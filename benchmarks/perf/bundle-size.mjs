@@ -8,16 +8,30 @@ import { reportPerformanceSample } from "./report-sample.mjs";
 const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const benchmarkDir = join(repositoryRoot, "benchmarks");
 const framework = process.argv[2];
+const target = process.argv[3] ?? "client";
 
 if (framework !== "vinext" && framework !== "nextjs") {
-  console.error("Usage: node benchmarks/perf/bundle-size.mjs <vinext|nextjs>");
+  console.error(
+    "Usage: node benchmarks/perf/bundle-size.mjs <vinext|nextjs> [client|rsc-entry|server]",
+  );
   process.exit(1);
 }
 
-const outputDirectory =
-  framework === "vinext"
-    ? join(benchmarkDir, "vinext", "dist", "client")
-    : join(benchmarkDir, "nextjs", ".next", "static");
+if (!["client", "rsc-entry", "server"].includes(target)) {
+  throw new Error(`Unknown bundle target: ${target}`);
+}
+if (framework === "nextjs" && target !== "client") {
+  throw new Error(`Bundle target ${target} is only defined for vinext`);
+}
+
+const outputPath =
+  framework === "nextjs"
+    ? join(benchmarkDir, "nextjs", ".next", "static")
+    : target === "client"
+      ? join(benchmarkDir, "vinext", "dist", "client")
+      : target === "rsc-entry"
+        ? join(benchmarkDir, "vinext", "dist", "server", "index.js")
+        : join(benchmarkDir, "vinext", "dist", "server");
 
 async function gzipBundleSize(directory) {
   let gzipBytes = 0;
@@ -41,24 +55,32 @@ async function gzipBundleSize(directory) {
 }
 
 async function main() {
-  const output = await lstat(outputDirectory).catch(() => null);
+  const output = await lstat(outputPath).catch(() => null);
   if (output?.isSymbolicLink()) {
-    throw new Error(`Bundle output may not be a symlink: ${outputDirectory}`);
+    throw new Error(`Bundle output may not be a symlink: ${outputPath}`);
   }
-  if (!output?.isDirectory()) {
+  const expectedType = target === "rsc-entry" ? "file" : "directory";
+  if (
+    !output ||
+    (expectedType === "file" && !output.isFile()) ||
+    (expectedType === "directory" && !output.isDirectory())
+  ) {
     throw new Error(
-      `Build output not found at ${outputDirectory}; run the production build scenario first`,
+      `Build output not found at ${outputPath}; run the production build scenario first`,
     );
   }
   const resolvedRoot = await realpath(repositoryRoot);
-  const resolvedOutput = await realpath(outputDirectory);
+  const resolvedOutput = await realpath(outputPath);
   const outputRelativePath = relative(resolvedRoot, resolvedOutput);
   if (outputRelativePath.startsWith("..") || isAbsolute(outputRelativePath)) {
-    throw new Error(`Bundle output escapes the benchmark checkout: ${outputDirectory}`);
+    throw new Error(`Bundle output escapes the benchmark checkout: ${outputPath}`);
   }
 
-  const { gzipBytes, fileCount } = await gzipBundleSize(outputDirectory);
-  if (fileCount === 0) throw new Error(`No client JavaScript or CSS found in ${outputDirectory}`);
+  const { gzipBytes, fileCount } =
+    target === "rsc-entry"
+      ? { gzipBytes: gzipSync(await readFile(outputPath)).length, fileCount: 1 }
+      : await gzipBundleSize(outputPath);
+  if (fileCount === 0) throw new Error(`No JavaScript or CSS found in ${outputPath}`);
   await reportPerformanceSample(gzipBytes);
 }
 

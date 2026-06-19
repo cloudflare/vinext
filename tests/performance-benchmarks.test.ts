@@ -240,6 +240,53 @@ describe("paired performance benchmarks", () => {
     ).toThrow("Bundle output escapes the benchmark checkout");
   });
 
+  it("measures the RSC entry and complete server bundle separately", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-server-bundle-"));
+    const serverDirectory = join(directory, "benchmarks/vinext/dist/server");
+    const samplesPath = join(directory, "samples.jsonl");
+    const rscEntry = "export default function handler() { return 'rsc'; }";
+    const ssrEntry = "export function render() { return 'ssr'; }";
+    const sharedChunk = "export const shared = 'chunk';";
+    mkdirSync(join(serverDirectory, "ssr"), { recursive: true });
+    mkdirSync(join(serverDirectory, "_next/static"), { recursive: true });
+    writeFileSync(join(serverDirectory, "index.js"), rscEntry);
+    writeFileSync(join(serverDirectory, "ssr/index.js"), ssrEntry);
+    writeFileSync(join(serverDirectory, "_next/static/shared.js"), sharedChunk);
+    writeFileSync(join(serverDirectory, "vinext-server.json"), "{}");
+
+    const baseEnvironment = {
+      ...process.env,
+      VINEXT_PERF_TARGET_ROOT: directory,
+      VINEXT_PERF_SAMPLES: samplesPath,
+      VINEXT_PERF_SCENARIO_ID: "bundle-size",
+      VINEXT_PERF_SUITE: "Build",
+      VINEXT_PERF_LABEL: "Bundle size",
+      VINEXT_PERF_IMPLEMENTATION_ID: "vinext",
+      VINEXT_PERF_IMPLEMENTATION_LABEL: "vinext",
+      VINEXT_PERF_UNIT: "bytes",
+      VINEXT_PERF_LOWER_IS_BETTER: "true",
+      VINEXT_PERF_REVISION: "head",
+    };
+
+    execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext", "rsc-entry"], {
+      cwd: join(import.meta.dirname, ".."),
+      env: { ...baseEnvironment, VINEXT_PERF_BENCHMARK_ID: "vinext-rsc-entry-gzip" },
+    });
+    execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext", "server"], {
+      cwd: join(import.meta.dirname, ".."),
+      env: { ...baseEnvironment, VINEXT_PERF_BENCHMARK_ID: "vinext-server-bundle-gzip" },
+    });
+
+    const samples = readFileSync(samplesPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(samples.map((sample) => sample.value)).toEqual([
+      gzipSync(rscEntry).length,
+      gzipSync(rscEntry).length + gzipSync(ssrEntry).length + gzipSync(sharedChunk).length,
+    ]);
+  });
+
   it("normalizes same-run baseline samples separately from head samples", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-"));
     const samplesPath = join(directory, "samples.jsonl");

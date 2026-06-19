@@ -70,14 +70,48 @@
           "label": "Next.js",
           "profile": false,
           "compareBase": true,
-          "command": ["node", "benchmarks/perf/bundle-size.mjs", "nextjs"]
+          "command": ["node", "benchmarks/perf/bundle-size.mjs", "nextjs", "client"]
         },
         {
           "id": "vinext",
           "label": "vinext",
           "profile": false,
           "compareBase": true,
-          "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext"]
+          "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext", "client"]
+        }
+      ]
+    },
+    {
+      "id": "rsc-entry-gzip",
+      "suite": "Build",
+      "label": "RSC entry size (gzip)",
+      "description": "Gzip size of the vinext production RSC entry emitted at dist/server/index.js.",
+      "unit": "bytes",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "vinext",
+          "label": "vinext",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext", "rsc-entry"]
+        }
+      ]
+    },
+    {
+      "id": "server-bundle-gzip",
+      "suite": "Build",
+      "label": "Server bundle size (gzip)",
+      "description": "Total gzip size of production JavaScript and CSS emitted under vinext's dist/server directory, including the RSC entry, SSR entry, and shared chunks.",
+      "unit": "bytes",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "vinext",
+          "label": "vinext",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext", "server"]
         }
       ]
     }
