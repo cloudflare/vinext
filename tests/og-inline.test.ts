@@ -273,6 +273,31 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("inlines assets for an aliased file-symlinked dependency", async () => {
+    const workspaceRoot = path.join(tmpDir, "file-symlinked-alias");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(projectRoot, "node_modules", "og-alias");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
+    const packageFont = Buffer.from("file-symlinked-alias-font");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspacePackageDir, "font.ttf"), packageFont);
+    await fsp.symlink(
+      path.join(workspacePackageDir, "index.js"),
+      path.join(packageDir, "index.js"),
+    );
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
   it("does not broaden a file-symlinked dependency to an ancestor package", async () => {
     const workspaceRoot = path.join(tmpDir, "file-symlinked-ancestor");
     const projectRoot = path.join(workspaceRoot, "app");
@@ -294,6 +319,24 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const transform = unwrapHook(plugin.transform);
     const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
     const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("does not broaden a manifest-less workspace module to the workspace root", async () => {
+    const workspaceRoot = path.join(tmpDir, "manifest-less-workspace");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"workspace-root"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "workspace-root-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(workspacePackageDir, "index.js"));
 
     expect(result).toBeNull();
   });

@@ -111,10 +111,15 @@ function getNodeModulesPackageRoot(
   return path.join(baseRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
 }
 
-function getNodeModulesPackageName(packageRoot: string): string {
-  const packageName = path.basename(packageRoot);
-  const scope = path.basename(path.dirname(packageRoot));
-  return scope.startsWith("@") ? `${scope}/${packageName}` : packageName;
+async function readPackageName(packageRoot: string): Promise<string | null> {
+  try {
+    const manifest = JSON.parse(
+      await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
+    );
+    return typeof manifest.name === "string" ? manifest.name : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
@@ -194,10 +199,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // target package, not the directory containing the symlink itself.
             // The nearest manifest is intentionally the boundary because the
             // canonical target is no longer inside the logical package path.
-            const canonicalPackageRoot = await findPackageRoot(
-              realModuleDir,
-              getNodeModulesPackageName(packageRoot),
-            );
+            const logicalPackageName = await readPackageName(packageRoot);
+            if (logicalPackageName === null) return null;
+            const canonicalPackageRoot = await findPackageRoot(realModuleDir, logicalPackageName);
             if (canonicalPackageRoot === null) return null;
             realAssetRoot = canonicalPackageRoot;
           }
@@ -208,6 +212,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           // linked workspace packages and confined to their nearest manifest.
           const workspacePackageRoot = await findPackageRoot(realModuleDir);
           if (workspacePackageRoot === null) return null;
+          if (isPathInside(workspacePackageRoot, realProjectRoot)) return null;
           realAssetRoot = workspacePackageRoot;
         }
         const moduleDir = realModuleDir;
