@@ -162,7 +162,9 @@ test.describe("OG Image Generation with ../-relative custom font (@next/og)", ()
  * Vinext-specific coverage for fonts loaded by an external linked package.
  * The package module itself evaluates `new URL("./noto-sans.ttf", import.meta.url)`,
  * so this exercises resolveId provenance and package-scoped asset containment
- * through Vite dev, Cloudflare dev, and the built Workers bundle.
+ * through Cloudflare Vite dev and the built Workers bundle. The shared
+ * app-router fixture is skipped because many integration tests copy its app/
+ * tree without copying fixture-specific Vite aliases.
  */
 test.describe("OG Image Generation with a linked-package font", () => {
   test("GET /api/og-linked-font returns a 1200×630 PNG", async ({ request }, testInfo) => {
