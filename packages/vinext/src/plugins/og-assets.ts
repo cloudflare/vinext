@@ -196,7 +196,15 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   const cache = new Map<string, string>(); // absPath -> base64
   const linkedPackageRoots = new Set<string>();
   const dependencyPackageNames = new Map<string, string>();
-  let configuredAliases: readonly { find: string | RegExp; replacement: string }[] = [];
+  const stringAliasesByFirstCharacter = new Map<
+    string,
+    { find: string; replacement: string; index: number }[]
+  >();
+  let regularExpressionAliases: readonly {
+    find: RegExp;
+    replacement: string;
+    index: number;
+  }[] = [];
   let isBuild = false;
   let projectRoot = process.cwd();
 
@@ -225,7 +233,22 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           }
         }
       } catch {}
-      configuredAliases = config.resolve.alias;
+      stringAliasesByFirstCharacter.clear();
+      regularExpressionAliases = [];
+      for (const [index, alias] of config.resolve.alias.entries()) {
+        if (typeof alias.find === "string") {
+          const firstCharacter = alias.find[0];
+          if (firstCharacter === undefined) continue;
+          const aliases = stringAliasesByFirstCharacter.get(firstCharacter) ?? [];
+          aliases.push({ find: alias.find, replacement: alias.replacement, index });
+          stringAliasesByFirstCharacter.set(firstCharacter, aliases);
+        } else {
+          regularExpressionAliases = [
+            ...regularExpressionAliases,
+            { find: alias.find, replacement: alias.replacement, index },
+          ];
+        }
+      }
     },
 
     buildStart() {
@@ -237,7 +260,12 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
     async resolveId(source, importer, options) {
       const sourcePackageName = getPackageNameFromSpecifier(source);
-      const configuredAlias = configuredAliases.find((alias) => aliasMatches(alias.find, source));
+      const configuredAlias = [
+        ...(stringAliasesByFirstCharacter.get(source[0] ?? "") ?? []),
+        ...regularExpressionAliases,
+      ]
+        .filter((alias) => aliasMatches(alias.find, source))
+        .sort((a, b) => a.index - b.index)[0];
       const expectedPackageName =
         sourcePackageName === null ? undefined : dependencyPackageNames.get(sourcePackageName);
       if (configuredAlias === undefined && expectedPackageName === undefined) return null;

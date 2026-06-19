@@ -601,6 +601,46 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("preserves configured precedence between regular-expression and string aliases", async () => {
+    const projectRoot = path.join(tmpDir, "alias-precedence-app");
+    const firstPackageDir = path.join(tmpDir, "alias-precedence-first");
+    const secondPackageDir = path.join(tmpDir, "alias-precedence-second");
+    const modulePath = path.join(firstPackageDir, "index.js");
+    const packageFont = Buffer.from("alias-precedence-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(firstPackageDir, { recursive: true });
+    await fsp.mkdir(secondPackageDir, { recursive: true });
+    await fsp.writeFile(path.join(firstPackageDir, "package.json"), '{"name":"first"}');
+    await fsp.writeFile(path.join(secondPackageDir, "package.json"), '{"name":"second"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(firstPackageDir, "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: {
+        alias: [
+          { find: /^@ui$/, replacement: firstPackageDir },
+          { find: "@ui", replacement: secondPackageDir },
+        ],
+      },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "@ui",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
     const projectRoot = path.join(workspaceRoot, "app");
