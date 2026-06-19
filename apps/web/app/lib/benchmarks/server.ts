@@ -7,7 +7,7 @@ type CloudflareEnv = {
 };
 
 type NormalizedPerfPayload = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   provider: "samply";
   instrument: "walltime";
   run: {
@@ -18,6 +18,7 @@ type NormalizedPerfPayload = {
     executionId: string;
     measuredAt: string;
     repository: string;
+    skippedImplementations?: string[];
   };
   system: Record<string, unknown>;
   benchmarks: Array<{
@@ -41,6 +42,18 @@ type NormalizedPerfPayload = {
       q3: number;
       outliers: number;
     };
+    baselineSamples?: {
+      rounds: number;
+      mean: number;
+      median: number;
+      standardDeviation: number;
+      min: number;
+      max: number;
+      q1: number;
+      q3: number;
+      outliers: number;
+    } | null;
+    profileRounds?: number | null;
     profileObjectKey?: string;
   }>;
 };
@@ -53,6 +66,15 @@ function getProfilesBucket() {
   return (env as CloudflareEnv).PERFORMANCE_PROFILES;
 }
 
+function executionOrder(executionId: string) {
+  const match = /^(\d+):(\d+)$/.exec(executionId);
+  if (!match) return null;
+  const runId = Number(match[1]);
+  const attempt = Number(match[2]);
+  if (!Number.isSafeInteger(runId) || !Number.isSafeInteger(attempt)) return null;
+  return [runId, attempt] as const;
+}
+
 export async function uploadPerformanceRun(request: Request): Promise<Response> {
   let body: NormalizedPerfPayload;
   try {
@@ -62,7 +84,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   if (
-    body.schemaVersion !== 1 ||
+    (body.schemaVersion !== 1 && body.schemaVersion !== 2) ||
     body.provider !== "samply" ||
     body.instrument !== "walltime" ||
     !body.run?.commitSha ||
@@ -83,6 +105,16 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   if (
+    body.schemaVersion === 2 &&
+    !body.benchmarks.some((benchmark) => benchmark.baselineSamples != null)
+  ) {
+    return Response.json(
+      { error: "Performance schema 2 requires paired baseline samples" },
+      { status: 400 },
+    );
+  }
+
+  if (
     body.run.kind === "pull_request" &&
     (!body.run.baseSha ||
       body.run.pullRequest === null ||
@@ -98,6 +130,10 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const db = getD1();
   const profiles = getProfilesBucket();
   const runId = `${body.run.kind}:${body.run.commitSha}`;
+  const incomingExecution = executionOrder(body.run.executionId);
+  if (!incomingExecution) {
+    return Response.json({ error: "Invalid performance execution ID" }, { status: 400 });
+  }
   const profileKeys = new Map(
     body.benchmarks.flatMap((benchmark) =>
       benchmark.profileObjectKey
@@ -112,22 +148,27 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const statements = [
     db
       .prepare(`
-        DELETE FROM performance_measurements
-        WHERE run_id IN (
-          SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
-        )
-        RETURNING profile_object_key
-      `)
-      .bind(body.run.kind, body.run.commitSha),
-    db
-      .prepare("DELETE FROM performance_runs WHERE kind = ? AND commit_sha = ?")
-      .bind(body.run.kind, body.run.commitSha),
-    db
-      .prepare(`
         INSERT INTO performance_runs (
           id, kind, commit_sha, base_sha, pull_request, measured_at,
           provider, instrument, repository, system_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          commit_sha = excluded.commit_sha,
+          base_sha = excluded.base_sha,
+          pull_request = excluded.pull_request,
+          measured_at = excluded.measured_at,
+          provider = excluded.provider,
+          instrument = excluded.instrument,
+          repository = excluded.repository,
+          system_json = excluded.system_json
+        WHERE json_extract(performance_runs.system_json, '$.executionRunId') IS NULL
+          OR CAST(json_extract(performance_runs.system_json, '$.executionRunId') AS INTEGER) < ?
+          OR (
+            CAST(json_extract(performance_runs.system_json, '$.executionRunId') AS INTEGER) = ?
+            AND CAST(json_extract(performance_runs.system_json, '$.executionAttempt') AS INTEGER) < ?
+          )
+        RETURNING id
       `)
       .bind(
         runId,
@@ -139,8 +180,29 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
         body.provider,
         body.instrument,
         body.run.repository,
-        JSON.stringify(body.system),
+        JSON.stringify({
+          ...body.system,
+          executionId: body.run.executionId,
+          executionRunId: incomingExecution[0],
+          executionAttempt: incomingExecution[1],
+        }),
+        incomingExecution[0],
+        incomingExecution[0],
+        incomingExecution[1],
       ),
+    db
+      .prepare(`
+        DELETE FROM performance_measurements
+        WHERE run_id = ?
+          AND EXISTS (
+            SELECT 1 FROM performance_runs
+            WHERE id = ?
+              AND CAST(json_extract(system_json, '$.executionRunId') AS INTEGER) = ?
+              AND CAST(json_extract(system_json, '$.executionAttempt') AS INTEGER) = ?
+          )
+        RETURNING profile_object_key
+      `)
+      .bind(runId, runId, incomingExecution[0], incomingExecution[1]),
     ...body.benchmarks.map((benchmark) =>
       db
         .prepare(`
@@ -149,8 +211,20 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
             implementation_id, implementation_label, unit,
             lower_is_better, rounds, mean_value, median_value,
             standard_deviation_value, min_value, max_value, q1_value,
-            q3_value, outliers, flame_graph_json, profile_object_key
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            q3_value, outliers, paired_baseline_rounds,
+            paired_baseline_mean_value, paired_baseline_median_value,
+            paired_baseline_standard_deviation_value, paired_baseline_min_value,
+            paired_baseline_max_value, paired_baseline_q1_value,
+            paired_baseline_q3_value, paired_baseline_outliers,
+            flame_graph_json, profile_rounds, profile_object_key
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM performance_runs
+            WHERE id = ?
+              AND CAST(json_extract(system_json, '$.executionRunId') AS INTEGER) = ?
+              AND CAST(json_extract(system_json, '$.executionAttempt') AS INTEGER) = ?
+          )
         `)
         .bind(
           runId,
@@ -172,13 +246,29 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
           benchmark.samples.q1,
           benchmark.samples.q3,
           benchmark.samples.outliers,
+          benchmark.baselineSamples?.rounds ?? null,
+          benchmark.baselineSamples?.mean ?? null,
+          benchmark.baselineSamples?.median ?? null,
+          benchmark.baselineSamples?.standardDeviation ?? null,
+          benchmark.baselineSamples?.min ?? null,
+          benchmark.baselineSamples?.max ?? null,
+          benchmark.baselineSamples?.q1 ?? null,
+          benchmark.baselineSamples?.q3 ?? null,
+          benchmark.baselineSamples?.outliers ?? null,
           null,
+          benchmark.profileRounds ?? null,
           profileKeys.get(benchmark.benchmarkId) ?? null,
+          runId,
+          incomingExecution[0],
+          incomingExecution[1],
         ),
     ),
   ];
 
-  const [deletedMeasurements] = await db.batch(statements);
+  const [claimedRun, deletedMeasurements] = await db.batch(statements);
+  if (claimedRun.results.length === 0) {
+    return Response.json({ error: "Stale performance execution" }, { status: 409 });
+  }
   const retainedKeys = new Set(profileKeys.values());
   const obsoleteKeys = (deletedMeasurements.results as Array<{ profile_object_key: string | null }>)
     .map((row) => row.profile_object_key)
@@ -299,8 +389,10 @@ type PerformanceComparisonMeasurementData = Omit<
   keyof PerformanceStatsData
 > & {
   baseline: PerformanceStatsData | null;
+  baselineSource: "paired" | "historical" | null;
   current: PerformanceStatsData;
   flameGraph: FlameGraphData | null;
+  profileRounds: number | null;
   profileUrl: string | null;
 };
 
@@ -353,7 +445,12 @@ export type PerformanceComparisonData = {
   description: string;
   currentLabel: string;
   head: ReturnType<typeof runReference>;
-  baseline: ReturnType<typeof runReference> | null;
+  baseline: {
+    sha: string;
+    shortSha: string;
+    measuredAt: string | null;
+  } | null;
+  baselineLabel: string;
   measurements: PerformanceComparisonMeasurementData[];
 };
 
@@ -385,7 +482,6 @@ export async function getPullComparison(
     `)
     .bind(pullRun.base_sha)
     .first<Record<string, unknown>>();
-
   const measurements = await comparableMeasurements(
     String(pullRun.id),
     baselineRun ? String(baselineRun.id) : null,
@@ -393,16 +489,16 @@ export async function getPullComparison(
   if (measurements.length === 0) {
     return null;
   }
+  const provenance = comparisonProvenance(measurements);
 
   return {
     badge: `PR #${pullNumber}`,
     title: `Pull request #${pullNumber}`,
-    description: baselineRun
-      ? "Exact-head measurements compared with the PR base commit. Directionality is defined per scenario."
-      : "Exact-head measurements. No benchmark run is available for the PR base commit.",
+    description: comparisonDescription(provenance, "Exact-head measurements."),
     currentLabel: "PR head",
     head: runReference(pullRun),
-    baseline: baselineRun ? runReference(baselineRun) : null,
+    baseline: comparisonBaseline(provenance, pullRun, baselineRun),
+    baselineLabel: comparisonBaselineLabel(provenance),
     measurements,
   };
 }
@@ -455,7 +551,6 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
         `)
         .bind(currentRun.commit_sha, currentRun.measured_at)
         .first<Record<string, unknown>>();
-
   const measurements = await comparableMeasurements(
     String(currentRun.id),
     baselineRun ? String(baselineRun.id) : null,
@@ -463,21 +558,25 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
   if (measurements.length === 0) {
     return null;
   }
+  const provenance = comparisonProvenance(measurements);
 
   const commitSha = String(currentRun.commit_sha);
   return {
     badge: commitSha.slice(0, 7),
     title: `Commit ${commitSha.slice(0, 7)}`,
     description: isPullRequestRun
-      ? baselineRun
-        ? "Pull-request measurements compared with the PR base commit. Directionality is defined per scenario."
-        : "Pull-request measurements. No benchmark run is available for the PR base commit."
+      ? comparisonDescription(provenance, "Pull-request measurements.")
       : baselineRun
         ? "Main-branch measurements compared with the immediately preceding main run. Directionality is defined per scenario."
         : "Main-branch measurements. No earlier main run is available for a baseline comparison.",
     currentLabel: isPullRequestRun ? "PR commit" : "Current commit",
     head: runReference(currentRun),
-    baseline: baselineRun ? runReference(baselineRun) : null,
+    baseline: isPullRequestRun
+      ? comparisonBaseline(provenance, currentRun, baselineRun)
+      : baselineRun
+        ? runReference(baselineRun)
+        : null,
+    baselineLabel: comparisonBaselineLabel(provenance),
     measurements,
   };
 }
@@ -513,12 +612,20 @@ async function comparableMeasurements(
       implementationLabel: String(row.implementation_label),
       unit: String(row.unit),
       lowerIsBetter: Boolean(row.lower_is_better),
-      baseline: baselineRow ? measurementStats(baselineRow) : null,
+      baseline:
+        row.paired_baseline_rounds !== null
+          ? pairedMeasurementStats(row)
+          : baselineRow
+            ? measurementStats(baselineRow)
+            : null,
+      baselineSource:
+        row.paired_baseline_rounds !== null ? "paired" : baselineRow ? "historical" : null,
       current: measurementStats(row),
       flameGraph:
         typeof row.flame_graph_json === "string"
           ? (JSON.parse(row.flame_graph_json) as FlameGraphData)
           : null,
+      profileRounds: typeof row.profile_rounds === "number" ? Number(row.profile_rounds) : null,
       profileUrl:
         typeof row.profile_object_key === "string"
           ? `/api/benchmarks/profile?runId=${encodeURIComponent(currentRunId)}&benchmarkId=${encodeURIComponent(String(row.benchmark_id))}`
@@ -554,6 +661,78 @@ function runReference(row: Record<string, unknown>) {
   return { sha, shortSha: sha.slice(0, 7), measuredAt: String(row.measured_at) };
 }
 
+function pairedBaselineReference(row: Record<string, unknown>) {
+  const sha = String(row.base_sha);
+  return { sha, shortSha: sha.slice(0, 7), measuredAt: null };
+}
+
+function mixedBaselineReference(row: Record<string, unknown>) {
+  const sha = String(row.base_sha);
+  return { sha, shortSha: sha.slice(0, 7), measuredAt: null };
+}
+
+function comparisonProvenance(measurements: PerformanceComparisonMeasurementData[]) {
+  const sources = new Set(measurements.map((measurement) => measurement.baselineSource));
+  const paired = sources.has("paired");
+  const historical = sources.has("historical");
+  const missing = sources.has(null);
+  if (paired && historical && missing) return "mixed-partial";
+  if (paired && historical) return "mixed";
+  if (paired && missing) return "paired-partial";
+  if (historical && missing) return "historical-partial";
+  if (paired) return "paired";
+  if (historical) return "historical";
+  return "none";
+}
+
+function comparisonDescription(
+  provenance: ReturnType<typeof comparisonProvenance>,
+  prefix: string,
+) {
+  if (provenance === "paired") {
+    return `${prefix} Head and base were measured together on the same runner with alternating rounds.`;
+  }
+  if (provenance === "mixed") {
+    return `${prefix} Paired rows use same-runner base measurements; unpaired rows use a historical run of the base commit.`;
+  }
+  if (provenance === "mixed-partial") {
+    return `${prefix} Paired rows use same-runner base measurements, other available rows use a historical base run, and remaining rows have no baseline.`;
+  }
+  if (provenance === "paired-partial") {
+    return `${prefix} Paired rows use same-runner base measurements; remaining rows have no baseline.`;
+  }
+  if (provenance === "historical") {
+    return `${prefix} Compared with a historical run of the base commit.`;
+  }
+  if (provenance === "historical-partial") {
+    return `${prefix} Available rows use a historical run of the base commit; remaining rows have no baseline.`;
+  }
+  return `${prefix} No benchmark run is available for the base commit.`;
+}
+
+function comparisonBaseline(
+  provenance: ReturnType<typeof comparisonProvenance>,
+  currentRun: Record<string, unknown>,
+  historicalRun: Record<string, unknown> | null,
+) {
+  if (provenance === "paired" || provenance === "paired-partial") {
+    return pairedBaselineReference(currentRun);
+  }
+  if (provenance === "mixed" || provenance === "mixed-partial") {
+    return mixedBaselineReference(currentRun);
+  }
+  if ((provenance === "historical" || provenance === "historical-partial") && historicalRun) {
+    return runReference(historicalRun);
+  }
+  return null;
+}
+
+function comparisonBaselineLabel(provenance: ReturnType<typeof comparisonProvenance>) {
+  if (provenance === "mixed" || provenance === "mixed-partial") return "Mixed baselines";
+  if (provenance === "paired-partial") return "Paired baseline";
+  return "Baseline";
+}
+
 function serializeMeasurement(row: Record<string, unknown>): PerformanceMeasurementData {
   return {
     benchmarkId: String(row.benchmark_id),
@@ -582,5 +761,16 @@ function measurementStats(row: Record<string, unknown>): PerformanceStatsData {
     rounds: Number(row.rounds),
     min: Number(row.min_value),
     max: Number(row.max_value),
+  };
+}
+
+function pairedMeasurementStats(row: Record<string, unknown>): PerformanceStatsData {
+  return {
+    median: Number(row.paired_baseline_median_value),
+    mean: Number(row.paired_baseline_mean_value),
+    standardDeviation: Number(row.paired_baseline_standard_deviation_value),
+    rounds: Number(row.paired_baseline_rounds),
+    min: Number(row.paired_baseline_min_value),
+    max: Number(row.paired_baseline_max_value),
   };
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
@@ -20,6 +20,19 @@ if (framework !== "vinext" && framework !== "nextjs") {
 
 const projectDir = join(benchmarkDir, framework);
 const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 60_000);
+const benchmarkEnvironmentNames = Object.keys(process.env).filter((name) =>
+  name.startsWith("VINEXT_PERF_"),
+);
+
+function targetEnvironment() {
+  const environment = { ...process.env };
+  for (const name of benchmarkEnvironmentNames) delete environment[name];
+  return {
+    ...environment,
+    NEXT_TELEMETRY_DISABLED: "1",
+    NO_COLOR: "1",
+  };
+}
 
 async function allocatePort() {
   const server = createServer();
@@ -41,14 +54,23 @@ async function cleanFrameworkCache() {
     framework === "vinext"
       ? [join(projectDir, "node_modules/.vite"), join(projectDir, ".vite")]
       : [join(projectDir, ".next")];
-  await Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(paths.map(clearDirectory));
+}
+
+async function clearDirectory(path) {
+  await mkdir(path, { recursive: true });
+  const entries = await readdir(path);
+  await Promise.all(
+    entries.map((entry) => rm(join(path, entry), { recursive: true, force: true })),
+  );
 }
 
 function commandFor(port) {
   let command;
   if (framework === "vinext") {
+    const vpPath = execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
     command = {
-      command: join(repositoryRoot, "node_modules/.bin/vp"),
+      command: vpPath,
       args: ["dev", "--host", "127.0.0.1", "--port", String(port)],
     };
   } else {
@@ -127,11 +149,7 @@ async function main() {
   const child = spawn(command, args, {
     cwd: projectDir,
     detached: true,
-    env: {
-      ...process.env,
-      NEXT_TELEMETRY_DISABLED: "1",
-      NO_COLOR: "1",
-    },
+    env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
 

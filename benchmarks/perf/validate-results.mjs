@@ -5,6 +5,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
+import { nextjsInputFingerprint } from "./nextjs-input-fingerprint.mts";
 
 const inputPath = resolve(process.argv[2] ?? "performance-artifact/perf-results.json");
 const artifactRoot = dirname(inputPath);
@@ -45,6 +46,14 @@ function githubApi(path) {
   );
 }
 
+function remoteNextjsInputFingerprint(repositoryName, ref) {
+  const tree = githubApi(
+    `repos/${repositoryName}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+  );
+  assert(Array.isArray(tree.tree) && tree.truncated !== true, "Invalid repository tree");
+  return nextjsInputFingerprint(tree.tree);
+}
+
 function trustedScenarioManifest(ref) {
   assert(isSha(ref), "Trusted benchmark manifest ref must be a complete SHA");
   const file = githubApi(
@@ -63,6 +72,26 @@ function trustedScenarioManifest(ref) {
 
 function benchmarkId(scenario, implementation) {
   return `${implementation.id}-${scenario.id}`;
+}
+
+function validateSamples(samples, benchmarkId, label) {
+  assert(
+    samples &&
+      Number.isInteger(samples.rounds) &&
+      samples.rounds > 0 &&
+      samples.rounds <= 1_000 &&
+      ["mean", "median", "standardDeviation", "min", "max", "q1", "q3"].every(
+        (field) => Number.isFinite(samples[field]) && samples[field] >= 0,
+      ),
+    `Invalid ${label} samples for ${benchmarkId}`,
+  );
+  assert(
+    samples.min <= samples.median &&
+      samples.median <= samples.max &&
+      samples.min <= samples.mean &&
+      samples.mean <= samples.max,
+    `Inconsistent ${label} samples for ${benchmarkId}`,
+  );
 }
 
 function tableRowCount(table, label) {
@@ -288,7 +317,10 @@ assert(sourceRun.path === ".github/workflows/perf.yml", "Unexpected source workf
 assert(sourceRun.status === "completed" && sourceRun.conclusion === "success", "Source run failed");
 assert(sourceRun.event === sourceEvent, "Source event does not match workflow run");
 assert(sourceRun.run_attempt === Number(sourceRunAttempt), "Source run attempt does not match");
-assert(payload.schemaVersion === 1, "Unsupported performance schema");
+assert(
+  payload.schemaVersion === 1 || payload.schemaVersion === 2,
+  "Unsupported performance schema",
+);
 assert(payload.provider === "samply", "Unexpected performance provider");
 assert(payload.instrument === "walltime", "Unexpected performance instrument");
 assert(payload.run?.repository === repository, "Performance repository does not match workflow");
@@ -296,6 +328,15 @@ assert(isSha(payload.run?.commitSha), "Performance commit SHA must be complete")
 assert(
   payload.run.executionId === `${sourceRunId}:${sourceRunAttempt}`,
   "Performance execution ID does not match workflow run",
+);
+const skippedImplementationIds = payload.run.skippedImplementations ?? [];
+assert(Array.isArray(skippedImplementationIds), "Invalid skipped implementations");
+assert(
+  skippedImplementationIds.every(
+    (implementation) =>
+      typeof implementation === "string" && /^[a-zA-Z0-9._:-]+$/.test(implementation),
+  ),
+  "Invalid skipped implementation",
 );
 assert(Array.isArray(payload.benchmarks), "Performance benchmarks must be an array");
 assert(
@@ -324,6 +365,20 @@ if (sourceEvent === "pull_request") {
     sourcePullRequest.head.ref === sourceRun.head_branch,
     "Source run branch does not match PR",
   );
+} else if (sourceEvent === "workflow_dispatch" && payload.run.kind === "pull_request") {
+  assert(
+    Number.isInteger(payload.run.pullRequest) && payload.run.pullRequest > 0,
+    "Invalid PR number",
+  );
+  sourcePullRequest = githubApi(`repos/${repository}/pulls/${payload.run.pullRequest}`);
+  assert(
+    payload.run.commitSha === sourcePullRequest.head.sha,
+    "Dispatched PR head SHA is stale or invalid",
+  );
+  assert(
+    payload.run.baseSha === sourcePullRequest.base.sha,
+    "Dispatched PR base SHA is stale or invalid",
+  );
 }
 
 let trustedManifestRef;
@@ -332,29 +387,69 @@ if (sourceEvent === "pull_request") {
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {
+  const defaultBranch = githubApi(`repos/${repository}/commits/main`);
+  assert(
+    defaultBranch.sha === sourceRun.head_sha,
+    "Dispatched workflow ref is not the current default branch head",
+  );
   trustedManifestRef = sourceRun.head_sha;
 } else {
   throw new Error(`Unsupported source event: ${sourceEvent}`);
 }
 
 const performanceScenarios = trustedScenarioManifest(trustedManifestRef);
+const skippedImplementations = new Set(skippedImplementationIds);
+if (payload.run.kind === "pull_request") {
+  assert(
+    [...skippedImplementations].every((implementation) => implementation === "nextjs"),
+    "Only unchanged Next.js benchmarks may be skipped",
+  );
+  if (skippedImplementations.has("nextjs")) {
+    const baseFingerprint = remoteNextjsInputFingerprint(
+      sourcePullRequest.base.repo.full_name,
+      sourcePullRequest.base.sha,
+    );
+    const benchmarkRef =
+      sourceEvent === "pull_request"
+        ? sourcePullRequest.merge_commit_sha
+        : sourcePullRequest.head.sha;
+    assert(isSha(benchmarkRef), "Pull request merge commit SHA is unavailable");
+    const headFingerprint = remoteNextjsInputFingerprint(
+      sourceEvent === "pull_request" ? repository : sourcePullRequest.head.repo.full_name,
+      benchmarkRef,
+    );
+    assert(
+      baseFingerprint === headFingerprint,
+      "Next.js benchmarks were skipped even though their inputs changed",
+    );
+  }
+} else {
+  assert(skippedImplementations.size === 0, "Non-PR runs may not skip implementations");
+}
 const benchmarkIds = new Set();
 const expectedBenchmarks = new Map(
   performanceScenarios.flatMap((scenario) =>
-    scenario.implementations.map((implementation) => [
-      benchmarkId(scenario, implementation),
-      {
-        scenarioId: scenario.id,
-        suite: scenario.suite,
-        label: scenario.label,
-        description: scenario.description,
-        implementationId: implementation.id,
-        implementationLabel: implementation.label,
-        unit: scenario.unit,
-        lowerIsBetter: scenario.lowerIsBetter,
-        profile: implementation.profile === true,
-      },
-    ]),
+    scenario.implementations.flatMap((implementation) =>
+      skippedImplementations.has(implementation.id)
+        ? []
+        : [
+            [
+              benchmarkId(scenario, implementation),
+              {
+                scenarioId: scenario.id,
+                suite: scenario.suite,
+                label: scenario.label,
+                description: scenario.description,
+                implementationId: implementation.id,
+                implementationLabel: implementation.label,
+                unit: scenario.unit,
+                lowerIsBetter: scenario.lowerIsBetter,
+                profile: implementation.profile === true,
+                compareBase: implementation.compareBase === true,
+              },
+            ],
+          ],
+    ),
   ),
 );
 assert(
@@ -403,29 +498,49 @@ for (const benchmark of payload.benchmarks) {
   }
   assert(typeof benchmark.lowerIsBetter === "boolean", "Invalid benchmark direction");
   assert(benchmark.profileObjectKey === undefined, "Artifacts may not provide profile object keys");
-  assert(
-    benchmark.samples &&
-      Number.isInteger(benchmark.samples.rounds) &&
-      benchmark.samples.rounds > 0 &&
-      benchmark.samples.rounds <= 1_000 &&
-      ["mean", "median", "standardDeviation", "min", "max", "q1", "q3"].every(
-        (field) => Number.isFinite(benchmark.samples[field]) && benchmark.samples[field] >= 0,
-      ),
-    `Invalid samples for ${benchmark.benchmarkId}`,
-  );
-  assert(
-    benchmark.samples.min <= benchmark.samples.median &&
-      benchmark.samples.median <= benchmark.samples.max &&
-      benchmark.samples.min <= benchmark.samples.mean &&
-      benchmark.samples.mean <= benchmark.samples.max,
-    `Inconsistent samples for ${benchmark.benchmarkId}`,
-  );
+  validateSamples(benchmark.samples, benchmark.benchmarkId, "head");
+  if (payload.run.kind === "pull_request" && expected.compareBase) {
+    validateSamples(benchmark.baselineSamples, benchmark.benchmarkId, "paired baseline");
+    assert(
+      benchmark.baselineSamples.rounds === benchmark.samples.rounds,
+      `Paired sample counts differ for ${benchmark.benchmarkId}`,
+    );
+  } else {
+    assert(
+      benchmark.baselineSamples === null || benchmark.baselineSamples === undefined,
+      `Unexpected paired baseline for ${benchmark.benchmarkId}`,
+    );
+  }
   if (benchmark.profileFile !== null && benchmark.profileFile !== undefined) {
     assert(expected.profile, `Unexpected profile for ${benchmark.benchmarkId}`);
+    if (payload.run.kind === "pull_request" && expected.compareBase) {
+      assert(
+        benchmark.profileRounds === 1,
+        `Paired profile must contain one round for ${benchmark.benchmarkId}`,
+      );
+    } else {
+      assert(
+        benchmark.profileRounds === undefined ||
+          (Number.isInteger(benchmark.profileRounds) &&
+            benchmark.profileRounds > 0 &&
+            benchmark.profileRounds <= 1_000),
+        `Invalid profile round count for ${benchmark.benchmarkId}`,
+      );
+    }
     await validateProfilePath(benchmark.profileFile);
   } else {
     assert(!expected.profile, `Missing profile for ${benchmark.benchmarkId}`);
+    assert(
+      benchmark.profileRounds === null || benchmark.profileRounds === undefined,
+      `Unexpected profile round count for ${benchmark.benchmarkId}`,
+    );
   }
+}
+if (payload.schemaVersion === 2) {
+  assert(
+    payload.benchmarks.some((benchmark) => benchmark.baselineSamples),
+    "Performance schema 2 requires paired baseline samples",
+  );
 }
 
 let commitRepository = repository;
@@ -455,20 +570,7 @@ if (sourceEvent === "pull_request") {
   );
 } else if (sourceEvent === "workflow_dispatch") {
   if (payload.run.kind === "pull_request") {
-    assert(
-      Number.isInteger(payload.run.pullRequest) && payload.run.pullRequest > 0,
-      "Invalid PR number",
-    );
-    const pullRequest = githubApi(`repos/${repository}/pulls/${payload.run.pullRequest}`);
-    commitRepository = pullRequest.head.repo.full_name;
-    assert(
-      payload.run.commitSha === pullRequest.head.sha,
-      "Dispatched PR head SHA is stale or invalid",
-    );
-    assert(
-      payload.run.baseSha === pullRequest.base.sha,
-      "Dispatched PR base SHA is stale or invalid",
-    );
+    commitRepository = sourcePullRequest.head.repo.full_name;
   } else {
     assert(payload.run.kind === "main", "Invalid dispatched run kind");
     execFileSync("git", ["fetch", "--no-tags", "origin", "main"], { stdio: "inherit" });

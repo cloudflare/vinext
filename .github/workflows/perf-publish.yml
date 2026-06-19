@@ -5,10 +5,7 @@ on: # zizmor: ignore[dangerous-triggers] trusted default-branch code validates d
     workflows: [Performance Benchmarks]
     types: [completed]
 
-permissions:
-  actions: read
-  contents: read
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: performance-publish-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
@@ -16,10 +13,16 @@ concurrency:
 
 jobs:
   publish:
-    name: Upload results and comment
+    name: Validate and upload results
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      comment_enabled: ${{ steps.comment.outputs.enabled }}
+      pull_request: ${{ steps.comment.outputs.pull_request }}
     steps:
       - name: Checkout trusted publisher
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -60,18 +63,49 @@ jobs:
             performance-comment.md
           if [ -s performance-comment.md ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
+            node -e '
+              const payload = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+              console.log(`pull_request=${payload.run.pullRequest}`);
+            ' performance-artifact/perf-results.json >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update pull request comment
+      - name: Upload pull request comment
         if: steps.comment.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-comment-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: performance-comment.md
+          retention-days: 1
+
+  comment:
+    name: Update pull request comment
+    needs: publish
+    if: needs.publish.outputs.comment_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Download rendered comment
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: performance-comment-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: performance-comment
+
+      - name: Update pull request comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          VINEXT_PERF_PR_NUMBER: ${{ needs.publish.outputs.pull_request }}
         with:
           script: |
             const fs = require('node:fs');
-            const payload = JSON.parse(fs.readFileSync('performance-artifact/perf-results.json', 'utf8'));
-            const prNumber = payload.run.pullRequest;
+            const prNumber = Number(process.env.VINEXT_PERF_PR_NUMBER);
+            if (!Number.isInteger(prNumber) || prNumber <= 0) {
+              throw new Error('Invalid pull request number');
+            }
             const marker = '<!-- vinext-performance-benchmarks -->';
-            const body = fs.readFileSync('performance-comment.md', 'utf8');
+            const body = fs.readFileSync('performance-comment/performance-comment.md', 'utf8');
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,

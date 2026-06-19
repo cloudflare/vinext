@@ -35,6 +35,7 @@ describe("performance traces", () => {
     await execFileAsync("git", ["config", "user.email", "performance@example.com"], {
       cwd: directory,
     });
+    await execFileAsync("git", ["config", "commit.gpgsign", "false"], { cwd: directory });
     await writeFile(join(directory, "commit.txt"), "measured commit\n");
     await execFileAsync("git", ["add", "commit.txt"], { cwd: directory });
     await execFileAsync("git", ["commit", "--quiet", "-m", "measured commit"], {
@@ -117,6 +118,7 @@ describe("performance traces", () => {
     expect(result.benchmarks[0].profileFile).toBe(
       join("profiles", benchmarkId, "samply-profile.json.gz"),
     );
+    expect(result.benchmarks[0].profileRounds).toBe(1);
     expect(result.benchmarks[0]).not.toHaveProperty("flameGraph");
     expect(result.benchmarks[0].samples.rounds).toBe(5);
     expect(result.benchmarks[0].samples.mean).toBe(3);
@@ -182,6 +184,34 @@ describe("performance traces", () => {
       category: "process",
       children: graph.children,
     });
+  });
+
+  test("filters expose vinext, Vite, and Rolldown sampled frames", () => {
+    const names = [
+      "JS:vinext file:///work/vinext/vinext/packages/vinext/dist/index.js:1:1",
+      "JS:vite file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
+      "JS:rolldown file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+    ];
+    const profile = {
+      meta: { interval: 1 },
+      threads: [
+        {
+          processName: "vinext",
+          samples: { stack: [0, 1, 2], weight: [1, 1, 1], weightType: "samples", length: 3 },
+          stackTable: { frame: [0, 1, 2], prefix: [null, null, null] },
+          frameTable: { func: [0, 1, 2] },
+          funcTable: { name: [0, 1, 2] },
+          stringArray: names,
+        },
+      ],
+    };
+    const graph = profileToFlameGraph(profile) as TraceNode;
+
+    for (const category of ["vinext", "vite", "rolldown"] as const) {
+      expect(filteredTraceGraph(graph, new Set([category]))?.children?.[0]?.category).toBe(
+        category,
+      );
+    }
   });
 
   test("upload streams raw profiles before posting compact metadata", async () => {
@@ -430,6 +460,72 @@ describe("performance traces", () => {
       expect(deletedKeys).toEqual([
         "profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A2/object/profile.json.gz",
       ]);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => (error ? rejectClose(error) : resolveClose())),
+      );
+    }
+  });
+
+  test("retries schema 2 metadata until the dashboard deployment is ready", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "vinext-performance-retry-"));
+    temporaryDirectories.push(directory);
+    const resultsPath = join(directory, "perf-results.json");
+    await writeFile(
+      resultsPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        run: {
+          kind: "pull_request",
+          commitSha: "a".repeat(40),
+          executionId: "run:retry",
+        },
+        benchmarks: [],
+      }),
+    );
+
+    let uploadAttempts = 0;
+    const server = createServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) {
+          // Consume the request body before responding.
+        }
+        if (request.method === "POST" && request.url === "/upload") {
+          uploadAttempts += 1;
+          if (uploadAttempts === 1) {
+            response.writeHead(400, { "Content-Type": "application/json" });
+            response.end('{"error":"Invalid normalized performance payload"}');
+            return;
+          }
+          response.writeHead(201, { "Content-Type": "application/json" });
+          response.end('{"ok":true}');
+          return;
+        }
+        response.writeHead(404);
+        response.end();
+      })();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      const result = await execFileAsync(
+        process.execPath,
+        [resolve("benchmarks/perf/upload-results.mjs"), resultsPath],
+        {
+          env: {
+            ...process.env,
+            COMPAT_INGEST_SECRET: "test-secret",
+            VINEXT_PERF_UPLOAD_URL: `http://127.0.0.1:${address.port}/upload`,
+            VINEXT_PERF_UPLOAD_RETRY_ATTEMPTS: "2",
+            VINEXT_PERF_UPLOAD_RETRY_DELAY_MS: "1",
+          },
+        },
+      );
+      expect(uploadAttempts).toBe(2);
+      expect(result.stdout).toContain("Performance schema 2 is not deployed yet");
+      expect(result.stdout).toContain('{"ok":true}');
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => (error ? rejectClose(error) : resolveClose())),

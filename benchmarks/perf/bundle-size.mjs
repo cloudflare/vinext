@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 import { gzipSync } from "node:zlib";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
@@ -25,6 +25,7 @@ async function gzipBundleSize(directory) {
 
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
+    if (entry.isSymbolicLink()) throw new Error(`Bundle output may not contain symlinks: ${path}`);
     if (entry.isDirectory()) {
       const nested = await gzipBundleSize(path);
       gzipBytes += nested.gzipBytes;
@@ -40,11 +41,20 @@ async function gzipBundleSize(directory) {
 }
 
 async function main() {
-  const output = await stat(outputDirectory).catch(() => null);
+  const output = await lstat(outputDirectory).catch(() => null);
+  if (output?.isSymbolicLink()) {
+    throw new Error(`Bundle output may not be a symlink: ${outputDirectory}`);
+  }
   if (!output?.isDirectory()) {
     throw new Error(
       `Build output not found at ${outputDirectory}; run the production build scenario first`,
     );
+  }
+  const resolvedRoot = await realpath(repositoryRoot);
+  const resolvedOutput = await realpath(outputDirectory);
+  const outputRelativePath = relative(resolvedRoot, resolvedOutput);
+  if (outputRelativePath.startsWith("..") || isAbsolute(outputRelativePath)) {
+    throw new Error(`Bundle output escapes the benchmark checkout: ${outputDirectory}`);
   }
 
   const { gzipBytes, fileCount } = await gzipBundleSize(outputDirectory);

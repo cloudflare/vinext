@@ -1,15 +1,29 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
 const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const benchmarkDir = join(repositoryRoot, "benchmarks");
 const targetUser = process.env.VINEXT_PERF_TARGET_USER;
+const profiling = process.env.VINEXT_PERF_PROFILE === "true";
 const framework = process.argv[2];
 const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 180_000);
+const benchmarkEnvironmentNames = Object.keys(process.env).filter((name) =>
+  name.startsWith("VINEXT_PERF_"),
+);
+
+function targetEnvironment() {
+  const environment = { ...process.env };
+  for (const name of benchmarkEnvironmentNames) delete environment[name];
+  return {
+    ...environment,
+    NEXT_TELEMETRY_DISABLED: "1",
+    NO_COLOR: "1",
+  };
+}
 
 if (framework !== "vinext" && framework !== "nextjs") {
   console.error("Usage: node benchmarks/perf/build-time.mjs <vinext|nextjs>");
@@ -19,18 +33,23 @@ if (framework !== "vinext" && framework !== "nextjs") {
 const projectDir = join(benchmarkDir, framework);
 
 async function cleanBuildOutput() {
-  await rm(join(projectDir, framework === "vinext" ? "dist" : ".next"), {
-    recursive: true,
-    force: true,
-  });
+  const outputDirectory = join(projectDir, framework === "vinext" ? "dist" : ".next");
+  await mkdir(outputDirectory, { recursive: true });
+  const entries = await readdir(outputDirectory);
+  await Promise.all(
+    entries.map((entry) => rm(join(outputDirectory, entry), { recursive: true, force: true })),
+  );
 }
 
 function buildCommand() {
   let command;
   if (framework === "vinext") {
+    const vpPath = profiling
+      ? join(projectDir, "node_modules/vite-plus/bin/vp")
+      : execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
     command = {
-      command: join(repositoryRoot, "node_modules/.bin/vp"),
-      args: ["build"],
+      command: profiling ? globalThis.process.execPath : vpPath,
+      args: profiling ? [vpPath, "build"] : ["build"],
     };
   } else {
     command = {
@@ -38,7 +57,7 @@ function buildCommand() {
       args: ["build", "--turbopack"],
     };
   }
-  return targetUser
+  return targetUser && !profiling
     ? { command: "sudo", args: ["-u", targetUser, "--", command.command, ...command.args] }
     : command;
 }
@@ -78,15 +97,15 @@ async function stopProcessGroup(child) {
 async function main() {
   await cleanBuildOutput();
   const { command, args } = buildCommand();
+  if (profiling) {
+    globalThis.process.chdir(projectDir);
+    globalThis.process.execve(command, [command, ...args], targetEnvironment());
+  }
   const startedAt = performance.now();
   const child = spawn(command, args, {
     cwd: projectDir,
     detached: true,
-    env: {
-      ...process.env,
-      NEXT_TELEMETRY_DISABLED: "1",
-      NO_COLOR: "1",
-    },
+    env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = [];

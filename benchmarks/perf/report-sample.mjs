@@ -16,6 +16,7 @@ export async function reportPerformanceSample(value) {
     profile: process.env.VINEXT_PERF_PROFILE === "true",
     unit: requiredEnvironment("VINEXT_PERF_UNIT"),
     lowerIsBetter: process.env.VINEXT_PERF_LOWER_IS_BETTER !== "false",
+    revision: process.env.VINEXT_PERF_REVISION === "base" ? "base" : "head",
     value,
     measuredAt: new Date().toISOString(),
   };

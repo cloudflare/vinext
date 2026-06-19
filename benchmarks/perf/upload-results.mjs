@@ -21,6 +21,8 @@ const payload = JSON.parse(await readFile(inputPath, "utf8"));
 const profileUploadUrl = uploadUrl.replace(/\/upload$/, "/profile-upload");
 const uploadedProfileKeys = [];
 let metadataCommitted = false;
+const metadataRetryAttempts = Number(process.env.VINEXT_PERF_UPLOAD_RETRY_ATTEMPTS ?? 30);
+const metadataRetryDelayMs = Number(process.env.VINEXT_PERF_UPLOAD_RETRY_DELAY_MS ?? 10_000);
 
 function resolveProfilePath(profileFile) {
   if (!artifactRoot) {
@@ -56,6 +58,33 @@ async function rollbackProfiles() {
   if (failures.length > 0) console.error(`Failed to roll back profiles:\n${failures.join("\n")}`);
 }
 
+async function uploadMetadata() {
+  for (let attempt = 1; attempt <= metadataRetryAttempts; attempt++) {
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        "X-Compat-Secret": secret,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const responseBody = await response.text();
+    if (response.ok) return responseBody;
+    const deploymentRace =
+      payload.schemaVersion === 2 &&
+      response.status === 400 &&
+      responseBody.includes("Invalid normalized performance payload");
+    if (!deploymentRace || attempt === metadataRetryAttempts) {
+      throw new Error(`Performance upload failed (${response.status}): ${responseBody}`);
+    }
+    console.log(
+      `Performance schema 2 is not deployed yet; retrying metadata upload (${attempt}/${metadataRetryAttempts})...`,
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, metadataRetryDelayMs));
+  }
+  throw new Error("Performance metadata upload exhausted retries");
+}
+
 try {
   for (const benchmark of payload.benchmarks) {
     if (!benchmark.profileFile) continue;
@@ -84,21 +113,9 @@ try {
     delete benchmark.profileFile;
   }
 
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: {
-      "X-Compat-Secret": secret,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Performance upload failed (${response.status}): ${await response.text()}`);
-  }
+  const responseBody = await uploadMetadata();
   metadataCommitted = true;
 
-  const responseBody = await response.text();
   if (process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH) {
     await writeFile(resolve(process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH), `${responseBody}\n`);
   }

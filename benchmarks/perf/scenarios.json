@@ -2,7 +2,11 @@
   "setup": [
     { "command": ["vp", "run", "build"] },
     { "command": ["node", "benchmarks/generate-app.mjs"], "trusted": true },
-    { "command": ["npm", "install"], "cwd": "benchmarks/nextjs" }
+    {
+      "command": ["npm", "install"],
+      "cwd": "benchmarks/nextjs",
+      "implementationId": "nextjs"
+    }
   ],
   "scenarios": [
     {
@@ -17,12 +21,14 @@
           "id": "nextjs",
           "label": "Next.js",
           "profile": false,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/cold-start.mjs", "nextjs", "/"]
         },
         {
           "id": "vinext",
           "label": "vinext",
           "profile": true,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/cold-start.mjs", "vinext", "/"]
         }
       ]
@@ -39,12 +45,14 @@
           "id": "nextjs",
           "label": "Next.js",
           "profile": false,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/build-time.mjs", "nextjs"]
         },
         {
           "id": "vinext",
           "label": "vinext",
           "profile": true,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/build-time.mjs", "vinext"]
         }
       ]
@@ -61,12 +69,14 @@
           "id": "nextjs",
           "label": "Next.js",
           "profile": false,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/bundle-size.mjs", "nextjs"]
         },
         {
           "id": "vinext",
           "label": "vinext",
           "profile": false,
+          "compareBase": true,
           "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext"]
         }
       ]
