@@ -95,10 +95,17 @@ async function stopProcessGroup(child) {
 async function main() {
   await cleanBuildOutput();
   const { command, args } = buildCommand();
+  if (profiling) {
+    const executable = command.includes("/")
+      ? command
+      : execFileSync("which", [command], { encoding: "utf8" }).trim();
+    globalThis.process.chdir(projectDir);
+    globalThis.process.execve(executable, [executable, ...args], targetEnvironment());
+  }
   const startedAt = performance.now();
   const child = spawn(command, args, {
     cwd: projectDir,
-    detached: !profiling,
+    detached: true,
     env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
