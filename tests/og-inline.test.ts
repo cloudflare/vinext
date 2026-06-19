@@ -309,6 +309,23 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("inlines parent-relative application assets when the project root is symlinked", async () => {
+    const realProjectRoot = path.join(tmpDir, "symlinked-parent-root-real");
+    const linkedProjectRoot = path.join(tmpDir, "symlinked-parent-root-link");
+    const routeDir = path.join(realProjectRoot, "app", "api", "og");
+    const packageFont = Buffer.from("symlinked-parent-project-font");
+    await fsp.mkdir(routeDir, { recursive: true });
+    await fsp.writeFile(path.join(realProjectRoot, "font.ttf"), packageFont);
+    await fsp.symlink(realProjectRoot, linkedProjectRoot, "dir");
+
+    const plugin = createOgInlinePlugin("build", linkedProjectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../../font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(routeDir, "route.tsx"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
   it.each([
     [
       "fetch",

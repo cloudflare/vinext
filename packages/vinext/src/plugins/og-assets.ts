@@ -47,7 +47,10 @@ import type { Plugin } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { promisify } from "node:util";
 import MagicString from "magic-string";
+
+const realpathNative = promisify(fs.realpath.native);
 
 function isPathInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -71,27 +74,9 @@ async function findPackageRoot(moduleDir: string): Promise<string | null> {
   }
 }
 
-function getNodeModulesPackageRoot(projectRoot: string, modulePath: string): string | null {
-  const relativePath = path.relative(projectRoot, modulePath);
-  if (
-    path.isAbsolute(relativePath) ||
-    relativePath === ".." ||
-    relativePath.startsWith(`..${path.sep}`)
-  ) {
-    return null;
-  }
-
-  const segments = relativePath.split(path.sep);
-  const nodeModulesIndex = segments.lastIndexOf("node_modules");
-  if (nodeModulesIndex === -1) return null;
-
-  const packageSegment = segments[nodeModulesIndex + 1];
-  if (!packageSegment) return null;
-  const packageSegmentCount = packageSegment.startsWith("@") ? 2 : 1;
-  if (segments.length <= nodeModulesIndex + packageSegmentCount) return null;
-  if (packageSegmentCount === 2 && !segments[nodeModulesIndex + 2]) return null;
-
-  return path.join(projectRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
+function isNodeModulesPath(root: string, target: string): boolean {
+  if (!isPathInside(root, target)) return false;
+  return path.relative(root, target).split(path.sep).includes("node_modules");
 }
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
@@ -135,19 +120,26 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         const useCache = isBuild;
         const modulePath = path.resolve(id.split("?")[0]);
         let realProjectRoot: string;
-        let realModuleDir: string;
+        let realModulePath: string;
         try {
-          [realProjectRoot, realModuleDir] = await Promise.all([
-            fs.promises.realpath(projectRoot),
-            fs.promises.realpath(path.dirname(modulePath)),
+          [realProjectRoot, realModulePath] = await Promise.all([
+            realpathNative(projectRoot),
+            realpathNative(modulePath),
           ]);
         } catch {
-          return null;
+          try {
+            realProjectRoot = await realpathNative(projectRoot);
+            const realModuleDir = await realpathNative(path.dirname(modulePath));
+            realModulePath = path.join(realModuleDir, path.basename(modulePath));
+          } catch {
+            return null;
+          }
         }
-        const realModulePath = path.join(realModuleDir, path.basename(modulePath));
-        const realAssetRoot = isPathInside(realProjectRoot, realModulePath)
-          ? (getNodeModulesPackageRoot(realProjectRoot, realModulePath) ?? realProjectRoot)
-          : await findPackageRoot(realModuleDir);
+        const realModuleDir = path.dirname(realModulePath);
+        const isDependency =
+          !isPathInside(realProjectRoot, realModulePath) ||
+          isNodeModulesPath(projectRoot, modulePath);
+        const realAssetRoot = isDependency ? await findPackageRoot(realModuleDir) : realProjectRoot;
         if (realAssetRoot === null) return null;
         const moduleDir = realModuleDir;
         let newCode = code;
@@ -159,7 +151,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         const readAsBase64 = async (absPath: string): Promise<string | null> => {
           let realPath: string;
           try {
-            realPath = await fs.promises.realpath(absPath);
+            realPath = await realpathNative(absPath);
           } catch {
             return null;
           }
