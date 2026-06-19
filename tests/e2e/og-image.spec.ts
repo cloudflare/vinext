@@ -165,7 +165,9 @@ test.describe("OG Image Generation with ../-relative custom font (@next/og)", ()
  * through Vite dev, Cloudflare dev, and the built Workers bundle.
  */
 test.describe("OG Image Generation with a linked-package font", () => {
-  test("GET /api/og-linked-font returns a 1200×630 PNG", async ({ request }) => {
+  test("GET /api/og-linked-font returns a 1200×630 PNG", async ({ request }, testInfo) => {
+    test.skip(testInfo.project.name === "app-router", "linked package fixture is Cloudflare-only");
+
     const response = await request.get("/api/og-linked-font");
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toContain("image/png");
