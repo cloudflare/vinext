@@ -499,6 +499,40 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("confines a non-separator regular-expression capture targeting a package directory", async () => {
+    const projectRoot = path.join(tmpDir, "regex-prefixed-package-app");
+    const packagesDir = path.join(tmpDir, "regex-prefixed-package-libs");
+    const packageDir = path.join(packagesDir, "acme-ui");
+    const siblingDir = path.join(packagesDir, "acme-secrets");
+    const modulePath = path.join(packageDir, "index.js");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(siblingDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"@acme/ui"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(siblingDir, ".env"), "regex-prefixed-sibling-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: { alias: [{ find: /^@acme\/(.*)$/, replacement: `${packagesDir}/acme-$1` }] },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "@acme/ui",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../acme-secrets/.env", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result).toBeNull();
+  });
+
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
     const projectRoot = path.join(workspaceRoot, "app");

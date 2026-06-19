@@ -240,12 +240,15 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             configuredAlias.find instanceof RegExp && configuredAlias.replacement.includes("$");
           const realAliasTarget = await realpathNative(aliasTarget);
           if (hasCapture) {
+            const aliasTargetStat = await fs.promises.stat(realAliasTarget);
             const staticPrefix = configuredAlias.replacement.slice(
               0,
               configuredAlias.replacement.indexOf("$"),
             );
             const targetPackageRoot = await findPackageRoot(path.dirname(realResolvedPath));
-            if (staticPrefix.endsWith(path.sep) && targetPackageRoot !== null) {
+            if (aliasTargetStat.isDirectory()) {
+              packageRoot = realAliasTarget;
+            } else if (staticPrefix.endsWith(path.sep) && targetPackageRoot !== null) {
               const realStaticPrefix = await realpathNative(staticPrefix.slice(0, -1));
               packageRoot = isPathInside(realStaticPrefix, targetPackageRoot)
                 ? targetPackageRoot
