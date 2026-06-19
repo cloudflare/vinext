@@ -569,6 +569,38 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("tracks a single-segment scoped alias to an external package", async () => {
+    const projectRoot = path.join(tmpDir, "single-segment-alias-app");
+    const packageDir = path.join(tmpDir, "single-segment-alias-package");
+    const modulePath = path.join(packageDir, "index.js");
+    const packageFont = Buffer.from("single-segment-alias-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: { alias: [{ find: "@ui", replacement: packageDir }] },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "@ui",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
     const projectRoot = path.join(workspaceRoot, "app");

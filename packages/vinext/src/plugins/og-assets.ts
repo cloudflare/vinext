@@ -159,14 +159,14 @@ async function readPackageName(packageRoot: string): Promise<string | null> {
 
 async function packageOwnsAliasFile(
   packageRoot: string,
-  packageName: string,
+  packageName: string | null,
   aliasFile: string,
 ): Promise<boolean> {
   try {
     const manifest = JSON.parse(
       await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
     );
-    if (manifest.name === packageName) return true;
+    if (packageName !== null && manifest.name === packageName) return true;
     return ["main", "module", "source", "browser"].some(
       (field) =>
         typeof manifest[field] === "string" &&
@@ -237,9 +237,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
     async resolveId(source, importer, options) {
       const sourcePackageName = getPackageNameFromSpecifier(source);
-      if (sourcePackageName === null) return null;
       const configuredAlias = configuredAliases.find((alias) => aliasMatches(alias.find, source));
-      const expectedPackageName = dependencyPackageNames.get(sourcePackageName);
+      const expectedPackageName =
+        sourcePackageName === null ? undefined : dependencyPackageNames.get(sourcePackageName);
       if (configuredAlias === undefined && expectedPackageName === undefined) return null;
 
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
