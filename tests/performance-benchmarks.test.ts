@@ -105,6 +105,8 @@ describe("paired performance benchmarks", () => {
     expect(runner).toContain('for (const signal of ["-STOP", "-KILL"])');
     expect(runner).toContain('["ps", "-u", user, "-o", "pid=,stat=,args="]');
     expect(runner).toContain("!/^\\s*\\d+\\s+\\S*Z/.test(process)");
+    expect(runner).toContain("for (let attempt = 0; attempt < 20; attempt++)");
+    expect(runner).toContain("await cleanupTargetUser(root)");
     expect(runner).toContain("else await runUntrusted(");
     expect(runner).toContain(
       "await runUntrusted(command[0], command.slice(1), timingEnv, root, root)",

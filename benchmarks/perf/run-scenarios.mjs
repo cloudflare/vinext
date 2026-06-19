@@ -76,7 +76,7 @@ function run(command, args, env, cwd = targetRoot) {
   });
 }
 
-function cleanupTargetUser(root = targetRoot) {
+async function cleanupTargetUser(root = targetRoot) {
   const user = userForRoot(root);
   if (!user) return;
   for (const signal of ["-STOP", "-KILL"]) {
@@ -86,19 +86,24 @@ function cleanupTargetUser(root = targetRoot) {
       if (error?.status !== 1) throw error;
     }
   }
-  try {
-    const processes = execFileSync("sudo", ["ps", "-u", user, "-o", "pid=,stat=,args="], {
-      encoding: "utf8",
-    })
-      .trim()
-      .split("\n")
-      .filter((process) => process.trim() && !/^\s*\d+\s+\S*Z/.test(process))
-      .join("\n");
-    if (processes) {
-      throw new Error(`Benchmark processes survived cleanup for ${user}:\n${processes}`);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      const processes = execFileSync("sudo", ["ps", "-u", user, "-o", "pid=,stat=,args="], {
+        encoding: "utf8",
+      })
+        .trim()
+        .split("\n")
+        .filter((process) => process.trim() && !/^\s*\d+\s+\S*Z/.test(process))
+        .join("\n");
+      if (!processes) return;
+      if (attempt === 19) {
+        throw new Error(`Benchmark processes survived cleanup for ${user}:\n${processes}`);
+      }
+    } catch (error) {
+      if (error?.status === 1) return;
+      throw error;
     }
-  } catch (error) {
-    if (error?.status !== 1) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 
@@ -106,7 +111,7 @@ async function runUntrusted(command, args, env, cwd, root) {
   try {
     await run(command, args, env, cwd);
   } finally {
-    cleanupTargetUser(root);
+    await cleanupTargetUser(root);
   }
 }
 
