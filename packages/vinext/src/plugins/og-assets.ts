@@ -49,6 +49,51 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 
+function isPathInside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`) && relative !== "..")
+  );
+}
+
+async function findPackageRoot(moduleDir: string): Promise<string | null> {
+  let currentDir = moduleDir;
+  while (true) {
+    try {
+      const packageJson = await fs.promises.stat(path.join(currentDir, "package.json"));
+      if (packageJson.isFile()) return currentDir;
+    } catch {}
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) return null;
+    currentDir = parentDir;
+  }
+}
+
+function getNodeModulesPackageRoot(projectRoot: string, modulePath: string): string | null {
+  const relativePath = path.relative(projectRoot, modulePath);
+  if (
+    path.isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`)
+  ) {
+    return null;
+  }
+
+  const segments = relativePath.split(path.sep);
+  const nodeModulesIndex = segments.lastIndexOf("node_modules");
+  if (nodeModulesIndex === -1) return null;
+
+  const packageSegment = segments[nodeModulesIndex + 1];
+  if (!packageSegment) return null;
+  const packageSegmentCount = packageSegment.startsWith("@") ? 2 : 1;
+  if (segments.length <= nodeModulesIndex + packageSegmentCount) return null;
+  if (packageSegmentCount === 2 && !segments[nodeModulesIndex + 2]) return null;
+
+  return path.join(projectRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
+}
+
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
 /**
@@ -67,6 +112,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
   let isBuild = false;
+  let projectRoot = process.cwd();
 
   return {
     name: "vinext:og-inline-fetch-assets",
@@ -74,6 +120,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
     configResolved(config) {
       isBuild = config.command === "build";
+      projectRoot = path.resolve(config.root);
     },
 
     buildStart() {
@@ -86,7 +133,23 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       filter: { code: "import.meta.url" },
       async handler(code, id) {
         const useCache = isBuild;
-        const moduleDir = path.dirname(id);
+        const modulePath = path.resolve(id.split("?")[0]);
+        let realProjectRoot: string;
+        let realModuleDir: string;
+        try {
+          [realProjectRoot, realModuleDir] = await Promise.all([
+            fs.promises.realpath(projectRoot),
+            fs.promises.realpath(path.dirname(modulePath)),
+          ]);
+        } catch {
+          return null;
+        }
+        const realModulePath = path.join(realModuleDir, path.basename(modulePath));
+        const realAssetRoot = isPathInside(realProjectRoot, realModulePath)
+          ? (getNodeModulesPackageRoot(realProjectRoot, realModulePath) ?? realProjectRoot)
+          : await findPackageRoot(realModuleDir);
+        if (realAssetRoot === null) return null;
+        const moduleDir = realModuleDir;
         let newCode = code;
         let didReplace = false;
 
@@ -94,12 +157,20 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         // cache when enabled. Returns null on any read error so callers can skip
         // the match (e.g. file not present on disk for the active environment).
         const readAsBase64 = async (absPath: string): Promise<string | null> => {
-          const cached = useCache ? cache.get(absPath) : undefined;
+          let realPath: string;
+          try {
+            realPath = await fs.promises.realpath(absPath);
+          } catch {
+            return null;
+          }
+          if (!isPathInside(realAssetRoot, realPath)) return null;
+
+          const cached = useCache ? cache.get(realPath) : undefined;
           if (cached !== undefined) return cached;
           try {
-            const buf = await fs.promises.readFile(absPath);
+            const buf = await fs.promises.readFile(realPath);
             const b64 = buf.toString("base64");
-            if (useCache) cache.set(absPath, b64);
+            if (useCache) cache.set(realPath, b64);
             return b64;
           } catch {
             return null;

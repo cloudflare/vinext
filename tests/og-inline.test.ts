@@ -17,12 +17,12 @@ function unwrapHook(hook: any): Function {
  * Create a fresh vinext:og-inline-fetch-assets plugin instance.
  * Each call gets an independent cache so tests do not share state.
  */
-function createOgInlinePlugin(command: "serve" | "build" = "serve"): Plugin {
+function createOgInlinePlugin(command: "serve" | "build" = "serve", root = tmpDir): Plugin {
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:og-inline-fetch-assets");
   if (!plugin) throw new Error("vinext:og-inline-fetch-assets plugin not found");
   const configResolved = unwrapHook(plugin.configResolved);
-  configResolved?.call(plugin, { command });
+  configResolved?.call(plugin, { command, root });
   return plugin;
 }
 
@@ -186,6 +186,171 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result.code).not.toContain("readFileSync");
   });
 
+  // ── Asset boundaries ───────────────────────────────────────
+
+  it("inlines assets contained within a dependency package", async () => {
+    const projectRoot = path.join(tmpDir, "dependency-asset");
+    const packageDir = path.join(tmpDir, "node_modules", "og-helper");
+    const packageFont = Buffer.from("dependency-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it.each(["og-helper", path.join("@scope", "og-helper")])(
+    "inlines assets contained within a linked workspace package (%s)",
+    async (packageName) => {
+      const projectRoot = path.join(tmpDir, "linked-workspace", "app");
+      const packageDir = path.join(tmpDir, "linked-workspace", "packages", packageName);
+      const packageFont = Buffer.from(`linked-${packageName}-font`);
+      await fsp.mkdir(projectRoot, { recursive: true });
+      await fsp.mkdir(packageDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({ name: packageName }),
+      );
+      await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+      const plugin = createOgInlinePlugin("build", projectRoot);
+      const transform = unwrapHook(plugin.transform);
+      const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+      const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+      expect(result?.code).toContain(packageFont.toString("base64"));
+    },
+  );
+
+  it("inlines assets through a node_modules symlink to a workspace package", async () => {
+    const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(workspaceRoot, "packages", "og-helper");
+    const linkedPackageDir = path.join(projectRoot, "node_modules", "og-helper");
+    const packageFont = Buffer.from("symlinked-workspace-font");
+    await fsp.mkdir(path.dirname(linkedPackageDir), { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+    await fsp.symlink(packageDir, linkedPackageDir, "dir");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(linkedPackageDir, "index.js"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it.each([
+    [
+      "pnpm",
+      path.join("node_modules", ".pnpm", "evil@1.0.0", "node_modules", "evil"),
+      "../../../secret.txt",
+    ],
+    ["nested", path.join("node_modules", "parent", "node_modules", "evil"), "../../secret.txt"],
+    [
+      "nested scoped",
+      path.join("node_modules", "parent", "node_modules", "@scope", "evil"),
+      "../../../secret.txt",
+    ],
+  ])("does not inline targets outside a %s dependency package", async (_, packagePath, relPath) => {
+    const projectRoot = path.join(
+      tmpDir,
+      `dependency-layout-${packagePath.replaceAll(path.sep, "-")}`,
+    );
+    const packageDir = path.join(projectRoot, packagePath);
+    const secretPath = path.resolve(packageDir, relPath);
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"evil"}');
+    await fsp.writeFile(secretPath, "dependency-layout-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL(${JSON.stringify(relPath)}, import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("uses the project boundary when the project root is inside node_modules", async () => {
+    const projectRoot = path.join(tmpDir, "nested-root", "node_modules", "host", "examples", "app");
+    const secretPath = path.join(projectRoot, "..", "secret.txt");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.writeFile(secretPath, "outside-project-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(projectRoot, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("inlines application assets when the project root is symlinked", async () => {
+    const realProjectRoot = path.join(tmpDir, "symlinked-root-real");
+    const linkedProjectRoot = path.join(tmpDir, "symlinked-root-link");
+    const packageFont = Buffer.from("symlinked-project-font");
+    await fsp.mkdir(realProjectRoot, { recursive: true });
+    await fsp.writeFile(path.join(realProjectRoot, "font.ttf"), packageFont);
+    await fsp.symlink(realProjectRoot, linkedProjectRoot, "dir");
+
+    const plugin = createOgInlinePlugin("build", linkedProjectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(realProjectRoot, "index.js"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it.each([
+    [
+      "fetch",
+      `const data = fetch(new URL("./../../.env", import.meta.url)).then((res) => res.arrayBuffer());`,
+    ],
+    [
+      "readFileSync",
+      `const data = fs.readFileSync(fileURLToPath(new URL("./../../.env", import.meta.url)));`,
+    ],
+  ])("does not inline %s targets outside a dependency package", async (_, code) => {
+    const secret = "CLOUDFLARE_API_TOKEN=demo-secret\n";
+    const projectRoot = path.join(tmpDir, "dependency-boundary");
+    const packageDir = path.join(projectRoot, "node_modules", "evil-og-helper");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(projectRoot, ".env"), secret);
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"evil-og-helper"}');
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inline assets that escape the allowed root through a symlink", async () => {
+    const secret = "symlink-secret";
+    const projectRoot = path.join(tmpDir, "symlink-boundary");
+    const packageDir = path.join(projectRoot, "node_modules", "evil-og-helper");
+    const secretPath = path.join(projectRoot, "secret.txt");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"evil-og-helper"}');
+    await fsp.writeFile(secretPath, secret);
+    await fsp.symlink(secretPath, path.join(packageDir, "font.ttf"));
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
   // ── File not found ───────────────────────────────────────
 
   it("silently skips when the referenced file does not exist", async () => {
@@ -230,7 +395,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
 
     // Exactly once: first call reads from disk, second call hits the build cache.
     const calls = readFileSpy.mock.calls.filter(
-      (call) => call[0] === path.join(tmpDir, "noto-sans.ttf"),
+      (call) => call[0] === fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")),
     );
     expect(calls.length).toBe(1);
   });
