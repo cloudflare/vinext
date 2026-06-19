@@ -1,0 +1,7 @@
+{
+  "name": "@test/og-font",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts"
+}
