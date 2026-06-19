@@ -1227,7 +1227,7 @@ export async function prerenderApp({
             continue;
           }
 
-          if (!Array.isArray(paramSets) || paramSets.length === 0) {
+          if (paramSets.length === 0) {
             // Empty params — skip with warning
             results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             continue;
