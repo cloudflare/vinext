@@ -47,135 +47,8 @@ import type { Plugin } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import { promisify } from "node:util";
 import MagicString from "magic-string";
-
-const realpathNative = promisify(fs.realpath.native);
-
-function isPathInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return (
-    relative === "" ||
-    (!path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`) && relative !== "..")
-  );
-}
-
-async function findPackageRoot(
-  moduleDir: string,
-  expectedPackageName?: string,
-): Promise<string | null> {
-  let currentDir = moduleDir;
-  while (true) {
-    try {
-      const packageJsonPath = path.join(currentDir, "package.json");
-      const packageJson = await fs.promises.stat(packageJsonPath);
-      if (packageJson.isFile()) {
-        const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
-        return expectedPackageName === undefined || manifest.name === expectedPackageName
-          ? currentDir
-          : null;
-      }
-    } catch {}
-
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) return null;
-    currentDir = parentDir;
-  }
-}
-
-function getPackageNameFromSpecifier(specifier: string): string | null {
-  if (
-    specifier.startsWith(".") ||
-    specifier.startsWith("/") ||
-    specifier.startsWith("\0") ||
-    specifier.startsWith("#")
-  ) {
-    return null;
-  }
-  const segments = specifier.split("/");
-  if (specifier.startsWith("@")) {
-    return segments.length >= 2 ? `${segments[0]}/${segments[1]}` : null;
-  }
-  return segments[0] || null;
-}
-
-function getAliasedPackageName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const alias = value.match(/^(?:npm:|workspace:)(@[^/]+\/[^@]+|[^@*~^]+)(?:@|$)/);
-  return alias?.[1] ?? null;
-}
-
-function aliasMatches(find: string | RegExp, source: string): boolean {
-  if (typeof find === "string") return source === find || source.startsWith(`${find}/`);
-  find.lastIndex = 0;
-  return find.test(source);
-}
-
-function applyAlias(find: string | RegExp, replacement: string, source: string): string {
-  if (typeof find === "string") return replacement + source.slice(find.length);
-  find.lastIndex = 0;
-  return source.replace(find, replacement);
-}
-
-function getNodeModulesPackageRoot(
-  logicalProjectRoot: string,
-  logicalModulePath: string,
-): string | null {
-  // Use logical Vite paths here, before realpath resolution, so a node_modules
-  // symlink still identifies the dependency package that owns the import. The
-  // selected package root is canonicalized before it becomes a read boundary.
-  const isProjectPath = isPathInside(logicalProjectRoot, logicalModulePath);
-  const parsedPath = path.parse(logicalModulePath);
-  const baseRoot = isProjectPath ? logicalProjectRoot : parsedPath.root;
-  const relativePath = isProjectPath
-    ? path.relative(logicalProjectRoot, logicalModulePath)
-    : logicalModulePath.slice(parsedPath.root.length);
-  const segments = relativePath.split(path.sep);
-  // The last node_modules segment identifies the innermost owning package for
-  // pnpm and nested dependency layouts. If a package ships its own internal
-  // node_modules directory this deliberately narrows the boundary and fails safe.
-  const nodeModulesIndex = segments.lastIndexOf("node_modules");
-  if (nodeModulesIndex === -1) return null;
-
-  const packageSegment = segments[nodeModulesIndex + 1];
-  if (!packageSegment) return null;
-  const packageSegmentCount = packageSegment.startsWith("@") ? 2 : 1;
-  if (segments.length <= nodeModulesIndex + packageSegmentCount) return null;
-  if (packageSegmentCount === 2 && !segments[nodeModulesIndex + 2]) return null;
-
-  return path.join(baseRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
-}
-
-async function readPackageName(packageRoot: string): Promise<string | null> {
-  try {
-    const manifest = JSON.parse(
-      await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
-    );
-    return typeof manifest.name === "string" ? manifest.name : null;
-  } catch {
-    return null;
-  }
-}
-
-async function packageOwnsAliasFile(
-  packageRoot: string,
-  packageName: string | null,
-  aliasFile: string,
-): Promise<boolean> {
-  try {
-    const manifest = JSON.parse(
-      await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
-    );
-    if (packageName !== null && manifest.name === packageName) return true;
-    return ["main", "module", "source", "browser"].some(
-      (field) =>
-        typeof manifest[field] === "string" &&
-        path.resolve(packageRoot, manifest[field]) === aliasFile,
-    );
-  } catch {
-    return false;
-  }
-}
+import { OgAssetOwnership } from "./og-asset-ownership.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -194,19 +67,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   // build. Dev mode skips the cache so asset edits are picked up without
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
-  const linkedPackageRoots = new Set<string>();
-  const dependencyPackageNames = new Map<string, string>();
-  const stringAliasesByFirstCharacter = new Map<
-    string,
-    { find: string; replacement: string; index: number }[]
-  >();
-  let regularExpressionAliases: readonly {
-    find: RegExp;
-    replacement: string;
-    index: number;
-  }[] = [];
+  const ownership = new OgAssetOwnership();
   let isBuild = false;
-  let projectRoot = process.cwd();
 
   return {
     name: "vinext:og-inline-fetch-assets",
@@ -214,113 +76,22 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
     configResolved(config) {
       isBuild = config.command === "build";
-      projectRoot = path.resolve(config.root);
-      dependencyPackageNames.clear();
-      try {
-        const manifest = JSON.parse(
-          fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"),
-        );
-        for (const field of [
-          "dependencies",
-          "devDependencies",
-          "optionalDependencies",
-          "peerDependencies",
-        ]) {
-          const dependencies = manifest[field];
-          if (dependencies === null || typeof dependencies !== "object") continue;
-          for (const [packageName, value] of Object.entries(dependencies)) {
-            dependencyPackageNames.set(packageName, getAliasedPackageName(value) ?? packageName);
-          }
-        }
-      } catch {}
-      stringAliasesByFirstCharacter.clear();
-      regularExpressionAliases = [];
-      for (const [index, alias] of config.resolve.alias.entries()) {
-        if (typeof alias.find === "string") {
-          const firstCharacter = alias.find[0];
-          if (firstCharacter === undefined) continue;
-          const aliases = stringAliasesByFirstCharacter.get(firstCharacter) ?? [];
-          aliases.push({ find: alias.find, replacement: alias.replacement, index });
-          stringAliasesByFirstCharacter.set(firstCharacter, aliases);
-        } else {
-          regularExpressionAliases = [
-            ...regularExpressionAliases,
-            { find: alias.find, replacement: alias.replacement, index },
-          ];
-        }
-      }
+      ownership.configure(config.root, config.resolve.alias);
     },
 
     buildStart() {
       if (isBuild) {
         cache.clear();
       }
-      linkedPackageRoots.clear();
+      ownership.reset();
     },
 
     async resolveId(source, importer, options) {
-      const sourcePackageName = getPackageNameFromSpecifier(source);
-      const configuredAlias = [
-        ...(stringAliasesByFirstCharacter.get(source[0] ?? "") ?? []),
-        ...regularExpressionAliases,
-      ]
-        .filter((alias) => aliasMatches(alias.find, source))
-        .sort((a, b) => a.index - b.index)[0];
-      const expectedPackageName =
-        sourcePackageName === null ? undefined : dependencyPackageNames.get(sourcePackageName);
-      if (configuredAlias === undefined && expectedPackageName === undefined) return null;
+      if (!ownership.shouldTrackImport(source)) return null;
 
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (resolved === null || resolved.external) return null;
-
-      let realResolvedPath: string;
-      try {
-        realResolvedPath = await realpathNative(path.resolve(resolved.id.split("?")[0]));
-      } catch {
-        return null;
-      }
-      let packageRoot: string | null;
-      if (configuredAlias !== undefined) {
-        const aliasTarget = applyAlias(configuredAlias.find, configuredAlias.replacement, source);
-        if (!path.isAbsolute(aliasTarget)) return null;
-        try {
-          const realAliasTarget = await realpathNative(aliasTarget);
-          const aliasTargetStat = await fs.promises.stat(realAliasTarget);
-          const hasCapture =
-            configuredAlias.find instanceof RegExp && configuredAlias.replacement.includes("$");
-          let configuredDirectory: string | null = null;
-          if (!hasCapture) {
-            const realReplacement = await realpathNative(configuredAlias.replacement);
-            const replacementStat = await fs.promises.stat(realReplacement);
-            if (replacementStat.isDirectory()) configuredDirectory = realReplacement;
-          }
-          if (configuredDirectory !== null || aliasTargetStat.isDirectory()) {
-            const aliasBoundary = configuredDirectory ?? realAliasTarget;
-            packageRoot = await findPackageRoot(path.dirname(realResolvedPath));
-            if (
-              packageRoot === null ||
-              !isPathInside(aliasBoundary, packageRoot) ||
-              !isPathInside(packageRoot, realResolvedPath)
-            ) {
-              return null;
-            }
-          } else {
-            packageRoot = await findPackageRoot(path.dirname(realResolvedPath));
-            if (
-              packageRoot === null ||
-              !(await packageOwnsAliasFile(packageRoot, sourcePackageName, realAliasTarget)) ||
-              !isPathInside(packageRoot, realResolvedPath)
-            ) {
-              return null;
-            }
-          }
-        } catch {
-          return null;
-        }
-      } else {
-        packageRoot = await findPackageRoot(path.dirname(realResolvedPath), expectedPackageName);
-      }
-      if (packageRoot !== null) linkedPackageRoots.add(packageRoot);
+      await ownership.recordResolvedImport(source, resolved.id);
       return null;
     },
 
@@ -328,75 +99,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       filter: { code: "import.meta.url" },
       async handler(code, id) {
         const useCache = isBuild;
-        const modulePath = path.resolve(id.split("?")[0]);
-        let realProjectRoot: string;
-        let realModulePath: string;
-        try {
-          [realProjectRoot, realModulePath] = await Promise.all([
-            realpathNative(projectRoot),
-            realpathNative(modulePath),
-          ]);
-        } catch {
-          try {
-            realProjectRoot = await realpathNative(projectRoot);
-            const realModuleDir = await realpathNative(path.dirname(modulePath));
-            // Transform hooks can receive a not-yet-materialized module path.
-            // Canonicalize its existing directory while retaining the basename
-            // so relative asset resolution still uses the module's location.
-            realModulePath = path.join(realModuleDir, path.basename(modulePath));
-          } catch {
-            return null;
-          }
-        }
-        const realModuleDir = path.dirname(realModulePath);
-        const packageRoot = getNodeModulesPackageRoot(projectRoot, modulePath);
-        let realAssetRoot: string;
-        if (packageRoot !== null) {
-          let realPackageRoot: string;
-          try {
-            realPackageRoot = await realpathNative(packageRoot);
-          } catch {
-            return null;
-          }
-          if (isPathInside(realPackageRoot, realModulePath)) {
-            realAssetRoot = realPackageRoot;
-          } else {
-            // A file-level symlink can point from node_modules into a workspace
-            // package. In that case relative assets belong to the canonical
-            // target package, not the directory containing the symlink itself.
-            // The nearest manifest is intentionally the boundary because the
-            // canonical target is no longer inside the logical package path.
-            const declaredPackageName = await readPackageName(packageRoot);
-            if (declaredPackageName === null) return null;
-            const logicalModuleRelativePath = path.relative(packageRoot, modulePath);
-            if (
-              path.isAbsolute(logicalModuleRelativePath) ||
-              logicalModuleRelativePath === ".." ||
-              logicalModuleRelativePath.startsWith(`..${path.sep}`)
-            ) {
-              return null;
-            }
-            const canonicalPackageRoot = await findPackageRoot(realModuleDir, declaredPackageName);
-            if (canonicalPackageRoot === null) return null;
-            if (path.relative(canonicalPackageRoot, realModulePath) !== logicalModuleRelativePath) {
-              return null;
-            }
-            realAssetRoot = canonicalPackageRoot;
-          }
-        } else if (isPathInside(realProjectRoot, realModulePath)) {
-          realAssetRoot = realProjectRoot;
-        } else {
-          // A linked package is trusted only after resolveId observes a bare
-          // package import whose declared name matches its nearest manifest.
-          // This keeps deep modules working without treating an ancestor
-          // workspace manifest as the package that owns a manifest-less child.
-          const linkedPackageRoot = [...linkedPackageRoots]
-            .filter((root) => isPathInside(root, realModulePath))
-            .sort((a, b) => b.length - a.length)[0];
-          if (linkedPackageRoot === undefined) return null;
-          realAssetRoot = linkedPackageRoot;
-        }
-        const moduleDir = realModuleDir;
+        const boundary = await ownership.resolveModuleBoundary(id);
+        if (boundary === null) return null;
+        const { assetRoot, moduleDir } = boundary;
         let newCode = code;
         let didReplace = false;
 
@@ -404,13 +109,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         // cache when enabled. Returns null on any read error so callers can skip
         // the match (e.g. file not present on disk for the active environment).
         const readAsBase64 = async (absPath: string): Promise<string | null> => {
-          let realPath: string;
-          try {
-            realPath = await realpathNative(absPath);
-          } catch {
-            return null;
-          }
-          if (!isPathInside(realAssetRoot, realPath)) return null;
+          const realPath = await ownership.resolveContainedAsset(assetRoot, absPath);
+          if (realPath === null) return null;
 
           const cached = useCache ? cache.get(realPath) : undefined;
           if (cached !== undefined) return cached;
