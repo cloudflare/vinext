@@ -44,10 +44,7 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import {
-  createBfcacheSegmentStateKeyMap,
-  createInitialBfcacheIdMap,
-} from "./app-bfcache-identity.js";
+import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
@@ -424,6 +421,13 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
+          const bfcacheMaps = createInitialBfcacheMaps({
+            elements,
+            metadata,
+            // Normalized inside the function to match the client navigation
+            // snapshot pathname (SSR/client Activity key parity).
+            pathname: ssrNavigationContext.pathname,
+          });
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
@@ -431,14 +435,7 @@ export async function handleSsr(
           );
           const stateKeyTree = createReactElement(
             BfcacheStateKeyMapContext.Provider,
-            {
-              value: createBfcacheSegmentStateKeyMap({
-                elements,
-                // Normalized inside the function to match the client navigation
-                // snapshot pathname (SSR/client Activity key parity).
-                pathname: ssrNavigationContext.pathname,
-              }),
-            },
+            { value: bfcacheMaps.stateKeys },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -450,7 +447,7 @@ export async function handleSsr(
           return BfcacheIdMapContext
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
-                { value: createInitialBfcacheIdMap(elements) },
+                { value: bfcacheMaps.bfcacheIds },
                 stateKeyTree,
               )
             : stateKeyTree;

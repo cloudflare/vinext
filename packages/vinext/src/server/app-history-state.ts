@@ -269,7 +269,7 @@ export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-export function isBfcacheSegmentId(id: string): boolean {
+function isBfcacheSegmentId(id: string): boolean {
   const parsed = AppElementsWire.parseElementKey(id);
   return (
     parsed?.kind === "layout" ||

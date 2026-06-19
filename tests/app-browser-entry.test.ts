@@ -100,6 +100,7 @@ import {
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
+import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import {
   HistoryStateSnapshotCache,
   RestorableClientStateController,
@@ -5078,6 +5079,24 @@ describe("app browser entry bfcacheId helpers", () => {
       [groupLayoutId]: "0",
       [pageX1Id]: "0",
     });
+  });
+
+  it("builds initial bfcache maps from shared App Elements metadata", () => {
+    const elements = createBfcacheElements(pageX1Id);
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+
+    expect(maps.bfcacheIds).toEqual(createInitialBfcacheIdMap(elements));
+    expect(maps.stateKeys).toEqual(
+      createBfcacheSegmentStateKeyMap({
+        elements,
+        pathname: "/x/1",
+      }),
+    );
   });
 
   it("derives page segment state keys from pathname, not history bfcache ids", () => {
