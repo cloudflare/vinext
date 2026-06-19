@@ -85,6 +85,11 @@ function readAppElementsMetadata(elements: AppElements): ParsedAppElementsMetada
   return indexAppElementsMetadata(metadata);
 }
 
+function parseBfcacheSegmentKey(id: string): BfcacheSegmentElementKey | null {
+  const parsed = AppElementsWire.parseElementKey(id);
+  return parsed !== null && parsed.kind !== "route" ? parsed : null;
+}
+
 function createActiveSlotIdentity(
   id: string,
   parsed: ParsedAppElementsMetadata | null,
@@ -131,30 +136,23 @@ function createBfcacheSegmentIdentity(
 
 function collectBfcacheSegmentIdCandidates(
   elements: AppElements,
-  parsed?: ParsedAppElementsMetadata | null,
+  metadata = readAppElementsMetadata(elements),
 ): Set<string> {
   const ids = new Set(Object.keys(elements));
-  // Reuse parsed metadata when available; initial-map callers can omit it.
-  const metadata = parsed === undefined ? readAppElementsMetadata(elements) : parsed;
   for (const layoutId of metadata?.metadata.layoutIds ?? []) {
     ids.add(layoutId);
   }
   return ids;
 }
 
-function createInitialBfcacheIdMapFromCandidateIds(ids: Iterable<string>): BfcacheIdMap {
-  const bfcacheIds: Record<string, string> = {};
-  for (const id of ids) {
-    const parsed = AppElementsWire.parseElementKey(id);
-    if (parsed === null || parsed.kind === "route") continue;
-    bfcacheIds[id] = INITIAL_BFCACHE_ID;
-  }
-
-  return bfcacheIds;
-}
-
 export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
-  return createInitialBfcacheIdMapFromCandidateIds(collectBfcacheSegmentIdCandidates(elements));
+  const bfcacheIds: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIdCandidates(elements)) {
+    if (parseBfcacheSegmentKey(id) !== null) {
+      bfcacheIds[id] = INITIAL_BFCACHE_ID;
+    }
+  }
+  return bfcacheIds;
 }
 
 function normalizeBfcachePathname(pathname: string): string {
@@ -169,27 +167,14 @@ export function createBfcacheSegmentStateKeyMap(options: {
 }): BfcacheStateKeyMap {
   const metadata = readAppElementsMetadata(options.elements);
   const normalizedPathname = normalizeBfcachePathname(options.pathname);
-  const ids = collectBfcacheSegmentIdCandidates(options.elements, metadata);
-  return createBfcacheSegmentStateKeyMapFromCandidateIds({
-    ids,
-    metadata,
-    pathname: normalizedPathname,
-  });
-}
-
-function createBfcacheSegmentStateKeyMapFromCandidateIds(options: {
-  ids: Iterable<string>;
-  metadata: ParsedAppElementsMetadata | null;
-  pathname: string;
-}): BfcacheStateKeyMap {
   const stateKeys: Record<string, string> = {};
 
-  for (const id of options.ids) {
-    const parsed = AppElementsWire.parseElementKey(id);
-    if (parsed === null || parsed.kind === "route") continue;
+  for (const id of collectBfcacheSegmentIdCandidates(options.elements, metadata)) {
+    const parsed = parseBfcacheSegmentKey(id);
+    if (parsed === null) continue;
     const stateKey = createBfcacheSegmentIdentity(id, parsed, {
-      metadata: options.metadata,
-      pathname: options.pathname,
+      metadata,
+      pathname: normalizedPathname,
     });
     if (stateKey !== null) stateKeys[id] = stateKey;
   }
@@ -209,8 +194,8 @@ export function createInitialBfcacheMaps(options: {
   const stateKeys: Record<string, string> = {};
 
   for (const id of ids) {
-    const parsed = AppElementsWire.parseElementKey(id);
-    if (parsed === null || parsed.kind === "route") continue;
+    const parsed = parseBfcacheSegmentKey(id);
+    if (parsed === null) continue;
     bfcacheIds[id] = INITIAL_BFCACHE_ID;
     const stateKey = createBfcacheSegmentIdentity(id, parsed, {
       metadata,
@@ -241,8 +226,8 @@ export function createNextBfcacheIdMap(options: {
   const nextPathname = normalizeBfcachePathname(options.nextPathname);
   const ids: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIdCandidates(options.elements, nextMetadata)) {
-    const parsed = AppElementsWire.parseElementKey(id);
-    if (parsed === null || parsed.kind === "route") continue;
+    const parsed = parseBfcacheSegmentKey(id);
+    if (parsed === null) continue;
     const currentIdentity = createBfcacheSegmentIdentity(id, parsed, {
       metadata: currentMetadata,
       pathname: currentPathname,
@@ -269,8 +254,7 @@ export function preserveBfcacheIdsForMergedElements(options: {
 }): BfcacheIdMap {
   const ids: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIdCandidates(options.elements)) {
-    const parsed = AppElementsWire.parseElementKey(id);
-    if (parsed === null || parsed.kind === "route") continue;
+    if (parseBfcacheSegmentKey(id) === null) continue;
     const value = options.next[id] ?? options.previous[id];
     if (value === undefined) continue;
     ids[id] = value;

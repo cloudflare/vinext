@@ -5099,6 +5099,32 @@ describe("app browser entry bfcacheId helpers", () => {
     );
   });
 
+  it("writes only history-readable bfcache segment ids", () => {
+    const routeId = AppElementsWire.encodeRouteId("/x/1", null);
+    const elements = createResolvedElements(routeId, "/", null, {
+      [routeId]: React.createElement("main", null),
+      [rootLayoutId]: React.createElement("div", null),
+      [pageX1Id]: React.createElement("main", null),
+    });
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: maps.bfcacheIds,
+      bfcacheVersion: 1,
+      previousNextUrl: null,
+    });
+
+    expect(maps.bfcacheIds).toEqual({
+      [rootLayoutId]: "0",
+      [pageX1Id]: "0",
+    });
+    expect(readHistoryStateBfcacheIds(state)).toEqual(maps.bfcacheIds);
+  });
+
   it("derives page segment state keys from pathname, not history bfcache ids", () => {
     const dynamicPageId = AppElementsWire.encodePageId("/page/[n]", null);
     const pageOneKeys = createBfcacheSegmentStateKeyMap({
