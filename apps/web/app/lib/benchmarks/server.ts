@@ -442,6 +442,7 @@ export async function getPerformanceRuns(limit = 100): Promise<PerformanceRunDat
 export type PerformanceComparisonData = {
   badge: string;
   title: string;
+  githubUrl: string;
   description: string;
   currentLabel: string;
   head: ReturnType<typeof runReference>;
@@ -494,6 +495,7 @@ export async function getPullComparison(
   return {
     badge: `PR #${pullNumber}`,
     title: `Pull request #${pullNumber}`,
+    githubUrl: `https://github.com/cloudflare/vinext/pull/${pullNumber}`,
     description: comparisonDescription(provenance, "Exact-head measurements."),
     currentLabel: "PR head",
     head: runReference(pullRun),
@@ -564,6 +566,7 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
   return {
     badge: commitSha.slice(0, 7),
     title: `Commit ${commitSha.slice(0, 7)}`,
+    githubUrl: `https://github.com/cloudflare/vinext/commit/${commitSha}`,
     description: isPullRequestRun
       ? comparisonDescription(provenance, "Pull-request measurements.")
       : baselineRun

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
-import { Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import type { FlameGraphData, PerformanceComparisonData } from "@/app/lib/benchmarks/server";
 import { formatMs } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
@@ -58,7 +58,18 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
                 <Badge variant="secondary">{comparison.badge}</Badge>
                 <span>{hasBaseline ? "Performance comparison" : "Performance results"}</span>
               </div>
-              <h1 className="text-2xl font-bold tracking-tight">{comparison.title}</h1>
+              <h1 className="text-2xl font-bold tracking-tight">
+                <a
+                  href={comparison.githubUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 hover:text-blue-700 hover:underline"
+                >
+                  {comparison.title}
+                  <ArrowSquareOut aria-hidden="true" className="size-5 shrink-0" />
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              </h1>
               <p className="mt-2 max-w-2xl text-sm text-gray-500">{comparison.description}</p>
             </div>
           </div>
@@ -68,12 +79,14 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
         >
           <RunCard
             label={comparison.currentLabel}
+            fullSha={comparison.head.sha}
             sha={comparison.head.shortSha}
             date={comparison.head.measuredAt}
           />
           {comparison.baseline && (
             <RunCard
               label={comparison.baselineLabel}
+              fullSha={comparison.baseline.sha}
               sha={comparison.baseline.shortSha}
               date={comparison.baseline.measuredAt}
             />
@@ -616,11 +629,30 @@ function TraceFilter({
   );
 }
 
-function RunCard({ label, sha, date }: { label: string; sha: string; date: string | null }) {
+function RunCard({
+  label,
+  fullSha,
+  sha,
+  date,
+}: {
+  label: string;
+  fullSha: string;
+  sha: string;
+  date: string | null;
+}) {
   return (
     <div className="bg-white px-6 py-4">
       <div className="text-xs uppercase tracking-wide text-gray-400">{label}</div>
-      <div className="mt-1 font-mono text-sm font-semibold">{sha}</div>
+      <a
+        href={`https://github.com/cloudflare/vinext/commit/${fullSha}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-1 inline-flex items-center gap-1 font-mono text-sm font-semibold text-blue-700 hover:underline"
+      >
+        {sha}
+        <ArrowSquareOut aria-hidden="true" className="size-3.5 shrink-0" />
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
       {date && <div className="mt-1 text-xs text-gray-500">{new Date(date).toLocaleString()}</div>}
     </div>
   );
