@@ -321,7 +321,10 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
     await fsp.writeFile(path.join(projectRoot, "package.json"), '{"dependencies":{"ui":"*"}}');
     await fsp.writeFile(path.join(projectRoot, "index.js"), 'import "ui";');
-    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"@scope/design-system"}');
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      '{"name":"@scope/design-system","main":"dist/index.js"}',
+    );
     await fsp.writeFile(
       path.join(packageDir, "dist", "index.js"),
       'export const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());',
@@ -355,7 +358,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
     await fsp.writeFile(path.join(projectRoot, "package.json"), "{}");
     await fsp.writeFile(path.join(projectRoot, "index.js"), 'import "ui/dist/chunk.js";');
-    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"@scope/design-system"}');
     await fsp.writeFile(
       path.join(packageDir, "dist", "chunk.js"),
       'export const data = fetch(new URL("../font.ttf", import.meta.url)).then((res) => res.arrayBuffer());',
@@ -387,7 +390,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const packageFont = Buffer.from("regex-alias-font");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(packageDir, { recursive: true });
-    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"ui"}');
     await fsp.writeFile(modulePath, "export {};");
     await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
@@ -407,7 +410,10 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const packageFont = Buffer.from("regex-capture-alias-font");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(path.dirname(modulePath), { recursive: true });
-    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      '{"name":"design-system","main":"dist/theme.js"}',
+    );
     await fsp.writeFile(modulePath, "export {};");
     await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
@@ -528,6 +534,36 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     );
     const transform = unwrapHook(plugin.transform);
     const code = `const data = fetch(new URL("../acme-secrets/.env", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result).toBeNull();
+  });
+
+  it("does not trust a string alias to an external non-package parent directory", async () => {
+    const projectRoot = path.join(tmpDir, "string-parent-alias-app");
+    const componentsDir = path.join(tmpDir, "string-parent-alias-components");
+    const modulePath = path.join(componentsDir, "button", "index.js");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.dirname(modulePath), { recursive: true });
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(componentsDir, "secret-token.txt"), "parent-alias-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: { alias: [{ find: "@components", replacement: componentsDir }] },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "@components/button",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../secret-token.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
     const result = await transform.call(plugin, code, modulePath);
 
     expect(result).toBeNull();
