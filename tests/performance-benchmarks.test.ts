@@ -85,9 +85,6 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('"$root/node_modules/.vite/task-cache"');
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
-    expect(workflow).toContain("projects=(vinext nextjs)");
-    expect(workflow).not.toContain("VINEXT_PERF_SKIP_IMPLEMENTATIONS");
-    expect(workflow).not.toContain("Detect Next.js benchmark input changes");
     expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha",
     );
@@ -153,14 +150,25 @@ describe("paired performance benchmarks", () => {
     expect(validation).toContain("Dispatched workflow ref is not the current default branch head");
   });
 
-  it("always pairs Next.js benchmarks for pull requests", () => {
+  it("keeps Next.js enabled until the trusted base supports fingerprinting", () => {
     const workflow = readFileSync(
       join(import.meta.dirname, "../.github/workflows/perf.yml"),
       "utf8",
     );
-    expect(workflow).toContain("projects=(vinext nextjs)");
-    expect(workflow).not.toContain("skipping Next.js PR benchmarks");
-    expect(workflow).not.toContain("--implementation=vinext");
+    const detectionStep = workflow.slice(
+      workflow.indexOf("- name: Detect Next.js benchmark input changes"),
+      workflow.indexOf("- name: Prepare trusted benchmark manifests"),
+    );
+    const compatibilityGuard = detectionStep.indexOf('[ ! -f "$fingerprint_script" ]');
+    const fingerprintInvocation = detectionStep.indexOf(
+      'head_fingerprint=$(node "$fingerprint_script" .)',
+    );
+
+    expect(compatibilityGuard).toBeGreaterThan(-1);
+    expect(detectionStep).toContain('grep -q "skippedImplementations" "$base_validator"');
+    expect(detectionStep).toContain("keeping Next.js for rollout compatibility");
+    expect(detectionStep).toContain("exit 0");
+    expect(fingerprintInvocation).toBeGreaterThan(compatibilityGuard);
   });
 
   it("isolates pull request comment permissions from benchmark publishing", () => {

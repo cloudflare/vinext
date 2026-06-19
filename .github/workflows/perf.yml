@@ -162,9 +162,35 @@ jobs:
             benchmarks/nextjs
             benchmarks/perf
 
+      - name: Detect Next.js benchmark input changes
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        run: |
+          fingerprint_script=".perf-manifests/benchmarks/perf/nextjs-input-fingerprint.mts"
+          base_validator="$VINEXT_PERF_BASE_ROOT/benchmarks/perf/validate-results.mjs"
+          if [ ! -f "$fingerprint_script" ] || \
+            ! grep -q "skippedImplementations" "$base_validator"; then
+            echo "Base publisher does not support skipped implementations yet; keeping Next.js for rollout compatibility."
+            exit 0
+          fi
+          head_fingerprint=$(node "$fingerprint_script" .)
+          base_fingerprint=$(node "$fingerprint_script" "$VINEXT_PERF_BASE_ROOT")
+          if [ "$head_fingerprint" = "$base_fingerprint" ]; then
+            echo "Next.js benchmark inputs are unchanged; skipping Next.js PR benchmarks."
+            echo "VINEXT_PERF_SKIP_IMPLEMENTATIONS=nextjs" >> "$GITHUB_ENV"
+          else
+            if [ "$VINEXT_PERF_TRUSTED_HEAD" != "true" ]; then
+              echo "Fork pull requests may not change Next.js benchmark inputs." >&2
+              exit 1
+            fi
+            echo "Next.js benchmark inputs changed; pairing base and head Next.js benchmarks."
+          fi
+
       - name: Prepare trusted benchmark manifests
         run: |
-          projects=(vinext nextjs)
+          projects=(vinext)
+          if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+            projects+=(nextjs)
+          fi
           for project in "${projects[@]}"; do
             find "benchmarks/$project" -mindepth 1 -maxdepth 1 \
               ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
@@ -281,7 +307,10 @@ jobs:
             roots+=("$VINEXT_PERF_BASE_ROOT")
           fi
           for root in "${roots[@]}"; do
-            projects=(vinext nextjs)
+            projects=(vinext)
+            if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+              projects+=(nextjs)
+            fi
             for project in "${projects[@]}"; do
               find "$root/benchmarks/$project" -mindepth 1 -maxdepth 1 \
                 ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
@@ -294,12 +323,18 @@ jobs:
       - name: Prepare performance scenarios
         run: |
           args=(--setup-only)
+          if [ "$VINEXT_PERF_SKIP_IMPLEMENTATIONS" = "nextjs" ]; then
+            args+=(--implementation=vinext)
+          fi
           node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" "${args[@]}"
 
       - name: Prepare base performance scenarios
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
         run: |
           args=(--setup-only)
+          if [ "$VINEXT_PERF_SKIP_IMPLEMENTATIONS" = "nextjs" ]; then
+            args+=(--implementation=vinext)
+          fi
           VINEXT_PERF_TARGET_ROOT="$VINEXT_PERF_BASE_ROOT" \
             node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" "${args[@]}"
 
@@ -314,7 +349,10 @@ jobs:
           for index in "${!roots[@]}"; do
             root="${roots[$index]}"
             user="${users[$index]}"
-            projects=(vinext nextjs)
+            projects=(vinext)
+            if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+              projects+=(nextjs)
+            fi
             for project in "${projects[@]}"; do
               find "$root/benchmarks/$project" -mindepth 1 -maxdepth 1 \
                 ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
