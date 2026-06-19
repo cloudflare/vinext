@@ -146,9 +146,9 @@ describe("paired performance benchmarks", () => {
 
     expect(workflow).toContain("- name: Validate dispatched workflow ref");
     expect(workflow).toContain('[ "$VINEXT_PERF_WORKFLOW_SHA" != "$(git rev-parse origin/main)" ]');
-    expect(validation).toContain("`repos/${repository}/commits/main`");
-    expect(validation).toContain("defaultBranch.sha === sourceRun.head_sha");
-    expect(validation).toContain("Dispatched workflow ref is not the current default branch head");
+    expect(validation).toContain("sourceRun.head_repository?.full_name === repository");
+    expect(validation).toContain('sourceRun.head_branch === "main"');
+    expect(validation).toContain("Dispatched workflow ref is not the default branch");
   });
 
   it("keeps Next.js enabled until the trusted base supports fingerprinting", () => {
@@ -568,8 +568,11 @@ describe("paired performance benchmarks", () => {
     });
 
     validatePerformancePayload(payload, "workflow_dispatch", {
-      "repos/cloudflare/vinext/actions/runs/123": sourceRun("workflow_dispatch", workflowSha),
-      "repos/cloudflare/vinext/commits/main": { sha: workflowSha },
+      "repos/cloudflare/vinext/actions/runs/123": sourceRun(
+        "workflow_dispatch",
+        workflowSha,
+        "main",
+      ),
       "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
       [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${workflowSha}`]:
         githubFile(
@@ -588,6 +591,42 @@ describe("paired performance benchmarks", () => {
     });
   });
 
+  it("accepts dispatched main artifacts after main advances", () => {
+    const workflowSha = "c".repeat(40);
+    const repositoryRoot = join(import.meta.dirname, "..");
+    execFileSync("git", ["fetch", "--no-tags", "origin", "main"], {
+      cwd: repositoryRoot,
+    });
+    const commitSha = execFileSync("git", ["rev-parse", "origin/main"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    }).trim();
+    const measuredAt = execFileSync("git", ["show", "-s", "--format=%cI", commitSha], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    }).trim();
+    const payload = mainPerformancePayload({
+      commitSha,
+      measuredAt,
+      benchmarks: [performanceBenchmark("vinext", false)],
+    });
+
+    validatePerformancePayload(payload, "workflow_dispatch", {
+      "repos/cloudflare/vinext/actions/runs/123": sourceRun(
+        "workflow_dispatch",
+        workflowSha,
+        "main",
+      ),
+      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${workflowSha}`]:
+        githubFile(
+          JSON.stringify({
+            scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
+          }),
+        ),
+      [`repos/cloudflare/vinext/commits/${commitSha}`]: commit(measuredAt),
+    });
+  }, 15_000);
+
   it("rejects dispatched artifacts from workflow refs outside main", () => {
     const workflowSha = "c".repeat(40);
     const headSha = "a".repeat(40);
@@ -603,10 +642,9 @@ describe("paired performance benchmarks", () => {
     expect(() =>
       validatePerformancePayload(payload, "workflow_dispatch", {
         "repos/cloudflare/vinext/actions/runs/123": sourceRun("workflow_dispatch", workflowSha),
-        "repos/cloudflare/vinext/commits/main": { sha: "d".repeat(40) },
         "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
       }),
-    ).toThrow("Dispatched workflow ref is not the current default branch head");
+    ).toThrow("Dispatched workflow ref is not the default branch");
   });
 
   it("validates skipped Next.js against the synthetic merge commit", () => {
@@ -831,6 +869,33 @@ function performancePayload({
   };
 }
 
+function mainPerformancePayload({
+  commitSha,
+  measuredAt,
+  benchmarks,
+}: {
+  commitSha: string;
+  measuredAt: string;
+  benchmarks: unknown[];
+}) {
+  return {
+    schemaVersion: 1,
+    provider: "samply",
+    instrument: "walltime",
+    run: {
+      kind: "main",
+      commitSha,
+      baseSha: null,
+      pullRequest: null,
+      executionId: "123:1",
+      measuredAt,
+      repository: "cloudflare/vinext",
+    },
+    system: {},
+    benchmarks,
+  };
+}
+
 function commentMeasurement(benchmarkId: string, baseline: number, current: number) {
   return {
     benchmarkId,
@@ -890,7 +955,7 @@ function performanceScenario(
   };
 }
 
-function sourceRun(event: string, headSha: string) {
+function sourceRun(event: string, headSha: string, headBranch = "benchmark-branch") {
   return {
     path: ".github/workflows/perf.yml",
     status: "completed",
@@ -899,7 +964,7 @@ function sourceRun(event: string, headSha: string) {
     run_attempt: 1,
     head_sha: headSha,
     head_repository: { full_name: "cloudflare/vinext" },
-    head_branch: "benchmark-branch",
+    head_branch: headBranch,
   };
 }
 
