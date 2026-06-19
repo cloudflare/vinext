@@ -1,5 +1,35 @@
 # vinext
 
+## 0.1.6
+
+### Bug Fixes
+
+- **OG:** constrain inlined assets to trusted roots (#2172)
+- **Router:** enhance navigation with `as` mask for URL handling (#2076)
+- **Proxy:** match Next.js file conventions (#2155)
+- **Prod Server:** send headers-only for HEAD in sendCompressed (#1980) (#2058)
+- **RSC:** resolve the app-rsc-handler shim to a forward-slash id on Windows (#2165)
+- **Init:** ignore vinext output directory (#2160)
+- **App Router:** block dangerous RSC redirect URLs (#2154)
+- **Fonts:** preload only requested google font subsets (#2152)
+- **Server:** q-value-aware Accept-Encoding negotiation (#2047)
+- **Image:** resolve aliased static imports (#2142)
+
+### Performance
+
+- **App Router:** defer layout, template and boundary modules to first request (#2145)
+- **App Router:** defer prerender endpoint & file metadata runtimes (#2150)
+
+### Contributors
+
+- @Divkix
+- @james-elicx
+- @jillesme
+- @MaxtuneLee
+- @NathanDrake2406
+- @shulaoda
+- @TheAlexLichter
+
 ## 0.1.5
 
 ### Bug Fixes
