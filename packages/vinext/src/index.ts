@@ -4811,9 +4811,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // oxlint-disable-next-line typescript/no-explicit-any
             const directiveValue = (cacheDirective as any).expression.value;
             const variant =
-              directiveValue === "use cache"
-                ? ""
-                : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
+              directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").trim();
 
             // Only skip default export wrapping for layouts and templates —
             // they receive {children} from the framework which requires
@@ -4894,7 +4892,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const variant =
                     directiveMatch === "use cache"
                       ? ""
-                      : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
+                      : directiveMatch.replace("use cache:", "").trim();
                   return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
                 },
                 rejectNonAsyncFunction: false,
