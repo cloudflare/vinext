@@ -16,6 +16,8 @@ type TrendChartProps = {
   labels: string[];
   /** Stable unique keys for each x-axis point, such as benchmark run IDs. */
   pointKeys: string[];
+  /** Optional destination for each x-axis point. */
+  pointHrefs?: string[];
   series: Series[];
   yLabel?: string;
   formatY?: (value: number) => string;
@@ -29,6 +31,7 @@ const PADDING = { top: 20, right: 20, bottom: 40, left: 70 };
 export function TrendChart({
   labels,
   pointKeys,
+  pointHrefs,
   series,
   yLabel = "",
   formatY = (v) => String(v),
@@ -152,9 +155,8 @@ export function TrendChart({
               {/* Dots — only for non-null values */}
               {s.values.map((v, i) => {
                 if (v === null) return null;
-                return (
+                const circle = (
                   <circle
-                    key={`${pointKeys[i]}-${s.name}`}
                     cx={scaleX(i)}
                     cy={scaleY(v)}
                     r="3.5"
@@ -173,6 +175,19 @@ export function TrendChart({
                     }}
                     onMouseLeave={() => setTooltip(null)}
                   />
+                );
+                const href = pointHrefs?.[i];
+                if (!href) {
+                  return <g key={`${pointKeys[i]}-${s.name}`}>{circle}</g>;
+                }
+                return (
+                  <a
+                    key={`${pointKeys[i]}-${s.name}`}
+                    href={href}
+                    aria-label={`View commit ${labels[i]} benchmark results`}
+                  >
+                    {circle}
+                  </a>
                 );
               })}
             </g>

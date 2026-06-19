@@ -257,6 +257,7 @@ function PerformanceTrendChart({
         key={scenario.scenarioId}
         labels={runs.map((run) => run.shortSha)}
         pointKeys={runs.map((run) => run.id)}
+        pointHrefs={runs.map((run) => `/benchmarks/commit/${run.commitSha}`)}
         series={series}
         yLabel={scenario.unit}
         formatY={(value) => formatPerformanceValue(value, scenario.unit)}
