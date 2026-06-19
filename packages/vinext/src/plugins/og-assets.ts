@@ -82,6 +82,9 @@ function getNodeModulesPackageRoot(projectRoot: string, modulePath: string): str
     ? path.relative(projectRoot, modulePath)
     : modulePath.slice(parsedPath.root.length);
   const segments = relativePath.split(path.sep);
+  // The last node_modules segment identifies the innermost owning package for
+  // pnpm and nested dependency layouts. If a package ships its own internal
+  // node_modules directory this deliberately narrows the boundary and fails safe.
   const nodeModulesIndex = segments.lastIndexOf("node_modules");
   if (nodeModulesIndex === -1) return null;
 
@@ -154,14 +157,27 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         const packageRoot = getNodeModulesPackageRoot(projectRoot, modulePath);
         let realAssetRoot: string;
         if (packageRoot !== null) {
+          let realPackageRoot: string;
           try {
-            realAssetRoot = await realpathNative(packageRoot);
+            realPackageRoot = await realpathNative(packageRoot);
           } catch {
             return null;
+          }
+          if (isPathInside(realPackageRoot, realModulePath)) {
+            realAssetRoot = realPackageRoot;
+          } else {
+            // A file-level symlink can point from node_modules into a workspace
+            // package. In that case relative assets belong to the canonical
+            // target package, not the directory containing the symlink itself.
+            const canonicalPackageRoot = await findPackageRoot(realModuleDir);
+            if (canonicalPackageRoot === null) return null;
+            realAssetRoot = canonicalPackageRoot;
           }
         } else if (isPathInside(realProjectRoot, realModulePath)) {
           realAssetRoot = realProjectRoot;
         } else {
+          // Modules outside both the project and node_modules are treated as
+          // linked workspace packages and confined to their nearest manifest.
           const workspacePackageRoot = await findPackageRoot(realModuleDir);
           if (workspacePackageRoot === null) return null;
           realAssetRoot = workspacePackageRoot;

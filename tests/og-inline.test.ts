@@ -248,6 +248,31 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("inlines assets beside a file-symlinked dependency module", async () => {
+    const workspaceRoot = path.join(tmpDir, "file-symlinked-workspace");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(projectRoot, "node_modules", "og-helper");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
+    const packageFont = Buffer.from("file-symlinked-workspace-font");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspacePackageDir, "font.ttf"), packageFont);
+    await fsp.symlink(
+      path.join(workspacePackageDir, "index.js"),
+      path.join(packageDir, "index.js"),
+    );
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
   it.each([
     [
       "pnpm",
