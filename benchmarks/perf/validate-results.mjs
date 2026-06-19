@@ -387,10 +387,9 @@ if (sourceEvent === "pull_request") {
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {
-  const defaultBranch = githubApi(`repos/${repository}/commits/main`);
   assert(
-    defaultBranch.sha === sourceRun.head_sha,
-    "Dispatched workflow ref is not the current default branch head",
+    sourceRun.head_repository?.full_name === repository && sourceRun.head_branch === "main",
+    "Dispatched workflow ref is not the default branch",
   );
   trustedManifestRef = sourceRun.head_sha;
 } else {
