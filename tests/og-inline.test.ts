@@ -465,6 +465,40 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("confines a separator-terminated regular-expression capture to the resolved package", async () => {
+    const projectRoot = path.join(tmpDir, "regex-package-alias-app");
+    const packagesDir = path.join(tmpDir, "regex-package-alias-packages");
+    const packageDir = path.join(packagesDir, "ui");
+    const siblingDir = path.join(packagesDir, "other");
+    const modulePath = path.join(packageDir, "index.js");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(siblingDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"@scope/ui"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(siblingDir, "secret.txt"), "regex-package-sibling-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: { alias: [{ find: /^@scope\/(.*)$/, replacement: `${packagesDir}/$1` }] },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "@scope/ui",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../other/secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result).toBeNull();
+  });
+
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
     const projectRoot = path.join(workspaceRoot, "app");

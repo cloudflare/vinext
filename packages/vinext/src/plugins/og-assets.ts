@@ -101,7 +101,7 @@ function getPackageNameFromSpecifier(specifier: string): string | null {
 
 function getAliasedPackageName(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const alias = value.match(/^(?:npm:|workspace:)(@[^/]+\/[^@]+|[^@]+)@/);
+  const alias = value.match(/^(?:npm:|workspace:)(@[^/]+\/[^@]+|[^@*~^]+)(?:@|$)/);
   return alias?.[1] ?? null;
 }
 
@@ -115,16 +115,6 @@ function applyAlias(find: string | RegExp, replacement: string, source: string):
   if (typeof find === "string") return replacement + source.slice(find.length);
   find.lastIndex = 0;
   return source.replace(find, replacement);
-}
-
-function getAliasBoundaryPath(
-  find: string | RegExp,
-  replacement: string,
-  aliasTarget: string,
-): string {
-  if (typeof find === "string" || !replacement.includes("$")) return replacement;
-  const staticPrefix = replacement.slice(0, replacement.indexOf("$"));
-  return staticPrefix.endsWith(path.sep) ? staticPrefix.slice(0, -1) : path.dirname(aliasTarget);
 }
 
 function getNodeModulesPackageRoot(
@@ -246,19 +236,29 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         const aliasTarget = applyAlias(configuredAlias.find, configuredAlias.replacement, source);
         if (!path.isAbsolute(aliasTarget)) return null;
         try {
-          const boundaryPath = getAliasBoundaryPath(
-            configuredAlias.find,
-            configuredAlias.replacement,
-            aliasTarget,
-          );
-          if (!path.isAbsolute(boundaryPath)) return null;
-          const realReplacement = await realpathNative(boundaryPath);
-          const replacementStat = await fs.promises.stat(realReplacement);
-          if (replacementStat.isDirectory()) {
-            packageRoot = realReplacement;
+          const hasCapture =
+            configuredAlias.find instanceof RegExp && configuredAlias.replacement.includes("$");
+          const realAliasTarget = await realpathNative(aliasTarget);
+          if (hasCapture) {
+            const staticPrefix = configuredAlias.replacement.slice(
+              0,
+              configuredAlias.replacement.indexOf("$"),
+            );
+            const targetPackageRoot = await findPackageRoot(path.dirname(realResolvedPath));
+            if (staticPrefix.endsWith(path.sep) && targetPackageRoot !== null) {
+              const realStaticPrefix = await realpathNative(staticPrefix.slice(0, -1));
+              packageRoot = isPathInside(realStaticPrefix, targetPackageRoot)
+                ? targetPackageRoot
+                : path.dirname(realAliasTarget);
+            } else {
+              packageRoot = path.dirname(realAliasTarget);
+            }
           } else {
-            const realAliasTarget = await realpathNative(aliasTarget);
-            packageRoot = path.dirname(realAliasTarget);
+            const realReplacement = await realpathNative(configuredAlias.replacement);
+            const replacementStat = await fs.promises.stat(realReplacement);
+            packageRoot = replacementStat.isDirectory()
+              ? realReplacement
+              : path.dirname(realAliasTarget);
           }
           if (!isPathInside(packageRoot, realResolvedPath)) return null;
         } catch {
