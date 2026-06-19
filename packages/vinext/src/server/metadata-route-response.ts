@@ -13,7 +13,7 @@ import { notFoundResponse } from "./http-error-responses.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
-export type MetadataRouteMakeThenableParams = (params: AppPageParams) => unknown;
+type MetadataRouteMakeThenableParams = (params: AppPageParams) => unknown;
 
 export type MetadataRuntimeRoute = MetadataFileRoute & {
   fileDataBase64?: string;
