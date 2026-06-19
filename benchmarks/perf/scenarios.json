@@ -82,6 +82,23 @@
       ]
     },
     {
+      "id": "client-entry-gzip",
+      "suite": "Build",
+      "label": "Client entry size (gzip)",
+      "description": "Total gzip size of the production browser entry and its eager static JavaScript imports.",
+      "unit": "bytes",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "vinext",
+          "label": "vinext",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext", "client-entry"]
+        }
+      ]
+    },
+    {
       "id": "rsc-entry-gzip",
       "suite": "Build",
       "label": "RSC entry size (gzip)",

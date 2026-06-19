@@ -312,6 +312,62 @@ describe("paired performance benchmarks", () => {
     ]);
   });
 
+  it("measures only the eager client entry closure", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-client-entry-"));
+    const clientDirectory = join(directory, "benchmarks/vinext/dist/client");
+    const chunksDirectory = join(clientDirectory, "assets");
+    const manifestDirectory = join(clientDirectory, ".vite");
+    const samplesPath = join(directory, "samples.jsonl");
+    const entry = "import './shared.js'; console.log('entry');";
+    const shared = "export const shared = 'shared';";
+    const lazy = "export const lazy = 'lazy';";
+    mkdirSync(chunksDirectory, { recursive: true });
+    mkdirSync(manifestDirectory, { recursive: true });
+    writeFileSync(join(chunksDirectory, "entry.js"), entry);
+    writeFileSync(join(chunksDirectory, "shared.js"), shared);
+    writeFileSync(join(chunksDirectory, "lazy.js"), lazy);
+    writeFileSync(
+      join(manifestDirectory, "manifest.json"),
+      JSON.stringify({
+        "virtual:entry": {
+          file: "assets/entry.js",
+          isEntry: true,
+          imports: ["shared"],
+          dynamicImports: ["lazy"],
+        },
+        shared: {
+          file: "assets/shared.js",
+          imports: ["virtual:entry"],
+        },
+        lazy: {
+          file: "assets/lazy.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+
+    execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext", "client-entry"], {
+      cwd: join(import.meta.dirname, ".."),
+      env: {
+        ...process.env,
+        VINEXT_PERF_TARGET_ROOT: directory,
+        VINEXT_PERF_SAMPLES: samplesPath,
+        VINEXT_PERF_BENCHMARK_ID: "vinext-client-entry-gzip",
+        VINEXT_PERF_SCENARIO_ID: "client-entry-gzip",
+        VINEXT_PERF_SUITE: "Build",
+        VINEXT_PERF_LABEL: "Client entry size",
+        VINEXT_PERF_IMPLEMENTATION_ID: "vinext",
+        VINEXT_PERF_IMPLEMENTATION_LABEL: "vinext",
+        VINEXT_PERF_UNIT: "bytes",
+        VINEXT_PERF_LOWER_IS_BETTER: "true",
+        VINEXT_PERF_REVISION: "head",
+      },
+    });
+
+    const sample = JSON.parse(readFileSync(samplesPath, "utf8"));
+    expect(sample.value).toBe(gzipSync(entry).length + gzipSync(shared).length);
+  });
+
   it("normalizes same-run baseline samples separately from head samples", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-"));
     const samplesPath = join(directory, "samples.jsonl");
