@@ -245,6 +245,7 @@ jobs:
               benchmarks/vinext/dist
               benchmarks/vinext/.vite
               benchmarks/vinext/node_modules/.vite
+              benchmarks/vinext/node_modules/.vite-temp
               benchmarks/nextjs/.next
               benchmarks/nextjs/node_modules
             )

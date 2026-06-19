@@ -83,6 +83,7 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('"$root/packages/vinext/dist"');
     expect(workflow).toContain('"$root/packages/cloudflare/dist"');
     expect(workflow).toContain('"$root/node_modules/.vite/task-cache"');
+    expect(workflow).toContain("benchmarks/vinext/node_modules/.vite-temp");
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
     expect(workflow).toContain(
