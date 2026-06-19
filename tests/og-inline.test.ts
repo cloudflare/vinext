@@ -350,10 +350,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(workspacePackageDir, { recursive: true });
-    await fsp.writeFile(
-      path.join(workspaceRoot, "package.json"),
-      '{"name":"workspace-root","workspaces":["packages/*"]}',
-    );
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"workspace-root"}');
     await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
     await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "external-workspace-secret");
 

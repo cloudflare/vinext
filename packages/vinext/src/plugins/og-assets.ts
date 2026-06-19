@@ -63,7 +63,7 @@ function isPathInside(root: string, target: string): boolean {
 async function findPackageRoot(
   moduleDir: string,
   expectedPackageName?: string,
-  rejectWorkspaceRoot = false,
+  requirePathPackageName = false,
 ): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
@@ -72,13 +72,7 @@ async function findPackageRoot(
       const packageJson = await fs.promises.stat(packageJsonPath);
       if (packageJson.isFile()) {
         const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
-        if (
-          rejectWorkspaceRoot &&
-          (manifest.workspaces !== undefined ||
-            fs.existsSync(path.join(currentDir, "pnpm-workspace.yaml")))
-        ) {
-          return null;
-        }
+        if (requirePathPackageName && manifest.name !== getPathPackageName(currentDir)) return null;
         if (expectedPackageName === undefined) return currentDir;
         return manifest.name === expectedPackageName ? currentDir : null;
       }
@@ -88,6 +82,12 @@ async function findPackageRoot(
     if (parentDir === currentDir) return null;
     currentDir = parentDir;
   }
+}
+
+function getPathPackageName(packageRoot: string): string {
+  const packageName = path.basename(packageRoot);
+  const scope = path.basename(path.dirname(packageRoot));
+  return scope.startsWith("@") ? `${scope}/${packageName}` : packageName;
 }
 
 function getNodeModulesPackageRoot(
