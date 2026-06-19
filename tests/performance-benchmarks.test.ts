@@ -122,6 +122,7 @@ describe("paired performance benchmarks", () => {
     expect(buildTime).toContain(
       "globalThis.process.execve(command, [command, ...args], targetEnvironment())",
     );
+    expect(buildTime).toContain("return targetUser && !profiling");
     expect(buildTime).toContain("detached: true");
     expect(buildTime).not.toContain(
       'rm(join(projectDir, framework === "vinext" ? "dist" : ".next")',

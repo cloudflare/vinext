@@ -57,7 +57,7 @@ function buildCommand() {
       args: ["build", "--turbopack"],
     };
   }
-  return targetUser
+  return targetUser && !profiling
     ? { command: "sudo", args: ["-u", targetUser, "--", command.command, ...command.args] }
     : command;
 }
