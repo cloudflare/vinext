@@ -74,13 +74,19 @@ async function findPackageRoot(moduleDir: string): Promise<string | null> {
   }
 }
 
-function getNodeModulesPackageRoot(projectRoot: string, modulePath: string): string | null {
-  const isProjectPath = isPathInside(projectRoot, modulePath);
-  const parsedPath = path.parse(modulePath);
-  const baseRoot = isProjectPath ? projectRoot : parsedPath.root;
+function getNodeModulesPackageRoot(
+  logicalProjectRoot: string,
+  logicalModulePath: string,
+): string | null {
+  // Use logical Vite paths here, before realpath resolution, so a node_modules
+  // symlink still identifies the dependency package that owns the import. The
+  // selected package root is canonicalized before it becomes a read boundary.
+  const isProjectPath = isPathInside(logicalProjectRoot, logicalModulePath);
+  const parsedPath = path.parse(logicalModulePath);
+  const baseRoot = isProjectPath ? logicalProjectRoot : parsedPath.root;
   const relativePath = isProjectPath
-    ? path.relative(projectRoot, modulePath)
-    : modulePath.slice(parsedPath.root.length);
+    ? path.relative(logicalProjectRoot, logicalModulePath)
+    : logicalModulePath.slice(parsedPath.root.length);
   const segments = relativePath.split(path.sep);
   // The last node_modules segment identifies the innermost owning package for
   // pnpm and nested dependency layouts. If a package ships its own internal
@@ -148,6 +154,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           try {
             realProjectRoot = await realpathNative(projectRoot);
             const realModuleDir = await realpathNative(path.dirname(modulePath));
+            // Transform hooks can receive a not-yet-materialized module path.
+            // Canonicalize its existing directory while retaining the basename
+            // so relative asset resolution still uses the module's location.
             realModulePath = path.join(realModuleDir, path.basename(modulePath));
           } catch {
             return null;
@@ -169,6 +178,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // A file-level symlink can point from node_modules into a workspace
             // package. In that case relative assets belong to the canonical
             // target package, not the directory containing the symlink itself.
+            // The nearest manifest is intentionally the boundary because the
+            // canonical target is no longer inside the logical package path.
             const canonicalPackageRoot = await findPackageRoot(realModuleDir);
             if (canonicalPackageRoot === null) return null;
             realAssetRoot = canonicalPackageRoot;
