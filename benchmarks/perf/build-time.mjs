@@ -44,10 +44,12 @@ async function cleanBuildOutput() {
 function buildCommand() {
   let command;
   if (framework === "vinext") {
-    const vpPath = execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
+    const vpPath = profiling
+      ? join(projectDir, "node_modules/vite-plus/bin/vp")
+      : execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
     command = {
-      command: vpPath,
-      args: ["build"],
+      command: profiling ? globalThis.process.execPath : vpPath,
+      args: profiling ? [vpPath, "build"] : ["build"],
     };
   } else {
     command = {
@@ -96,11 +98,8 @@ async function main() {
   await cleanBuildOutput();
   const { command, args } = buildCommand();
   if (profiling) {
-    const executable = command.includes("/")
-      ? command
-      : execFileSync("which", [command], { encoding: "utf8" }).trim();
     globalThis.process.chdir(projectDir);
-    globalThis.process.execve(executable, [executable, ...args], targetEnvironment());
+    globalThis.process.execve(command, [command, ...args], targetEnvironment());
   }
   const startedAt = performance.now();
   const child = spawn(command, args, {

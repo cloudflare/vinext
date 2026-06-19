@@ -118,8 +118,9 @@ describe("paired performance benchmarks", () => {
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
     expect(buildTime).toContain("const entries = await readdir(outputDirectory)");
     expect(buildTime).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
+    expect(buildTime).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
     expect(buildTime).toContain(
-      "globalThis.process.execve(executable, [executable, ...args], targetEnvironment())",
+      "globalThis.process.execve(command, [command, ...args], targetEnvironment())",
     );
     expect(buildTime).toContain("detached: true");
     expect(buildTime).not.toContain(
