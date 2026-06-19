@@ -86,6 +86,10 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
     expect(workflow).toContain(
+      "github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha",
+    );
+    expect(workflow).toContain("github.event.pull_request.head.sha || github.sha");
+    expect(workflow).toContain(
       'cp -R .perf-harness/benchmarks/vinext "$trusted_harness/benchmarks/vinext"',
     );
     expect(workflow).toContain(
