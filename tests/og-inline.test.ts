@@ -326,6 +326,26 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("does not inline parent-relative assets outside a symlinked project root", async () => {
+    const realProjectRoot = path.join(tmpDir, "symlinked-parent-escape-real");
+    const linkedProjectRoot = path.join(tmpDir, "symlinked-parent-escape-link");
+    const secretPath = path.join(tmpDir, "symlinked-parent-secret.txt");
+    await fsp.mkdir(realProjectRoot, { recursive: true });
+    await fsp.writeFile(secretPath, "symlinked-parent-secret");
+    await fsp.symlink(realProjectRoot, linkedProjectRoot, "dir");
+
+    const plugin = createOgInlinePlugin("build", linkedProjectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../symlinked-parent-secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(
+      plugin,
+      code,
+      path.join(realProjectRoot, "opengraph-image.tsx"),
+    );
+
+    expect(result).toBeNull();
+  });
+
   it.each([
     [
       "fetch",

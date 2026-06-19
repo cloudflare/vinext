@@ -74,9 +74,24 @@ async function findPackageRoot(moduleDir: string): Promise<string | null> {
   }
 }
 
-function isNodeModulesPath(root: string, target: string): boolean {
-  if (!isPathInside(root, target)) return false;
-  return path.relative(root, target).split(path.sep).includes("node_modules");
+function getNodeModulesPackageRoot(projectRoot: string, modulePath: string): string | null {
+  const isProjectPath = isPathInside(projectRoot, modulePath);
+  const parsedPath = path.parse(modulePath);
+  const baseRoot = isProjectPath ? projectRoot : parsedPath.root;
+  const relativePath = isProjectPath
+    ? path.relative(projectRoot, modulePath)
+    : modulePath.slice(parsedPath.root.length);
+  const segments = relativePath.split(path.sep);
+  const nodeModulesIndex = segments.lastIndexOf("node_modules");
+  if (nodeModulesIndex === -1) return null;
+
+  const packageSegment = segments[nodeModulesIndex + 1];
+  if (!packageSegment) return null;
+  const packageSegmentCount = packageSegment.startsWith("@") ? 2 : 1;
+  if (segments.length <= nodeModulesIndex + packageSegmentCount) return null;
+  if (packageSegmentCount === 2 && !segments[nodeModulesIndex + 2]) return null;
+
+  return path.join(baseRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
 }
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
@@ -136,11 +151,21 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           }
         }
         const realModuleDir = path.dirname(realModulePath);
-        const isDependency =
-          !isPathInside(realProjectRoot, realModulePath) ||
-          isNodeModulesPath(projectRoot, modulePath);
-        const realAssetRoot = isDependency ? await findPackageRoot(realModuleDir) : realProjectRoot;
-        if (realAssetRoot === null) return null;
+        const packageRoot = getNodeModulesPackageRoot(projectRoot, modulePath);
+        let realAssetRoot: string;
+        if (packageRoot !== null) {
+          try {
+            realAssetRoot = await realpathNative(packageRoot);
+          } catch {
+            return null;
+          }
+        } else if (isPathInside(realProjectRoot, realModulePath)) {
+          realAssetRoot = realProjectRoot;
+        } else {
+          const workspacePackageRoot = await findPackageRoot(realModuleDir);
+          if (workspacePackageRoot === null) return null;
+          realAssetRoot = workspacePackageRoot;
+        }
         const moduleDir = realModuleDir;
         let newCode = code;
         let didReplace = false;
