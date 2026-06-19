@@ -60,12 +60,20 @@ function isPathInside(root: string, target: string): boolean {
   );
 }
 
-async function findPackageRoot(moduleDir: string): Promise<string | null> {
+async function findPackageRoot(
+  moduleDir: string,
+  expectedPackageName?: string,
+): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
     try {
-      const packageJson = await fs.promises.stat(path.join(currentDir, "package.json"));
-      if (packageJson.isFile()) return currentDir;
+      const packageJsonPath = path.join(currentDir, "package.json");
+      const packageJson = await fs.promises.stat(packageJsonPath);
+      if (packageJson.isFile()) {
+        if (expectedPackageName === undefined) return currentDir;
+        const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
+        return manifest.name === expectedPackageName ? currentDir : null;
+      }
     } catch {}
 
     const parentDir = path.dirname(currentDir);
@@ -101,6 +109,12 @@ function getNodeModulesPackageRoot(
   if (packageSegmentCount === 2 && !segments[nodeModulesIndex + 2]) return null;
 
   return path.join(baseRoot, ...segments.slice(0, nodeModulesIndex + 1 + packageSegmentCount));
+}
+
+function getNodeModulesPackageName(packageRoot: string): string {
+  const packageName = path.basename(packageRoot);
+  const scope = path.basename(path.dirname(packageRoot));
+  return scope.startsWith("@") ? `${scope}/${packageName}` : packageName;
 }
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
@@ -180,7 +194,10 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // target package, not the directory containing the symlink itself.
             // The nearest manifest is intentionally the boundary because the
             // canonical target is no longer inside the logical package path.
-            const canonicalPackageRoot = await findPackageRoot(realModuleDir);
+            const canonicalPackageRoot = await findPackageRoot(
+              realModuleDir,
+              getNodeModulesPackageName(packageRoot),
+            );
             if (canonicalPackageRoot === null) return null;
             realAssetRoot = canonicalPackageRoot;
           }

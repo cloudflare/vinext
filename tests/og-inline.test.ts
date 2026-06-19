@@ -273,6 +273,31 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
+  it("does not broaden a file-symlinked dependency to an ancestor package", async () => {
+    const workspaceRoot = path.join(tmpDir, "file-symlinked-ancestor");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(projectRoot, "node_modules", "og-helper");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
+    const secret = Buffer.from("ancestor-package-secret");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"workspace-root"}');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), secret);
+    await fsp.symlink(
+      path.join(workspacePackageDir, "index.js"),
+      path.join(packageDir, "index.js"),
+    );
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
   it.each([
     [
       "pnpm",
