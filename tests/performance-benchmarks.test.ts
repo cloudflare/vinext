@@ -323,6 +323,44 @@ describe("paired performance benchmarks", () => {
     expect(results.benchmarks[0].profileRounds).toBe(1);
   });
 
+  it("accepts required trace categories spread across diagnostic profiles", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-traces-"));
+    const resultsPath = join(directory, "results.json");
+    const firstProfile = "profiles/dev/samply-profile.json.gz";
+    const secondProfile = "profiles/build/samply-profile.json.gz";
+    mkdirSync(join(directory, "profiles/dev"), { recursive: true });
+    mkdirSync(join(directory, "profiles/build"), { recursive: true });
+    writeFileSync(
+      join(directory, firstProfile),
+      gzipSync(profileWithSources(["file:///repo/packages/vinext/src/index.ts"])),
+    );
+    writeFileSync(
+      join(directory, secondProfile),
+      gzipSync(
+        profileWithSources([
+          "file:///repo/node_modules/vite-plus-core/dist/vite/node/index.js",
+          "file:///repo/node_modules/rolldown/dist/index.mjs",
+        ]),
+      ),
+    );
+    writeFileSync(
+      resultsPath,
+      JSON.stringify({
+        benchmarks: [
+          { benchmarkId: "vinext-dev", profileFile: firstProfile },
+          { benchmarkId: "vinext-build", profileFile: secondProfile },
+        ],
+      }),
+    );
+
+    const output = execFileSync(
+      process.execPath,
+      ["benchmarks/perf/validate-profile-traces.mjs", resultsPath, directory],
+      { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
+    );
+    expect(output).toContain("Performance profiles sampled vinext, vite, rolldown frames");
+  });
+
   it("reports unchanged Next.js as skipped", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-comment-"));
     const resultsPath = join(directory, "results.json");
@@ -834,6 +872,23 @@ function githubFile(contents: string) {
     encoding: "base64",
     content: Buffer.from(contents).toString("base64"),
   };
+}
+
+function profileWithSources(sources: string[]) {
+  return JSON.stringify({
+    threads: [
+      {
+        stringArray: sources.map((source) => `function ${source}`),
+        funcTable: { name: sources.map((_, index) => index) },
+        frameTable: { func: sources.map((_, index) => index) },
+        stackTable: {
+          frame: sources.map((_, index) => index),
+          prefix: sources.map((_, index) => (index === 0 ? null : index - 1)),
+        },
+        samples: { stack: [sources.length - 1], length: 1 },
+      },
+    ],
+  });
 }
 
 function gitTreeEntry(path: string, sha: string) {

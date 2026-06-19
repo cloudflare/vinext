@@ -73,11 +73,8 @@ function profilePath(root, profileFile) {
 async function validateProfile(path, benchmarkId) {
   const profile = JSON.parse((await gunzipAsync(await readFile(path))).toString("utf8"));
   const categories = sampledCategories(profile);
-  const missing = requiredCategories.filter((category) => !categories.has(category));
-  if (missing.length > 0) {
-    throw new Error(`${benchmarkId} profile is missing sampled ${missing.join(", ")} frames`);
-  }
-  console.log(`${benchmarkId}: sampled ${requiredCategories.join(", ")} frames`);
+  console.log(`${benchmarkId}: sampled ${[...categories].join(", ") || "no required"} frames`);
+  return categories;
 }
 
 async function main() {
@@ -88,11 +85,17 @@ async function main() {
   const results = JSON.parse(await readFile(resultsPath, "utf8"));
   const profiles = (results.benchmarks ?? []).filter((benchmark) => benchmark.profileFile);
   if (profiles.length === 0) throw new Error("Performance results contain no diagnostic profiles");
-  await Promise.all(
+  const categorySets = await Promise.all(
     profiles.map((benchmark) =>
       validateProfile(profilePath(artifactRoot, benchmark.profileFile), benchmark.benchmarkId),
     ),
   );
+  const categories = new Set(categorySets.flatMap((categorySet) => [...categorySet]));
+  const missing = requiredCategories.filter((category) => !categories.has(category));
+  if (missing.length > 0) {
+    throw new Error(`Performance profiles are missing sampled ${missing.join(", ")} frames`);
+  }
+  console.log(`Performance profiles sampled ${requiredCategories.join(", ")} frames`);
 }
 
 main().catch((error) => {
