@@ -115,7 +115,7 @@ describe("paired performance benchmarks", () => {
     expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
     expect(coldStart).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
     expect(coldStart).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
-    expect(coldStart).toContain("detached: !profiling");
+    expect(coldStart).toContain("detached: true");
     expect(coldStart).toContain("return targetUser && !profiling");
     expect(coldStart).toContain("await Promise.all(paths.map(clearDirectory))");
     expect(coldStart).toContain("const entries = await readdir(path)");
@@ -342,6 +342,7 @@ describe("paired performance benchmarks", () => {
       join(directory, secondProfile),
       gzipSync(
         profileWithSources([
+          "file:///repo/packages/vinext/src/index.ts",
           "file:///repo/node_modules/vite-plus-core/dist/vite/node/index.js",
           "file:///repo/node_modules/rolldown/dist/index.mjs",
         ]),

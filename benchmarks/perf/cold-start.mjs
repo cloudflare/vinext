@@ -118,8 +118,7 @@ async function waitForRoute(url, child, output, getSpawnError) {
 async function stopProcessGroup(child) {
   const processGroupId = child.pid;
   try {
-    if (!profiling && processGroupId) globalThis.process.kill(-processGroupId, "SIGTERM");
-    else if (child.exitCode === null) child.kill("SIGTERM");
+    if (processGroupId) globalThis.process.kill(-processGroupId, "SIGTERM");
   } catch {
     try {
       if (child.exitCode === null) child.kill("SIGTERM");
@@ -135,8 +134,7 @@ async function stopProcessGroup(child) {
 
   if (child.exitCode === null) {
     try {
-      if (!profiling && processGroupId) globalThis.process.kill(-processGroupId, "SIGKILL");
-      else child.kill("SIGKILL");
+      if (processGroupId) globalThis.process.kill(-processGroupId, "SIGKILL");
     } catch {
       // The process exited between the checks.
     }
@@ -155,7 +153,7 @@ async function main() {
   const startedAt = performance.now();
   const child = spawn(command, args, {
     cwd: projectDir,
-    detached: !profiling,
+    detached: true,
     env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
