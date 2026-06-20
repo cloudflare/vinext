@@ -17,14 +17,18 @@ type RscFrameworkManualChunksMeta = {
 };
 
 const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "compat-router",
+  "dynamic",
   "dynamic-preload-chunks",
   "form",
   "image",
   "layout-segment-context",
+  "legacy-image",
   "link",
   "offline",
   "router",
   "script",
+  "web-vitals",
 ]);
 
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
@@ -132,10 +136,12 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     }
 
     if (id.startsWith(shimsDir)) {
-      const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
-      const extensionIndex = relativeId.lastIndexOf(".");
-      const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-      if (preserveRouteBoundaries && ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      if (preserveRouteBoundaries) {
+        const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const extensionIndex = relativeId.lastIndexOf(".");
+        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      }
       return "vinext";
     }
 

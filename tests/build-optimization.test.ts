@@ -125,10 +125,14 @@ describe("clientManualChunks", () => {
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
+    expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/legacy-image.tsx")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/layout-segment-context.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
   });
 
   it("handles pnpm-style nested node_modules paths", () => {
