@@ -4359,6 +4359,10 @@ describe("app browser entry previousNextUrl helpers", () => {
     const staleLayout = React.createElement("div", null, "stale layout");
     const stalePage = React.createElement("main", null, "stale page");
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/dashboard": "_b_1_",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4403,6 +4407,98 @@ describe("app browser entry previousNextUrl helpers", () => {
       "layout:/dashboard",
       "layout:/dashboard/settings",
     ]);
+  });
+
+  it("installs fresh dynamic layout output when its bound segment identity changes", async () => {
+    const previousLayout = React.createElement("div", null, "hello-world layout");
+    const nextLayout = React.createElement("div", null, "getting-started layout");
+    const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/blog/[slug]": "_b_2_",
+      },
+      elements: createResolvedElements(
+        "route:/blog/[slug]",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+          "layout:/blog/[slug]": previousLayout,
+        },
+        ["layout:/", "layout:/blog/[slug]"],
+      ),
+      layoutIds: ["layout:/", "layout:/blog/[slug]"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/hello-world",
+        { slug: "hello-world" },
+      ),
+      routeId: "route:/blog/[slug]",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "layout:/blog/[slug]": nextLayout,
+        "page:/blog/[slug]": React.createElement("main", null, "getting-started"),
+      },
+      layoutIds: ["layout:/", "layout:/blog/[slug]"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/getting-started",
+        { slug: "getting-started" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/blog/[slug]",
+      targetHref: "https://example.com/blog/getting-started",
+    });
+
+    expect(nextState.elements["layout:/blog/[slug]"]).toBe(nextLayout);
+    expect(nextState.bfcacheIds["layout:/blog/[slug]"]).not.toBe("_b_2_");
+  });
+
+  it("does not preserve a previous default slot when its dynamic owner identity changes", async () => {
+    const layoutId = "layout:/blog/[slug]";
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
+    const previousSlot = React.createElement("aside", null, "hello-world sidebar");
+    const nextSlot = React.createElement("aside", null, "getting-started sidebar");
+    const state = createState({
+      bfcacheIds: { [layoutId]: "_b_3_" },
+      elements: createResolvedElements(
+        "route:/blog/[slug]",
+        "/",
+        null,
+        {
+          [layoutId]: React.createElement("div", null, "hello-world layout"),
+          [slotId]: previousSlot,
+        },
+        ["layout:/", layoutId],
+        [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+      ),
+      layoutIds: ["layout:/", layoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/hello-world",
+        { slug: "hello-world" },
+      ),
+      routeId: "route:/blog/[slug]",
+      slotBindings: [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        [layoutId]: React.createElement("div", null, "getting-started layout"),
+        [slotId]: nextSlot,
+      },
+      layoutIds: ["layout:/", layoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/getting-started",
+        { slug: "getting-started" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/blog/[slug]",
+      slotBindings: [{ ownerLayoutId: layoutId, slotId, state: "default" }],
+      targetHref: "https://example.com/blog/getting-started",
+    });
+
+    expect(nextState.elements[slotId]).toBe(nextSlot);
+    expect(nextState.slotBindings).toEqual([{ ownerLayoutId: layoutId, slotId, state: "default" }]);
   });
 
   it("does not preserve same-layout ancestors when root identity is unknown", async () => {

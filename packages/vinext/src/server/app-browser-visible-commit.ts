@@ -152,10 +152,21 @@ function reduceApprovedVisibleCommitState(
     case "traverse":
     case "navigate": {
       const preserveElementIds = action.reuseCurrentBfcacheIds
-        ? commit.decision.preserveElementIds
+        ? commit.decision.preserveElementIds.filter((id) => {
+            const previousBfcacheId = state.bfcacheIds[id];
+            return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
+          })
         : [];
+      const preservedElementIdSet = new Set(preserveElementIds);
       const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
-        ? commit.decision.preservePreviousSlotIds
+        ? commit.decision.preservePreviousSlotIds.filter((slotId) => {
+            const targetBinding = action.slotBindings.find((binding) => binding.slotId === slotId);
+            return (
+              targetBinding?.ownerLayoutId !== null &&
+              targetBinding?.ownerLayoutId !== undefined &&
+              preservedElementIdSet.has(targetBinding.ownerLayoutId)
+            );
+          })
         : [];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
