@@ -811,6 +811,33 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry only includes the App middleware runtime when middleware exists", () => {
+    const withoutMiddleware = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
+    const withMiddleware = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      "/tmp/test/middleware.ts",
+      [],
+      null,
+      "",
+      false,
+    );
+
+    expect(withoutMiddleware).not.toContain("app-middleware.js");
+    expect(withoutMiddleware).not.toContain("runMiddleware(");
+    expect(withMiddleware).toContain("app-middleware.js");
+    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain("return __applyAppMiddleware({");
+  });
+
   it("generateRscEntry only includes metadata route response handling when routes exist", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-runtime-"));
     const filePath = path.join(tmpDir, "sitemap.ts");

@@ -36,7 +36,7 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import type { AppMiddlewareContext } from "./app-middleware.js";
+import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import type {
   AppPrerenderRootParamNamesMap,
@@ -65,7 +65,6 @@ import {
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
-import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
@@ -92,6 +91,13 @@ type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
+
+type RunAppMiddlewareOptions = {
+  cleanPathname: string;
+  context: AppRscMiddlewareContext;
+  isDataRequest: boolean;
+  request: Request;
+};
 
 type AppRscHandlerRoute = {
   isDynamic: boolean;
@@ -291,11 +297,9 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   isDev: boolean;
-  isMiddlewareProxy: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
-  middlewareFilePath: string | null;
-  middlewareModule: MiddlewareModule | null;
+  runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
@@ -575,19 +579,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
   let didMiddlewareRewrite = false;
 
-  if (options.middlewareModule) {
-    const { applyAppMiddleware } = await import("./app-middleware.js");
-    const middlewareResult = await applyAppMiddleware({
-      basePath: options.basePath,
+  if (options.runMiddleware) {
+    const middlewareResult = await options.runMiddleware({
       cleanPathname,
       context: middlewareContext,
-      filePath: options.middlewareFilePath ?? undefined,
-      i18nConfig: options.i18nConfig,
       isDataRequest,
-      isProxy: options.isMiddlewareProxy,
-      module: options.middlewareModule,
       request: userlandRequest,
-      trailingSlash: options.trailingSlash,
     });
     if (middlewareResult.kind === "response") {
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {

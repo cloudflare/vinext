@@ -2977,34 +2977,37 @@ describe("Plugin config", () => {
     expect(mdxProxy.enforce).toBe("pre");
     // Proxy forwards config and transform to the delegate (@mdx-js/rollup)
     expect(typeof mdxProxy.config).toBe("function");
-    expect(typeof mdxProxy.transform).toBe("function");
-    // Proxy should be inert when no MDX files are detected (mdxDelegate is null)
+    // transform is an object-form hook: a native id filter gates the JS handler
+    // so it only runs for .mdx files instead of every module in the graph.
+    expect(typeof mdxProxy.transform).toBe("object");
+    expect(typeof mdxProxy.transform.handler).toBe("function");
+    const { include, exclude } = mdxProxy.transform.filter.id;
+    expect(include.test("/app/page.mdx") && !exclude.test("/app/page.mdx")).toBe(true);
+    expect(include.test("./foo.ts")).toBe(false);
+    // Proxy config is inert when no MDX files are detected (mdxDelegate is null)
     expect(mdxProxy.config({}, { command: "build", mode: "production" })).toBeUndefined();
-    await expect(mdxProxy.transform("code", "./foo.ts", {})).resolves.toBeUndefined();
   });
 
-  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", async () => {
-    // @mdx-js/rollup strips the query before matching the file extension, so
-    // it would compile "foo.mdx?raw" as MDX and return compiled JSX instead of
-    // raw text. The proxy must short-circuit on any id that contains "?".
+  it("vinext:mdx filter skips ids that contain a query string (regression: ?raw)", () => {
+    // @mdx-js/rollup strips the query before matching the file extension, so it
+    // would compile "foo.mdx?raw" as MDX and return compiled JSX instead of raw
+    // text. The id filter must exclude any id with a "?" so the handler never
+    // runs for query imports.
     const plugins = vinext() as any[];
     const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
+    const { include, exclude } = mdxProxy.transform.filter.id;
+    const matches = (id: string) => include.test(id) && !exclude.test(id);
 
     // Common query-param import patterns that must be skipped
-    await expect(
-      mdxProxy.transform("# hello", "/app/content.mdx?raw", {}),
-    ).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).resolves.toBeUndefined();
-    await expect(
-      mdxProxy.transform("# hello", "/app/page.mdx?inline", {}),
-    ).resolves.toBeUndefined();
-    // Additional query variations
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?v=123", {})).resolves.toBeUndefined();
-    await expect(mdxProxy.transform("# hello", "/app/page.mdx?mdx", {})).resolves.toBeUndefined();
+    expect(matches("/app/content.mdx?raw")).toBe(false);
+    expect(matches("/app/page.mdx?url")).toBe(false);
+    expect(matches("/app/page.mdx?inline")).toBe(false);
+    expect(matches("/app/page.mdx?v=123")).toBe(false);
+    expect(matches("/app/page.mdx?mdx")).toBe(false);
     // Edge case: query value contains .mdx but isn't the extension
-    await expect(
-      mdxProxy.transform("# hello", "/app/page.mdx?something.mdx", {}),
-    ).resolves.toBeUndefined();
+    expect(matches("/app/page.mdx?something.mdx")).toBe(false);
+    // Plain .mdx still matches the filter
+    expect(matches("/app/page.mdx")).toBe(true);
   });
 
   it("vinext:mdx lazily compiles plain .mdx imports that were not pre-detected", async () => {
@@ -3025,7 +3028,8 @@ describe("Plugin config", () => {
         { command: "build", mode: "production" },
       );
 
-      const result = await mdxProxy.transform(
+      const result = await mdxProxy.transform.handler.call(
+        mdxProxy,
         `---
 title: "Second Post"
 ---

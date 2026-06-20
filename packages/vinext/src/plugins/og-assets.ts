@@ -102,7 +102,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         const boundary = await ownership.resolveModuleBoundary(id);
         if (boundary === null) return null;
         const { assetRoot, moduleDir } = boundary;
-        let newCode = code;
+        const s = new MagicString(code);
         let didReplace = false;
 
         // Read a file from disk and return its base64 encoding, using the build
@@ -163,7 +163,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
               `})()`,
             ].join("");
 
-            newCode = newCode.replaceAll(fullMatch, inlined);
+            s.overwrite(match.index, match.index + fullMatch.length, inlined);
             didReplace = true;
           }
         }
@@ -176,7 +176,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           const readFilePattern =
             /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
 
-          for (const match of newCode.matchAll(readFilePattern)) {
+          for (const match of code.matchAll(readFilePattern)) {
             const fullMatch = match[0];
             const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
             const absPath = path.resolve(moduleDir, relPath);
@@ -188,13 +188,13 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
             const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-            newCode = newCode.replaceAll(fullMatch, inlined);
+            s.overwrite(match.index, match.index + fullMatch.length, inlined);
             didReplace = true;
           }
         }
 
         if (!didReplace) return null;
-        return { code: newCode, map: null };
+        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
       },
     },
   } satisfies Plugin;

@@ -50,11 +50,6 @@ export function removeConsoleCalls(
 ): RemoveConsoleResult | null {
   if (config === false) return null;
 
-  const excluded =
-    typeof config === "object"
-      ? new Set(config.exclude.map((s) => s.toLowerCase()))
-      : new Set<string>();
-
   // Fast path: if there's no bare "console" reference, skip parsing.
   // This avoids the parse cost for the vast majority of modules.
   const consoleMatch = code.match(/\bconsole\b/);
@@ -67,6 +62,11 @@ export function removeConsoleCalls(
     // If parsing fails (shouldn't happen post-transform), bail out
     return null;
   }
+
+  const excluded =
+    typeof config === "object"
+      ? new Set(config.exclude.map((s) => s.toLowerCase()))
+      : new Set<string>();
 
   // Collect shadowing scopes: tracks whether there's a local binding named
   // "console" in the current or any parent scope. We do a simple top-down
