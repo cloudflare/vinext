@@ -101,8 +101,8 @@
     {
       "id": "rsc-entry-gzip",
       "suite": "Build",
-      "label": "RSC entry size (gzip)",
-      "description": "Gzip size of the vinext production RSC entry emitted at dist/server/index.js.",
+      "label": "RSC entry closure size (gzip)",
+      "description": "Total gzip size of the vinext production RSC entry and its eager static JavaScript imports.",
       "unit": "bytes",
       "lowerIsBetter": true,
       "implementations": [

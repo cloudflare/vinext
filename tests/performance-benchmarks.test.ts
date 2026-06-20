@@ -265,18 +265,23 @@ describe("paired performance benchmarks", () => {
     ).toThrow("Bundle output escapes the benchmark checkout");
   });
 
-  it("measures the RSC entry and complete server bundle separately", () => {
+  it("measures the eager RSC entry closure and complete server bundle separately", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-server-bundle-"));
     const serverDirectory = join(directory, "benchmarks/vinext/dist/server");
     const samplesPath = join(directory, "samples.jsonl");
-    const rscEntry = "export default function handler() { return 'rsc'; }";
+    const rscEntry =
+      "import './_next/static/shared.js'; export { value } from './_next/static/reexport.js'; import('./_next/static/lazy.js'); export default function handler() { return 'rsc'; }";
     const ssrEntry = "export function render() { return 'ssr'; }";
-    const sharedChunk = "export const shared = 'chunk';";
+    const sharedChunk = "import '../../index.js'; export const shared = 'chunk';";
+    const reexportedChunk = "export const value = 'reexported';";
+    const lazyChunk = "export const lazy = 'lazy';";
     mkdirSync(join(serverDirectory, "ssr"), { recursive: true });
     mkdirSync(join(serverDirectory, "_next/static"), { recursive: true });
     writeFileSync(join(serverDirectory, "index.js"), rscEntry);
     writeFileSync(join(serverDirectory, "ssr/index.js"), ssrEntry);
     writeFileSync(join(serverDirectory, "_next/static/shared.js"), sharedChunk);
+    writeFileSync(join(serverDirectory, "_next/static/reexport.js"), reexportedChunk);
+    writeFileSync(join(serverDirectory, "_next/static/lazy.js"), lazyChunk);
     writeFileSync(join(serverDirectory, "vinext-server.json"), "{}");
 
     const baseEnvironment = {
@@ -307,8 +312,12 @@ describe("paired performance benchmarks", () => {
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(samples.map((sample) => sample.value)).toEqual([
-      gzipSync(rscEntry).length,
-      gzipSync(rscEntry).length + gzipSync(ssrEntry).length + gzipSync(sharedChunk).length,
+      gzipSync(rscEntry).length + gzipSync(sharedChunk).length + gzipSync(reexportedChunk).length,
+      gzipSync(rscEntry).length +
+        gzipSync(ssrEntry).length +
+        gzipSync(sharedChunk).length +
+        gzipSync(reexportedChunk).length +
+        gzipSync(lazyChunk).length,
     ]);
   });
 

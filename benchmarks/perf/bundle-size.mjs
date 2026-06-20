@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
+import { parseAst } from "vite";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
 const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
@@ -109,6 +110,46 @@ async function gzipClientEntryClosure(clientOutputPath) {
   return { gzipBytes, fileCount: visited.size };
 }
 
+async function gzipStaticEntryClosure(entryPath) {
+  const outputDirectory = dirname(entryPath);
+  const resolvedOutputDirectory = await realpath(outputDirectory);
+  let gzipBytes = 0;
+  const visited = new Set();
+
+  async function visit(filePath) {
+    const output = await lstat(filePath);
+    if (!output.isFile() || output.isSymbolicLink()) {
+      throw new Error(`RSC entry output must be a regular file: ${filePath}`);
+    }
+    const resolvedFilePath = await realpath(filePath);
+    const outputRelativePath = relative(resolvedOutputDirectory, resolvedFilePath);
+    if (outputRelativePath.startsWith("..") || isAbsolute(outputRelativePath)) {
+      throw new Error(`RSC entry import escapes the output directory: ${filePath}`);
+    }
+    if (visited.has(resolvedFilePath)) return;
+    visited.add(resolvedFilePath);
+
+    const source = await readFile(resolvedFilePath, "utf8");
+    gzipBytes += gzipSync(source).length;
+    const ast = parseAst(source);
+    for (const statement of ast.body) {
+      if (
+        statement.type !== "ImportDeclaration" &&
+        statement.type !== "ExportAllDeclaration" &&
+        statement.type !== "ExportNamedDeclaration"
+      ) {
+        continue;
+      }
+      const specifier = statement.source?.value;
+      if (typeof specifier !== "string" || !specifier.startsWith(".")) continue;
+      await visit(resolve(dirname(filePath), specifier));
+    }
+  }
+
+  await visit(entryPath);
+  return { gzipBytes, fileCount: visited.size };
+}
+
 async function main() {
   const output = await lstat(outputPath).catch(() => null);
   if (output?.isSymbolicLink()) {
@@ -133,7 +174,7 @@ async function main() {
 
   const { gzipBytes, fileCount } =
     target === "rsc-entry"
-      ? { gzipBytes: gzipSync(await readFile(outputPath)).length, fileCount: 1 }
+      ? await gzipStaticEntryClosure(outputPath)
       : target === "client-entry"
         ? await gzipClientEntryClosure(outputPath)
         : await gzipBundleSize(outputPath);
