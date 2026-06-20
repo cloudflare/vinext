@@ -12,7 +12,7 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
 
   await fs.mkdir(targetNodeModules, { recursive: true });
   for (const entry of await fs.readdir(sourceNodeModules, { withFileTypes: true })) {
-    if (entry.name === ".vite-temp") continue;
+    if (entry.name === ".vite" || entry.name === ".vite-temp") continue;
 
     await fs.symlink(
       path.join(sourceNodeModules, entry.name),
