@@ -1416,6 +1416,9 @@ describe("app browser entry state helpers", () => {
       "layout:/": React.createElement("div", null, "layout"),
     });
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
       elements: previousElements,
     });
 
@@ -2556,7 +2559,10 @@ describe("app browser entry state helpers", () => {
   });
 
   it("preserves layoutFlags only for approved same-layout ancestors", async () => {
-    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
+    const state = createState({
+      bfcacheIds: { "layout:/": "0" },
+      layoutFlags: { "layout:/": "s", "layout:/old": "d" },
+    });
     const nextState = await applyApprovedTestCommit(state, {
       layoutFlags: { "layout:/blog": "d" },
       layoutIds: ["layout:/", "layout:/blog"],
@@ -4527,6 +4533,9 @@ describe("app browser entry previousNextUrl helpers", () => {
     const rootLayout = React.createElement("div", null, "root layout");
     const staleLayout = React.createElement("div", null, "stale layout");
     const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4585,6 +4594,72 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.layoutFlags).toEqual({
       "layout:/": "s",
     });
+  });
+
+  it("does not preserve skipped layouts when target bfcache ids mismatch", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+        },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          ["layout:/"],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+
+    const mismatchedCommit = {
+      ...approval.approvedCommit,
+      action: {
+        ...approval.approvedCommit.action,
+        bfcacheIds: {
+          ...approval.approvedCommit.action.bfcacheIds,
+          "layout:/": "_b_stale_",
+        },
+      },
+    };
+    const nextState = applyApprovedVisibleCommit(currentState, mismatchedCommit);
+
+    expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
+    expect(nextState.elements["page:/settings"]).toBeDefined();
+    expect(nextState.bfcacheIds["layout:/"]).toBe("_b_stale_");
   });
 
   it("does not preserve skipped layouts when current bfcache ids are stale", async () => {
@@ -4662,6 +4737,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/dashboard": "_b_4_",
+        [modalSlotId]: "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/dashboard",
         "/",
@@ -4767,6 +4847,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
@@ -4921,14 +5006,11 @@ describe("app browser entry previousNextUrl helpers", () => {
     }
     expect(approval.approvedCommit.action.bfcacheIds["layout:/feed"]).toBe("_b_4_");
 
-    // createPendingNavigationCommit pre-populates common layout ids today.
-    // Remove one to exercise reducer-level preservation for merged elements,
-    // and add a stale slot id to verify the merged element set bounds the map.
+    // Add a stale slot id to verify the merged element set bounds the map.
     const reducerBfcacheIdProbe = {
       ...approval.approvedCommit.action.bfcacheIds,
       [modalSlotId]: "_b_5_",
     };
-    delete reducerBfcacheIdProbe["layout:/feed"];
     const commitWithoutPreservedLayoutBfcacheId = {
       ...approval.approvedCommit,
       action: {
@@ -4936,9 +5018,7 @@ describe("app browser entry previousNextUrl helpers", () => {
         bfcacheIds: reducerBfcacheIdProbe,
       },
     };
-    expect(
-      Object.hasOwn(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds, "layout:/feed"),
-    ).toBe(false);
+    expect(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds["layout:/feed"]).toBe("_b_4_");
     expect(commitWithoutPreservedLayoutBfcacheId.action.bfcacheIds[modalSlotId]).toBe("_b_5_");
 
     const nextState = applyApprovedVisibleCommit(state, commitWithoutPreservedLayoutBfcacheId);
@@ -4957,6 +5037,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
@@ -5052,6 +5137,11 @@ describe("app browser entry previousNextUrl helpers", () => {
       state: "active",
     } satisfies AppElementsSlotBinding;
     const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        "layout:/feed": "_b_4_",
+        "slot:modal:/feed": "_b_5_",
+      },
       elements: createResolvedElements(
         "route:/feed",
         "/",
