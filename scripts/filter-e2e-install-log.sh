@@ -6,7 +6,7 @@ awk '
     in_lifecycle_script = 1
   }
 
-  in_lifecycle_script && /^$/ {
+  in_lifecycle_script && /^Done in .* using pnpm v[0-9]/ {
     in_lifecycle_script = 0
     print
     next
