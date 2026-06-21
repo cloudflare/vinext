@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { createBuilder, createServer } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -206,6 +207,25 @@ require(missing ?? request);
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
     expect(transformed).toContain("import(void 0)");
     expect(transformed).toContain("require(!0)");
+  });
+
+  it("does not evaluate side effects in void request expressions", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `let calls = 0;
+function sideEffect() { calls += 1; }
+try { require(void sideEffect()); } catch {}
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed).toContain("Cannot find module as expression is too dynamic");
+    expect(vm.runInNewContext(`${transformed}; calls`)).toBe(0);
+  });
+
+  it("resolves constant expressions in template interpolations", () => {
+    expect(
+      _transformVeryDynamicRequests("require(`${42}`); import(`${!0}`);", "/app/page.tsx"),
+    ).toBeNull();
   });
 
   it("preserves require calls shadowed by loop-header bindings", () => {

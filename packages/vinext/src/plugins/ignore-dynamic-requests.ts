@@ -98,18 +98,36 @@ function templateHasStaticPart(
   return nodeArray(node.expressions).some((expression) => {
     const expressionNode = unwrapExpression(expression);
     if (!expressionNode) return false;
-    const constantString = stringValue(expressionNode);
-    if (constantString !== null) return hasSignificantPathPart(constantString);
-    if (expressionNode.type !== "Identifier" || typeof expressionNode.name !== "string") {
-      return false;
-    }
-    if (resolvingBindings.has(expressionNode.name)) return false;
-    const binding = findConstantBinding(scope, expressionNode.name);
+    return requestHasStaticPart(expressionNode, scope, resolvingBindings);
+  });
+}
+
+function isStaticSafeExpression(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings = new Set<string>(),
+): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (node.type === "Literal" || node.type === "StringLiteral") return true;
+  if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return true;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return false;
+    const binding = findConstantBinding(scope, node.name);
     if (!binding) return false;
     const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(expressionNode.name);
-    return requestHasStaticPart(binding, scope, nextResolvingBindings);
-  });
+    nextResolvingBindings.add(node.name);
+    return isStaticSafeExpression(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "UnaryExpression") {
+    return isStaticSafeExpression(node.argument, scope, resolvingBindings);
+  }
+  if (node.type === "TemplateLiteral") {
+    return nodeArray(node.expressions).every((expression) =>
+      isStaticSafeExpression(expression, scope, resolvingBindings),
+    );
+  }
+  return false;
 }
 
 function staticTruthiness(
@@ -130,7 +148,9 @@ function staticTruthiness(
     return staticTruthiness(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
-    if (node.operator === "void") return false;
+    if (node.operator === "void") {
+      return isStaticSafeExpression(node.argument, scope, resolvingBindings) ? false : null;
+    }
     if (node.operator === "!") {
       const argumentTruthiness = staticTruthiness(node.argument, scope, resolvingBindings);
       return argumentTruthiness === null ? null : !argumentTruthiness;
@@ -165,7 +185,12 @@ function staticNullishness(
     nextResolvingBindings.add(node.name);
     return staticNullishness(binding, scope, nextResolvingBindings);
   }
-  if (node.type === "UnaryExpression") return node.operator === "void";
+  if (node.type === "UnaryExpression") {
+    return node.operator === "void" &&
+      isStaticSafeExpression(node.argument, scope, resolvingBindings)
+      ? true
+      : null;
+  }
   if (
     node.type === "ArrayExpression" ||
     node.type === "ObjectExpression" ||
@@ -211,7 +236,10 @@ function requestHasStaticPart(
     return requestHasStaticPart(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
-    if (node.operator === "void" || node.operator === "!") return true;
+    if (node.operator === "void") {
+      return isStaticSafeExpression(node.argument, scope, resolvingBindings);
+    }
+    if (node.operator === "!") return true;
     return staticTruthiness(node, scope, resolvingBindings) !== null;
   }
 
