@@ -2521,6 +2521,103 @@ describe("app browser entry state helpers", () => {
     expect(setBrowserRouterState).not.toHaveBeenCalled();
   });
 
+  it("does not let faster HMR reject a navigation that started while HMR was pending", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    let resolveHmrPayload!: (elements: AppElements) => void;
+    let resolveNavigationPayload!: (elements: AppElements) => void;
+    const hmrPayload = new Promise<AppElements>((resolve) => {
+      resolveHmrPayload = resolve;
+    });
+    const navigationPayload = new Promise<AppElements>((resolve) => {
+      resolveNavigationPayload = resolve;
+    });
+
+    try {
+      const hmrPromise = controller.hmrReplaceTree(
+        hmrPayload,
+        createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+      );
+      const navId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/navigation",
+          {},
+        ),
+        nextElements: navigationPayload,
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/navigation",
+        navId,
+      });
+
+      resolveHmrPayload(createResolvedElements("route:/hmr", "/"));
+      await hmrPromise;
+      expect(stateRef.current.routeId).toBe("route:/initial");
+
+      resolveNavigationPayload(createResolvedElements("route:/navigation", "/"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/navigation");
+      expect(stateRef.current.activeOperation).toMatchObject({
+        lane: "navigation",
+        state: "committed",
+      });
+    } finally {
+      detach();
+    }
+  });
+
+  it("hard-navigates when HMR changes the root layout boundary", async () => {
+    const performHardNavigation = vi.fn(() => true);
+    const currentState = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/marketing", {}),
+      rootLayoutTreePath: "/(marketing)",
+      routeId: "route:/marketing",
+    });
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness(
+      currentState,
+      {
+        getRouteManifest: () =>
+          createTestRouteManifest([
+            {
+              id: "route:/marketing",
+              layoutIds: [AppElementsWire.encodeLayoutId("/(marketing)")],
+              pattern: "/marketing",
+              rootBoundaryId: "root-boundary:/(marketing)",
+            },
+            {
+              id: "route:/marketing-hmr",
+              layoutIds: [AppElementsWire.encodeLayoutId("/(shop)")],
+              pattern: "/marketing",
+              rootBoundaryId: "root-boundary:/(shop)",
+            },
+          ]),
+        performHardNavigation,
+      },
+    );
+
+    try {
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/marketing-hmr", "/(shop)")),
+        currentState.navigationSnapshot,
+      );
+
+      expect(performHardNavigation).toHaveBeenCalledWith("/marketing");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+      expect(stateRef.current).toBe(currentState);
+    } finally {
+      detach();
+    }
+  });
+
   it("does not commit an older HMR payload after a newer HMR update starts", async () => {
     const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
     let resolveFirstHmrPayload!: (elements: AppElements) => void;

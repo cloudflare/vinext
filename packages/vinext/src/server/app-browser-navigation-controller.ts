@@ -330,6 +330,10 @@ export function createAppBrowserNavigationController(
   }
 
   function beginNavigation(): number {
+    // User navigation owns the next visible result. Revoke any HMR payload
+    // already suspended on RSC resolution so it cannot commit first and make
+    // the still-current navigation look stale by advancing visible state.
+    latestHmrUpdateId += 1;
     activeNavigationId += 1;
     return activeNavigationId;
   }
@@ -515,6 +519,8 @@ export function createAppBrowserNavigationController(
     });
     if (approval.approvedCommit) {
       dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    } else if (approval.decision.disposition === "hard-navigate") {
+      performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
     }
   }
 
