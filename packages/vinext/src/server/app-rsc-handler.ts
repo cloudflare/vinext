@@ -468,6 +468,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   request: Request,
   preMiddlewareRequestContext: RequestContext,
   isDataRequest: boolean,
+  isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
@@ -598,7 +599,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const middlewareResult = await options.runMiddleware({
       cleanPathname,
       context: middlewareContext,
-      isDataRequest,
+      isDataRequest: isMiddlewareDataRequest,
       request: userlandRequest,
     });
     if (middlewareResult.kind === "response") {
@@ -1107,10 +1108,6 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
-    // Capture `x-nextjs-data` before filtering — the middleware redirect
-    // protocol needs to know whether the inbound request was a `_next/data`
-    // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
-    const hasDataRequestHeader = rawRequest.headers.get("x-nextjs-data") === "1";
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
       !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);
@@ -1127,7 +1124,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     if (pagesDataNormalization?.notFoundResponse) {
       return pagesDataNormalization.notFoundResponse;
     }
-    const isDataRequest = hasDataRequestHeader || pagesDataNormalization?.isDataReq === true;
+    const isPagesDataRequest = pagesDataNormalization?.isDataReq === true;
     // Read the trusted prerender route params before filtering strips the
     // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
     // validated value below so the second read in handleAppRscRequest still sees
@@ -1182,7 +1179,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               options,
               request,
               preMiddlewareRequestContext,
-              isDataRequest,
+              isPagesDataRequest,
+              isPagesDataRequest,
               pagesDataRequest,
             );
           } catch (error) {

@@ -1442,6 +1442,10 @@ export function createSSRHandler(
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
+          if ((statusCode ?? 200) === 200) {
+            const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
+            dataHeaders["x-nextjs-matched-path"] = matchedPathname;
+          }
           if (gsspExtraHeaders) {
             for (const [k, v] of Object.entries(gsspExtraHeaders)) {
               dataHeaders[k] = v;

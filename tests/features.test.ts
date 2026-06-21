@@ -1409,6 +1409,18 @@ describe("i18n domain routing (Pages Router)", () => {
     );
   });
 
+  it("uses the dynamic route pattern for locale-prefixed data responses in dev", async () => {
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/_next/data/test-build-id/fr/posts/first.json",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-nextjs-matched-path"]).toBe("/fr/posts/[id]");
+    expect(JSON.parse(res.body)).toEqual({ pageProps: { id: "first" }, __N_SSP: true });
+  });
+
   // Issue #1336 item 3: locale prefix must be stripped before API route matching.
   //
   // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts

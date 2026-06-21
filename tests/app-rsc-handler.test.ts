@@ -616,6 +616,23 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-nextjs-redirect")).toBe("/docs/about");
   });
 
+  it("ignores forged data headers for App Router config redirects", async () => {
+    const handler = createHandler({
+      configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about");
+    expect(response.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+
   it("lets middleware redirect headers override earlier matching config headers", async () => {
     // Next.js route order reference:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
@@ -1499,6 +1516,7 @@ describe("createAppRscHandler", () => {
 
   it("normalizes hybrid Pages data requests before middleware", async () => {
     let middlewarePathname: string | null = null;
+    let middlewareIsData: boolean | undefined;
     let middlewareCf: unknown;
     let pagesDataCf: unknown;
     let pagesDataUrl: string | null = null;
@@ -1509,6 +1527,7 @@ describe("createAppRscHandler", () => {
       middlewareModule: {
         default: (request: Request) => {
           middlewarePathname = new URL(request.url).pathname;
+          middlewareIsData = (request as Request & { __isData?: boolean }).__isData;
           middlewareCf = (request as Request & { cf?: unknown }).cf;
           return new Response(null, { headers: { "x-middleware-next": "1" } });
         },
@@ -1529,6 +1548,7 @@ describe("createAppRscHandler", () => {
 
     expect(await response.text()).toBe("pages-data");
     expect(middlewarePathname).toBe("/docs/form-search");
+    expect(middlewareIsData).toBe(true);
     expect(middlewareCf).toBe(cf);
     expect(pagesDataCf).toBe(cf);
     expect(pagesDataUrl).toBe(
@@ -1540,6 +1560,28 @@ describe("createAppRscHandler", () => {
         pagesDataRequest: expect.any(Request),
       }),
     );
+  });
+
+  it("does not expose forged data headers to App Router middleware", async () => {
+    let middlewareIsData: boolean | undefined;
+    const handler = createHandler({
+      middlewareModule: {
+        default: (request: Request) => {
+          middlewareIsData = (request as Request & { __isData?: boolean }).__isData;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(middlewareIsData).toBeUndefined();
   });
 
   it("exposes the rewritten route on hybrid Pages data responses", async () => {
