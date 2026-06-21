@@ -281,6 +281,7 @@ export function createAppBrowserNavigationController(
   // and causing hooks to prefer stale snapshot values indefinitely.
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
+  let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<number, () => void>();
   const pendingNavigationFailureTargets = new Map<number, URL>();
   const pendingNavigationPrePaintEffects = new Map<number, BrowserNavigationCommitEffect>();
@@ -483,6 +484,7 @@ export function createAppBrowserNavigationController(
     nextElements: Promise<AppElements>,
     navigationSnapshot: ClientNavigationRenderSnapshot,
   ): Promise<void> {
+    const hmrUpdateId = ++latestHmrUpdateId;
     if (!hasBrowserRouterState()) return;
 
     const currentState = getBrowserRouterState();
@@ -496,6 +498,8 @@ export function createAppBrowserNavigationController(
       renderId,
       type: "replace",
     });
+
+    if (hmrUpdateId !== latestHmrUpdateId) return;
 
     // createPendingNavigationCommit awaits the new RSC payload. While
     // suspended, the prior broken render can unmount BrowserRoot. Re-check
