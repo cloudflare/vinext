@@ -158,6 +158,68 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("orders overlapping interception targets segment by segment", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/:name/static",
+              interceptLayouts: [],
+              page: "dynamic-prefix",
+              params: ["name"],
+            },
+            {
+              targetPattern: "/foo/:id",
+              interceptLayouts: [],
+              page: "static-prefix",
+              params: ["id"],
+            },
+            {
+              targetPattern: "/files/:slug*",
+              interceptLayouts: [],
+              page: "optional-catch-all",
+              params: ["slug"],
+            },
+            {
+              targetPattern: "/files/:slug+",
+              interceptLayouts: [],
+              page: "catch-all",
+              params: ["slug"],
+            },
+            {
+              targetPattern: "/files/:id",
+              interceptLayouts: [],
+              page: "dynamic",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/foo/static", "/")).toMatchObject({
+      targetPattern: "/foo/:id",
+      page: "static-prefix",
+      matchedParams: { id: "static" },
+    });
+    expect(matcher.findIntercept("/files/one", "/")).toMatchObject({
+      targetPattern: "/files/:id",
+      page: "dynamic",
+      matchedParams: { id: "one" },
+    });
+    expect(matcher.findIntercept("/files/one/two", "/")).toMatchObject({
+      targetPattern: "/files/:slug+",
+      page: "catch-all",
+      matchedParams: { slug: ["one", "two"] },
+    });
+    expect(matcher.findIntercept("/files", "/")).toMatchObject({
+      targetPattern: "/files/:slug*",
+      page: "optional-catch-all",
+      matchedParams: {},
+    });
+  });
+
   it("shares lazy intercept load state across fresh match objects", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed", ["feed"], {

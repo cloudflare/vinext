@@ -4,7 +4,7 @@ import {
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { sortRoutes, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { splitPathnameForRouteMatch } from "../routing/utils.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -201,6 +201,33 @@ function matchInterceptSource(sourceParts: string[], entry: AppRscInterceptLooku
   return matchRoutePatternPrefix(sourceParts, patternParts);
 }
 
+function interceptSegmentPrecedence(segment: string): number {
+  if (!segment.startsWith(":")) return 0;
+  if (segment.endsWith("*")) return 3;
+  if (segment.endsWith("+")) return 2;
+  return 1;
+}
+
+function compareInterceptTargetPatterns(
+  a: AppRscInterceptLookupEntry,
+  b: AppRscInterceptLookupEntry,
+): number {
+  const sharedLength = Math.min(a.targetPatternParts.length, b.targetPatternParts.length);
+  for (let index = 0; index < sharedLength; index++) {
+    const aSegment = a.targetPatternParts[index];
+    const bSegment = b.targetPatternParts[index];
+    const precedence = interceptSegmentPrecedence(aSegment) - interceptSegmentPrecedence(bSegment);
+    if (precedence !== 0) return precedence;
+
+    if (aSegment !== bSegment && !aSegment.startsWith(":") && !bSegment.startsWith(":")) {
+      return aSegment.localeCompare(bSegment);
+    }
+  }
+
+  const lengthDifference = a.targetPatternParts.length - b.targetPatternParts.length;
+  return lengthDifference !== 0 ? lengthDifference : a.targetPattern.localeCompare(b.targetPattern);
+}
+
 function createInterceptLookup<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): AppRscInterceptLookupEntry[] {
@@ -284,9 +311,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
       }
     }
   }
-  return sortRoutes(interceptLookup.map((entry) => ({ pattern: entry.targetPattern, entry }))).map(
-    ({ entry }) => entry,
-  );
+  return interceptLookup.sort(compareInterceptTargetPatterns);
 }
 
 export function matchAppRscRoutePattern(
