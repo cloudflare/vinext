@@ -144,6 +144,7 @@ export const VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOr
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  dynamicStaleTimeSeconds?: number;
   skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
@@ -175,10 +176,14 @@ function createOperationRecord(options: {
   };
 }
 
+export function isCompleteAppPayloadMetadata(metadata: CacheRestorableAppPayloadMetadata): boolean {
+  return metadata.skippedLayoutIds.length === 0;
+}
+
 export function isCacheRestorableAppPayloadMetadata(
   metadata: CacheRestorableAppPayloadMetadata,
 ): metadata is CacheRestorableAppPayloadMetadata & { cacheEntryReuseProof: CacheEntryReuseProof } {
-  return metadata.cacheEntryReuseProof !== undefined && metadata.skippedLayoutIds.length === 0;
+  return metadata.cacheEntryReuseProof !== undefined && isCompleteAppPayloadMetadata(metadata);
 }
 
 function requiresCacheEntryReuseProof(origin: AppNavigationPayloadOrigin): boolean {

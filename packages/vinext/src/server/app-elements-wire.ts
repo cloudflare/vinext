@@ -21,6 +21,7 @@ const APP_INTERCEPTION_SEPARATOR = "\0";
 
 export const APP_ARTIFACT_COMPATIBILITY_KEY = "__artifactCompatibility";
 export const APP_CACHE_ENTRY_REUSE_PROOF_KEY = "__cacheEntryReuseProof";
+export const APP_DYNAMIC_STALE_TIME_KEY = "__dynamicStaleTime";
 export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
@@ -192,6 +193,7 @@ export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
 type AppElementsMetadata = {
   artifactCompatibility: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  dynamicStaleTimeSeconds?: number;
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
@@ -211,6 +213,7 @@ type AppElementsWireElementKey =
   | { kind: "template"; treePath: string };
 
 type AppElementsWireMetadataInput = {
+  dynamicStaleTimeSeconds?: number;
   interception?: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds?: readonly string[];
@@ -221,6 +224,7 @@ type AppElementsWireMetadataInput = {
 };
 
 type AppElementsWireMetadataEntries = Readonly<{
+  [APP_DYNAMIC_STALE_TIME_KEY]?: number;
   [APP_ROUTE_KEY]: string;
   [APP_INTERCEPTION_KEY]?: AppElementsInterception;
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
@@ -245,6 +249,7 @@ export type AppOutgoingElements = Readonly<
     | CacheEntryReuseProof
     | AppElementsInterception
     | RenderObservation
+    | number
     | readonly string[]
     | readonly AppElementsSlotBinding[]
   >
@@ -253,6 +258,7 @@ export type AppOutgoingElements = Readonly<
 type AppElementsWireKeys = {
   readonly artifactCompatibility: typeof APP_ARTIFACT_COMPATIBILITY_KEY;
   readonly cacheEntryReuseProof: typeof APP_CACHE_ENTRY_REUSE_PROOF_KEY;
+  readonly dynamicStaleTime: typeof APP_DYNAMIC_STALE_TIME_KEY;
   readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
@@ -276,6 +282,7 @@ type AppElementsWireCodec = {
     element: ReactNode | AppElements;
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
+    dynamicStaleTimeSeconds?: number;
     layoutFlags: LayoutFlags;
     renderObservation?: RenderObservation;
     skipDisposition?: ClientReuseManifestSkipDisposition;
@@ -396,6 +403,9 @@ function createAppElementsWireMetadataEntries(
     [APP_INTERCEPTION_CONTEXT_KEY]: input.interceptionContext,
     [APP_LAYOUT_IDS_KEY]: layoutIds,
     [APP_ROOT_LAYOUT_KEY]: input.rootLayoutTreePath,
+    ...(input.dynamicStaleTimeSeconds === undefined
+      ? {}
+      : { [APP_DYNAMIC_STALE_TIME_KEY]: input.dynamicStaleTimeSeconds }),
     ...(input.sourcePage === null || input.sourcePage === undefined
       ? {}
       : { [APP_SOURCE_PAGE_KEY]: input.sourcePage }),
@@ -640,6 +650,7 @@ export function buildOutgoingAppPayload(input: {
   element: ReactNode | AppElements;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  dynamicStaleTimeSeconds?: number;
   layoutFlags: LayoutFlags;
   renderObservation?: RenderObservation;
   skipDisposition?: ClientReuseManifestSkipDisposition;
@@ -656,6 +667,7 @@ export function buildOutgoingAppPayload(input: {
     | CacheEntryReuseProof
     | AppElementsInterception
     | RenderObservation
+    | number
     | readonly string[]
     | readonly AppElementsSlotBinding[]
   > = {};
@@ -674,6 +686,9 @@ export function buildOutgoingAppPayload(input: {
     input.artifactCompatibility ?? createArtifactCompatibilityEnvelope();
   if (input.cacheEntryReuseProof) {
     payload[APP_CACHE_ENTRY_REUSE_PROOF_KEY] = input.cacheEntryReuseProof;
+  }
+  if (input.dynamicStaleTimeSeconds !== undefined) {
+    payload[APP_DYNAMIC_STALE_TIME_KEY] = input.dynamicStaleTimeSeconds;
   }
   if (input.renderObservation) {
     payload[APP_RENDER_OBSERVATION_KEY] = input.renderObservation;
@@ -823,11 +838,19 @@ export function readAppElementsMetadata(
   const cacheEntryReuseProof = parseCacheEntryReuseProofMetadata(
     elements[APP_CACHE_ENTRY_REUSE_PROOF_KEY],
   );
+  const dynamicStaleTime = elements[APP_DYNAMIC_STALE_TIME_KEY];
+  const dynamicStaleTimeSeconds =
+    typeof dynamicStaleTime === "number" &&
+    Number.isFinite(dynamicStaleTime) &&
+    dynamicStaleTime >= 0
+      ? dynamicStaleTime
+      : undefined;
   const sourcePage = readSourcePageMetadata(elements[APP_SOURCE_PAGE_KEY]);
 
   return {
     artifactCompatibility,
     ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
+    ...(dynamicStaleTimeSeconds === undefined ? {} : { dynamicStaleTimeSeconds }),
     interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
@@ -846,6 +869,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   keys: {
     artifactCompatibility: APP_ARTIFACT_COMPATIBILITY_KEY,
     cacheEntryReuseProof: APP_CACHE_ENTRY_REUSE_PROOF_KEY,
+    dynamicStaleTime: APP_DYNAMIC_STALE_TIME_KEY,
     interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,

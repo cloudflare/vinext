@@ -5,6 +5,7 @@ type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
 export type VisitedResponseCacheEntry = {
   createdAt: number;
   expiresAt: number;
+  mountedSlotsHeader: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
 };
@@ -13,7 +14,9 @@ export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 
 export function createVisitedResponseCacheEntry(options: {
+  fallbackTtlMs?: number;
   now: number;
+  mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
 }): VisitedResponseCacheEntry {
@@ -22,8 +25,9 @@ export function createVisitedResponseCacheEntry(options: {
     expiresAt: resolveCachedRscResponseExpiresAt(
       options.now,
       options.response,
-      VISITED_RESPONSE_CACHE_TTL,
+      options.fallbackTtlMs ?? VISITED_RESPONSE_CACHE_TTL,
     ),
+    mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
     response: options.response,
   };

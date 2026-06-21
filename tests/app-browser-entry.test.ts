@@ -88,6 +88,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
+  isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
@@ -1996,11 +1997,12 @@ describe("app browser entry state helpers", () => {
     ]);
   });
 
-  it("does not classify unproofed payload metadata as cache-restorable", () => {
+  it("classifies complete dynamic payload metadata as client-cacheable", () => {
     const elements = createResolvedElements("route:/dashboard/settings", "/", null, {
       "page:/dashboard/settings": React.createElement("main", null, "settings"),
     });
 
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(true);
     expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
@@ -2018,7 +2020,7 @@ describe("app browser entry state helpers", () => {
       [layoutId],
     );
 
-    expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
   it("traces unknown root-layout identity without preserving absent slots", async () => {

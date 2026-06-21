@@ -7,6 +7,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -144,11 +145,15 @@ export type AppPageSsrHandler = {
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      dynamicStaleTimeSeconds?: number;
+      getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
   ) => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
 };
 
 type RenderAppPageHtmlStreamOptions = {
+  dynamicStaleTimeSeconds?: number;
+  getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   fontData: AppPageFontData;
   formState?: ReactFormState | null;
   navigationContext: NavigationContext | null;
@@ -251,6 +256,8 @@ export async function renderAppPageHtmlStream(
     // global-error.tsx; undefined (unknown) keeps reject semantics.
     fallbackToErrorDocumentOnShellError:
       options.waitForAllReady !== true && options.hasCustomGlobalError === false,
+    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+    getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
 
   const rawResult = await options.ssrHandler.handleSsr(

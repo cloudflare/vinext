@@ -211,15 +211,21 @@ export const MAX_PREFETCH_CACHE_SIZE = 50;
  * has not set `experimental.staleTimes`, Next.js' 300s default applies
  * (see `resolveStaleTimes` in `config/next-config.ts`).
  */
-function resolvePrefetchCacheTtl(): number {
-  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
-  if (raw === undefined || raw === "") return 30_000;
+function resolveClientRouterStaleTime(raw: string | undefined, fallbackMs: number): number {
+  if (raw === undefined || raw === "") return fallbackMs;
   const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds < 0) return 30_000;
+  if (!Number.isFinite(seconds) || seconds < 0) return fallbackMs;
   return seconds * 1000;
 }
 
-export const PREFETCH_CACHE_TTL = resolvePrefetchCacheTtl();
+export const DYNAMIC_NAVIGATION_CACHE_TTL = resolveClientRouterStaleTime(
+  process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME,
+  30_000,
+);
+export const PREFETCH_CACHE_TTL = resolveClientRouterStaleTime(
+  process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME,
+  30_000,
+);
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
@@ -589,6 +595,34 @@ export function invalidatePrefetchCache(): void {
   if (!isServer) {
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
+}
+
+export function seedPrefetchResponseSnapshot(
+  rscUrl: string,
+  snapshot: CachedRscResponse,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+  fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+): void {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const existing = cache.get(cacheKey);
+  if (existing) {
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, existing, false);
+  }
+  evictPrefetchCacheIfNeeded();
+  const timestamp = Date.now();
+  const entry: PrefetchCacheEntry = {
+    cacheForNavigation: true,
+    expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
+    mountedSlotsHeader,
+    outcome: "cache-seeded",
+    snapshot,
+    timestamp,
+  };
+  cache.set(cacheKey, entry);
+  getPrefetchedUrls().add(cacheKey);
+  schedulePrefetchInvalidation(cacheKey, entry);
 }
 
 /**

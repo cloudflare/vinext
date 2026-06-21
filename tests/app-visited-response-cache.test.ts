@@ -23,11 +23,13 @@ describe("visited response cache freshness", () => {
     const now = 1_000_000;
     const entry = createVisitedResponseCacheEntry({
       now,
+      mountedSlotsHeader: "slot:source",
       params: {},
       response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
     });
 
     expect(entry.expiresAt).toBe(now + 10_000);
+    expect(entry.mountedSlotsHeader).toBe("slot:source");
     expect(
       isVisitedResponseCacheEntryFresh(entry, {
         navigationKind: "navigate",
@@ -51,6 +53,21 @@ describe("visited response cache freshness", () => {
     });
 
     expect(entry.expiresAt).toBe(now + VISITED_RESPONSE_CACHE_TTL);
+  });
+
+  it("uses the configured dynamic fallback without server metadata", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: {},
+      response: createCachedResponse(),
+    });
+
+    expect(entry.expiresAt).toBe(now);
+    expect(isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now })).toBe(
+      false,
+    );
   });
 
   it("keeps traversal restores independent from dynamic stale expiry", () => {
