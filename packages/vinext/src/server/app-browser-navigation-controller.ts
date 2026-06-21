@@ -503,7 +503,14 @@ export function createAppBrowserNavigationController(
     // initialized-setter error.
     if (!hasBrowserRouterState()) return;
 
-    dispatchSynchronousVisibleCommit(approveHmrVisibleCommit(pending));
+    dispatchSynchronousVisibleCommit(
+      approveHmrVisibleCommit({
+        currentState,
+        pending,
+        routeManifest: deps.getRouteManifest?.() ?? null,
+        targetHref: createSnapshotPathAndSearch(navigationSnapshot),
+      }),
+    );
   }
 
   function NavigationCommitSignal(

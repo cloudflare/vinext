@@ -937,6 +937,70 @@ describe("app page route wiring helpers", () => {
     expect(provider?.props.segmentMap).toEqual({ children: [], modal: ["foo", "1"] });
   });
 
+  it("uses intercepted override segments for named slot reset boundaries", async () => {
+    function SlotError() {
+      return createElement("div", null, "slot error");
+    }
+
+    const buildInterceptedElements = (params: { username: string; id: string }) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(value) {
+          return Promise.resolve(value);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: [],
+          slots: {
+            modal: {
+              default: null,
+              error: { default: SlotError },
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "modal",
+              page: null,
+              routeSegments: null,
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/interception-dyn-seg",
+        rootNotFoundModule: null,
+        slotOverrides: {
+          modal: {
+            pageModule: { default: SlotPage },
+            params,
+            routeSegments: ["[username]", "[id]"],
+          },
+        },
+      });
+
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/");
+    const fooBoundary = findElementByTypeName(
+      buildInterceptedElements({ username: "foo", id: "1" })[modalSlotId],
+      "ErrorBoundary",
+    );
+    const barBoundary = findElementByTypeName(
+      buildInterceptedElements({ username: "bar", id: "2" })[modalSlotId],
+      "ErrorBoundary",
+    );
+
+    expect(fooBoundary?.props.resetKey).toBe(JSON.stringify(["username|foo|d", "id|1|d"]));
+    expect(barBoundary?.props.resetKey).toBe(JSON.stringify(["username|bar|d", "id|2|d"]));
+    expect(barBoundary?.props.resetKey).not.toBe(fooBoundary?.props.resetKey);
+  });
+
   it("wraps intercepted slot overrides with intercept layout modules inside the slot layout", async () => {
     const sidebarOverride: AppPageSlotOverride<AppPageModule> = {
       layoutModules: [{ default: InterceptOuterLayout }, { default: InterceptInnerLayout }],

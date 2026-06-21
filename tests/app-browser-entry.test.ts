@@ -2367,7 +2367,12 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    const approvedCommit = approveHmrVisibleCommit(pending);
+    const approvedCommit = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/hmr",
+    });
     expect(approvedCommit.decision.trace.entries[0]).toEqual({
       code: NavigationTraceTransactionCodes.visibleCommit,
       fields: {
@@ -2398,9 +2403,83 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    expect(() => approveHmrVisibleCommit(pending)).toThrow(
-      "[vinext] HMR visible commit approval requires an HMR pending operation",
-    );
+    expect(() =>
+      approveHmrVisibleCommit({
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        targetHref: "https://example.com/dashboard",
+      }),
+    ).toThrow("[vinext] HMR visible commit approval requires an HMR pending operation");
+  });
+
+  it("preserves planner-approved named slot state across HMR replacement", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
+    const currentSlot = React.createElement("aside", null, "reset");
+    const currentBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "active" as const,
+      },
+    ];
+    const targetBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      elements: createResolvedElements(
+        "route:/parallel-selected-segment/foo",
+        "/",
+        null,
+        { [authSlotId]: currentSlot },
+        [rootLayoutId],
+        currentBindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/foo",
+        {},
+      ),
+      routeId: "route:/parallel-selected-segment/foo",
+      slotBindings: currentBindings,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/parallel-selected-segment/foo",
+          "/",
+          null,
+          { [authSlotId]: React.createElement("aside", null, "default") },
+          [rootLayoutId],
+          targetBindings,
+        ),
+      ),
+      navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "hmr",
+      renderId: 15,
+      type: "replace",
+    });
+
+    const approvedCommit = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/parallel-selected-segment/foo",
+    });
+    expect(approvedCommit.decision.preservePreviousSlotIds).toEqual([authSlotId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
+    expect(nextState.elements[authSlotId]).toBe(currentSlot);
+    expect(nextState.slotBindings).toEqual(currentBindings);
   });
 
   it("does not preserve unapproved old elements on navigation replace commits", async () => {

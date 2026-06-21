@@ -2,6 +2,8 @@
 // test/e2e/app-dir/parallel-routes-use-selected-layout-segment/parallel-routes-use-selected-layout-segment.test.ts
 // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-use-selected-layout-segment/parallel-routes-use-selected-layout-segment.test.ts
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
@@ -65,6 +67,29 @@ test.describe("parallel routes useSelectedLayoutSegment", () => {
 
     await page.locator("#replace-foo").click();
     await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
+  });
+
+  test("HMR preserves the named slot selected before navigating to children", async ({ page }) => {
+    const pagePath = path.resolve(
+      process.cwd(),
+      "tests/fixtures/app-basic/app/parallel-selected-segment/foo/page.tsx",
+    );
+    const original = await fs.readFile(pagePath, "utf8");
+
+    try {
+      await page.goto(BASE);
+      await waitForAppRouterHydration(page);
+      await page.locator('a[href="/parallel-selected-segment/reset"]').click();
+      await page.locator('a[href="/parallel-selected-segment/foo"]').click();
+      await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
+
+      await fs.writeFile(pagePath, original.replace("foo/page.tsx", "foo/page.tsx hmr"));
+
+      await expect(page.locator("#children")).toContainText("foo/page.tsx hmr");
+      await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
+    } finally {
+      await fs.writeFile(pagePath, original);
+    }
   });
 
   test("hard nav to a named slot renders default children", async ({ page }) => {

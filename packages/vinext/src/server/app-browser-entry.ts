@@ -2386,7 +2386,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       // Interception context on HMR re-renders is intentionally deferred:
       // preserving intercepted modal state across HMR reloads is out of scope
       // for the previousNextUrl mechanism.
-      const hmrHeaders = createRscRequestHeaders();
+      const hmrHeaders = createRscRequestHeaders({
+        mountedSlotsHeader: getMountedSlotIdsHeader(
+          browserNavigationController.getBrowserRouterState().elements,
+        ),
+      });
       await browserNavigationController.hmrReplaceTree(
         decodeAppElementsPromise(
           createFromFetch<AppWireElements>(

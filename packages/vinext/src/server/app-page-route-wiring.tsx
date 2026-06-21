@@ -755,7 +755,7 @@ export function buildAppPageElements<
     const slotId = resolveAppPageSlotId(slot, treePath);
     const slotOverride = resolveSlotOverride(slotKey, slotName);
     const slotParams = getEffectiveSlotParams(slotKey, slotName);
-    const slotRouteSegments = slot.routeSegments ?? [];
+    const slotRouteSegments = slotOverride?.routeSegments ?? slot.routeSegments ?? [];
     const slotResetKey = resolveAppPageRouteStateKey(slotRouteSegments, slotParams);
     const overrideOrPageComponent =
       getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
