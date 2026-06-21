@@ -421,8 +421,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production" && submitter?.getAttribute("formaction") !== null) {
       checkFormActionUrl(effectiveAction, "formAction");
     }
-    e.preventDefault();
     const url = createFormSubmitDestinationUrl(effectiveAction, e.currentTarget, submitter);
+    e.preventDefault();
 
     // Navigate client-side
     if (hasAppNavigationRuntime()) {
@@ -443,25 +443,20 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
         try {
           const routerModule = await import("./router.js");
           Router = routerModule.default;
-        } catch {
-          // Fallback: pushState + popstate keeps the URL in sync even if the
-          // Router singleton import fails (e.g. in test/SSR-only contexts).
           if (replace) {
-            window.history.replaceState({}, "", url);
+            await Router.replace(url, undefined, { scroll });
           } else {
-            window.history.pushState({}, "", url);
+            await Router.push(url, undefined, { scroll });
           }
-          window.dispatchEvent(new PopStateEvent("popstate"));
-          if (scroll) {
-            window.scrollTo(0, 0);
+        } catch {
+          // If the Pages Router cannot load or initialize navigation, use a
+          // real document navigation rather than publishing a stale URL via
+          // history alone.
+          if (replace) {
+            window.location.replace(url);
+          } else {
+            window.location.assign(url);
           }
-          return;
-        }
-
-        if (replace) {
-          await Router.replace(url, undefined, { scroll });
-        } else {
-          await Router.push(url, undefined, { scroll });
         }
       })();
     }

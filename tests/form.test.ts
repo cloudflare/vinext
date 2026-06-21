@@ -209,6 +209,7 @@ function installClientGlobals({ supportsSubmitter }: { supportsSubmitter: boolea
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.doUnmock("../packages/vinext/src/shims/router.js");
 });
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
@@ -625,12 +626,16 @@ describe("Form Pages Router soft navigation", () => {
   function createPagesWindowStub() {
     const pushState = vi.fn();
     const replaceState = vi.fn();
+    const assign = vi.fn();
+    const replace = vi.fn();
     const scrollTo = vi.fn();
     const dispatched: Event[] = [];
 
     return {
       pushState,
       replaceState,
+      assign,
+      replace,
       scrollTo,
       dispatched,
       window: {
@@ -647,6 +652,8 @@ describe("Form Pages Router soft navigation", () => {
           search: "",
           hash: "",
           hostname: "localhost",
+          assign,
+          replace,
         },
         scrollTo,
         scrollX: 0,
@@ -675,15 +682,47 @@ describe("Form Pages Router soft navigation", () => {
     // Regression for #1355: without interception, the browser would submit
     // the form and trigger a full page reload (`didMpaNavigate` -> true).
     // Calling preventDefault is the only thing that can stop that.
-    const { pushState } = installPagesGlobals();
+    const push = vi.fn(async () => true);
+    vi.doMock("../packages/vinext/src/shims/router.js", () => ({
+      default: { push, replace: vi.fn(async () => true) },
+    }));
+    installPagesGlobals();
     const { onSubmit } = renderClientForm({ action: "/results" });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
     onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(pushState).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(push).toHaveBeenCalledOnce());
   });
+
+  for (const replace of [false, true]) {
+    it(`hard-navigates with location.${replace ? "replace" : "assign"} when Pages Router navigation fails`, async () => {
+      const routerMethod = vi.fn(async () => {
+        throw new Error("forced Pages Router setup failure");
+      });
+      vi.doMock("../packages/vinext/src/shims/router.js", () => ({
+        default: {
+          push: replace ? vi.fn(async () => true) : routerMethod,
+          replace: replace ? routerMethod : vi.fn(async () => true),
+        },
+      }));
+      const { assign, replace: replaceLocation, pushState, replaceState } = installPagesGlobals();
+      const { onSubmit } = renderClientForm({ action: "/results", replace });
+      const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+      onSubmit(event);
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(replace ? replaceLocation : assign).toHaveBeenCalledWith(
+          "http://localhost:3000/results?q=react",
+        ),
+      );
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+  }
 
   it("does not call preventDefault when submitter overrides method to POST", async () => {
     // POST forms (e.g. server actions) must not be intercepted by the Form's
@@ -700,6 +739,28 @@ describe("Form Pages Router soft navigation", () => {
 
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  for (const [name, action, submitter] of [
+    ["form action", "http://[", null],
+    [
+      "submitter formAction override",
+      "/results",
+      new FakeButtonElement({ attributes: { formaction: "http://[" } }),
+    ],
+  ] as const) {
+    it(`retains native fallback when a malformed ${name} cannot construct a destination`, () => {
+      const { assign, replace, pushState, replaceState } = installPagesGlobals();
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+      expect(() => onSubmit(event)).toThrow();
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(assign).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+  }
 
   for (const [name, action, submitter] of [
     ["form action", "data:text/html,dangerous", null],
