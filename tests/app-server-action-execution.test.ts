@@ -8,6 +8,7 @@ import {
   readActionFormDataWithLimit,
   type HandleProgressiveServerActionRequestOptions,
 } from "../packages/vinext/src/server/app-server-action-execution.js";
+import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
 import {
   createServerActionNotFoundResponse,
   throwOnServerActionNotFound,
@@ -295,6 +296,33 @@ function createRscOptions(
 }
 
 describe("app server action execution helpers", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside progressive server actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => getRootParam("lang");
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "form-state", actionFailed: true });
+    expect(result && "actionError" in result ? result.actionError : null).toMatchObject({
+      name: "Error",
+      message:
+        "`import('next/root-params').lang()` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.",
+    });
+    errorSpy.mockRestore();
+  });
+
   it("reads streamed action text bodies and enforces the byte limit", async () => {
     const validRequest = new Request("https://example.com/action", {
       method: "POST",
@@ -1154,6 +1182,84 @@ describe("app server action execution helpers", () => {
     expect(navigationContexts).toEqual([{ params: {}, pathname: "/dashboard" }]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside fetch server actions", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        decodeReply() {
+          return Promise.resolve([]);
+        },
+        loadServerAction() {
+          return Promise.resolve(() => getRootParam("lang"));
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    errorSpy.mockRestore();
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("allows root params during the rerender after a successful fetch action", async () => {
+    let pageParam!: Promise<string | string[] | undefined>;
+    let metadataParam!: Promise<string | string[] | undefined>;
+    const buildPageElement = vi.fn(() => {
+      pageParam = getRootParam("lang");
+      metadataParam = getRootParam("lang");
+      return "rerendered-page";
+    });
+    const renderToReadableStream = vi.fn(
+      (model: TestActionModel) => new Response(JSON.stringify(model)).body,
+    );
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await revalidatePath("/dashboard");
+              return "updated";
+            });
+          },
+          renderToReadableStream,
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    await expect(pageParam).resolves.toBe("en");
+    await expect(metadataParam).resolves.toBe("en");
+    expect(JSON.parse(await response!.text())).toEqual({
+      root: "rerendered-page",
+      returnValue: { ok: true, data: "updated" },
+    });
+  });
+
+  it("allows deferred post-action render work to read root params", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = Promise.resolve().then(() => getRootParam("lang"));
+              return "updated";
+            });
+          },
+        }),
+      ),
+    );
+
+    await expect(deferredRead).resolves.toBe("en");
+  });
+
   it("skips page rerendering for fetch actions that do not revalidate", async () => {
     const buildPageElement = vi.fn(() => "dashboard:{}:none");
     const setNavigationContext = vi.fn();
@@ -1667,10 +1773,11 @@ describe("app server action execution helpers", () => {
         }),
       );
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
       expect(renderedModel).toEqual({
+        root: "dashboard:{}:none",
         returnValue: {
           ok: false,
           data: "Server Action arguments list is too long (1001). Maximum allowed is 1000.",

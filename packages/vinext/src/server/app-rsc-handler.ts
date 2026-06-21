@@ -58,6 +58,7 @@ import { notFoundResponse } from "./http-error-responses.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { parseNextHttpErrorDigest } from "./next-error-digest.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -754,6 +755,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : null;
   const actionFailed = failedProgressiveActionResult !== null;
   const actionError = failedProgressiveActionResult?.actionError;
+  const actionErrorDigest =
+    actionError && typeof actionError === "object" && "digest" in actionError
+      ? String(actionError.digest)
+      : null;
+  if (
+    actionFailed &&
+    middlewareContext.status === null &&
+    (!actionErrorDigest || parseNextHttpErrorDigest(actionErrorDigest) === null)
+  ) {
+    middlewareContext.status = 500;
+  }
 
   const serverActionResponse =
     isPostRequest && actionId && options.handleServerActionRequest

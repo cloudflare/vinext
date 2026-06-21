@@ -15,6 +15,7 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../config/config-matchers.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -854,7 +855,7 @@ export async function handleProgressiveServerActionRequest(
     let actionResult: unknown;
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
-      actionResult = await action();
+      actionResult = await runWithRootParamsUsage({ kind: "server-action" }, action);
     } catch (error) {
       actionRedirect = getActionRedirect(error);
       if (!actionRedirect) {
@@ -1160,7 +1161,9 @@ export async function handleServerActionRscRequest<
     try {
       try {
         validateServerActionArgs(args);
-        const data = await action.apply(null, args);
+        const data = await runWithRootParamsUsage({ kind: "server-action" }, () =>
+          action.apply(null, args),
+        );
         returnValue = { ok: true, data };
       } catch (error) {
         actionRedirect = getActionRedirect(error);
@@ -1172,6 +1175,7 @@ export async function handleServerActionRscRequest<
             actionStatus = httpFallbackStatus;
             returnValue = { ok: false, data: error };
           } else {
+            actionStatus = 500;
             console.error("[vinext] Server action error:", error);
             returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
           }

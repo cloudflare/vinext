@@ -11,9 +11,23 @@ export type RootParamsState = {
   rootParams: RootParams | null;
 };
 
+export type RootParamsUsage =
+  | { kind: "route" }
+  | { kind: "server-action" }
+  | { kind: "route-handler"; routePattern: string };
+
+type RootParamsUsageState = RootParamsUsage & {
+  phase: "active" | "render" | "inactive";
+};
+
+function createRootParamsUsageError(message: string): Error {
+  return new Error(message);
+}
+
 const _FALLBACK_KEY = Symbol.for("vinext.rootParams.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = getOrCreateAls<RootParamsState>("vinext.rootParams.als");
+const _usageAls = getOrCreateAls<RootParamsUsageState>("vinext.rootParams.usage.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   rootParams: null,
@@ -42,7 +56,45 @@ export function setRootParams(params: RootParams | null): void {
 }
 
 export function getRootParam(name: string): Promise<string | string[] | undefined> {
+  const usage = _usageAls.getStore();
+  if (usage?.kind === "server-action" && usage.phase === "active") {
+    throw createRootParamsUsageError(
+      `\`import('next/root-params').${name}()\` was used inside a Server Action. This is not supported. Functions from 'next/root-params' can only be called in the context of a route.`,
+    );
+  }
+  if (usage?.kind === "route-handler" && usage.phase === "active") {
+    throw createRootParamsUsageError(
+      `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
+    );
+  }
   return Promise.resolve(getState().rootParams?.[name]);
+}
+
+export function runWithRootParamsUsage<T>(usage: RootParamsUsage, fn: () => Promise<T>): Promise<T>;
+export function runWithRootParamsUsage<T>(
+  usage: RootParamsUsage,
+  fn: () => T | Promise<T>,
+): T | Promise<T>;
+export function runWithRootParamsUsage<T>(
+  usage: RootParamsUsage,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
+  const state: RootParamsUsageState = { ...usage, phase: "active" };
+  return _usageAls.run(state, () => {
+    try {
+      const result = fn();
+      if (result && typeof (result as PromiseLike<T>).then === "function") {
+        return Promise.resolve(result).finally(() => {
+          state.phase = usage.kind === "server-action" ? "render" : "inactive";
+        });
+      }
+      state.phase = usage.kind === "server-action" ? "render" : "inactive";
+      return result;
+    } catch (error) {
+      state.phase = usage.kind === "server-action" ? "render" : "inactive";
+      throw error;
+    }
+  });
 }
 
 export function runWithRootParamsScope<T>(params: RootParams, fn: () => Promise<T>): Promise<T>;
