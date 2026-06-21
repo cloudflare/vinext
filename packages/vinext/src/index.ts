@@ -1407,6 +1407,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // Let shared client shims compile out Pages-only behavior in pure App
+        // Router builds while retaining it for Pages and hybrid applications.
+        defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
         // Expose experimental.staleTimes.static to client-side code so the
         // App Router prefetch cache can honor the configured freshness window.
         // Value is in seconds; matches Next.js' `define-env.ts` plumbing.

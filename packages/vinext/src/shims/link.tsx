@@ -92,6 +92,8 @@ type NavigateEvent = {
   defaultPrevented: boolean;
 };
 
+const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+
 type LinkProps = {
   href: string | { pathname?: string; query?: UrlQuery };
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
@@ -198,6 +200,7 @@ function resolveHref(href: LinkProps["href"]): string {
 }
 
 function resolvePagesQueryOnlyHref(href: string): string {
+  if (!HAS_PAGES_ROUTER) return href;
   if (!href.startsWith("?") || typeof window === "undefined") return href;
 
   const pagesRouter = window.next?.appDir === true ? undefined : window.next?.router;
@@ -529,7 +532,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
-      } else if (window.__NEXT_DATA__) {
+      } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {
         // Pages Router prefetch. When a code-split loader is registered for
         // the target route (prod builds expose them on window via the
         // generated client entry), prefetch the data JSON + warm the page
@@ -838,7 +841,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
   // shared/lib/router/router.ts around L987).
   const rawResolvedHref = as ?? resolveHref(href);
-  const concreteRouteHref = resolveConcreteRouteHref(href, as);
+  const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, as) : null;
   const routeHrefRaw = concreteRouteHref ?? (typeof href === "string" ? href : resolveHref(href));
 
   // Mirror Next.js: emit a console.error when the href contains repeated
@@ -1034,9 +1037,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     e.preventDefault();
 
     const hasAppNavigationRuntime = Boolean(getNavigationRuntime()?.functions.navigate);
-    const pagesNavigateHref = resolvedHref.startsWith("?")
-      ? resolvePagesLinkNavigationHref(resolvedHref, locale)
-      : navigateHref;
+    const pagesNavigateHref =
+      HAS_PAGES_ROUTER && resolvedHref.startsWith("?")
+        ? resolvePagesLinkNavigationHref(resolvedHref, locale)
+        : navigateHref;
     // When the Link author passed both `href` (route pattern) AND `as` (mask),
     // forward the original route-pattern href to Pages Router as the `url`
     // argument. The router uses `url` to fetch the page module / data, while
@@ -1044,7 +1048,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // semantics. When no mask is present, leave `pagesAsForLink` undefined so
     // existing single-arg navigation (the dominant code path) is unaffected.
     const pagesAsForLink =
-      typeof as === "string" && typeof routeHrefRaw === "string" && as !== routeHrefRaw
+      HAS_PAGES_ROUTER &&
+      typeof as === "string" &&
+      typeof routeHrefRaw === "string" &&
+      as !== routeHrefRaw
         ? pagesNavigateHref
         : undefined;
     const pagesHrefForLink = pagesAsForLink === undefined ? pagesNavigateHref : routeHrefRaw;
@@ -1095,6 +1102,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
     if (
+      HAS_PAGES_ROUTER &&
       hasAppNavigationRuntime &&
       ["pages", "document"].includes(resolveHybridClientRouteOwner(navigateHref, __basePath) ?? "")
     ) {
@@ -1124,7 +1132,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         );
       });
       return;
-    } else {
+    } else if (HAS_PAGES_ROUTER) {
       // Next.js only consumes onRouterTransitionStart in the App Router.
       // Pages Router still executes instrumentation-client side effects
       // during startup, but it does not invoke the named export on navigation.
@@ -1152,6 +1160,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           window.dispatchEvent(new PopStateEvent("popstate"));
         },
       });
+    } else if (replace) {
+      window.location.replace(absoluteFullHref);
+    } else {
+      window.location.assign(absoluteFullHref);
     }
   };
 
