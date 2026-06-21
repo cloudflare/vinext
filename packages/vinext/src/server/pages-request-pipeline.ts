@@ -101,6 +101,7 @@ export type PagesPipelineDeps = {
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
+  hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
@@ -697,7 +698,7 @@ export async function runPagesRequest(
     const matchedPathHeaders = { ...middlewareHeaders };
     if (
       (isDataReq || isDataRequest) &&
-      typeof deps.runMiddleware === "function" &&
+      deps.hasMiddleware &&
       !renderPageMatch &&
       response.status === 404 &&
       (middlewareStatus === undefined || middlewareStatus === 200 || middlewareStatus === 404)

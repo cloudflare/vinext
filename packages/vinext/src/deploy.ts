@@ -562,7 +562,7 @@ import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix
 import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, normalizeDataRequest, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, normalizeDataRequest, vinextConfig, matchPageRoute, hasMiddleware } from "virtual:vinext-server-entry";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 
@@ -687,6 +687,7 @@ export default {
         hadBasePath,
         isDataReq,
         isDataRequest: isDataReq,
+        hasMiddleware,
         ctx,
         matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that

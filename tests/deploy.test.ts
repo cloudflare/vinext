@@ -887,6 +887,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
+    expect(content).toContain("hasMiddleware,");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 

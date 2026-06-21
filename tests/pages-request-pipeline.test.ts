@@ -24,6 +24,7 @@ function baseDeps(overrides?: Partial<PagesPipelineDeps>): PagesPipelineDeps {
     hadBasePath: true,
     isDataReq: false,
     isDataRequest: false,
+    hasMiddleware: false,
     ...overrides,
   };
 }
@@ -223,6 +224,7 @@ describe("middleware", () => {
       baseDeps({
         isDataReq: true,
         isDataRequest: true,
+        hasMiddleware: true,
         runMiddleware: makeMiddleware({ continue: true }),
         matchPageRoute: vi.fn().mockReturnValue(null),
         renderPage: makeRenderPage(404, "not found"),
@@ -237,12 +239,14 @@ describe("middleware", () => {
     expect(await result.response.text()).toBe("{}");
   });
 
-  it("keeps data misses as JSON 404 without middleware", async () => {
+  it("keeps data misses as JSON 404 when generated wiring provides a no-op middleware", async () => {
     const result = await runPagesRequest(
       makeRequest("/unknown"),
       baseDeps({
         isDataReq: true,
         isDataRequest: true,
+        hasMiddleware: false,
+        runMiddleware: makeMiddleware({ continue: true }),
         matchPageRoute: vi.fn().mockReturnValue(null),
         renderPage: makeRenderPage(404, "{}"),
       }),

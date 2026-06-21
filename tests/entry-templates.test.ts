@@ -995,6 +995,7 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).toContain("export const hasMiddleware = true");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1020,6 +1021,7 @@ describe("Pages Router entry template", () => {
         null,
       );
 
+      expect(code).toContain("export const hasMiddleware = false");
       const globalsImportIndex = code.indexOf("/server-globals.js");
       const firstUserImportIndex = code.indexOf(
         `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
