@@ -2100,10 +2100,11 @@ describe("Pages Router integration", () => {
       expect(res.headers.get("x-custom-middleware")).toBe("active");
     });
 
-    it("returns 404 JSON for an unknown page", async () => {
+    it("returns the middleware data-miss protocol for an unknown page", async () => {
       const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       // Body must still be valid JSON so naive clients calling `.json()` do
       // not throw before checking the status code.
       expect(await res.json()).toEqual({});
@@ -2168,15 +2169,16 @@ describe("Pages Router integration", () => {
         });
       });
 
-      it("sets the header on the route-miss JSON 404", async () => {
+      it("sets deployment and matched-path headers on the route-miss response", async () => {
         // Exercises createSSRHandler's `!match` data exit (dev-server.ts):
         // the page was removed under a new deployment, so a stale client's
         // data fetch must still see the header to hard-navigate.
         await withDeploymentId(async () => {
           const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-          expect(res.status).toBe(404);
+          expect(res.status).toBe(200);
           expect(res.headers.get("content-type")).toContain("application/json");
           expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+          expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
           expect(await res.json()).toEqual({});
         });
       });
@@ -2213,8 +2215,9 @@ describe("Pages Router integration", () => {
         expect(staleRes.headers.get("x-nextjs-deployment-id")).toBeNull();
 
         const missRes = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-        expect(missRes.status).toBe(404);
+        expect(missRes.status).toBe(200);
         expect(missRes.headers.get("x-nextjs-deployment-id")).toBeNull();
+        expect(missRes.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
 
         const okRes = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
         expect(okRes.status).toBe(200);
@@ -5472,10 +5475,11 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("x-custom-middleware")).toBe("active");
     });
 
-    it("returns JSON 404 for an unknown page", async () => {
+    it("returns the middleware data-miss protocol for an unknown page", async () => {
       const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       expect(await res.json()).toEqual({});
     });
 
