@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { PAGES_FIXTURE_DIR } from "./helpers.js";
+import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
@@ -21543,11 +21543,20 @@ describe("shim alias map .js variants", () => {
       { mode: "development", command: "serve" },
     );
 
-    const aliases = result?.resolve?.alias as Record<string, string> | undefined;
+    const aliases = result?.resolve?.alias as
+      | Array<{ find: string | RegExp; replacement: string }>
+      | undefined;
     expect(aliases).toBeDefined();
+    const aliasMap = new Map(
+      aliases!
+        .filter(
+          (alias): alias is { find: string; replacement: string } => typeof alias.find === "string",
+        )
+        .map(({ find, replacement }) => [find, replacement]),
+    );
 
     // Collect top-level next/<name> keys (exclude next/dist/*, next/font/*, next/compat/*, next/legacy/*)
-    const topLevel = Object.keys(aliases!).filter((key) => {
+    const topLevel = [...aliasMap.keys()].filter((key) => {
       if (!key.startsWith("next/")) return false;
       if (key.endsWith(".js")) return false;
       const segment = key.slice("next/".length);
@@ -21560,7 +21569,7 @@ describe("shim alias map .js variants", () => {
 
     expect(topLevel.length).toBeGreaterThan(0);
 
-    const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
+    const missing = topLevel.filter((key) => !aliasMap.has(key + ".js"));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 
@@ -21624,6 +21633,156 @@ describe("shim alias map .js variants", () => {
     expect(
       hook.handler.call({ environment: { name: "ssr", config: { command: "serve" } } }, id),
     ).toBe(expected);
+  });
+
+  it("externalizes the styled-jsx React peer only for the Pages server build", async () => {
+    async function resolveStyledJsxReact(
+      pluginNames: string[],
+      environment = "ssr",
+      build: { rolldownOptions: { input: string | Record<string, string> } } | { ssr: string } = {
+        rolldownOptions: { input: "virtual:vinext-server-entry" },
+      },
+    ) {
+      const plugins = vinext() as Plugin[];
+      const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+      if (!configPlugin?.config || !configPlugin.resolveId) {
+        throw new Error("vinext:config hooks not found");
+      }
+
+      const configHook = (
+        typeof configPlugin.config === "function"
+          ? configPlugin.config
+          : configPlugin.config.handler
+      ) as (
+        config: { root: string; plugins: Array<{ name: string }> },
+        env: { mode: string; command: string },
+      ) => Promise<unknown>;
+      await configHook(
+        {
+          root: PAGES_FIXTURE_DIR,
+          plugins: pluginNames.map((name) => ({ name })),
+        },
+        { mode: "production", command: "build" },
+      );
+
+      if (typeof configPlugin.resolveId === "function") {
+        throw new Error("vinext:config filtered resolveId hook not found");
+      }
+      const resolveId = configPlugin.resolveId.handler as (
+        this: {
+          environment?: {
+            name?: string;
+            config: {
+              build:
+                | { rolldownOptions: { input: string | Record<string, string> } }
+                | { ssr: string };
+            };
+          };
+        },
+        id: string,
+        importer?: string,
+      ) => { id: string; external: true } | undefined;
+      return resolveId.call(
+        {
+          environment: {
+            name: environment,
+            config: { build },
+          },
+        },
+        "react",
+        "/project/node_modules/styled-jsx/dist/index/index.js",
+      );
+    }
+
+    const nodeResult = await resolveStyledJsxReact([]);
+    expect(nodeResult).toEqual({ id: "react", external: true });
+
+    expect(
+      await resolveStyledJsxReact([], "client", {
+        rolldownOptions: { input: "virtual:vinext-server-entry" },
+      }),
+    ).toBeUndefined();
+    expect(
+      await resolveStyledJsxReact([], "ssr", {
+        rolldownOptions: { input: { index: "virtual:vinext-app-ssr-entry" } },
+      }),
+    ).toBeUndefined();
+    expect(await resolveStyledJsxReact(["vite-plugin-cloudflare"])).toBeUndefined();
+    expect(await resolveStyledJsxReact(["nitro"])).toBeUndefined();
+    expect(
+      await resolveStyledJsxReact([], "ssr", { ssr: "virtual:vinext-server-entry" }),
+    ).toMatchObject({ external: true });
+    expect(
+      await resolveStyledJsxReact([], "ssr", { ssr: "virtual:vinext-app-ssr-entry" }),
+    ).toBeUndefined();
+  });
+
+  it("bundles the styled-jsx package for Cloudflare through its transformable entry", async () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.config) throw new Error("vinext:config hook not found");
+
+    const configHook = (
+      typeof configPlugin.config === "function" ? configPlugin.config : configPlugin.config.handler
+    ) as (
+      config: { root: string; plugins: Array<{ name: string }> },
+      env: { mode: string; command: string },
+    ) => Promise<{
+      ssr?: { noExternal?: string[] | true };
+      resolve?: { alias?: Array<{ find: string | RegExp; replacement: string }> };
+    }>;
+    const resolved = await configHook(
+      {
+        root: PAGES_FIXTURE_DIR,
+        plugins: [{ name: "vite-plugin-cloudflare" }],
+      },
+      { mode: "development", command: "serve" },
+    );
+
+    expect(resolved.ssr?.noExternal).toContain("styled-jsx");
+    const styledJsxAlias = resolved.resolve?.alias?.find(
+      ({ find }) => find instanceof RegExp && find.source === "^styled-jsx$",
+    );
+    expect(styledJsxAlias?.replacement).toContain("styled-jsx-root");
+  });
+
+  it("uses distinct Pages and hybrid App SSR build entries", async () => {
+    async function getSsrBuildInput(root: string) {
+      const plugins = vinext() as Plugin[];
+      const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+      if (!configPlugin?.config) throw new Error("vinext:config hook not found");
+
+      const configHook = (
+        typeof configPlugin.config === "function"
+          ? configPlugin.config
+          : configPlugin.config.handler
+      ) as (
+        config: { root: string; plugins: Array<{ name: string }> },
+        env: { mode: string; command: string },
+      ) => Promise<{
+        environments?: {
+          ssr?: {
+            build?: {
+              rolldownOptions?: { input?: unknown };
+              rollupOptions?: { input?: unknown };
+            };
+          };
+        };
+      }>;
+      const resolved = await configHook(
+        { root, plugins: [] },
+        { mode: "production", command: "build" },
+      );
+      const build = resolved.environments?.ssr?.build;
+      return build?.rolldownOptions?.input ?? build?.rollupOptions?.input;
+    }
+
+    expect(await getSsrBuildInput(PAGES_FIXTURE_DIR)).toEqual({
+      index: "virtual:vinext-server-entry",
+    });
+    expect(await getSsrBuildInput(APP_FIXTURE_DIR)).toEqual({
+      index: "virtual:vinext-app-ssr-entry",
+    });
   });
 });
 

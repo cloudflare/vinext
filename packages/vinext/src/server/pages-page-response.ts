@@ -23,6 +23,8 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { createPagesStyledJsxRegistry } from "./pages-styled-jsx.js";
+import { insertHtmlAfterPagesRoot } from "./pages-stream-html.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -188,7 +190,9 @@ type RenderPagesPageResponseOptions = {
   params: Record<string, unknown>;
   query?: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
-  renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
+  renderToReadableStream: (
+    element: ReactNode,
+  ) => Promise<ReadableStream<Uint8Array> & { allReady?: Promise<void> }>;
   resetSSRHead?: (() => void) | undefined;
   routePattern: string;
   routeUrl: string;
@@ -352,6 +356,7 @@ async function buildPagesCompositeStream(
   bodyStream: ReadableStream<Uint8Array>,
   shellPrefix: string,
   shellSuffix: string,
+  getPostRootHTML: () => string,
 ): Promise<ReadableStream<Uint8Array>> {
   const encoder = new TextEncoder();
 
@@ -370,7 +375,7 @@ async function buildPagesCompositeStream(
       } finally {
         reader.releaseLock();
       }
-      controller.enqueue(encoder.encode(shellSuffix));
+      controller.enqueue(encoder.encode(insertHtmlAfterPagesRoot(shellSuffix, getPostRootHTML())));
       controller.close();
     },
   });
@@ -405,6 +410,7 @@ function schedulePagesIsrCacheWrite(options: {
   routePattern: string;
   shellPrefix: string;
   shellSuffix: string;
+  getPostRootHTML: () => string;
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
@@ -415,7 +421,10 @@ function schedulePagesIsrCacheWrite(options: {
         options.cacheKey,
         {
           kind: "PAGES",
-          html: options.shellPrefix + bodyHtml + options.shellSuffix,
+          html:
+            options.shellPrefix +
+            bodyHtml +
+            insertHtmlAfterPagesRoot(options.shellSuffix, options.getPostRootHTML()),
           pageData: options.pageData,
           headers: undefined,
           status: options.status,
@@ -490,6 +499,7 @@ export async function renderPagesPageResponse(
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
+  const styledJsx = createPagesStyledJsxRegistry();
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
@@ -502,7 +512,9 @@ export async function renderPagesPageResponse(
   // prod and dev stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent: options.DocumentComponent,
-    enhancePageElement: options.enhancePageElement,
+    enhancePageElement: options.enhancePageElement
+      ? (renderPageOptions) => styledJsx.wrap(options.enhancePageElement!(renderPageOptions))
+      : undefined,
     renderToReadableStream: options.renderToReadableStream,
     // Render the collected `styles` fragment with the plain stream renderer
     // rather than the full `<Document>` shell renderer — the styles tree is a
@@ -538,7 +550,7 @@ export async function renderPagesPageResponse(
     // (`rendered`), this element is never used, so there's no point
     // constructing the tree on that path.
     const pageElement = withScriptNonce(
-      React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+      styledJsx.wrap(options.createPageElement(renderProps)),
       options.scriptNonce,
     );
     bodyStream = await options.renderToReadableStream(pageElement);
@@ -571,6 +583,8 @@ export async function renderPagesPageResponse(
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     ssrHeadHTML += `\n  ${documentRenderPage.stylesHTML}`;
   }
+  const styledJsxHTML = styledJsx.stylesHTML({ nonce: options.scriptNonce });
+  if (styledJsxHTML) ssrHeadHTML += `\n  ${styledJsxHTML}`;
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
@@ -589,6 +603,9 @@ export async function renderPagesPageResponse(
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const responseHeaders = new Headers({ "Content-Type": "text/html" });
   const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
+  let postRootHTML: string | undefined;
+  const getPostRootHTML = () =>
+    (postRootHTML ??= styledJsx.stylesHTML({ nonce: options.scriptNonce }));
 
   let responseBodyStream = bodyStream;
   if (
@@ -598,7 +615,7 @@ export async function renderPagesPageResponse(
     options.isrRevalidateSeconds !== null &&
     options.isrRevalidateSeconds > 0
   ) {
-    const cacheBodyStreamPair = bodyStream.tee();
+    const cacheBodyStreamPair = responseBodyStream.tee();
     responseBodyStream = cacheBodyStreamPair[0];
     const cacheBodyStream = cacheBodyStreamPair[1];
     const isrPathname = options.routeUrl.split("?")[0];
@@ -613,6 +630,7 @@ export async function renderPagesPageResponse(
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix,
+      getPostRootHTML,
       status: finalStatus,
       stream: cacheBodyStream,
     });
@@ -622,6 +640,7 @@ export async function renderPagesPageResponse(
     responseBodyStream,
     shellPrefix,
     shellSuffix,
+    getPostRootHTML,
   );
 
   // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)

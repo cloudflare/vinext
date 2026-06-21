@@ -12,6 +12,11 @@ test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
     expect(html).toContain("__NEXT_DATA__");
   });
 
+  test("starts with the Worker-compatible styled-jsx runtime", async ({ request }) => {
+    const res = await request.get(`${BASE}/`);
+    expect(res.status()).toBe(200);
+  });
+
   test("GSSP runs inside the Cloudflare Worker", async ({ request }) => {
     // getServerSideProps on /ssr reads navigator.userAgent and embeds it in
     // the rendered HTML. "Cloudflare-Workers" can only appear if GSSP executed

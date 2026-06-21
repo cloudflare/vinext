@@ -11,7 +11,7 @@ import http, { type IncomingHttpHeaders } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import { createServer, build, type ViteDevServer } from "vite";
+import { createServer, build, type PluginOption, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
@@ -62,6 +62,7 @@ export async function startFixtureServer(
       cors?: boolean;
       port?: number;
     };
+    pluginsBefore?: PluginOption[];
   },
 ): Promise<TestServerResult> {
   // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected.
@@ -80,7 +81,7 @@ export async function startFixtureServer(
   } else {
     plugin = vinext({ appDir: opts?.appDir ?? fixtureDir });
   }
-  const plugins = [plugin];
+  const plugins = [...(opts?.pluginsBefore ?? []), plugin];
 
   const server = await createServer({
     root: fixtureDir,
@@ -225,10 +226,8 @@ export async function requestNodeServerWithHost(
  * Returns the path to the built bundle (`entry.js`).
  */
 export async function buildPagesFixture(fixtureDir: string): Promise<string> {
-  const serverOutDir = path.join(
-    await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-build-")),
-    "server",
-  );
+  const buildDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-build-"));
+  const serverOutDir = path.join(buildDir, "server");
 
   // Use disableAppRouter: true so the RSC/App Router pipeline is not activated.
   // This is required when the fixture has both app/ and pages/ directories
@@ -247,6 +246,12 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
       },
     },
   });
+
+  // The Pages bundle keeps React external so styled-jsx and the renderer share
+  // the same instance. Temp build directories are outside the repo's normal
+  // node_modules lookup path, so expose the workspace dependencies there.
+  const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(projectNodeModules, path.join(buildDir, "node_modules"));
 
   return path.join(serverOutDir, "entry.js");
 }

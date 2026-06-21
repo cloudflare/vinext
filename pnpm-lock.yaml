@@ -963,6 +963,9 @@ importers:
 
   packages/vinext:
     dependencies:
+      '@babel/core':
+        specifier: 7.29.0
+        version: 7.29.0
       '@unpic/react':
         specifier: 'catalog:'
         version: 1.0.2(next@16.2.7(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.100.0))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -978,6 +981,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      styled-jsx:
+        specifier: 5.1.6
+        version: 5.1.6(react@19.2.7)
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.2.1
         version: '@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)'

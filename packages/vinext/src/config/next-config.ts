@@ -381,6 +381,8 @@ export type ResolvedNextConfig = {
   serverActionsAllowedOrigins: string[];
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
+  /** Packages whose source should be transformed even when resolved through node_modules. */
+  transpilePackages: string[];
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
@@ -1294,6 +1296,7 @@ export async function resolveNextConfig(
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
+      transpilePackages: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
@@ -1612,6 +1615,7 @@ export async function resolveNextConfig(
     allowedDevOrigins,
     serverActionsAllowedOrigins,
     optimizePackageImports,
+    transpilePackages: readStringArray(config.transpilePackages),
     inlineCss,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,

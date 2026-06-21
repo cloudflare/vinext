@@ -36,6 +36,20 @@ function findNamedPlugin(plugins: ReturnType<typeof vinext>, name: string) {
   return plugins.find((plugin): plugin is Plugin => isPlugin(plugin) && plugin.name === name);
 }
 
+function stringAliasMap(alias: unknown): Map<string, string> {
+  if (Array.isArray(alias)) {
+    return new Map(
+      alias
+        .filter(
+          (entry): entry is { find: string; replacement: string } =>
+            typeof entry?.find === "string" && typeof entry.replacement === "string",
+        )
+        .map(({ find, replacement }) => [find, replacement]),
+    );
+  }
+  return new Map(Object.entries((alias ?? {}) as Record<string, string>));
+}
+
 afterEach(() => {
   // Restore the cwd before removing the temp dir: each test chdir's into
   // `root`, and Windows refuses to delete a directory that is a process's
@@ -116,11 +130,11 @@ describe("Vite tsconfig paths support", () => {
       { command: "serve", mode: "development" },
     );
 
-    const alias = resolvedConfig?.resolve?.alias as Record<string, string>;
-    expect(alias).toBeDefined();
-    expect(alias["@"]).toBeDefined();
-    expect(path.isAbsolute(alias["@"])).toBe(true);
-    expect(alias["@"].replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
+    const alias = stringAliasMap(resolvedConfig?.resolve?.alias);
+    const rootAlias = alias.get("@");
+    expect(rootAlias).toBeDefined();
+    expect(path.isAbsolute(rootAlias!)).toBe(true);
+    expect(rootAlias!.replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
   });
 
   it("materializes path aliases inherited via tsconfig extends on Vite 8", async () => {
@@ -167,11 +181,7 @@ describe("Vite tsconfig paths support", () => {
       { command: "serve", mode: "development" },
     );
 
-    expect(resolvedConfig?.resolve?.alias).toEqual(
-      expect.objectContaining({
-        "@": "/src",
-      }),
-    );
+    expect(stringAliasMap(resolvedConfig?.resolve?.alias).get("@")).toBe("/src");
   });
 
   it("does not override user-defined resolve.tsconfigPaths on Vite 8", async () => {

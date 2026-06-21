@@ -1,3 +1,4 @@
+import { cp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
@@ -14,6 +15,8 @@ import { defineConfig } from "vite-plus";
  * (`@vinext/cloudflare` -> `vinext`).
  */
 const cloudflareCacheSrc = fileURLToPath(new URL("../cloudflare/src/cache", import.meta.url));
+const typesSrc = fileURLToPath(new URL("src/types", import.meta.url));
+const typesDist = fileURLToPath(new URL("dist/types", import.meta.url));
 
 export default defineConfig({
   pack: {
@@ -47,5 +50,13 @@ export default defineConfig({
     fixedExtension: false,
     format: "esm",
     unbundle: true,
+    plugins: [
+      {
+        name: "vinext-public-types",
+        async closeBundle() {
+          await cp(typesSrc, typesDist, { recursive: true });
+        },
+      },
+    ],
   },
 });

@@ -150,6 +150,8 @@ describe("SCSS preprocessing (Pages Router)", () => {
         },
       });
 
+      await fs.symlink(ROOT_NODE_MODULES, path.join(outDir, "node_modules"), "junction");
+
       await build({
         root: tmpDir,
         configFile: false,

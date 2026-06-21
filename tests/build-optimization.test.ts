@@ -234,7 +234,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { transpilePackages: ["raw-package"] };`,
+    );
 
     try {
       const mockConfig = {
@@ -244,7 +247,7 @@ describe("optimizeDeps.exclude for vinext", () => {
         optimizeDeps: {
           // Include "vinext" to simulate overlap with vinext's own excludes
           exclude: ["@lingui/macro", "@lingui/core/macro", "vinext"],
-          include: ["some-lib"],
+          include: ["some-lib", "raw-package", "raw-package/deep-import"],
         },
       };
       const result = await (mainPlugin as any).config(mockConfig, {
@@ -271,8 +274,15 @@ describe("optimizeDeps.exclude for vinext", () => {
       // Client environment should merge incoming includes
       const clientInclude = result.environments.client.optimizeDeps?.include;
       expect(clientInclude).toContain("some-lib");
+      expect(clientInclude).not.toContain("raw-package");
+      expect(clientInclude).not.toContain("raw-package/deep-import");
       expect(clientInclude).toContain("react");
       expect(clientInclude).toContain("react-dom");
+      expect(result.environments.rsc.optimizeDeps?.include).not.toContain("raw-package");
+      expect(result.environments.rsc.optimizeDeps?.include).not.toContain(
+        "raw-package/deep-import",
+      );
+      expect(result.optimizeDeps?.include).toEqual(["some-lib"]);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

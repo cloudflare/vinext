@@ -15,10 +15,10 @@
   ],
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "dist/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": "./dist/types/index.d.ts",
       "import": "./dist/index.js"
     },
     "./cache": {
@@ -92,11 +92,13 @@
     "dev": "vp pack --watch"
   },
   "dependencies": {
+    "@babel/core": "7.29.0",
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
+    "styled-jsx": "5.1.6",
     "vite-plugin-commonjs": "catalog:",
     "vite-tsconfig-paths": "catalog:",
     "web-vitals": "catalog:"

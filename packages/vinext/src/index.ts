@@ -135,6 +135,7 @@ import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
+  mergeOptimizeDepsInclude,
   SSR_EXTERNAL_REACT_ENTRIES,
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
@@ -205,6 +206,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import { escapeRegExp } from "./utils/regex.js";
 import {
@@ -541,6 +543,22 @@ const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
 const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
+
+function hasPagesServerBuildInput(input: unknown): boolean {
+  if (typeof input === "string") {
+    const cleanInput = input.startsWith(VIRTUAL_PREFIX) ? input.slice(1) : input;
+    return (
+      cleanInput === VIRTUAL_SERVER_ENTRY ||
+      cleanInput.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
+      cleanInput.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
+    );
+  }
+  if (Array.isArray(input)) return input.some(hasPagesServerBuildInput);
+  if (input && typeof input === "object") {
+    return Object.values(input).some(hasPagesServerBuildInput);
+  }
+  return false;
+}
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
@@ -1128,6 +1146,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
+    // styled-jsx must see source JSX before the React transform lowers it.
+    createStyledJsxPlugin({
+      getTranspilePackages: () => nextConfig?.transpilePackages,
+    }),
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Transform CJS require()/module.exports to ESM before other plugins
@@ -2025,23 +2047,50 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // This also resolves extensionless-import issues in packages like
           // `validator` (see #189) by routing them through Vite's resolver.
           ...(hasCloudflarePlugin || hasNitroPlugin
-            ? {}
+            ? {
+                ssr: {
+                  // styled-jsx only publishes CommonJS. Keep the bare package
+                  // specifier so Vite can detect and transform it, and force it
+                  // into Worker bundles instead of leaving require() calls for
+                  // the runtime module runner.
+                  noExternal: ["styled-jsx"],
+                },
+              }
             : config.ssr?.external === true
               ? { ssr: { external: true as const } }
               : {
                   ssr: {
-                    external: ["react", "react-dom", "react-dom/server", "ipaddr.js"],
+                    external: [
+                      "react",
+                      "react-dom",
+                      "react-dom/server",
+                      ...(env?.command === "serve" ? ["styled-jsx"] : []),
+                      "ipaddr.js",
+                    ],
                     noExternal: true,
                   },
                 }),
           resolve: {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
-            alias: {
-              ...tsconfigPathAliases,
-              ...nextConfig.aliases,
-              ...nextShimMap,
-            },
+            alias: [
+              ...Object.entries({
+                ...tsconfigPathAliases,
+                ...nextConfig.aliases,
+                ...nextShimMap,
+                "styled-jsx/css": resolveOptionalDependency(earlyBaseDir, "styled-jsx/css")!,
+                "styled-jsx/style": resolveShimModulePath(shimsDir, "styled-jsx-style"),
+                "styled-jsx/style.js": resolveShimModulePath(shimsDir, "styled-jsx-style"),
+              }).map(([find, replacement]) => ({ find, replacement })),
+              ...(hasCloudflarePlugin || hasNitroPlugin || env?.command === "build"
+                ? [
+                    {
+                      find: /^styled-jsx$/,
+                      replacement: resolveShimModulePath(shimsDir, "styled-jsx-root"),
+                    },
+                  ]
+                : []),
+            ],
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -2216,6 +2265,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           (config.optimizeDeps?.exclude as string[] | undefined) ?? [];
         const incomingInclude: string[] =
           (config.optimizeDeps?.include as string[] | undefined) ?? [];
+        const transpilePackages = nextConfig?.transpilePackages ?? [];
+        const preservedOptimizeDepsInclude = mergeOptimizeDepsInclude(
+          transpilePackages,
+          incomingInclude,
+        );
 
         // Merge incoming excludes into the top-level optimizeDeps so
         // Pages Router builds (which don't set per-environment configs)
@@ -2241,10 +2295,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
-            "@tailwindcss/oxide",
-          ]),
-          ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
+          exclude: mergeOptimizeDepsExclude(
+            incomingExclude,
+            VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            ["@tailwindcss/oxide"],
+            transpilePackages,
+          ),
+          ...(preservedOptimizeDepsInclude.length > 0
+            ? { include: preservedOptimizeDepsInclude }
+            : {}),
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
@@ -2316,13 +2375,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  transpilePackages,
+                ),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
                 // Prebundle both so they share the large development renderer
                 // instead of transforming its raw CJS source on the first request.
-                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                include: mergeOptimizeDepsInclude(transpilePackages, incomingInclude, [
+                  "react-server-dom-webpack/static.edge",
+                ]),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -2392,6 +2457,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   userSsrExternal === true || externalizeSsrReactInDev
                     ? SSR_EXTERNAL_REACT_ENTRIES
                     : [],
+                  transpilePackages,
                 ),
                 entries: optimizeEntries,
                 ...depOptimizeNodeEnvOptions,
@@ -2424,6 +2490,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   nextServerExternal,
+                  transpilePackages,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
@@ -2431,16 +2498,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: optimizeEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
-                include: [
-                  ...new Set([
-                    ...incomingInclude,
-                    "react",
-                    "react-dom",
-                    "react-dom/client",
-                    "react/jsx-runtime",
-                    "react/jsx-dev-runtime",
-                  ]),
-                ],
+                include: mergeOptimizeDepsInclude(transpilePackages, incomingInclude, [
+                  "react",
+                  "react-dom",
+                  "react-dom/client",
+                  "react/jsx-runtime",
+                  "react/jsx-dev-runtime",
+                ]),
               },
               build: {
                 // Production App Router rendering needs Vite's client manifest
@@ -2469,8 +2533,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteConfig.environments = {
             client: {
               consumer: "client",
-              optimizeDeps:
-                pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
+              optimizeDeps: {
+                ...(transpilePackages.length > 0
+                  ? { exclude: mergeOptimizeDepsExclude(transpilePackages) }
+                  : {}),
+                ...(preservedOptimizeDepsInclude.length > 0
+                  ? { include: preservedOptimizeDepsInclude }
+                  : {}),
+                ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
+              },
               build: {
                 manifest: true,
                 ssrManifest: true,
@@ -2495,8 +2566,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteConfig.environments = {
             client: {
               consumer: "client",
-              optimizeDeps:
-                pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : undefined,
+              optimizeDeps: {
+                ...(transpilePackages.length > 0
+                  ? { exclude: mergeOptimizeDepsExclude(transpilePackages) }
+                  : {}),
+                ...(preservedOptimizeDepsInclude.length > 0
+                  ? { include: preservedOptimizeDepsInclude }
+                  : {}),
+                ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
+              },
               build: {
                 outDir: "dist/client",
                 manifest: true,
@@ -2521,7 +2599,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // optimizer avoids the "new dependencies optimized" full
                 // reload the first time a Pages Router page renders an
                 // <Image>.
-                exclude: ["ipaddr.js"],
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  ["ipaddr.js"],
+                  transpilePackages,
+                ),
+                ...(preservedOptimizeDepsInclude.length > 0
+                  ? { include: preservedOptimizeDepsInclude }
+                  : {}),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -2560,6 +2645,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
+        const filterTranspilePackageIncludes = (include: string[] | undefined) => {
+          if (!include) return;
+          include.splice(
+            0,
+            include.length,
+            ...mergeOptimizeDepsInclude(nextConfig.transpilePackages, include),
+          );
+        };
+        filterTranspilePackageIncludes(config.optimizeDeps?.include);
+        for (const environment of Object.values(config.environments ?? {})) {
+          filterTranspilePackageIncludes(environment.optimizeDeps?.include);
+        }
+
         const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
         typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
 
@@ -2699,7 +2797,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: /(?:^react$|^styled-jsx$|next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
         handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
@@ -2721,6 +2819,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");
+          }
+
+          if (
+            cleanId === "styled-jsx" &&
+            !hasCloudflarePlugin &&
+            !hasNitroPlugin &&
+            this.environment?.name === "ssr" &&
+            this.environment.config?.command === "serve"
+          ) {
+            return { id: "styled-jsx", external: true };
+          }
+
+          if (
+            cleanId === "react" &&
+            importer?.includes("/styled-jsx/") &&
+            !hasCloudflarePlugin &&
+            !hasNitroPlugin &&
+            this.environment?.name === "ssr" &&
+            (hasPagesServerBuildInput(
+              getBuildBundlerOptions(this.environment.config.build)?.input,
+            ) ||
+              hasPagesServerBuildInput(this.environment.config.build?.ssr))
+          ) {
+            return {
+              id: "react",
+              external: true,
+            };
           }
 
           const vinextShimPrefix = "vinext/shims/";

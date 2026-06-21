@@ -54,3 +54,25 @@ export function mergeOptimizeDepsExclude(
 
   return [...seen];
 }
+
+export function mergeOptimizeDepsInclude(
+  excludePackages: readonly string[],
+  ...includeGroups: readonly (readonly string[])[]
+): string[] {
+  const seen = new Set<string>();
+
+  for (const group of includeGroups) {
+    for (const entry of group) {
+      if (
+        excludePackages.some(
+          (packageName) => entry === packageName || entry.startsWith(`${packageName}/`),
+        )
+      ) {
+        continue;
+      }
+      seen.add(entry);
+    }
+  }
+
+  return [...seen];
+}
