@@ -599,7 +599,9 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
-  it("uses the soft redirect protocol for config redirects on Pages data requests", async () => {
+  it("keeps the real status for config redirects on Pages data requests", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
     const handler = createHandler({
       configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
       matchRoute: () => null,
@@ -611,9 +613,9 @@ describe("createAppRscHandler", () => {
       null,
     );
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("location")).toBeNull();
-    expect(response.headers.get("x-nextjs-redirect")).toBe("/docs/about");
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about");
+    expect(response.headers.get("x-nextjs-redirect")).toBeNull();
   });
 
   it("ignores forged data headers for App Router config redirects", async () => {

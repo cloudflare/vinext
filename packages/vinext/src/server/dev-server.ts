@@ -552,7 +552,8 @@ export function createSSRHandler(
         const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
         const notFoundHeaders: Record<string, string> = { "Content-Type": "application/json" };
         if (hasMiddleware) {
-          notFoundHeaders["x-nextjs-matched-path"] = localeStrippedUrl;
+          notFoundHeaders["x-nextjs-matched-path"] =
+            `${locale ? `/${locale}` : ""}${localeStrippedUrl}`;
         }
         if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
         res.writeHead(hasMiddleware ? 200 : 404, notFoundHeaders);

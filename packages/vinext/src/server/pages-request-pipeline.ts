@@ -296,15 +296,6 @@ export async function runPagesRequest(
       // Use the raw query (when the adapter supplies it) so the redirect Location
       // isn't re-encoded by URL parsing; fall back to the parsed search otherwise.
       const location = preserveRedirectDestinationQuery(dest, deps.rawSearch ?? search);
-      if (isDataReq || isDataRequest) {
-        return {
-          type: "response",
-          response: new Response(null, {
-            status: 200,
-            headers: { "x-nextjs-redirect": location },
-          }),
-        };
-      }
       return {
         type: "response",
         response: new Response(null, {

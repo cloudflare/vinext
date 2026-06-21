@@ -565,12 +565,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
         : preserveRedirectDestinationQuery(destination, url.search);
-    if (isDataRequest) {
-      return new Response(null, {
-        status: 200,
-        headers: { "x-nextjs-redirect": location },
-      });
-    }
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },

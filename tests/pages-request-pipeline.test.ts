@@ -94,7 +94,9 @@ describe("config redirects", () => {
     expect(result.response.headers.get("Location")).toBe("/new");
   });
 
-  it("uses the soft redirect protocol for trusted data requests", async () => {
+  it("keeps the real redirect status for trusted data requests", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
     const result = await runPagesRequest(
       makeRequest("/old"),
       baseDeps({
@@ -106,9 +108,9 @@ describe("config redirects", () => {
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.response.status).toBe(200);
-    expect(result.response.headers.get("Location")).toBeNull();
-    expect(result.response.headers.get("x-nextjs-redirect")).toBe("/new");
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/new");
+    expect(result.response.headers.get("x-nextjs-redirect")).toBeNull();
   });
 
   it("does not use the soft redirect protocol for forged data headers", async () => {
