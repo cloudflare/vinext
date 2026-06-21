@@ -25,4 +25,30 @@ describe("Next.js deploy harness logging", () => {
         "Application warning: keep this diagnostic\n",
     );
   });
+
+  it("preserves matching diagnostics from application lifecycle scripts", () => {
+    const output = execFileSync("bash", ["scripts/filter-e2e-install-log.sh"], {
+      input:
+        "WARN 1 deprecated subdependencies found: tsconfck@3.1.6\n" +
+        "> application@1.0.0 postinstall /tmp/application\n" +
+        "> node postinstall.js\n" +
+        "(node:9211) [DEP0169] DeprecationWarning: `url.parse()` is deprecated\n" +
+        "(Use `node --trace-deprecation ...` to show where the warning was created)\n" +
+        "1 deprecated subdependencies found: application-owned diagnostic\n" +
+        "Application install error: keep this diagnostic\n" +
+        "\n" +
+        "WARN 2 deprecated subdependencies found: harness@1.0.0\n",
+      encoding: "utf8",
+    });
+
+    expect(output).toBe(
+      "> application@1.0.0 postinstall /tmp/application\n" +
+        "> node postinstall.js\n" +
+        "(node:9211) [DEP0169] DeprecationWarning: `url.parse()` is deprecated\n" +
+        "(Use `node --trace-deprecation ...` to show where the warning was created)\n" +
+        "1 deprecated subdependencies found: application-owned diagnostic\n" +
+        "Application install error: keep this diagnostic\n" +
+        "\n",
+    );
+  });
 });

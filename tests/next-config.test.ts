@@ -83,15 +83,34 @@ describe("deprecated config warnings", () => {
     ]);
   });
 
-  it("warns when deprecated options are explicitly false", async () => {
+  it("warns once across repeated config resolution", async () => {
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.mjs"), "export default {}\n");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await resolveNextConfig({
-      skipMiddlewareUrlNormalize: false,
-      experimental: { instrumentationHook: false },
-    });
+    try {
+      await resolveNextConfig(
+        {
+          skipMiddlewareUrlNormalize: false,
+          experimental: { instrumentationHook: false },
+        },
+        root,
+      );
+      await resolveNextConfig(
+        {
+          skipMiddlewareUrlNormalize: false,
+          experimental: { instrumentationHook: false },
+        },
+        root,
+      );
 
-    expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls.map(([message]) => message)).toEqual([
+        "`skipMiddlewareUrlNormalize` is deprecated. Please use `skipProxyUrlNormalize` instead in next.config.mjs.",
+        "`experimental.instrumentationHook` is no longer needed, because `instrumentation.js` is available by default. You can remove it from next.config.mjs.",
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

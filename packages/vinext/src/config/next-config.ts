@@ -826,6 +826,14 @@ function hasConfigProperty(config: NextConfig, propertyPath: string): boolean {
   return true;
 }
 
+const emittedConfigWarnings = new Set<string>();
+
+function warnConfigOnce(message: string): void {
+  if (emittedConfigWarnings.has(message)) return;
+  emittedConfigWarnings.add(message);
+  console.warn(message);
+}
+
 function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
   const warnings = [
@@ -852,7 +860,7 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   ] as const;
 
   for (const [propertyPath, warning] of warnings) {
-    if (hasConfigProperty(config, propertyPath)) console.warn(warning);
+    if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
   }
 }
 
