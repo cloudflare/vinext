@@ -48,6 +48,53 @@ describe("invalid config files", () => {
   });
 });
 
+describe("deprecated config warnings", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not warn when no config file exists", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig(null);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("matches Next.js warnings for explicitly configured deprecated options", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      skipMiddlewareUrlNormalize: true,
+      experimental: {
+        middlewarePrefetch: "strict",
+        instrumentationHook: true,
+        middlewareClientMaxBodySize: "5mb",
+        externalMiddlewareRewritesResolve: true,
+      },
+    });
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.middlewarePrefetch` is deprecated. Please use `experimental.proxyPrefetch` instead in next.config.js.",
+      "`experimental.middlewareClientMaxBodySize` is deprecated. Please use `experimental.proxyClientMaxBodySize` instead in next.config.js.",
+      "`experimental.externalMiddlewareRewritesResolve` is deprecated. Please use `experimental.externalProxyRewritesResolve` instead in next.config.js.",
+      "`skipMiddlewareUrlNormalize` is deprecated. Please use `skipProxyUrlNormalize` instead in next.config.js.",
+      "`experimental.instrumentationHook` is no longer needed, because `instrumentation.js` is available by default. You can remove it from next.config.js.",
+    ]);
+  });
+
+  it("warns when deprecated options are explicitly false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      skipMiddlewareUrlNormalize: false,
+      experimental: { instrumentationHook: false },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("loadNextConfig with CJS next.config.js under type:module", () => {
   // Real-world shape from the Next.js deploy suite: `vinext init` flips
   // package.json to `"type": "module"`, but the test fixture's

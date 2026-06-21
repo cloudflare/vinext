@@ -817,6 +817,45 @@ export function findNextConfigPath(root: string): string | null {
   return null;
 }
 
+function hasConfigProperty(config: NextConfig, propertyPath: string): boolean {
+  let current: unknown = config;
+  for (const property of propertyPath.split(".")) {
+    if (!isUnknownRecord(current) || current[property] === undefined) return false;
+    current = current[property];
+  }
+  return true;
+}
+
+function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
+  const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
+  const warnings = [
+    [
+      "experimental.middlewarePrefetch",
+      `\`experimental.middlewarePrefetch\` is deprecated. Please use \`experimental.proxyPrefetch\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.middlewareClientMaxBodySize",
+      `\`experimental.middlewareClientMaxBodySize\` is deprecated. Please use \`experimental.proxyClientMaxBodySize\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.externalMiddlewareRewritesResolve",
+      `\`experimental.externalMiddlewareRewritesResolve\` is deprecated. Please use \`experimental.externalProxyRewritesResolve\` instead in ${configFileName}.`,
+    ],
+    [
+      "skipMiddlewareUrlNormalize",
+      `\`skipMiddlewareUrlNormalize\` is deprecated. Please use \`skipProxyUrlNormalize\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.instrumentationHook",
+      `\`experimental.instrumentationHook\` is no longer needed, because \`instrumentation.js\` is available by default. You can remove it from ${configFileName}.`,
+    ],
+  ] as const;
+
+  for (const [propertyPath, warning] of warnings) {
+    if (hasConfigProperty(config, propertyPath)) console.warn(warning);
+  }
+}
+
 export async function resolveNextConfigInput(
   config: NextConfigInput,
   phase: string = PHASE_DEVELOPMENT_SERVER,
@@ -1323,6 +1362,8 @@ export async function resolveNextConfig(
     detectNextIntlConfig(root, resolved);
     return resolved;
   }
+
+  warnDeprecatedConfigOptions(config, root);
 
   // Resolve redirects
   let redirects: NextRedirect[] = [];
