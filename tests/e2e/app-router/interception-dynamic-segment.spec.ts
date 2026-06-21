@@ -77,6 +77,18 @@ test.describe("interception-dynamic-segment", () => {
     await expect(page.locator("#children")).toContainText("CHILDREN SLOT");
   });
 
+  test("resolves @modal/sub/(.)target/[id] from the actual marker", async ({ page }) => {
+    await page.goto(`${ROOT}/sub`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#link-sub-target-42");
+
+    await expect(page.locator("#modal")).toContainText("Intercepted sub target 42");
+    await expect(page.locator("#modal-segment")).toHaveText("modal segment: 42");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: sub|target|42");
+    await expect(page.locator("#children")).toContainText("/sub/target/42");
+  });
+
   test("direct visit to test-nested shows actual page (not intercepted)", async ({ page }) => {
     await page.goto(`${ROOT}/test-nested`);
 

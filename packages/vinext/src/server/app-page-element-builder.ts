@@ -373,40 +373,79 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
       layoutModules: opts.interceptLayouts || null,
       pageModule: opts.interceptPage,
       params: opts.interceptParams || routeParams,
-      routeSegments: resolveInterceptedSlotSegments(opts.interceptSourcePageSegments),
+      routeSegments: resolveInterceptedSlotSegments(
+        opts.interceptSourcePageSegments,
+        opts.interceptSlotKey,
+      ),
     };
   }
 
   const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
   for (const [slotKey, params] of Object.entries(slotParamOverrides ?? {})) {
     const existing = overrides[slotKey];
-    overrides[slotKey] = existing ? { ...existing, params } : { params };
+    overrides[slotKey] = existing ? { ...existing, params: existing.params ?? params } : { params };
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
 }
 
-function resolveInterceptedSlotSegments(
+export function resolveInterceptedSlotSegments(
   sourcePageSegments: readonly string[] | null | undefined,
+  slotKey: string,
 ): readonly string[] | null {
   if (!sourcePageSegments) return null;
 
-  const slotIndex = sourcePageSegments.findIndex((segment) => segment.startsWith("@"));
-  if (slotIndex < 0 || slotIndex === sourcePageSegments.length - 1) return null;
-
-  const routeSegments = sourcePageSegments
-    .slice(slotIndex + 1)
-    .filter(
-      (segment) => !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
-    );
-  const firstSegment = routeSegments[0];
-  const marker = ["(...)", "(..)(..)", "(..)", "(.)"].find((prefix) =>
-    firstSegment.startsWith(prefix),
+  const markerPrefixes = ["(...)", "(..)(..)", "(..)", "(.)"];
+  const markerIndex = sourcePageSegments.findIndex((segment) =>
+    markerPrefixes.some((prefix) => segment.startsWith(prefix)),
   );
-  if (!marker) return routeSegments;
+  if (markerIndex < 0) return null;
 
-  const targetSegment = firstSegment.slice(marker.length);
-  return targetSegment ? [targetSegment, ...routeSegments.slice(1)] : routeSegments.slice(1);
+  const slotPathSeparator = slotKey.indexOf("@");
+  const slotPath = slotPathSeparator >= 0 ? slotKey.slice(slotPathSeparator + 1) : "";
+  const ownerSegments = slotPath.split("/").filter(Boolean);
+  let segmentStart = ownerSegments.length;
+
+  if (
+    segmentStart === 0 ||
+    segmentStart > markerIndex ||
+    !ownerSegments.every((segment, index) => sourcePageSegments[index] === segment)
+  ) {
+    let slotName: string | null = null;
+    for (let index = ownerSegments.length - 1; index >= 0; index--) {
+      if (ownerSegments[index].startsWith("@")) {
+        slotName = ownerSegments[index];
+        break;
+      }
+    }
+
+    let slotIndex = -1;
+    if (slotName) {
+      for (let index = markerIndex - 1; index >= 0; index--) {
+        if (sourcePageSegments[index] === slotName) {
+          slotIndex = index;
+          break;
+        }
+      }
+    }
+    if (slotIndex < 0) return null;
+    segmentStart = slotIndex + 1;
+  }
+
+  const routeSegments = sourcePageSegments.slice(segmentStart).flatMap((segment, index) => {
+    if (segment.startsWith("@")) return [];
+
+    if (segmentStart + index === markerIndex) {
+      const marker = markerPrefixes.find((prefix) => segment.startsWith(prefix));
+      const targetSegment = marker ? segment.slice(marker.length) : segment;
+      return targetSegment ? [targetSegment] : [];
+    }
+
+    if (segment.startsWith("(") && segment.endsWith(")")) return [];
+    return [segment];
+  });
+
+  return routeSegments;
 }
 
 function resolveSlotParamOverrides(
