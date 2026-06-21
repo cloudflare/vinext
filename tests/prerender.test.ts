@@ -74,6 +74,10 @@ function runtimeRscDoneScript(): string {
   return `<script>${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
 }
 
+function runtimeRscDoneScriptWithCacheMetadata(): string {
+  return `<script>Object.assign(${RSC_RUNTIME_BOOTSTRAP_EXPRESSION},{"initialCacheKind":"static"});${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
+}
+
 function legacyRscChunkScript(chunk: string | [3, string]): string {
   return (
     "<script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];" +
@@ -106,6 +110,16 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
       "</body></html>";
 
     expect(decodeExtractedPayload(html)).toBe(chunks.join(""));
+  });
+
+  it("reconstructs chunks when cache metadata precedes the done marker", () => {
+    const html =
+      "<html><body>" +
+      runtimeRscChunkScript("0:[]\n") +
+      runtimeRscDoneScriptWithCacheMetadata() +
+      "</body></html>";
+
+    expect(decodeExtractedPayload(html)).toBe("0:[]\n");
   });
 
   it("keeps parsing legacy streamed RSC chunk scripts", () => {
