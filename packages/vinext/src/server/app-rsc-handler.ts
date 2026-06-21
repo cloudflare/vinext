@@ -886,6 +886,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (pagesDataRequest) {
     options.clearRequestContext();
+    if (
+      options.runMiddleware &&
+      (middlewareContext.status === null ||
+        middlewareContext.status === 200 ||
+        middlewareContext.status === 404)
+    ) {
+      const response = buildNextDataNotFoundResponse();
+      const headers = new Headers(response.headers);
+      headers.set("x-nextjs-matched-path", matchPathname(canonicalPathname));
+      return new Response("{}", { status: 200, headers });
+    }
     return buildNextDataNotFoundResponse();
   }
 

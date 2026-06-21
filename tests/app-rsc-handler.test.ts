@@ -1658,6 +1658,27 @@ describe("createAppRscHandler", () => {
     expect(renderPagesFallback).not.toHaveBeenCalled();
   });
 
+  it("returns middleware-enabled Pages data misses with the requested matched path", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      middlewareModule: {
+        default: () => new Response(null, { headers: { "x-middleware-next": "1" } }),
+      },
+      renderPagesFallback: async () => null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/missing.json"),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("x-nextjs-matched-path")).toBe("/missing");
+    expect(await response.text()).toBe("{}");
+  });
+
   it("does not normalize hybrid Pages data requests outside basePath", async () => {
     const renderPagesFallback = vi.fn(async () => new Response("pages-data"));
     const handler = createHandler({

@@ -217,19 +217,40 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 
-  it("does not invent matched-path metadata without a route match", async () => {
+  it("returns middleware data misses as JSON with the requested matched path", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unknown"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        renderPage: makeRenderPage(404, "not found"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("content-type")).toContain("application/json");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
+    expect(await result.response.text()).toBe("{}");
+  });
+
+  it("keeps data misses as JSON 404 without middleware", async () => {
     const result = await runPagesRequest(
       makeRequest("/unknown"),
       baseDeps({
         isDataReq: true,
         isDataRequest: true,
         matchPageRoute: vi.fn().mockReturnValue(null),
-        renderPage: makeRenderPage(),
+        renderPage: makeRenderPage(404, "{}"),
       }),
     );
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
+    expect(result.response.status).toBe(404);
     expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 

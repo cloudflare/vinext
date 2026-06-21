@@ -697,6 +697,23 @@ export async function runPagesRequest(
     const matchedPathHeaders = { ...middlewareHeaders };
     if (
       (isDataReq || isDataRequest) &&
+      typeof deps.runMiddleware === "function" &&
+      !renderPageMatch &&
+      response.status === 404 &&
+      (middlewareStatus === undefined || middlewareStatus === 200 || middlewareStatus === 404)
+    ) {
+      const headers = new Headers(response.headers);
+      headers.set("content-type", "application/json");
+      headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
+      const notFoundResponse = new Response("{}", { status: 200, headers });
+      return {
+        type: "response",
+        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        defaultContentType: "application/json",
+      };
+    }
+    if (
+      (isDataReq || isDataRequest) &&
       renderPageMatch &&
       (middlewareStatus ?? response.status) === 200
     ) {
