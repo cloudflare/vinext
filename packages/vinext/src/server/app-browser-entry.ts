@@ -2082,7 +2082,7 @@ function bootstrapHydration(
               interceptionContext,
               snapshot,
               navParams,
-              DYNAMIC_NAVIGATION_CACHE_TTL,
+              PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
             );
           } else {
