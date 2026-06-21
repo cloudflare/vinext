@@ -67,7 +67,11 @@ function hasSignificantPathPart(value: string): boolean {
   return normalized !== "" && normalized !== "/";
 }
 
-function templateHasStaticPart(node: AstRecord): boolean {
+function templateHasStaticPart(
+  node: AstRecord,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): boolean {
   const quasis = nodeArray(node.quasis).filter(isAstRecord);
   if (nodeArray(node.expressions).length === 0) {
     const value = quasis[0]?.value;
@@ -77,14 +81,34 @@ function templateHasStaticPart(node: AstRecord): boolean {
     const constant = typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "";
     return constant.replaceAll("\\", "/") !== "/";
   }
-  return quasis.some((quasi) => {
-    const value = quasi.value;
-    const cooked =
-      typeof value === "object" && value !== null ? Reflect.get(value, "cooked") : null;
-    const raw = typeof value === "object" && value !== null ? Reflect.get(value, "raw") : null;
-    return hasSignificantPathPart(
-      typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "",
-    );
+  if (
+    quasis.some((quasi) => {
+      const value = quasi.value;
+      const cooked =
+        typeof value === "object" && value !== null ? Reflect.get(value, "cooked") : null;
+      const raw = typeof value === "object" && value !== null ? Reflect.get(value, "raw") : null;
+      return hasSignificantPathPart(
+        typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "",
+      );
+    })
+  ) {
+    return true;
+  }
+
+  return nodeArray(node.expressions).some((expression) => {
+    const expressionNode = unwrapExpression(expression);
+    if (!expressionNode) return false;
+    const constantString = stringValue(expressionNode);
+    if (constantString !== null) return hasSignificantPathPart(constantString);
+    if (expressionNode.type !== "Identifier" || typeof expressionNode.name !== "string") {
+      return false;
+    }
+    if (resolvingBindings.has(expressionNode.name)) return false;
+    const binding = findConstantBinding(scope, expressionNode.name);
+    if (!binding) return false;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(expressionNode.name);
+    return requestHasStaticPart(binding, scope, nextResolvingBindings);
   });
 }
 
@@ -174,7 +198,9 @@ function requestHasStaticPart(
   const constantString = stringValue(node);
   if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
-  if (node.type === "TemplateLiteral") return templateHasStaticPart(node);
+  if (node.type === "TemplateLiteral") {
+    return templateHasStaticPart(node, scope, resolvingBindings);
+  }
   if (isIdentifierNamed(node, "undefined")) return !hasBinding(scope, "undefined");
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return false;
@@ -294,7 +320,18 @@ function collectLoopBindings(node: AstRecord, scope: Scope): void {
   const declaration = astNode(node.type === "ForStatement" ? node.init : node.left);
   if (declaration?.type !== "VariableDeclaration" || declaration.declare === true) return;
   for (const declarator of nodeArray(declaration.declarations)) {
-    collectBindingNames(astNode(declarator)?.id, scope.bindings);
+    const declaratorNode = astNode(declarator);
+    collectBindingNames(declaratorNode?.id, scope.bindings);
+    const identifier = astNode(declaratorNode?.id);
+    const initializer = astNode(declaratorNode?.init);
+    if (
+      declaration.kind === "const" &&
+      identifier?.type === "Identifier" &&
+      typeof identifier.name === "string" &&
+      initializer
+    ) {
+      scope.constants.set(identifier.name, initializer);
+    }
   }
 }
 
@@ -441,7 +478,6 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
         id: {
           include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
         },
-        code: /\b(?:require|import)\s*\(/,
       },
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];

@@ -69,8 +69,8 @@ export default function Layout({ children }: { children: ReactNode }) {
 
 function dynamic() {
   const request = Math.random() + "";
-  require(request);
-  import(request);
+  require/* comment-separated call */(request);
+  import/* comment-separated call */(request);
 }
 `,
   );
@@ -105,8 +105,8 @@ function dynamic() {
 
 function dynamic() {
   const request = Math.random() + "";
-  require(request);
-  import(request);
+  require/* comment-separated call */(request);
+  import/* comment-separated call */(request);
 }
 `,
   );
@@ -147,6 +147,19 @@ function local(require) { require(request); }
 const alias = request;
 require(request);
 import(alias);
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("resolves constant bindings in template interpolations", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `const part = "module";
+const alias = part;
+require(\`${"${part}"}\`);
+import(\`${"${alias}"}\`);
 `,
         "/app/page.tsx",
       ),
@@ -204,6 +217,25 @@ for (let require; condition; ) require(request);
         "/app/page.tsx",
       ),
     ).toBeNull();
+  });
+
+  it("resolves constant initializers in loop headers", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `for (const request = "./module"; condition; ) require(request);
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("rewrites comment-separated dynamic request calls", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `require/* comment */(request); import/* comment */(request);`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
   });
 
   it("preserves require calls shadowed by switch and named class bindings", () => {
