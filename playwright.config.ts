@@ -69,6 +69,30 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
+  "next-form-parity-dev": {
+    testDir: "./tests/e2e/next-form-parity",
+    use: { baseURL: "http://localhost:4190" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && vp dev --port 4190",
+      cwd: "./tests/fixtures/next-form-parity",
+      port: 4190,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
+  "next-form-parity-prod": {
+    testDir: "./tests/e2e/next-form-parity",
+    use: { baseURL: "http://localhost:4191" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && ./start-prod.sh",
+      cwd: "./tests/fixtures/next-form-parity",
+      port: 4191,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
     use: { baseURL: "http://localhost:4185" },
