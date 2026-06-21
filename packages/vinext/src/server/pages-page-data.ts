@@ -465,6 +465,9 @@ function matchesPagesStaticPath(
   return Object.entries(entryParams).every(([key, value]) => {
     const actual = params[key];
     if (Array.isArray(value)) {
+      if (value.length === 0 && actual === undefined) {
+        return true;
+      }
       return Array.isArray(actual) && value.join("/") === actual.join("/");
     }
     return String(value) === String(actual);

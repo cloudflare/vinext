@@ -227,6 +227,34 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("accepts an empty optional catch-all getStaticPaths entry at the route root", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: [] } }],
+            };
+          },
+          async getStaticProps() {
+            return { props: { slug: [] } };
+          },
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: true },
+        routePattern: "/catchall-optional/[[...slug]]",
+        routeUrl: "/catchall-optional",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { slug: [] },
+    });
+  });
+
   it("runs page getInitialProps with the original request URL and asPath", async () => {
     const result = await resolvePagesPageData(
       createOptions({
