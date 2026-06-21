@@ -1213,6 +1213,39 @@ describe("app server action execution helpers", () => {
     errorSpy.mockRestore();
   });
 
+  it("rerenders the page for failed fetch actions that revalidate", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "rerendered-page");
+    let renderedModel: TestActionModel | null = null;
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw new Error("action failed");
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    expect(renderedModel).toEqual({
+      root: "rerendered-page",
+      returnValue: expect.objectContaining({ ok: false }),
+    });
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    errorSpy.mockRestore();
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
   it("allows root params during the rerender after a successful fetch action", async () => {
