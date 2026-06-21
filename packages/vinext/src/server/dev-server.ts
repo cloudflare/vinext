@@ -2,7 +2,6 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
-import { normalizeStaticPathname, type StaticPathsEntry } from "../routing/route-pattern.js";
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
@@ -58,6 +57,11 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import {
+  getPagesRouteParams,
+  matchesPagesStaticPath,
+  type PagesStaticPathsEntry,
+} from "./pages-page-data.js";
 import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
@@ -720,30 +724,12 @@ export function createSSRHandler(
           });
           const fallback = pathsResult?.fallback ?? false;
 
-          // Only allow paths explicitly listed in getStaticPaths. Next.js
-          // accepts `paths` as Array<string | { params, locale? }>; the
-          // shared `StaticPathsEntry` type and `normalizeStaticPathname`
-          // helper in `../routing/route-pattern.ts` reference the upstream
-          // implementation.
-          type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
-          const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
-          const currentPathname = normalizeStaticPathname(url);
-          const isValidPath = paths.some((p) => {
-            if (typeof p === "string") {
-              return normalizeStaticPathname(p) === currentPathname;
-            }
-            const entryParams = p.params;
-            if (entryParams === undefined || entryParams === null) {
-              return false;
-            }
-            return Object.entries(entryParams).every(([key, val]) => {
-              const actual = params[key];
-              if (Array.isArray(val)) {
-                return Array.isArray(actual) && val.join("/") === actual.join("/");
-              }
-              return String(val) === String(actual);
-            });
-          });
+          const paths: PagesStaticPathsEntry[] = pathsResult?.paths ?? [];
+          const routePattern = patternToNextFormat(route.pattern);
+          const routeParams = getPagesRouteParams(routePattern);
+          const isValidPath = paths.some((pathEntry) =>
+            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+          );
 
           if (fallback === false && !isValidPath) {
             if (isDataReq) {

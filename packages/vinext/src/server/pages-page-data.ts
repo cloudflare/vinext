@@ -41,7 +41,12 @@ type PagesRedirectResult = {
 // `string | string[]` shape used at build time. The shared
 // `normalizeStaticPathname` helper from `../routing/route-pattern.js` is used
 // to canonicalize the string-entry comparison.
-type PagesStaticPathsEntry = string | { params?: Record<string, unknown>; locale?: string };
+export type PagesStaticPathsEntry =
+  | string
+  | {
+      params?: Record<string, unknown>;
+      locale?: string;
+    };
 
 type PagesStaticPathsResult = {
   fallback?: boolean | "blocking";
@@ -450,13 +455,13 @@ function buildPagesRedirectResponse(
  * entry with a missing `params` key, return false rather than throwing — the
  * caller will respond with a 404 just like Next.js does for unlisted paths.
  */
-type PagesRouteParam = {
+export type PagesRouteParam = {
   key: string;
   repeat: boolean;
   optional: boolean;
 };
 
-function getPagesRouteParams(routePattern: string): PagesRouteParam[] {
+export function getPagesRouteParams(routePattern: string): PagesRouteParam[] {
   return routePattern
     .split("/")
     .map((segment) => {
@@ -477,7 +482,7 @@ function getPagesRouteParams(routePattern: string): PagesRouteParam[] {
     .filter((param): param is PagesRouteParam => param !== null);
 }
 
-function matchesPagesStaticPath(
+export function matchesPagesStaticPath(
   pathEntry: PagesStaticPathsEntry,
   params: Record<string, unknown>,
   routeParams: PagesRouteParam[],

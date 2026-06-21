@@ -1350,6 +1350,27 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  it("renders an empty optional catch-all path from getStaticPaths in dev", async () => {
+    const res = await fetch(`${baseUrl}/catchall-optional`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/Catch all: \[(?:<!-- -->)?\]/);
+  });
+
+  it("requires mixed route params while accepting an empty optional catch-all in dev", async () => {
+    const res = await fetch(`${baseUrl}/mixed-catchall/guides`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Category:");
+    expect(html).toContain("guides");
+    expect(html).toMatch(/Slug: \[(?:<!-- -->)?\]/);
+
+    const unlistedRes = await fetch(`${baseUrl}/mixed-catchall/unlisted`);
+    expect(unlistedRes.status).toBe(404);
+  });
+
   it("renders pre-listed paths with getStaticPaths fallback: blocking", async () => {
     const res = await fetch(`${baseUrl}/articles/1`);
     expect(res.status).toBe(200);
