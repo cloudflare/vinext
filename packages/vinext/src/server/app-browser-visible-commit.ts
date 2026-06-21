@@ -150,7 +150,28 @@ function reduceApprovedVisibleCommitState(
   const { action } = commit;
   switch (action.type) {
     case "traverse":
-    case "navigate": {
+    case "navigate":
+    case "replace": {
+      if (action.type === "replace" && action.operation.lane === "hmr") {
+        return commitVisibleRouterState(
+          state,
+          {
+            bfcacheIds: action.bfcacheIds,
+            elements: action.elements,
+            interception: action.interception,
+            interceptionContext: action.interceptionContext,
+            layoutFlags: action.layoutFlags,
+            layoutIds: action.layoutIds,
+            navigationSnapshot: action.navigationSnapshot,
+            previousNextUrl: action.previousNextUrl,
+            renderId: action.renderId,
+            rootLayoutTreePath: action.rootLayoutTreePath,
+            routeId: action.routeId,
+            slotBindings: action.slotBindings,
+          },
+          action.operation,
+        );
+      }
       const preserveElementIds = action.reuseCurrentBfcacheIds
         ? commit.decision.preserveElementIds
         : [];
@@ -191,27 +212,6 @@ function reduceApprovedVisibleCommitState(
         action.operation,
       );
     }
-    case "replace":
-      return commitVisibleRouterState(
-        state,
-        {
-          // Replace commits install the complete payload directly; if they ever
-          // start preserving previous elements, they must preserve bfcache ids too.
-          bfcacheIds: action.bfcacheIds,
-          elements: action.elements,
-          interception: action.interception,
-          interceptionContext: action.interceptionContext,
-          layoutFlags: action.layoutFlags,
-          layoutIds: action.layoutIds,
-          navigationSnapshot: action.navigationSnapshot,
-          previousNextUrl: action.previousNextUrl,
-          renderId: action.renderId,
-          rootLayoutTreePath: action.rootLayoutTreePath,
-          routeId: action.routeId,
-          slotBindings: action.slotBindings,
-        },
-        action.operation,
-      );
     default: {
       const _exhaustive: never = action.type;
       throw new Error("[vinext] Unknown router action: " + String(_exhaustive));

@@ -885,6 +885,58 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-sidebar-segments="members|42"');
   });
 
+  it("uses override route segments for intercepted named slots", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          modal: {
+            default: { default: SlotPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/interception-dyn-seg",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          pageModule: { default: SlotPage },
+          params: { username: "foo", id: "1" },
+          routeSegments: ["[username]", "[id]"],
+        },
+      },
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/interception-dyn-seg"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: [], modal: ["foo", "1"] });
+  });
+
   it("wraps intercepted slot overrides with intercept layout modules inside the slot layout", async () => {
     const sidebarOverride: AppPageSlotOverride<AppPageModule> = {
       layoutModules: [{ default: InterceptOuterLayout }, { default: InterceptInnerLayout }],

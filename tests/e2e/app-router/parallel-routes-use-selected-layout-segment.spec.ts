@@ -56,6 +56,17 @@ test.describe("parallel routes useSelectedLayoutSegment", () => {
     await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
   });
 
+  test("replace nav preserves a named slot while changing children", async ({ page }) => {
+    await page.goto(BASE);
+    await waitForAppRouterHydration(page);
+
+    await page.locator('a[href="/parallel-selected-segment/reset"]').click();
+    await expectSegments(page, { nav: "", auth: "reset", route: "" });
+
+    await page.locator("#replace-foo").click();
+    await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
+  });
+
   test("hard nav to a named slot renders default children", async ({ page }) => {
     await page.goto(`${BASE}/reset/withMobile`);
     await expectSegments(page, { nav: "", auth: "withMobile", route: "" });

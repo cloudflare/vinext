@@ -373,6 +373,7 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
       layoutModules: opts.interceptLayouts || null,
       pageModule: opts.interceptPage,
       params: opts.interceptParams || routeParams,
+      routeSegments: resolveInterceptedSlotSegments(opts.interceptSourcePageSegments),
     };
   }
 
@@ -383,6 +384,27 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function resolveInterceptedSlotSegments(
+  sourcePageSegments: readonly string[] | null | undefined,
+): readonly string[] | null {
+  if (!sourcePageSegments) return null;
+
+  const slotIndex = sourcePageSegments.findIndex((segment) => segment.startsWith("@"));
+  if (slotIndex < 0 || slotIndex === sourcePageSegments.length - 1) return null;
+
+  const routeSegments = sourcePageSegments
+    .slice(slotIndex + 1)
+    .filter((segment) => !segment.startsWith("@"));
+  const firstSegment = routeSegments[0];
+  const marker = ["(...)", "(..)(..)", "(..)", "(.)"].find((prefix) =>
+    firstSegment.startsWith(prefix),
+  );
+  if (!marker) return routeSegments;
+
+  const targetSegment = firstSegment.slice(marker.length);
+  return targetSegment ? [targetSegment, ...routeSegments.slice(1)] : routeSegments.slice(1);
 }
 
 function resolveSlotParamOverrides(

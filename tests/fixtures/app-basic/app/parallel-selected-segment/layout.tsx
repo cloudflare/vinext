@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSelectedLayoutSegment } from "next/navigation";
+import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 
 export default function Layout({
   children,
@@ -15,12 +15,16 @@ export default function Layout({
   const authSegment = useSelectedLayoutSegment("auth");
   const navSegment = useSelectedLayoutSegment("nav");
   const routeSegment = useSelectedLayoutSegment();
+  const router = useRouter();
 
   return (
     <section>
       <nav>
         <Link href="/parallel-selected-segment">Main</Link>
         <Link href="/parallel-selected-segment/foo">Foo</Link>
+        <button id="replace-foo" onClick={() => router.replace("/parallel-selected-segment/foo")}>
+          Replace Foo
+        </button>
         <Link href="/parallel-selected-segment/login">Login</Link>
         <Link href="/parallel-selected-segment/reset">Reset</Link>
         <Link href="/parallel-selected-segment/reset/withEmail">Reset with Email</Link>

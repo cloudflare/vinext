@@ -1427,7 +1427,7 @@ describe("app browser entry state helpers", () => {
     });
   });
 
-  it("replaces elements on approved replace commits", async () => {
+  it("merges planner-approved elements on navigation replace commits", async () => {
     const nextElements = createResolvedElements("route:/next", "/", null, {
       "page:/next": React.createElement("main", null, "next"),
     });
@@ -1456,7 +1456,7 @@ describe("app browser entry state helpers", () => {
 
     const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
 
-    expect(nextState.elements).toBe(nextElements);
+    expect(nextState.elements).toEqual(nextElements);
     expect(nextState.interceptionContext).toBeNull();
     expect(nextState.previousNextUrl).toBeNull();
     expect(nextState.elements).toMatchObject({
@@ -2403,7 +2403,7 @@ describe("app browser entry state helpers", () => {
     );
   });
 
-  it("applies approved replace commits without preserving old elements", async () => {
+  it("does not preserve unapproved old elements on navigation replace commits", async () => {
     const currentState = createState({
       elements: createResolvedElements("route:/initial", "/", null, {
         "layout:/old": React.createElement("div", null, "old"),
@@ -2436,13 +2436,92 @@ describe("app browser entry state helpers", () => {
     }
 
     const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
-    expect(nextState.elements).toBe(nextElements);
+    expect(nextState.elements).toEqual(nextElements);
     expect(Object.hasOwn(nextState.elements, "layout:/old")).toBe(false);
     expect(nextState.activeOperation).toMatchObject({
       id: 12,
       lane: "navigation",
       state: "committed",
     });
+  });
+
+  it("replace navigation preserves planner-approved default-only slot content", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
+    const currentSlot = React.createElement("aside", null, "reset");
+    const currentBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "active" as const,
+      },
+    ];
+    const targetBindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: authSlotId,
+        slotName: "auth",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      elements: createResolvedElements(
+        "route:/parallel-selected-segment/reset",
+        "/",
+        null,
+        { [authSlotId]: currentSlot },
+        [rootLayoutId],
+        currentBindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/reset",
+        {},
+      ),
+      routeId: "route:/parallel-selected-segment/reset",
+      slotBindings: currentBindings,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/parallel-selected-segment/foo",
+          "/",
+          null,
+          { "page:/parallel-selected-segment/foo": React.createElement("main", null, "foo") },
+          [rootLayoutId],
+          targetBindings,
+        ),
+      ),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/parallel-selected-segment/foo",
+        {},
+      ),
+      operationLane: "navigation",
+      renderId: 13,
+      type: "replace",
+    });
+
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 5,
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      startedNavigationId: 5,
+      targetHref: "https://example.com/parallel-selected-segment/foo",
+    });
+
+    expect(approval.decision.disposition).toBe("commit");
+    if (approval.decision.disposition !== "commit" || approval.approvedCommit === null) {
+      throw new Error("Expected visible commit approval");
+    }
+    expect(approval.decision.preservePreviousSlotIds).toEqual([authSlotId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(nextState.elements[authSlotId]).toBe(currentSlot);
+    expect(nextState.slotBindings).toEqual(currentBindings);
   });
 
   it("applies approved traverse commits with stale slot cleanup", async () => {

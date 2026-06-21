@@ -155,6 +155,7 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   pageModule?: TModule | null;
   params?: AppPageParams;
   props?: Readonly<Record<string, unknown>>;
+  routeSegments?: readonly string[] | null;
 };
 
 type AppPageLayoutEntry<
@@ -393,6 +394,10 @@ function createAppPageParallelSlotEntries<
   layoutEntries: readonly AppPageLayoutEntry<TModule, TErrorModule>[],
   route: AppPageRouteWiringRoute<TModule, TErrorModule>,
   getEffectiveSlotParams: (slotKey: string, slotName: string) => AppPageParams,
+  resolveSlotOverride: (
+    slotKey: string,
+    slotName: string,
+  ) => AppPageSlotOverride<TModule> | undefined,
 ): Readonly<Record<string, ReactNode>> | undefined {
   const parallelSlots: Record<string, ReactNode> = {};
 
@@ -407,8 +412,10 @@ function createAppPageParallelSlotEntries<
     const treePath = layoutEntry?.treePath ?? "/";
     const slotId = resolveAppPageSlotId(slot, treePath);
     const slotParams = getEffectiveSlotParams(slotKey, slotName);
-    const slotSegments = slot.routeSegments
-      ? resolveAppPageChildSegments(slot.routeSegments, 0, slotParams)
+    const routeSegments =
+      resolveSlotOverride(slotKey, slotName)?.routeSegments ?? slot.routeSegments;
+    const slotSegments = routeSegments
+      ? resolveAppPageChildSegments(routeSegments, 0, slotParams)
       : [];
     parallelSlots[slotName] = (
       <LayoutSegmentProvider segmentMap={{ children: slotSegments }}>
@@ -1044,8 +1051,9 @@ export function buildAppPageElements<
       if (shouldPreserveMountedDefault) {
         continue;
       }
-      segmentMap[slotName] = slot.routeSegments
-        ? resolveAppPageChildSegments(slot.routeSegments, 0, slotParams)
+      const slotRouteSegments = slotOverride?.routeSegments ?? slot.routeSegments;
+      segmentMap[slotName] = slotRouteSegments
+        ? resolveAppPageChildSegments(slotRouteSegments, 0, slotParams)
         : [];
     }
 
@@ -1059,6 +1067,7 @@ export function buildAppPageElements<
               layoutEntries,
               options.route,
               getEffectiveSlotParams,
+              resolveSlotOverride,
             )}
           >
             {segmentChildren}
