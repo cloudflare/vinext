@@ -7,6 +7,8 @@ import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 
+const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+
 async function withTempDir<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "vinext-dynamic-requests-"));
   try {
@@ -39,12 +41,8 @@ async function buildApp(root: string) {
   await builder.buildApp();
 }
 
-function writeAppFixture(root: string) {
-  fs.symlinkSync(
-    path.resolve(import.meta.dirname, "../node_modules"),
-    path.join(root, "node_modules"),
-    "junction",
-  );
+function writeAppFixture(root: string, options: { dependency?: boolean } = {}) {
+  fs.symlinkSync(ROOT_NODE_MODULES, path.join(root, "node_modules"), "junction");
   writeFixtureFile(
     root,
     "package.json",
@@ -63,8 +61,9 @@ export default function Layout({ children }: { children: ReactNode }) {
   writeFixtureFile(
     root,
     "app/page.tsx",
-    `export default function Page() {
+    `${options.dependency ? 'import { runDynamicRequests } from "dynamic-request-dependency";\n\n' : ""}export default function Page() {
   if (Math.random() < 0) dynamic();
+  ${options.dependency ? "if (Math.random() < 0) runDynamicRequests();" : ""}
   return <p>Hello World</p>;
 }
 
@@ -75,6 +74,27 @@ function dynamic() {
 }
 `,
   );
+  if (options.dependency) {
+    writeFixtureFile(
+      root,
+      "app/node_modules/dynamic-request-dependency/package.json",
+      JSON.stringify({
+        name: "dynamic-request-dependency",
+        type: "module",
+        exports: "./index.js",
+      }),
+    );
+    writeFixtureFile(
+      root,
+      "app/node_modules/dynamic-request-dependency/index.js",
+      `export function runDynamicRequests() {
+  const request = Math.random() + "";
+  require(request);
+  import(request);
+}
+`,
+    );
+  }
   writeFixtureFile(
     root,
     "app/hello/route.ts",
@@ -120,12 +140,53 @@ function local(require) { require(request); }
     ).toBeNull();
   });
 
+  it("resolves constant identifier bindings and simple aliases", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `const request = "./module.js";
+const alias = request;
+require(request);
+import(alias);
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
   it("rewrites requests without significant static path parts", () => {
     const transformed = _transformVeryDynamicRequests(
-      `require(""); require("/"); import(\`\${name}\`); import(unknown ? "./a" : "./b");`,
+      `require("/"); import(\`\${name}\`);`,
       "/app/page.tsx",
     )?.code;
-    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(4);
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("preserves empty strings and conditional static alternatives", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `require(""); import(unknown ? "./a" : "./b");`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves require calls shadowed by loop-header bindings", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `for (const require of loaders) require(request);
+for (let require; condition; ) require(request);
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("rewrites fully dynamic requests in dependency modules", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `export function load(request) { require(request); return import(request); }`,
+      "/app/node_modules/dynamic-request-dependency/index.js",
+    )?.code;
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
   });
 
   it("serves guarded fully dynamic requests in pages and route handlers during development", async () => {
@@ -145,8 +206,9 @@ function local(require) { require(request); }
         expect(baseUrl).toBeTruthy();
         if (!baseUrl) return;
         const pageResponse = await fetch(baseUrl);
-        expect(pageResponse.status).toBe(200);
-        expect(await pageResponse.text()).toContain("Hello World");
+        const pageBody = await pageResponse.text();
+        expect(pageResponse.status, pageBody).toBe(200);
+        expect(pageBody).toContain("Hello World");
 
         const routeResponse = await fetch(new URL("/hello", baseUrl));
         expect(routeResponse.status).toBe(200);
@@ -162,7 +224,7 @@ function local(require) { require(request); }
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/dynamic-requests/dynamic-requests.test.ts
   it("builds guarded fully dynamic requests in pages and route handlers", async () => {
     await withTempDir(async (root) => {
-      writeAppFixture(root);
+      writeAppFixture(root, { dependency: true });
       await expect(buildApp(root)).resolves.not.toThrow();
     });
   });

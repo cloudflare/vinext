@@ -14,6 +14,8 @@ import {
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PLUGIN_RSC_PATH =
+  /[\\/]node_modules[\\/](?:\.pnpm[\\/][^/\\]+[\\/]node_modules[\\/])?@vitejs[\\/]plugin-rsc[\\/]/;
 const TRANSFORMABLE_EXTENSIONS = new Set([
   ".js",
   ".jsx",
@@ -37,6 +39,7 @@ const TRANSPARENT_EXPRESSIONS = new Set([
 type Scope = {
   parent: Scope | null;
   bindings: Set<string>;
+  constants: Map<string, AstRecord>;
 };
 
 function astNode(value: unknown): AstRecord | null {
@@ -113,15 +116,35 @@ function staticNullishness(value: unknown, scope: Scope): boolean | null {
   return null;
 }
 
-function requestHasStaticPart(value: unknown, scope: Scope): boolean {
+function findConstantBinding(scope: Scope, name: string): AstRecord | null {
+  for (let current: Scope | null = scope; current; current = current.parent) {
+    if (!current.bindings.has(name)) continue;
+    return current.constants.get(name) ?? null;
+  }
+  return null;
+}
+
+function requestHasStaticPart(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings = new Set<string>(),
+): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
 
   const constantString = stringValue(node);
-  if (constantString !== null) return hasSignificantPathPart(constantString);
+  if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
   if (node.type === "TemplateLiteral") return templateHasStaticPart(node);
   if (isIdentifierNamed(node, "undefined")) return !hasBinding(scope, "undefined");
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return false;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return false;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return requestHasStaticPart(binding, scope, nextResolvingBindings);
+  }
 
   if (node.type === "BinaryExpression" && node.operator === "+") {
     const left = unwrapExpression(node.left);
@@ -131,36 +154,46 @@ function requestHasStaticPart(value: unknown, scope: Scope): boolean {
     return (
       (leftString !== null && hasSignificantPathPart(leftString)) ||
       (rightString !== null && hasSignificantPathPart(rightString)) ||
-      requestHasStaticPart(left, scope) ||
-      requestHasStaticPart(right, scope)
+      (leftString === null && requestHasStaticPart(left, scope, resolvingBindings)) ||
+      (rightString === null && requestHasStaticPart(right, scope, resolvingBindings))
     );
   }
 
   if (node.type === "ConditionalExpression") {
     const truthiness = staticTruthiness(node.test, scope);
     return truthiness === null
-      ? false
-      : requestHasStaticPart(truthiness ? node.consequent : node.alternate, scope);
+      ? requestHasStaticPart(node.consequent, scope, resolvingBindings) ||
+          requestHasStaticPart(node.alternate, scope, resolvingBindings)
+      : requestHasStaticPart(
+          truthiness ? node.consequent : node.alternate,
+          scope,
+          resolvingBindings,
+        );
   }
   if (node.type === "LogicalExpression") {
     const truthiness = staticTruthiness(node.left, scope);
     if (node.operator === "&&" && truthiness !== null) {
-      return requestHasStaticPart(truthiness ? node.right : node.left, scope);
+      return requestHasStaticPart(truthiness ? node.right : node.left, scope, resolvingBindings);
     }
     if (node.operator === "||" && truthiness !== null) {
-      return requestHasStaticPart(truthiness ? node.left : node.right, scope);
+      return requestHasStaticPart(truthiness ? node.left : node.right, scope, resolvingBindings);
     }
     if (node.operator === "??") {
       const nullishness = staticNullishness(node.left, scope);
       if (nullishness !== null) {
-        return requestHasStaticPart(nullishness ? node.right : node.left, scope);
+        return requestHasStaticPart(nullishness ? node.right : node.left, scope, resolvingBindings);
       }
     }
-    return requestHasStaticPart(node.left, scope) || requestHasStaticPart(node.right, scope);
+    return (
+      requestHasStaticPart(node.left, scope, resolvingBindings) ||
+      requestHasStaticPart(node.right, scope, resolvingBindings)
+    );
   }
   if (node.type === "SequenceExpression") {
     const expressions = nodeArray(node.expressions);
-    return expressions.length > 0 && requestHasStaticPart(expressions.at(-1), scope);
+    return (
+      expressions.length > 0 && requestHasStaticPart(expressions.at(-1), scope, resolvingBindings)
+    );
   }
 
   return false;
@@ -192,7 +225,18 @@ function collectDirectBindings(node: AstRecord, scope: Scope): void {
       }
     } else if (declaration.type === "VariableDeclaration" && declaration.declare !== true) {
       for (const declarator of nodeArray(declaration.declarations)) {
-        collectBindingNames(astNode(declarator)?.id, scope.bindings);
+        const declaratorNode = astNode(declarator);
+        collectBindingNames(declaratorNode?.id, scope.bindings);
+        const identifier = astNode(declaratorNode?.id);
+        const initializer = astNode(declaratorNode?.init);
+        if (
+          declaration.kind === "const" &&
+          identifier?.type === "Identifier" &&
+          typeof identifier.name === "string" &&
+          initializer
+        ) {
+          scope.constants.set(identifier.name, initializer);
+        }
       }
     } else if (
       (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") &&
@@ -200,6 +244,14 @@ function collectDirectBindings(node: AstRecord, scope: Scope): void {
     ) {
       collectBindingNames(declaration.id, scope.bindings);
     }
+  }
+}
+
+function collectLoopBindings(node: AstRecord, scope: Scope): void {
+  const declaration = astNode(node.type === "ForStatement" ? node.init : node.left);
+  if (declaration?.type !== "VariableDeclaration" || declaration.declare === true) return;
+  for (const declarator of nodeArray(declaration.declarations)) {
+    collectBindingNames(astNode(declarator)?.id, scope.bindings);
   }
 }
 
@@ -249,14 +301,14 @@ function transformVeryDynamicRequests(code: string, id: string) {
   let changed = false;
   const root = astNode(ast);
   if (!root) return null;
-  const rootScope: Scope = { parent: null, bindings: new Set() };
+  const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
   collectDirectBindings(root, rootScope);
   collectVarBindings(root, rootScope);
 
   function visit(node: AstRecord, parentScope: Scope): void {
     let scope = parentScope;
     if (isFunction(node)) {
-      scope = { parent: parentScope, bindings: new Set() };
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.id, scope.bindings);
       for (const parameter of nodeArray(node.params))
         collectBindingNames(parameter, scope.bindings);
@@ -266,11 +318,18 @@ function transformVeryDynamicRequests(code: string, id: string) {
         collectVarBindings(body, scope);
       }
     } else if (node.type === "BlockStatement" && node !== root) {
-      scope = { parent: parentScope, bindings: new Set() };
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
     } else if (node.type === "CatchClause") {
-      scope = { parent: parentScope, bindings: new Set() };
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);
+    } else if (
+      node.type === "ForStatement" ||
+      node.type === "ForInStatement" ||
+      node.type === "ForOfStatement"
+    ) {
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
+      collectLoopBindings(node, scope);
     }
 
     if (node.type === "CallExpression" && hasRange(node)) {
@@ -321,7 +380,6 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
       filter: {
         id: {
           include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
-          exclude: /[\\/]node_modules[\\/]/,
         },
         code: /\b(?:require|import)\s*\(/,
       },
@@ -331,7 +389,8 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
         const absoluteId = path.resolve(cleanId);
         if (
           absoluteId === VINEXT_SOURCE_ROOT ||
-          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}${path.sep}`)
+          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}${path.sep}`) ||
+          PLUGIN_RSC_PATH.test(absoluteId)
         ) {
           return null;
         }
