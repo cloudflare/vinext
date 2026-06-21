@@ -39,10 +39,12 @@ const PERFORMANCE_COLORS = ["#f6821f", "#2563eb", "#16a34a", "#9333ea", "#dc2626
 export function PerformanceResultsTable({
   measurements,
   baselineMeasurements,
+  baselineLabel = "Baseline",
   renderFrameworkLabel,
 }: {
   measurements: PerformanceMeasurement[];
   baselineMeasurements?: PerformanceMeasurement[];
+  baselineLabel?: string;
   renderFrameworkLabel?: (measurement: PerformanceMeasurement) => ReactNode;
 }) {
   const comparisonMode = baselineMeasurements !== undefined;
@@ -75,7 +77,7 @@ export function PerformanceResultsTable({
           <Table.Row>
             <Table.Head>Scenario</Table.Head>
             <Table.Head>Framework</Table.Head>
-            {comparisonMode && <Table.Head>Baseline</Table.Head>}
+            {comparisonMode && <Table.Head>{baselineLabel}</Table.Head>}
             <Table.Head>{comparisonMode ? "Current" : "Median"}</Table.Head>
             {comparisonMode && <Table.Head>Change</Table.Head>}
             <Table.Head>Range</Table.Head>
