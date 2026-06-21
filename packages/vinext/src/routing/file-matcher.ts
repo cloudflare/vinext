@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { glob } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { escapeRegExp } from "../utils/regex.js";
 
@@ -15,13 +15,6 @@ export function normalizePageExtensions(pageExtensions?: readonly string[] | nul
     .map((ext) => ext.trim().replace(/^\.+/, ""))
     .filter((ext) => ext.length > 0);
   return filtered.length > 0 ? [...filtered] : [...DEFAULT_PAGE_EXTENSIONS];
-}
-
-function buildExtensionGlob(stem: string, extensions: readonly string[]): string {
-  if (extensions.length === 1) {
-    return `${stem}.${extensions[0]}`;
-  }
-  return `${stem}.{${extensions.join(",")}}`;
 }
 
 export type ValidFileMatcher = {
@@ -162,7 +155,23 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
 }
 
 /**
- * Use function-form exclude for Node < 22.14 compatibility.
+ * Recursively scan `cwd` for files matching `stem.{extensions}`.
+ *
+ * `stem` is always a recursive glob (a leading globstar joined to a leaf), where
+ * the leaf is either a literal basename (`page`, `route`, `layout`, …) or `*`
+ * (any basename). The leading globstar means the leaf may live at any depth.
+ *
+ * This mirrors Next.js route discovery (`recursiveReadDir`), which walks the
+ * directory tree itself and only skips directories the caller asks it to. Unlike
+ * Node's `glob`, `**` there does NOT skip dot-prefixed directories — Next.js only
+ * ignores path parts starting with `_` (and the caller supplies that filter via
+ * `exclude`). Using `glob` here silently dropped routes inside dot-directories
+ * such as `app/.well-known/openid-configuration/route.ts` (cloudflare/vinext#2014).
+ *
+ * The `exclude` callback receives the base name of each entry (with extension for
+ * files) and, when it returns true, prunes that directory (or skips that file),
+ * matching the previous `glob` `exclude` semantics. Yielded paths are relative to
+ * `cwd` and use the platform path separator, as `glob` did.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -170,11 +179,50 @@ export async function* scanWithExtensions(
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
-  const pattern = buildExtensionGlob(stem, extensions);
-  for await (const file of glob(pattern, {
-    cwd,
-    ...(exclude ? { exclude } : {}),
-  })) {
-    yield file;
+  const leaf = stem.slice(stem.lastIndexOf("/") + 1);
+  // Compare against each full extension (not just the substring after the last
+  // dot) so multi-dot pageExtensions like "platform.tsx" still match a file
+  // named `page.platform.tsx`, exactly as the previous `{a,b}` glob brace did.
+  const suffixes = extensions.map((ext) => `.${ext}`);
+  const matchesLeaf = (fileName: string): boolean =>
+    suffixes.some((suffix) =>
+      leaf === "*"
+        ? fileName.length > suffix.length && fileName.endsWith(suffix)
+        : fileName === `${leaf}${suffix}`,
+    );
+
+  yield* scanDirectory(cwd, "", matchesLeaf, exclude);
+}
+
+async function* scanDirectory(
+  absoluteDir: string,
+  relativeDir: string,
+  matchesLeaf: (fileName: string) => boolean,
+  exclude: ((name: string) => boolean) | undefined,
+): AsyncGenerator<string> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(absoluteDir, { withFileTypes: true });
+  } catch {
+    // Directory removed between readdir calls (or unreadable): abandon it.
+    return;
+  }
+
+  // Sort for deterministic discovery order regardless of filesystem ordering.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+  for (const entry of entries) {
+    const name = entry.name;
+    if (exclude?.(name)) continue;
+    const childRelative = relativeDir ? path.join(relativeDir, name) : name;
+    // `isDirectory()` is false for symlinks-to-directories, so we don't recurse
+    // into them. This is an intentional, conservative divergence from Next.js'
+    // `recursiveReadDir` (which follows symlinks): route trees almost never use
+    // symlinked directories, and not following them avoids symlink cycles.
+    if (entry.isDirectory()) {
+      yield* scanDirectory(path.join(absoluteDir, name), childRelative, matchesLeaf, exclude);
+    } else if (matchesLeaf(name)) {
+      yield childRelative;
+    }
   }
 }

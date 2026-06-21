@@ -72,9 +72,12 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   const routes: Route[] = [];
 
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14).
-  // The `RESERVED_PAGE_NAMES` check here is a directory-traversal optimization only — glob's
-  // exclude callback fires on directory names, not file names, so root-level files like
-  // `_app.tsx` still get yielded and are filtered by the guard in `fileToRoute()` below.
+  // The exclude predicate fires on every scanned entry — both directory names AND file names.
+  // For directories it prunes traversal (`api`, reserved folders). For files it matches against
+  // extensionless basenames: `RESERVED_PAGE_NAMES` stores `_app`/`_document`, so `exclude("_app.tsx")`
+  // is false and root-level reserved files are still yielded, then filtered by the guard in
+  // `fileToRoute()` below. So this check is a traversal optimization; the authoritative
+  // reserved-file filtering lives in `fileToRoute()`.
   for await (const file of scanWithExtensions(
     "**/*",
     pagesDir,

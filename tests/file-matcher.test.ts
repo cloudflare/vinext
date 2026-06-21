@@ -1,9 +1,26 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import {
   createValidFileMatcher,
   normalizePageExtensions,
+  scanWithExtensions,
 } from "../packages/vinext/src/routing/file-matcher.js";
 import { shouldInvalidateAppRouteFile } from "../packages/vinext/src/server/dev-route-files.js";
+
+async function collectScan(
+  stem: string,
+  cwd: string,
+  extensions: readonly string[],
+  exclude?: (name: string) => boolean,
+): Promise<string[]> {
+  const out: string[] = [];
+  for await (const file of scanWithExtensions(stem, cwd, extensions, exclude)) {
+    out.push(file.split(path.sep).join("/"));
+  }
+  return out.sort();
+}
 
 describe("file matcher", () => {
   it("normalizes pageExtensions with defaults and preserves configured values", () => {
@@ -82,5 +99,81 @@ describe("file matcher", () => {
     expect(shouldInvalidateAppRouteFile(appDir, "/project/app/blog/robots.ts", matcher)).toBe(
       false,
     );
+  });
+});
+
+describe("scanWithExtensions directory traversal", () => {
+  it("discovers route files inside dot-directories at any depth", async () => {
+    // Next.js discovers app routes via recursiveReadDir, which only ignores
+    // path parts starting with "_" (private folders) — NOT dot-directories.
+    // See packages/next/src/build/route-discovery.ts (ignorePartFilter:
+    // (part) => part.startsWith('_')) and packages/next/src/lib/recursive-readdir.ts.
+    // So app/.well-known/openid-configuration/route.ts MUST be matched.
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "vinext-scan-dot-"));
+    try {
+      const write = async (rel: string) => {
+        const filePath = path.join(tmpDir, rel);
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, "export const GET = () => new Response();\n");
+      };
+
+      await write("foo/route.ts");
+      await write(".well-known/openid-configuration/route.ts");
+      await write("nested/.hidden/deep/route.ts");
+
+      const found = await collectScan("**/route", tmpDir, ["ts", "tsx"]);
+
+      expect(found).toEqual([
+        ".well-known/openid-configuration/route.ts",
+        "foo/route.ts",
+        "nested/.hidden/deep/route.ts",
+      ]);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still prunes excluded directories while traversing dot-directories", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "vinext-scan-exclude-"));
+    try {
+      const write = async (rel: string) => {
+        const filePath = path.join(tmpDir, rel);
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, "export default function Page() { return null; }\n");
+      };
+
+      await write("blog/page.tsx");
+      await write(".well-known/page.tsx");
+      await write("_private/page.tsx");
+
+      const found = await collectScan("**/page", tmpDir, ["tsx"], (name) => name.startsWith("_"));
+
+      expect(found).toEqual([".well-known/page.tsx", "blog/page.tsx"]);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("matches multi-dot page extensions like the previous brace-expansion glob", async () => {
+    // pageExtensions can carry compound suffixes, e.g. ["platform.tsx", "tsx"]
+    // from the Next.js resolve-extensions fixture (see buildViteResolveExtensions).
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "vinext-scan-ext-"));
+    try {
+      const write = async (rel: string) => {
+        const filePath = path.join(tmpDir, rel);
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, "export default function Page() { return null; }\n");
+      };
+
+      await write("a/page.platform.tsx");
+      await write("b/page.tsx");
+      await write("c/page.module.css");
+
+      const found = await collectScan("**/page", tmpDir, ["platform.tsx", "tsx"]);
+
+      expect(found).toEqual(["a/page.platform.tsx", "b/page.tsx"]);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
