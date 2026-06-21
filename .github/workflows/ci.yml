@@ -278,6 +278,14 @@ jobs:
             label: pages-router-basepath
             shardIndex: 1
             shardTotal: 1
+          - project: next-form-parity-dev
+            label: next-form-parity-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: next-form-parity-prod
+            label: next-form-parity-prod
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 1/3
             shardIndex: 1

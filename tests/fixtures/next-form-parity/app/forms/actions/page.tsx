@@ -66,14 +66,6 @@ export default function ActionsPage() {
           Submit dangerous override
         </button>
       </Form>
-      <Form action="/search" id="javascript-submitter-override">
-        <button
-          type="submit"
-          formAction="javascript:globalThis.__VINEXT_FORM_JAVASCRIPT_SUBMITTER__=true"
-        >
-          Submit javascript override
-        </button>
-      </Form>
     </main>
   );
 }

@@ -66,6 +66,7 @@ const SUPPORTED_FORM_METHOD = "GET";
 const SUPPORTED_FORM_TARGET = "_self";
 
 function isPrefetchableAction(action: string): boolean {
+  // Browser-only: callers must guard this behind a client environment check.
   try {
     const actionUrl = new URL(action, window.location.href);
     return (
@@ -434,15 +435,14 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       // Pages Router: delegate to the Router singleton so navigation flows
       // through `performNavigation` (route events, HTML fetch, scroll
       // handling). Mirrors what `<Link>` does at link.tsx:619-623.
+      // Keep the shared guard synchronous so React receives the error; the
+      // async import fallback below must never turn it into history navigation.
+      assertSafeNavigationUrl(url);
       void (async () => {
+        let Router: (typeof import("./router.js"))["default"];
         try {
           const routerModule = await import("./router.js");
-          const Router = routerModule.default;
-          if (replace) {
-            await Router.replace(url, undefined, { scroll });
-          } else {
-            await Router.push(url, undefined, { scroll });
-          }
+          Router = routerModule.default;
         } catch {
           // Fallback: pushState + popstate keeps the URL in sync even if the
           // Router singleton import fails (e.g. in test/SSR-only contexts).
@@ -455,6 +455,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
           if (scroll) {
             window.scrollTo(0, 0);
           }
+          return;
+        }
+
+        if (replace) {
+          await Router.replace(url, undefined, { scroll });
+        } else {
+          await Router.push(url, undefined, { scroll });
         }
       })();
     }

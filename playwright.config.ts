@@ -71,12 +71,12 @@ const projectServers = {
   },
   "next-form-parity-dev": {
     testDir: "./tests/e2e/next-form-parity",
-    use: { baseURL: "http://localhost:4190" },
+    use: { baseURL: "http://localhost:4192" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && vp dev --port 4190",
+        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && vp dev --port 4192",
       cwd: "./tests/fixtures/next-form-parity",
-      port: 4190,
+      port: 4192,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
     },
@@ -95,12 +95,12 @@ const projectServers = {
   },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
-    use: { baseURL: "http://localhost:4185" },
+    use: { baseURL: "http://localhost:4193" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4193",
       cwd: "./tests/fixtures/global-not-found-basic",
-      port: 4185,
+      port: 4193,
       reuseExistingServer: false,
       timeout: 60_000,
     },

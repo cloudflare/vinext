@@ -125,11 +125,6 @@ for (const [name, selector, marker] of [
     "#dangerous-submitter-override button",
     "__VINEXT_FORM_DANGEROUS_SUBMITTER__",
   ],
-  [
-    "javascript submitter formAction overrides",
-    "#javascript-submitter-override button",
-    "__VINEXT_FORM_JAVASCRIPT_SUBMITTER__",
-  ],
 ] as const) {
   test(`blocks dangerous schemes in ${name} without executing them`, async ({ page }) => {
     const errors: string[] = [];

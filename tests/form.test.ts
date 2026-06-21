@@ -675,13 +675,14 @@ describe("Form Pages Router soft navigation", () => {
     // Regression for #1355: without interception, the browser would submit
     // the form and trigger a full page reload (`didMpaNavigate` -> true).
     // Calling preventDefault is the only thing that can stop that.
-    installPagesGlobals();
+    const { pushState } = installPagesGlobals();
     const { onSubmit } = renderClientForm({ action: "/results" });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
     onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(pushState).toHaveBeenCalledOnce());
   });
 
   it("does not call preventDefault when submitter overrides method to POST", async () => {
@@ -699,6 +700,34 @@ describe("Form Pages Router soft navigation", () => {
 
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  for (const [name, action, submitter] of [
+    ["form action", "data:text/html,dangerous", null],
+    [
+      "submitter formAction override",
+      "/results",
+      new FakeButtonElement({ attributes: { formaction: "vbscript:dangerous" } }),
+    ],
+  ] as const) {
+    it(`blocks a dangerous ${name} without falling through to history`, async () => {
+      const { pushState, replaceState, dispatched } = installPagesGlobals();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(dispatched).toHaveLength(0);
+    });
+  }
 });
 
 describe("Form function action (client/server action)", () => {
