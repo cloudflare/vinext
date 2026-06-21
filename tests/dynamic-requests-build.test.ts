@@ -170,11 +170,53 @@ import(alias);
     ).toBeNull();
   });
 
+  it("resolves constant aliases in conditional and nullish predicates", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const enabled = true;
+const enabledAlias = enabled;
+const missing = undefined;
+import(enabledAlias ? request : "./fallback");
+require(missing ?? request);
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("matches constant template and unary request patterns", () => {
+    const transformed = _transformVeryDynamicRequests(
+      "require(`/`); import(void 0); require(!0);",
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed).toContain("import(void 0)");
+    expect(transformed).toContain("require(!0)");
+  });
+
   it("preserves require calls shadowed by loop-header bindings", () => {
     expect(
       _transformVeryDynamicRequests(
         `for (const require of loaders) require(request);
 for (let require; condition; ) require(request);
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves require calls shadowed by switch and named class bindings", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `switch (value) {
+  case 1:
+    let require;
+    require(request);
+}
+const Loader = class require {
+  load() { require(request); }
+};
 `,
         "/app/page.tsx",
       ),

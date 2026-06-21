@@ -69,7 +69,14 @@ function hasSignificantPathPart(value: string): boolean {
 
 function templateHasStaticPart(node: AstRecord): boolean {
   const quasis = nodeArray(node.quasis).filter(isAstRecord);
-  if (nodeArray(node.expressions).length === 0) return true;
+  if (nodeArray(node.expressions).length === 0) {
+    const value = quasis[0]?.value;
+    const cooked =
+      typeof value === "object" && value !== null ? Reflect.get(value, "cooked") : null;
+    const raw = typeof value === "object" && value !== null ? Reflect.get(value, "raw") : null;
+    const constant = typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "";
+    return constant.replaceAll("\\", "/") !== "/";
+  }
   return quasis.some((quasi) => {
     const value = quasi.value;
     const cooked =
@@ -81,11 +88,30 @@ function templateHasStaticPart(node: AstRecord): boolean {
   });
 }
 
-function staticTruthiness(value: unknown, scope: Scope): boolean | null {
+function staticTruthiness(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings = new Set<string>(),
+): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
   if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return false;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return null;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return null;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return staticTruthiness(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "UnaryExpression") {
+    if (node.operator === "void") return false;
+    if (node.operator === "!") {
+      const argumentTruthiness = staticTruthiness(node.argument, scope, resolvingBindings);
+      return argumentTruthiness === null ? null : !argumentTruthiness;
+    }
+  }
   if (
     node.type === "ArrayExpression" ||
     node.type === "ObjectExpression" ||
@@ -98,11 +124,24 @@ function staticTruthiness(value: unknown, scope: Scope): boolean | null {
   return null;
 }
 
-function staticNullishness(value: unknown, scope: Scope): boolean | null {
+function staticNullishness(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings = new Set<string>(),
+): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
   if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return true;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return null;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return null;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return staticNullishness(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "UnaryExpression") return node.operator === "void";
   if (
     node.type === "ArrayExpression" ||
     node.type === "ObjectExpression" ||
@@ -144,6 +183,10 @@ function requestHasStaticPart(
     const nextResolvingBindings = new Set(resolvingBindings);
     nextResolvingBindings.add(node.name);
     return requestHasStaticPart(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "UnaryExpression") {
+    if (node.operator === "void" || node.operator === "!") return true;
+    return staticTruthiness(node, scope, resolvingBindings) !== null;
   }
 
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -255,6 +298,17 @@ function collectLoopBindings(node: AstRecord, scope: Scope): void {
   }
 }
 
+function collectSwitchBindings(node: AstRecord, scope: Scope): void {
+  for (const caseValue of nodeArray(node.cases)) {
+    const switchCase = astNode(caseValue);
+    if (!switchCase) continue;
+    collectDirectBindings(
+      { type: "BlockStatement", body: nodeArray(switchCase.consequent) },
+      scope,
+    );
+  }
+}
+
 function collectVarBindings(node: AstRecord, scope: Scope, root = true): void {
   if (!root && isFunction(node)) return;
   if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
@@ -323,6 +377,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
     } else if (node.type === "CatchClause") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);
+    } else if (node.type === "SwitchStatement") {
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
+      collectSwitchBindings(node, scope);
     } else if (
       node.type === "ForStatement" ||
       node.type === "ForInStatement" ||
@@ -330,6 +387,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
     ) {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectLoopBindings(node, scope);
+    } else if (node.type === "ClassExpression" && node.id) {
+      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
+      collectBindingNames(node.id, scope.bindings);
     }
 
     if (node.type === "CallExpression" && hasRange(node)) {
