@@ -127,7 +127,7 @@ function renderClientForm(props: Record<string, unknown>) {
     ).render(props);
     expect(rendered.type).toBe("form");
     return rendered.props as {
-      onSubmit: (event: any) => Promise<void>;
+      onSubmit: (event: any) => void;
     };
   } finally {
     ReactSharedInternals.H = previousDispatcher;
@@ -297,6 +297,56 @@ describe("Form useActionState", () => {
 });
 
 describe("Form client GET interception", () => {
+  for (const scheme of ["javascript", "data", "vbscript"] as const) {
+    it(`blocks dangerous ${scheme}: form actions without invoking navigation`, async () => {
+      const { navigate } = installClientGlobals({ supportsSubmitter: true });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const action = `${scheme}:globalThis.__VINEXT_FORM_DANGEROUS_ACTION__=true`;
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [] });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(navigate).not.toHaveBeenCalled();
+      expect(
+        (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_ACTION__,
+      ).toBeUndefined();
+    });
+  }
+
+  for (const scheme of ["data", "vbscript"] as const) {
+    it(`blocks dangerous ${scheme}: submitter formAction overrides`, async () => {
+      const { navigate } = installClientGlobals({ supportsSubmitter: true });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const submitter = new FakeButtonElement({
+        attributes: {
+          formaction: `${scheme}:globalThis.__VINEXT_FORM_DANGEROUS_SUBMITTER__=true`,
+        },
+      });
+      const { onSubmit } = renderClientForm({ action: "/search" });
+      const event = createSubmitEvent({ entries: [], submitter });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(navigate).not.toHaveBeenCalled();
+      expect(
+        (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_SUBMITTER__,
+      ).toBeUndefined();
+    });
+  }
+
   it("strips existing query params from the action URL and warns in development", async () => {
     const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -305,7 +355,7 @@ describe("Form client GET interception", () => {
       entries: [["q", "react"]],
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
@@ -346,7 +396,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(navigate).toHaveBeenCalledWith(
@@ -380,7 +430,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=fallback&lang=de&source=fallback-submitter",
@@ -408,7 +458,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     // hasUnsupportedSubmitterAttributes fires an error and returns true → no nav.
     expect(error).toHaveBeenCalledWith(
@@ -434,7 +484,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       '<Form> received a `formAction` that contains search params: "/search-alt?lang=fr". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
@@ -466,7 +516,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(error).toHaveBeenCalledWith(
       `<Form>'s \`target\` was set to an unsupported value via \`formTarget="_blank"\`. This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
@@ -487,7 +537,7 @@ describe("Form client GET interception", () => {
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     // Bails silently — no unsupported-attribute warning, no navigation, no preventDefault.
     expect(error).not.toHaveBeenCalled();
@@ -503,15 +553,20 @@ describe("Form client GET interception", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search" });
     const submitter = new FakeButtonElement({
-      attributes: { formaction: "javascript:void(0)" },
+      attributes: {
+        formaction: "javascript:globalThis.__VINEXT_FORM_DANGEROUS_SUBMITTER__=true",
+      },
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(warn).not.toHaveBeenCalled();
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+    expect(
+      (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_SUBMITTER__,
+    ).toBeUndefined();
   });
 
   it("respects onSubmit calling preventDefault — no client-side navigation", async () => {
@@ -526,7 +581,7 @@ describe("Form client GET interception", () => {
     const { onSubmit } = renderClientForm({ action: "/search", onSubmit: userOnSubmit });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(userOnSubmit).toHaveBeenCalledOnce();
     expect(event.preventDefault).toHaveBeenCalledOnce();
@@ -539,7 +594,7 @@ describe("Form client GET interception", () => {
     const { onSubmit } = renderClientForm({ action: "/search", replace: true });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
       "/search?q=react",
@@ -624,7 +679,7 @@ describe("Form Pages Router soft navigation", () => {
     const { onSubmit } = renderClientForm({ action: "/results" });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
   });
@@ -640,7 +695,7 @@ describe("Form Pages Router soft navigation", () => {
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
@@ -755,7 +810,7 @@ describe("Form file input warning", () => {
       event.defaultPrevented = true;
     });
 
-    await onSubmit(event);
+    onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(

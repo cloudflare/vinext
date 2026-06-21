@@ -12053,9 +12053,10 @@ describe("next/form shim", () => {
   });
 
   it("preserves the absolute form target so basePath normalization runs once", async () => {
-    const previousWindow = globalThis.window;
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", {
       configurable: true,
+      writable: true,
       value: { location: { href: "https://example.com/base/forms/basic" } },
     });
 
@@ -12077,10 +12078,11 @@ describe("next/form shim", () => {
 
       formDataSpy.mockRestore();
     } finally {
-      Object.defineProperty(globalThis, "window", {
-        configurable: true,
-        value: previousWindow,
-      });
+      if (previousWindowDescriptor) {
+        Object.defineProperty(globalThis, "window", previousWindowDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "window");
+      }
     }
   });
 });

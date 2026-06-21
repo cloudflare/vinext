@@ -37,6 +37,7 @@ import {
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
 import { withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
@@ -383,7 +384,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     return <form ref={setRefs} action={action} onSubmit={onSubmit} {...cleanRest} />;
   }
 
-  async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
+  function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
     if (onSubmit) {
       onSubmit(e);
@@ -424,34 +425,38 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
     // Navigate client-side
     if (hasAppNavigationRuntime()) {
-      // App Router: use the shared navigator so URL/history publish stays
-      // aligned with the committed RSC tree.
-      await navigateClientSide(url, replace ? "replace" : "push", scroll);
+      // App Router: preserve the same dangerous-scheme guard used by
+      // router.push()/replace(), then use the shared navigator so URL/history
+      // publication stays aligned with the committed RSC tree.
+      assertSafeNavigationUrl(url);
+      void navigateClientSide(url, replace ? "replace" : "push", scroll);
     } else {
       // Pages Router: delegate to the Router singleton so navigation flows
       // through `performNavigation` (route events, HTML fetch, scroll
       // handling). Mirrors what `<Link>` does at link.tsx:619-623.
-      try {
-        const routerModule = await import("./router.js");
-        const Router = routerModule.default;
-        if (replace) {
-          await Router.replace(url, undefined, { scroll });
-        } else {
-          await Router.push(url, undefined, { scroll });
+      void (async () => {
+        try {
+          const routerModule = await import("./router.js");
+          const Router = routerModule.default;
+          if (replace) {
+            await Router.replace(url, undefined, { scroll });
+          } else {
+            await Router.push(url, undefined, { scroll });
+          }
+        } catch {
+          // Fallback: pushState + popstate keeps the URL in sync even if the
+          // Router singleton import fails (e.g. in test/SSR-only contexts).
+          if (replace) {
+            window.history.replaceState({}, "", url);
+          } else {
+            window.history.pushState({}, "", url);
+          }
+          window.dispatchEvent(new PopStateEvent("popstate"));
+          if (scroll) {
+            window.scrollTo(0, 0);
+          }
         }
-      } catch {
-        // Fallback: pushState + popstate keeps the URL in sync even if the
-        // Router singleton import fails (e.g. in test/SSR-only contexts).
-        if (replace) {
-          window.history.replaceState({}, "", url);
-        } else {
-          window.history.pushState({}, "", url);
-        }
-        window.dispatchEvent(new PopStateEvent("popstate"));
-        if (scroll) {
-          window.scrollTo(0, 0);
-        }
-      }
+      })();
     }
   }
 
@@ -460,7 +465,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       ref={setRefs}
       action={actionHref}
       onSubmit={(event) => {
-        void handleSubmit(event);
+        handleSubmit(event);
       }}
       {...cleanRest}
     />

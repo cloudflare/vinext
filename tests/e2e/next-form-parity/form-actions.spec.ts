@@ -118,6 +118,42 @@ test("uses submitter formAction verbatim without adding basePath", async ({ page
   await expectSoftNavigation(page);
 });
 
+for (const [name, selector, marker] of [
+  ["form actions", "#dangerous-action button", "__VINEXT_FORM_DANGEROUS_ACTION__"],
+  [
+    "submitter formAction overrides",
+    "#dangerous-submitter-override button",
+    "__VINEXT_FORM_DANGEROUS_SUBMITTER__",
+  ],
+  [
+    "javascript submitter formAction overrides",
+    "#javascript-submitter-override button",
+    "__VINEXT_FORM_JAVASCRIPT_SUBMITTER__",
+  ],
+] as const) {
+  test(`blocks dangerous schemes in ${name} without executing them`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    const initialUrl = page.url();
+
+    await page.locator(selector).click();
+
+    await expect
+      .poll(() =>
+        errors.some((message) =>
+          message.includes("has blocked a javascript: URL as a security precaution."),
+        ),
+      )
+      .toBe(true);
+    await expect(page).toHaveURL(initialUrl);
+    expect(
+      await page.evaluate((property) => (globalThis as Record<string, unknown>)[property], marker),
+    ).toBeUndefined();
+  });
+}
+
 for (const [name, selector] of [
   ["external absolute actions", "#external-absolute button"],
   ["protocol-relative actions", "#protocol-relative button"],

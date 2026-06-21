@@ -52,6 +52,28 @@ export default function ActionsPage() {
         <input name="query" defaultValue="relative" />
         <button type="submit">Submit relative</button>
       </Form>
+      <Form
+        action="javascript:globalThis.__VINEXT_FORM_DANGEROUS_ACTION__=true"
+        id="dangerous-action"
+      >
+        <button type="submit">Submit dangerous action</button>
+      </Form>
+      <Form action="/search" id="dangerous-submitter-override">
+        <button
+          type="submit"
+          formAction="data:text/html,<script>globalThis.__VINEXT_FORM_DANGEROUS_SUBMITTER__=true</script>"
+        >
+          Submit dangerous override
+        </button>
+      </Form>
+      <Form action="/search" id="javascript-submitter-override">
+        <button
+          type="submit"
+          formAction="javascript:globalThis.__VINEXT_FORM_JAVASCRIPT_SUBMITTER__=true"
+        >
+          Submit javascript override
+        </button>
+      </Form>
     </main>
   );
 }
