@@ -20,6 +20,10 @@ type RootParamsUsageState = RootParamsUsage & {
   phase: "active" | "render" | "inactive";
 };
 
+export type RootParamsUsageController = {
+  transitionToRender(): void;
+};
+
 function createRootParamsUsageError(message: string): Error {
   return new Error(message);
 }
@@ -70,31 +74,32 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
   return Promise.resolve(getState().rootParams?.[name]);
 }
 
-export function runWithRootParamsUsage<T>(usage: RootParamsUsage, fn: () => Promise<T>): Promise<T>;
+export function runWithRootParamsUsage<T>(
+  usage: RootParamsUsage,
+  fn: () => Promise<T>,
+  controller?: RootParamsUsageController,
+): Promise<T>;
 export function runWithRootParamsUsage<T>(
   usage: RootParamsUsage,
   fn: () => T | Promise<T>,
+  controller?: RootParamsUsageController,
 ): T | Promise<T>;
 export function runWithRootParamsUsage<T>(
   usage: RootParamsUsage,
   fn: () => T | Promise<T>,
+  controller?: RootParamsUsageController,
 ): T | Promise<T> {
   const state: RootParamsUsageState = { ...usage, phase: "active" };
-  return _usageAls.run(state, () => {
-    try {
-      const result = fn();
-      if (result && typeof (result as PromiseLike<T>).then === "function") {
-        return Promise.resolve(result).finally(() => {
-          state.phase = usage.kind === "server-action" ? "render" : "inactive";
-        });
-      }
-      state.phase = usage.kind === "server-action" ? "render" : "inactive";
-      return result;
-    } catch (error) {
-      state.phase = usage.kind === "server-action" ? "render" : "inactive";
-      throw error;
-    }
-  });
+  if (controller) {
+    controller.transitionToRender = () => {
+      if (usage.kind === "server-action") state.phase = "render";
+    };
+  }
+  return _usageAls.run(state, fn);
+}
+
+export function createRootParamsUsageController(): RootParamsUsageController {
+  return { transitionToRender() {} };
 }
 
 export function runWithRootParamsScope<T>(params: RootParams, fn: () => Promise<T>): Promise<T>;

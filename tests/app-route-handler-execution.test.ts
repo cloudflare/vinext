@@ -91,7 +91,7 @@ describe("app route handler execution helpers", () => {
     );
   });
 
-  it("deactivates route-handler root params restrictions after execution", async () => {
+  it("keeps route-handler root params restrictions for deferred work", async () => {
     const dynamicUsage = createDynamicUsageState();
     let deferredRead!: Promise<string | string[] | undefined>;
     let releaseDeferred!: () => void;
@@ -114,7 +114,7 @@ describe("app route handler execution helpers", () => {
     );
 
     releaseDeferred();
-    await expect(deferredRead).resolves.toBe("en");
+    await expect(deferredRead).rejects.toThrow("inside a Route Handler");
   });
 
   it("runs force-static route handlers with empty request APIs without marking dynamic usage", async () => {

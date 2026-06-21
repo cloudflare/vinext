@@ -1243,13 +1243,18 @@ describe("app server action execution helpers", () => {
 
   it("allows deferred post-action render work to read root params", async () => {
     let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
 
     await runWithRootParamsScope({ lang: "en" }, () =>
       handleServerActionRscRequest(
         createRscOptions({
           loadServerAction() {
-            return Promise.resolve(() => {
-              deferredRead = Promise.resolve().then(() => getRootParam("lang"));
+            return Promise.resolve(async () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              await revalidatePath("/dashboard");
               return "updated";
             });
           },
@@ -1257,10 +1262,16 @@ describe("app server action execution helpers", () => {
       ),
     );
 
+    releaseDeferred();
     await expect(deferredRead).resolves.toBe("en");
   });
 
   it("skips page rerendering for fetch actions that do not revalidate", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const buildPageElement = vi.fn(() => "dashboard:{}:none");
     const setNavigationContext = vi.fn();
     const renderToReadableStream = vi.fn(
@@ -1271,6 +1282,12 @@ describe("app server action execution helpers", () => {
       const response = await handleServerActionRscRequest(
         createRscOptions({
           buildPageElement,
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              return "action-result";
+            });
+          },
           middlewareHeaders: new Headers([[VINEXT_RSC_COMPATIBILITY_ID_HEADER, "spoofed-compat"]]),
           renderToReadableStream,
           setNavigationContext,
@@ -1287,6 +1304,9 @@ describe("app server action execution helpers", () => {
       const model = JSON.parse(await response!.text()) as Partial<TestActionModel>;
       expect(model.returnValue).toEqual({ ok: true, data: "action-result" });
       expect(model).not.toHaveProperty("root");
+
+      releaseDeferred();
+      await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
     });
   });
 
@@ -2070,12 +2090,23 @@ describe("app server action execution helpers", () => {
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
   it("processes forwarded action POSTs but suppresses same-page rerenders", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
     const renderToReadableStream = vi.fn(
       (model: TestActionModel) => new Response(JSON.stringify(model)).body,
     );
 
     const response = await handleServerActionRscRequest(
       createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            deferredRead = deferred.then(() => getRootParam("lang"));
+            return "action-result";
+          });
+        },
         request: createFetchActionRequest({ "x-action-forwarded": "1" }),
         renderToReadableStream,
       }),
@@ -2086,6 +2117,8 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true, data: "action-result" },
     });
     expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
   });
 
   it("preserves forwarded action cookie and revalidation side effects without a rerender", async () => {

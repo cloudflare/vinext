@@ -15,7 +15,7 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
-import { runWithRootParamsUsage } from "vinext/shims/root-params";
+import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../config/config-matchers.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -853,9 +853,14 @@ export async function handleProgressiveServerActionRequest(
     let actionError: unknown = undefined;
     let actionFailed = false;
     let actionResult: unknown;
+    const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
-      actionResult = await runWithRootParamsUsage({ kind: "server-action" }, action);
+      actionResult = await runWithRootParamsUsage(
+        { kind: "server-action" },
+        action,
+        rootParamsUsage,
+      );
     } catch (error) {
       actionRedirect = getActionRedirect(error);
       if (!actionRedirect) {
@@ -881,6 +886,7 @@ export async function handleProgressiveServerActionRequest(
     }
 
     if (!actionRedirect) {
+      rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
       // apply them to the rendered page response. Mirrors Next.js'
       // `res.setHeader('set-cookie', ...)` path in app-render.tsx, which
@@ -1157,12 +1163,15 @@ export async function handleServerActionRscRequest<
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;
     const actionWasForwarded = Boolean(options.request.headers.get(ACTION_FORWARDED_HEADER));
+    const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       try {
         validateServerActionArgs(args);
-        const data = await runWithRootParamsUsage({ kind: "server-action" }, () =>
-          action.apply(null, args),
+        const data = await runWithRootParamsUsage(
+          { kind: "server-action" },
+          () => action.apply(null, args),
+          rootParamsUsage,
         );
         returnValue = { ok: true, data };
       } catch (error) {
@@ -1240,6 +1249,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
+      rootParamsUsage.transitionToRender();
       const currentMatch = options.matchRoute(options.cleanPathname);
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
@@ -1363,6 +1373,8 @@ export async function handleServerActionRscRequest<
         options.clearRequestContext,
       );
     }
+
+    rootParamsUsage.transitionToRender();
 
     const match = options.matchRoute(options.cleanPathname);
     let element: TElement;

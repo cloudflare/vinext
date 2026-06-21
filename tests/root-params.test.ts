@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  createRootParamsUsageController,
   getRootParam,
   runWithRootParamsScope,
   runWithRootParamsUsage,
@@ -84,7 +85,29 @@ describe("next/root-params shim", () => {
     });
   });
 
-  it("allows deferred work after a server action settles", async () => {
+  it("allows deferred work after a server action transitions to rendering", async () => {
+    await runWithRootParamsScope({ lang: "en" }, async () => {
+      const controller = createRootParamsUsageController();
+      let resolveDeferred!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        resolveDeferred = resolve;
+      });
+      let postActionRead!: Promise<string | string[] | undefined>;
+      await runWithRootParamsUsage(
+        { kind: "server-action" },
+        async () => {
+          postActionRead = deferred.then(() => getRootParam("lang"));
+        },
+        controller,
+      );
+
+      controller.transitionToRender();
+      resolveDeferred();
+      await expect(postActionRead).resolves.toBe("en");
+    });
+  });
+
+  it("keeps deferred work restricted when a server action does not rerender", async () => {
     await runWithRootParamsScope({ lang: "en" }, async () => {
       let resolveDeferred!: () => void;
       const deferred = new Promise<void>((resolve) => {
@@ -96,7 +119,7 @@ describe("next/root-params shim", () => {
       });
 
       resolveDeferred();
-      await expect(postActionRead).resolves.toBe("en");
+      await expect(postActionRead).rejects.toThrow("was used inside a Server Action");
     });
   });
 
