@@ -558,7 +558,7 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
-  it("does not reuse a speculative connection() page probe", async () => {
+  it("does not run a speculative connection() page probe for HTML renders", async () => {
     const probePage = vi.fn(async () => {
       await connection();
     });
@@ -572,7 +572,7 @@ describe("app page dispatch", () => {
     ]);
 
     expect(response.status).toBe(200);
-    expect(probePage).toHaveBeenCalledTimes(1);
+    expect(probePage).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
@@ -612,14 +612,23 @@ describe("app page dispatch", () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
+    const probePage = vi.fn(() => null);
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
-      probePage() {
-        markDynamicUsage();
-        markRenderRequestApiUsage("searchParams");
-        return null;
-      },
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return new ReadableStream<Uint8Array>({
+            start(controller) {
+              markDynamicUsage();
+              markRenderRequestApiUsage("searchParams");
+              controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -627,9 +636,50 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
+    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("caches fresh query-bearing HTML when the page probe does not read searchParams", async () => {
+    const probePage = vi.fn(() => null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrSet,
+      probePage,
+      revalidateSeconds: 60,
+      searchParams: new URLSearchParams("utm_source=google"),
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+
+    expect(probePage).not.toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(waitUntilPromises.splice(0));
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    const [cacheKey, cacheValue, revalidateSeconds, tags, expireSeconds] = isrSet.mock.calls[0]!;
+    expect(cacheKey).toBe("html:/posts/hello");
+    expect(cacheValue).toMatchObject({
+      kind: "APP_PAGE",
+      renderObservation: {
+        requestApis: expect.arrayContaining([{ kind: "searchParams", status: "notObserved" }]),
+      },
+    });
+    expect(revalidateSeconds).toBe(60);
+    expect(tags).toEqual(expect.arrayContaining(["_N_T_/posts/hello"]));
+    expect(expireSeconds).toBeUndefined();
   });
 
   it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
@@ -1750,7 +1800,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
     expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
-    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
     await expect(response.text()).resolves.toContain("fresh render");
     expect(buildPageElement).toHaveBeenCalled();
   });

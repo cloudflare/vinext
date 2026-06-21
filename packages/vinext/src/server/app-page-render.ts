@@ -142,6 +142,8 @@ type RenderAppPageLifecycleOptions = {
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isProduction: boolean;
+  probePageBeforeRender?: boolean;
+  omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
@@ -583,8 +585,10 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
+  const probePageBeforeRender = options.probePageBeforeRender ?? options.isRscRequest;
   const preRenderResult = await probeAppPageBeforeRender({
     hasLoadingBoundary: options.hasLoadingBoundary,
+    probePageBeforeRender,
     skipProbes: options.pprFallbackShellSignal !== undefined,
     layoutCount: options.layoutCount,
     probeLayoutAt(layoutIndex) {
@@ -913,19 +917,18 @@ export async function renderAppPageLifecycle(
     await htmlRender.metadataReady;
   }
 
-  // Routes with a route-level Suspense boundary (loading.tsx) skip the page
-  // probe — the page render happens once, inside the RSC stream. Mirror
-  // Next.js's `app-render.tsx:4293` catch shape: by the time the SSR shell
-  // promise has resolved, any redirect()/notFound() throw whose async work
-  // settles in microtasks during shell rendering has already fired through
-  // React's onError and been captured by the tracker. Convert that to a
-  // 307/404 before any bytes are flushed.
+  // Routes that skip the page probe render the page once, inside the RSC
+  // stream. Mirror Next.js's `app-render.tsx:4293` catch shape: by the time
+  // the SSR shell promise has resolved, any redirect()/notFound() throw whose
+  // async work settles in microtasks during shell rendering has already fired
+  // through React's onError and been captured by the tracker. Convert that to
+  // a 307/404 before any bytes are flushed.
   //
   // Late rejections — ones that settle after macrotask boundaries (real
   // I/O, setTimeout, etc.) — fall through to the streamed body, exactly
   // as Next.js does. The digest survives in the Flight payload for the
   // client router to consume.
-  if (options.hasLoadingBoundary) {
+  if (options.hasLoadingBoundary || !probePageBeforeRender) {
     const captured = rscErrorTracker.getCapturedSpecialError();
     if (captured) {
       const specialError = resolveAppPageSpecialError(captured);
@@ -945,8 +948,9 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     }));
   }
+  let dynamicUsedDuringRender = options.consumeDynamicUsage();
+
   const draftCookie = options.getDraftModeCookieHeader();
-  const dynamicUsedDuringRender = options.consumeDynamicUsage();
   let dynamicUsedBeforeContextCleanup = dynamicUsedDuringRender;
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
@@ -1064,6 +1068,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
       revalidateSeconds,

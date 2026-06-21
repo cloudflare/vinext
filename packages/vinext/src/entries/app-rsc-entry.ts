@@ -731,7 +731,7 @@ export default createAppRscHandler({
       ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       reactMaxHeadersLength: __reactMaxHeadersLength,
-      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
+      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess, buildOptions) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
           searchParams: targetSearchParams,
@@ -739,6 +739,7 @@ export default createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,

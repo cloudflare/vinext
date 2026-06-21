@@ -230,6 +230,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    options?: { observePageSearchParamsAccess?: boolean },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
@@ -529,7 +530,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
   const layoutParamAccess = createAppLayoutParamAccessTracker();
+  const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
+    options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
+  )
+    ? false
+    : Boolean(route.loading?.default);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -591,7 +598,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
-      hasRequestSearchParams: !isForceStatic && hasSearchParams(options.searchParams),
+      hasRequestSearchParams,
       isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
@@ -834,6 +841,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           interceptResult.interceptOpts,
           options.searchParams,
           layoutParamAccess,
+          {
+            observePageSearchParamsAccess: !options.isRscRequest && hasRequestSearchParams,
+          },
         );
       },
       async probePageSpecialError() {
@@ -879,6 +889,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (pageBuildResult.response) {
     return pageBuildResult.response;
   }
+
   const navigationParams = resolveAppPageNavigationParams(
     route,
     options.params,
@@ -928,11 +939,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return _peekRequestScopedCacheLife();
     },
     handlerStart: options.handlerStart,
-    hasLoadingBoundary: shouldSuppressLoadingBoundaries(
-      options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    )
-      ? false
-      : Boolean(route.loading?.default),
+    hasLoadingBoundary: hasActiveLoadingBoundary,
+    omitPendingDynamicCacheState: !options.isRscRequest && hasRequestSearchParams,
     formState: options.formState ?? null,
     isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
@@ -975,6 +983,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     probePage() {
       return options.probePage();
     },
+    probePageBeforeRender: options.isRscRequest,
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

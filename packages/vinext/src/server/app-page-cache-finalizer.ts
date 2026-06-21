@@ -2,6 +2,7 @@ import type { CachedAppPageValue } from "vinext/shims/cache";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
+import { NEXTJS_CACHE_HEADER, VINEXT_CACHE_HEADER } from "./headers.js";
 import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
@@ -48,6 +49,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
@@ -75,9 +77,18 @@ type ScheduleAppPageRscCacheWriteOptions = {
   waitUntil?: (promise: Promise<void>) => void;
 };
 
-function applyPendingDynamicCdnHeaders(headers: Headers, tags?: readonly string[]): void {
+function applyPendingDynamicCdnHeaders(
+  headers: Headers,
+  tags?: readonly string[],
+  options: { omitCacheState?: boolean } = {},
+): void {
   const cacheable = headers.get("Cache-Control") ?? "";
   applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
+  if (options.omitCacheState === true) {
+    headers.delete(VINEXT_CACHE_HEADER);
+    headers.delete(NEXTJS_CACHE_HEADER);
+    return;
+  }
   setCacheStateHeaders(headers, "MISS");
 }
 
@@ -125,7 +136,9 @@ export function finalizeAppPageHtmlCacheResponse(
   );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
-    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
+    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
   }
 
   const cachePromise = (async () => {

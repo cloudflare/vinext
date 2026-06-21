@@ -71,6 +71,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   mountedSlotsHeader: string | null;
   /** Semantic RSC payload mode for this page render. */
   renderMode?: AppRscRenderMode;
+  /** Observe page `searchParams` access for cache-safety classification. */
+  observePageSearchParamsAccess?: boolean;
 };
 
 export type BuildPageElementsOptions<
@@ -165,6 +167,7 @@ export async function buildPageElements<
     isRscRequest,
     mountedSlotsHeader,
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
+    observePageSearchParamsAccess = false,
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -264,7 +267,8 @@ export async function buildPageElements<
   let pageSearchParamsThenable: unknown;
   if (searchParams) {
     const shouldObservePageSearchParamsAccess =
-      !shouldSuppressLoadingBoundaries(renderMode) && Boolean(route.loading?.default);
+      observePageSearchParamsAccess ||
+      (!shouldSuppressLoadingBoundaries(renderMode) && Boolean(route.loading?.default));
     pageSearchParamsThenable = shouldObservePageSearchParamsAccess
       ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
       : makeThenableParams(pageSearchParams);
