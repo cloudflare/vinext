@@ -333,7 +333,7 @@ export function approveHmrVisibleCommit(options: {
   pending: PendingNavigationCommit;
   routeManifest?: RouteManifest | null;
   targetHref: string;
-}): ApprovedVisibleCommit {
+}): CommitApproval {
   const { currentState, pending } = options;
   if (pending.action.operation.lane !== "hmr") {
     throw new Error("[vinext] HMR visible commit approval requires an HMR pending operation");
@@ -347,18 +347,18 @@ export function approveHmrVisibleCommit(options: {
     startedNavigationId: pending.action.operation.id,
     targetHref: options.targetHref,
   });
-  if (decision.disposition !== "commit") {
-    throw new Error(
-      `[vinext] HMR visible commit approval requires a planner-approved commit, received ${decision.disposition}`,
-    );
-  }
-
   const tracedDecision = addCommitTransactionTrace(decision, pending);
-  if (tracedDecision.disposition !== "commit") {
-    throw new Error("[vinext] HMR visible commit trace changed the planner disposition");
+  if (tracedDecision.disposition === "commit") {
+    return {
+      approvedCommit: createApprovedVisibleCommit({ decision: tracedDecision, pending }),
+      decision: tracedDecision,
+    };
   }
 
-  return createApprovedVisibleCommit({ decision: tracedDecision, pending });
+  return {
+    approvedCommit: null,
+    decision: tracedDecision,
+  };
 }
 
 export function approvePendingNavigationCommit(options: {

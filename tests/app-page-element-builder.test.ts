@@ -8,11 +8,13 @@ import {
   APP_ROUTE_KEY,
   APP_SOURCE_PAGE_KEY,
   APP_SLOT_BINDINGS_KEY,
+  type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
+import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 
 // Import the function under test AFTER mocking dependencies.
 // eslint-disable-next-line import/first
@@ -139,6 +141,17 @@ async function renderNode(node: React.ReactNode): Promise<string> {
     },
   });
   return readStreamAsText(stream);
+}
+
+async function renderRouteEntry(elements: AppElements, routeId: string): Promise<string> {
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  return renderNode(
+    React.createElement(
+      ElementsContext.Provider,
+      { value: elements },
+      React.createElement(Slot, { id: routeId }),
+    ),
+  );
 }
 
 async function buildAndRenderElement(
@@ -591,6 +604,74 @@ describe("buildPageElements", () => {
         state: "active",
       },
     ]);
+  });
+
+  it("strips route groups from intercepted slot segments and reset keys", async () => {
+    function TestPage(): React.ReactNode {
+      return React.createElement("div", null, "Page");
+    }
+    function TestLayout({
+      children,
+      modal,
+    }: {
+      children?: React.ReactNode;
+      modal?: React.ReactNode;
+    }) {
+      const modalSegments = useSelectedLayoutSegments("modal");
+      return React.createElement(
+        "div",
+        { "data-modal-segments": modalSegments.join("|") },
+        children,
+        modal,
+      );
+    }
+    function SlotError(): React.ReactNode {
+      return React.createElement("div", null, "Slot error");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(TestPage),
+      layouts: [createSyntheticPageModule(TestLayout)],
+      layoutTreePositions: [0],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        "modal@feed/@modal": {
+          id: "slot:modal:/",
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          error: { default: SlotError },
+          layoutIndex: 0,
+          routeSegments: null,
+        },
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/foo/1",
+        opts: {
+          interceptionContext: "/feed",
+          interceptSlotKey: "modal@feed/@modal",
+          interceptPage: createSyntheticPageModule(() =>
+            React.createElement("div", null, "Intercepted"),
+          ),
+          interceptParams: { username: "foo", id: "1" },
+          interceptSourcePageSegments: [
+            "feed",
+            "@modal",
+            "(group)",
+            "(.)[username]",
+            "(nested)",
+            "[id]",
+          ],
+        } as Record<string, unknown>,
+      }),
+    );
+
+    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+    expect(html).toContain('data-modal-segments="foo|1"');
   });
 
   it("uses the source route identity for intercepted source-route payload keys", async () => {

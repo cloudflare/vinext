@@ -17,6 +17,7 @@ test.describe("interception-dynamic-segment", () => {
     // Client navigation — modal slot should show intercepted content
     await expect(page.locator("#modal")).toContainText("intercepted");
     await expect(page.locator("#modal-segment")).toHaveText("modal segment: 1");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: foo|1");
     // The catch-all fallback should NOT be visible during interception
     await expect(page.locator("#modal")).not.toContainText("catch-all");
   });
@@ -71,6 +72,7 @@ test.describe("interception-dynamic-segment", () => {
     // Modal slot shows intercepted sidebar content
     await expect(page.locator("#modal")).toContainText("Intercepted test-nested sidebar");
     await expect(page.locator("#modal-segment")).toHaveText("modal segment: test-nested");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: test-nested");
     // Children slot should still contain the home page content
     await expect(page.locator("#children")).toContainText("CHILDREN SLOT");
   });

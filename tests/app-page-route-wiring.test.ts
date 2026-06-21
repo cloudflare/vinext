@@ -981,7 +981,7 @@ describe("app page route wiring helpers", () => {
           modal: {
             pageModule: { default: SlotPage },
             params,
-            routeSegments: ["[username]", "[id]"],
+            routeSegments: ["(group)", "[username]", "(nested)", "[id]"],
           },
         },
       });

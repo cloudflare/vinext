@@ -2367,12 +2367,15 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    const approvedCommit = approveHmrVisibleCommit({
+    const approval = approveHmrVisibleCommit({
       currentState,
       pending,
       routeManifest: createRouteManifestForPendingCommit(currentState, pending),
       targetHref: "https://example.com/hmr",
     });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
     expect(approvedCommit.decision.trace.entries[0]).toEqual({
       code: NavigationTraceTransactionCodes.visibleCommit,
       fields: {
@@ -2469,17 +2472,53 @@ describe("app browser entry state helpers", () => {
       type: "replace",
     });
 
-    const approvedCommit = approveHmrVisibleCommit({
+    const approval = approveHmrVisibleCommit({
       currentState,
       pending,
       routeManifest: createRouteManifestForPendingCommit(currentState, pending),
       targetHref: "https://example.com/parallel-selected-segment/foo",
     });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
     expect(approvedCommit.decision.preservePreviousSlotIds).toEqual([authSlotId]);
 
     const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
     expect(nextState.elements[authSlotId]).toBe(currentSlot);
     expect(nextState.slotBindings).toEqual(currentBindings);
+  });
+
+  it("does not let a pending HMR replacement overwrite a navigation commit", async () => {
+    const { controller, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveHmrPayload!: (elements: AppElements) => void;
+    const hmrPayload = new Promise<AppElements>((resolve) => {
+      resolveHmrPayload = resolve;
+    });
+
+    const hmrPromise = controller.hmrReplaceTree(
+      hmrPayload,
+      createClientNavigationRenderSnapshot("https://example.com/hmr", {}),
+    );
+    const navigationState = await applyApprovedTestCommit(stateRef.current, {
+      activeNavigationId: 17,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/navigation",
+        {},
+      ),
+      renderId: 17,
+      rootLayoutTreePath: "/",
+      routeId: "route:/navigation",
+      startedNavigationId: 17,
+      targetHref: "https://example.com/navigation",
+    });
+    stateRef.current = navigationState;
+
+    resolveHmrPayload(createResolvedElements("route:/hmr", "/"));
+    await hmrPromise;
+
+    expect(stateRef.current.routeId).toBe("route:/navigation");
+    expect(stateRef.current.visibleCommitVersion).toBe(1);
+    expect(setBrowserRouterState).not.toHaveBeenCalled();
   });
 
   it("does not preserve unapproved old elements on navigation replace commits", async () => {

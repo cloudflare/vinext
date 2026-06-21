@@ -503,14 +503,15 @@ export function createAppBrowserNavigationController(
     // initialized-setter error.
     if (!hasBrowserRouterState()) return;
 
-    dispatchSynchronousVisibleCommit(
-      approveHmrVisibleCommit({
-        currentState,
-        pending,
-        routeManifest: deps.getRouteManifest?.() ?? null,
-        targetHref: createSnapshotPathAndSearch(navigationSnapshot),
-      }),
-    );
+    const approval = approveHmrVisibleCommit({
+      currentState: getBrowserRouterState(),
+      pending,
+      routeManifest: deps.getRouteManifest?.() ?? null,
+      targetHref: createSnapshotPathAndSearch(navigationSnapshot),
+    });
+    if (approval.approvedCommit) {
+      dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    }
   }
 
   function NavigationCommitSignal(

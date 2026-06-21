@@ -396,7 +396,9 @@ function resolveInterceptedSlotSegments(
 
   const routeSegments = sourcePageSegments
     .slice(slotIndex + 1)
-    .filter((segment) => !segment.startsWith("@"));
+    .filter(
+      (segment) => !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
+    );
   const firstSegment = routeSegments[0];
   const marker = ["(...)", "(..)(..)", "(..)", "(.)"].find((prefix) =>
     firstSegment.startsWith(prefix),
