@@ -701,6 +701,44 @@ describe("buildPageElements", () => {
     ).toBe(JSON.stringify(["before", "username|foo|d", "id|1|d"]));
   });
 
+  it.each([
+    {
+      expected: ["products", "[category]", "account", "[id]", "[[...rest]]"],
+      markerSegment: "(.)account",
+    },
+    {
+      expected: ["products", "account", "[id]", "[[...rest]]"],
+      markerSegment: "(..)account",
+    },
+    {
+      expected: ["account", "[id]", "[[...rest]]"],
+      markerSegment: "(..)(..)account",
+    },
+    {
+      expected: ["account", "[id]", "[[...rest]]"],
+      markerSegment: "(...)account",
+    },
+  ])(
+    "applies $markerSegment traversal before resolving intercepted dynamic segments",
+    ({ expected, markerSegment }) => {
+      expect(
+        resolveInterceptedSlotSegments(
+          [
+            "root",
+            "shop",
+            "@modal",
+            "products",
+            "[category]",
+            markerSegment,
+            "[id]",
+            "[[...rest]]",
+          ],
+          "modal@root/shop/@modal",
+        ),
+      ).toEqual(expected);
+    },
+  );
+
   it("uses the source route identity for intercepted source-route payload keys", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Feed");

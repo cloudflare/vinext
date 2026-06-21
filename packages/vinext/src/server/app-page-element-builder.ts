@@ -395,9 +395,14 @@ export function resolveInterceptedSlotSegments(
 ): readonly string[] | null {
   if (!sourcePageSegments) return null;
 
-  const markerPrefixes = ["(...)", "(..)(..)", "(..)", "(.)"];
+  const markerTraversals = [
+    { prefix: "(...)", levels: Number.POSITIVE_INFINITY },
+    { prefix: "(..)(..)", levels: 2 },
+    { prefix: "(..)", levels: 1 },
+    { prefix: "(.)", levels: 0 },
+  ] as const;
   const markerIndex = sourcePageSegments.findIndex((segment) =>
-    markerPrefixes.some((prefix) => segment.startsWith(prefix)),
+    markerTraversals.some(({ prefix }) => segment.startsWith(prefix)),
   );
   if (markerIndex < 0) return null;
 
@@ -432,18 +437,32 @@ export function resolveInterceptedSlotSegments(
     segmentStart = slotIndex + 1;
   }
 
-  const routeSegments = sourcePageSegments.slice(segmentStart).flatMap((segment, index) => {
-    if (segment.startsWith("@")) return [];
+  const routeSegments = sourcePageSegments
+    .slice(segmentStart, markerIndex)
+    .filter(
+      (segment) => !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
+    );
+  const markerSegment = sourcePageSegments[markerIndex];
+  const marker = markerTraversals.find(({ prefix }) => markerSegment.startsWith(prefix));
+  if (!marker) return null;
 
-    if (segmentStart + index === markerIndex) {
-      const marker = markerPrefixes.find((prefix) => segment.startsWith(prefix));
-      const targetSegment = marker ? segment.slice(marker.length) : segment;
-      return targetSegment ? [targetSegment] : [];
-    }
+  if (Number.isFinite(marker.levels)) {
+    routeSegments.splice(Math.max(0, routeSegments.length - marker.levels), marker.levels);
+  } else {
+    routeSegments.length = 0;
+  }
 
-    if (segment.startsWith("(") && segment.endsWith(")")) return [];
-    return [segment];
-  });
+  const targetSegment = markerSegment.slice(marker.prefix.length);
+  if (targetSegment) routeSegments.push(targetSegment);
+
+  routeSegments.push(
+    ...sourcePageSegments
+      .slice(markerIndex + 1)
+      .filter(
+        (segment) =>
+          !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
+      ),
+  );
 
   return routeSegments;
 }

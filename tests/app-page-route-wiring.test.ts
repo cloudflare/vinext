@@ -726,6 +726,53 @@ describe("app page route wiring helpers", () => {
     expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
   });
 
+  it("omits mounted unmatched named-slot state without default.tsx from providers", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      isRscRequest: true,
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "settings"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/dashboard/settings"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+  });
+
   it("suppresses route and slot loading boundaries for refresh payloads", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),

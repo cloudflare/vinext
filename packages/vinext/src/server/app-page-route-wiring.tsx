@@ -1043,12 +1043,11 @@ export function buildAppPageElements<
       const slotOverride = resolveSlotOverride(slotKey, slotName);
       const hasActiveSlotPage =
         getDefaultExport(slotOverride?.pageModule) !== null || getDefaultExport(slot.page) !== null;
-      const shouldPreserveMountedDefault =
+      const shouldPreserveMountedSlot =
         !hasActiveSlotPage &&
-        getDefaultExport(slot.default) !== null &&
         options.isRscRequest &&
         options.mountedSlotIds?.has(resolveAppPageSlotId(slot, layoutEntry.treePath));
-      if (shouldPreserveMountedDefault) {
+      if (shouldPreserveMountedSlot) {
         continue;
       }
       const slotRouteSegments = slotOverride?.routeSegments ?? slot.routeSegments;
