@@ -123,6 +123,41 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("prefers static interception targets over dynamic targets", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    // https://github.com/vercel/next.js/blob/ee6e79b1792a4d401ddf2480f40a83549fe8e722/test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    const matcher = createAppRscRouteMatcher([
+      route("/", [], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/:username/:id",
+              interceptLayouts: [],
+              page: "dynamic-page",
+              params: ["username", "id"],
+            },
+            {
+              sourceMatchPattern: "/",
+              targetPattern: "/explicit-layout/deeper",
+              interceptLayouts: ["explicit-layout"],
+              page: "static-page",
+              params: [],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/explicit-layout/deeper", "/")).toMatchObject({
+      targetPattern: "/explicit-layout/deeper",
+      interceptLayouts: ["explicit-layout"],
+      page: "static-page",
+      matchedParams: {},
+    });
+  });
+
   it("shares lazy intercept load state across fresh match objects", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed", ["feed"], {

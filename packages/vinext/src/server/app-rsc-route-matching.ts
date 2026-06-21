@@ -4,7 +4,7 @@ import {
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { sortRoutes, splitPathnameForRouteMatch } from "../routing/utils.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -284,7 +284,9 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
       }
     }
   }
-  return interceptLookup;
+  return sortRoutes(interceptLookup.map((entry) => ({ pattern: entry.targetPattern, entry }))).map(
+    ({ entry }) => entry,
+  );
 }
 
 export function matchAppRscRoutePattern(
