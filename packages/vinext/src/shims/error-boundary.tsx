@@ -14,6 +14,28 @@ export type ErrorBoundaryProps = {
   resetKey?: string | null;
 };
 
+export type SerializedBoundaryError = {
+  digest?: string;
+  message: string;
+  name?: string;
+  stack?: string;
+};
+
+export function SerializedErrorBoundary({
+  fallback: Fallback,
+  error,
+}: {
+  fallback: React.ComponentType<{ error: Error & { digest?: string }; reset: () => void }>;
+  error: SerializedBoundaryError;
+}) {
+  const reconstructedError = Object.assign(new Error(error.message), {
+    digest: error.digest,
+    name: error.name ?? "Error",
+    stack: error.stack,
+  });
+  return <Fallback error={reconstructedError} reset={() => globalThis.location?.reload()} />;
+}
+
 type CapturedError = {
   thrownValue: unknown;
 };

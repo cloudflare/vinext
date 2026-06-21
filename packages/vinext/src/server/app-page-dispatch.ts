@@ -290,7 +290,10 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
   probePage: () => unknown;
   expireSeconds?: number;
-  renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
+  renderErrorBoundaryPage: (
+    error: unknown,
+    errorOrigin?: "rsc" | "ssr",
+  ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
     opts: {
@@ -1128,8 +1131,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    renderErrorBoundaryResponse(renderError) {
-      return options.renderErrorBoundaryPage(renderError);
+    renderErrorBoundaryResponse(renderError, errorOrigin) {
+      return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
     renderLayoutSpecialError(specialError, layoutIndex) {
       return renderLayoutSpecialError(options, specialError, layoutIndex);

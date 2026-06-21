@@ -168,7 +168,10 @@ type RenderAppPageLifecycleOptions = {
   expireSeconds?: number;
   formState?: ReactFormState | null;
   revalidateSeconds: number | null;
-  renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
+  renderErrorBoundaryResponse: (
+    error: unknown,
+    errorOrigin: "rsc" | "ssr",
+  ) => Promise<Response | null>;
   renderLayoutSpecialError: (
     specialError: AppPageSpecialError,
     layoutIndex: number,
@@ -866,7 +869,11 @@ export async function renderAppPageLifecycle(
       }
     },
     renderErrorBoundaryResponse(error) {
-      return options.renderErrorBoundaryResponse(rscErrorTracker.getCapturedError() ?? error);
+      const capturedRscError = rscErrorTracker.getCapturedError();
+      return options.renderErrorBoundaryResponse(
+        capturedRscError ?? error,
+        capturedRscError === null ? "ssr" : "rsc",
+      );
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();

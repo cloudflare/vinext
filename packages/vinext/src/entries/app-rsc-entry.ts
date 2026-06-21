@@ -801,14 +801,14 @@ export default createAppRscHandler({
           makeThenableParams,
         }));
       },
-      renderErrorBoundaryPage(renderErr) {
+      renderErrorBoundaryPage(renderErr, errorOrigin) {
         const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
-        });
+        }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
         const __activeIntercept = findIntercept(cleanPathname, interceptionContext);

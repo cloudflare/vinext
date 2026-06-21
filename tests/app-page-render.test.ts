@@ -606,8 +606,27 @@ describe("app page render lifecycle", () => {
       },
     });
 
-    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(rscError);
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(rscError, "rsc");
     await expect(response.text()).resolves.toBe("boundary:rsc-original");
+  });
+
+  it("marks uncaptured SSR errors as SSR-origin boundary failures", async () => {
+    const common = createCommonOptions();
+    const ssrError = new Error("ssr-decoder");
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw ssrError;
+          },
+        };
+      },
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(ssrError, "ssr");
+    await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

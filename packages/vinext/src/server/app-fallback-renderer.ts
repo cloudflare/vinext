@@ -108,6 +108,7 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
     callContext?: AppFallbackRendererCallContext,
+    errorOrigin?: "rsc" | "ssr",
   ) => Promise<Response | null>;
   renderHttpAccessFallback: (
     route: AppPageBoundaryRoute<TModule> | null,
@@ -322,6 +323,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       scriptNonce,
       middlewareContext,
       callContext,
+      errorOrigin = "rsc",
     ) {
       return renderAppPageErrorBoundary({
         basePath,
@@ -332,6 +334,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
           return buildRscOnErrorHandler(request, pathname, routePath);
         },
         error,
+        errorOrigin,
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
