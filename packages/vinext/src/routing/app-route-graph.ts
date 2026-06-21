@@ -165,6 +165,15 @@ export type AppRoute = {
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
    */
   routeSegments: string[];
+  /**
+   * Active filesystem segments for the default `children` slot.
+   *
+   * Synthetic routes materialized only from named parallel-slot pages still
+   * use the full `routeSegments` for URL matching, params, and route identity,
+   * but their children slot renders the parent's default.tsx. In that case the
+   * active children segments remain at the parent route.
+   */
+  childrenRouteSegments?: string[];
   /** Tree position (directory depth from app/ root) for each template. */
   templateTreePositions?: number[];
   /**
@@ -1259,6 +1268,7 @@ function discoverSlotSubRoutes(
         unauthorizedPath: parentRoute.unauthorizedPath,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+        childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
         isDynamic: parentRoute.isDynamic || subIsDynamic,

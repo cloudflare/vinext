@@ -635,6 +635,97 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-segments="blog|post"');
   });
 
+  it("keeps default children segments at the parent for synthetic named-slot routes", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        childrenRouteSegments: ["dashboard"],
+        error: null,
+        errors: [null],
+        layoutTreePositions: [1],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "members"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/members",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard/members");
+
+    expect(html).toContain('data-segments=""');
+    expect(html).toContain('data-sidebar-segments="members"');
+  });
+
+  it("omits mounted default-only named-slot state from soft-navigation providers", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      isRscRequest: true,
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "settings"],
+        slots: {
+          sidebar: {
+            default: { default: SlotPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/dashboard/settings"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+  });
+
   it("suppresses route and slot loading boundaries for refresh payloads", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),

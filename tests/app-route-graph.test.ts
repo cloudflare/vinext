@@ -212,6 +212,7 @@ describe("App Router route graph builder", () => {
         pagePath: path.join(appDir, "dashboard/default.tsx"),
         routePath: null,
         routeSegments: ["dashboard", "members"],
+        childrenRouteSegments: ["dashboard"],
         patternParts: ["dashboard", "members"],
       });
       expect(members.parallelSlots[0]).toMatchObject({

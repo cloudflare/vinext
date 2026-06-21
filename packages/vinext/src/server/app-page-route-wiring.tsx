@@ -123,6 +123,7 @@ export type AppPageRouteWiringRoute<
   unauthorized?: TModule | null;
   unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
+  childrenRouteSegments?: readonly string[] | null;
   /**
    * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
    */
@@ -1020,7 +1021,7 @@ export function buildAppPageElements<
     const layoutIndex = layoutIndicesByTreePosition.get(treePosition) ?? -1;
     const segmentMap: { children: string[] } & Record<string, string[]> = {
       children: resolveAppPageChildSegments(
-        routeSegments,
+        options.route.childrenRouteSegments ?? routeSegments,
         layoutEntry.treePosition,
         options.matchedParams,
       ),
@@ -1032,6 +1033,17 @@ export function buildAppPageElements<
         continue;
       }
       const slotParams = getEffectiveSlotParams(slotKey, slotName);
+      const slotOverride = resolveSlotOverride(slotKey, slotName);
+      const hasActiveSlotPage =
+        getDefaultExport(slotOverride?.pageModule) !== null || getDefaultExport(slot.page) !== null;
+      const shouldPreserveMountedDefault =
+        !hasActiveSlotPage &&
+        getDefaultExport(slot.default) !== null &&
+        options.isRscRequest &&
+        options.mountedSlotIds?.has(resolveAppPageSlotId(slot, layoutEntry.treePath));
+      if (shouldPreserveMountedDefault) {
+        continue;
+      }
       segmentMap[slotName] = slot.routeSegments
         ? resolveAppPageChildSegments(slot.routeSegments, 0, slotParams)
         : [];
