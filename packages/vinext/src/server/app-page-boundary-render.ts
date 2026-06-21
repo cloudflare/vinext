@@ -487,12 +487,13 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       name: errorObject.name,
       stack: process.env.NODE_ENV !== "production" ? errorObject.stack : undefined,
     } satisfies SerializedBoundaryError;
-    const boundaryElement = errorBoundary.isGlobalError
-      ? createElement(SerializedErrorBoundary, {
-          error: serializedError,
-          fallback: BoundaryComponent,
-        })
-      : createElement(BoundaryComponent, { error: errorObject });
+    const boundaryElement =
+      errorBoundary.isGlobalError && BoundaryComponent !== DEFAULT_GLOBAL_ERROR_COMPONENT
+        ? createElement(SerializedErrorBoundary, {
+            error: serializedError,
+            fallback: BoundaryComponent,
+          })
+        : createElement(BoundaryComponent, { error: errorObject });
     return wrapRenderedBoundaryElement({
       element: createElement(
         Fragment,
