@@ -1186,19 +1186,30 @@ describe("app server action execution helpers", () => {
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
   it("rejects next/root-params inside fetch server actions", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const buildPageElement = vi.fn(() => "should-not-render");
+    let renderedModel: TestActionModel | null = null;
 
     const response = await handleServerActionRscRequest(
       createRscOptions({
+        buildPageElement,
         decodeReply() {
           return Promise.resolve([]);
         },
         loadServerAction() {
           return Promise.resolve(() => getRootParam("lang"));
         },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("action-error-flight").body;
+        },
       }),
     );
 
     expect(response?.status).toBe(500);
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(renderedModel).toEqual({
+      returnValue: expect.objectContaining({ ok: false }),
+    });
     errorSpy.mockRestore();
   });
 
@@ -1797,7 +1808,6 @@ describe("app server action execution helpers", () => {
       expect(await response?.text()).toBe("too-many-args-flight");
       expect(action).not.toHaveBeenCalled();
       expect(renderedModel).toEqual({
-        root: "dashboard:{}:none",
         returnValue: {
           ok: false,
           data: "Server Action arguments list is too long (1001). Maximum allowed is 1000.",
@@ -2389,10 +2399,7 @@ describe("app server action execution helpers", () => {
 
       expect(response?.status).toBe(statusCode);
       expect(await response?.text()).toBe("fallback-flight");
-      expect(renderedModel).toEqual({
-        root: "dashboard:{}:none",
-        returnValue: { ok: false, data: fallbackError },
-      });
+      expect(renderedModel).toEqual({ returnValue: { ok: false, data: fallbackError } });
     }
   });
 

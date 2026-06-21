@@ -1331,15 +1331,13 @@ export async function handleServerActionRscRequest<
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
     );
 
-    // When an action returned a non-200 HTTP fallback status (e.g. 404 from
-    // notFound()), skip the early page render so the error boundary displays
-    // the fallback payload embedded in returnValue. Forwarded actions always
-    // skip rerendering regardless of status (the forwarded worker doesn't own
-    // the page's layout tree). Otherwise only skip when the action status is
-    // 200 and no revalidation side-effects occurred.
+    // Response status and page rerendering are independent. Next.js skips the
+    // page tree whenever the action did not revalidate (including failed and
+    // HTTP fallback actions), while still returning the action's non-200
+    // status. Forwarded actions also skip because this worker does not own the
+    // page's layout tree.
     const shouldSkipPageRendering =
-      actionWasForwarded ||
-      (actionStatus === 200 && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
+      actionWasForwarded || actionRevalidationKind === ACTION_DID_NOT_REVALIDATE;
     if (shouldSkipPageRendering) {
       const onRenderError = options.createRscOnErrorHandler(
         options.request,
