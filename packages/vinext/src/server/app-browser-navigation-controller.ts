@@ -282,6 +282,7 @@ export function createAppBrowserNavigationController(
   let nextNavigationRenderId = 0;
   let activeNavigationId = 0;
   let pendingUserNavigationId: number | null = null;
+  let pendingUserNavigationLane: OperationLane | null = null;
   let latestHmrUpdateId = 0;
   const pendingNavigationCommits = new Map<number, () => void>();
   const pendingNavigationFailureTargets = new Map<number, URL>();
@@ -337,6 +338,7 @@ export function createAppBrowserNavigationController(
     latestHmrUpdateId += 1;
     activeNavigationId += 1;
     pendingUserNavigationId = activeNavigationId;
+    pendingUserNavigationLane = null;
     return activeNavigationId;
   }
 
@@ -407,6 +409,7 @@ export function createAppBrowserNavigationController(
 
     if (isCurrentNavigation(navId)) {
       pendingUserNavigationId = null;
+      pendingUserNavigationLane = null;
       clearPendingPathname(navId);
     }
   }
@@ -492,7 +495,7 @@ export function createAppBrowserNavigationController(
     navigationSnapshot: ClientNavigationRenderSnapshot,
   ): Promise<void> {
     const hmrUpdateId = ++latestHmrUpdateId;
-    const startedDuringUserNavigation = pendingUserNavigationId !== null;
+    const startedDuringUserNavigation = pendingUserNavigationLane === "navigation";
     if (!hasBrowserRouterState()) return;
 
     const currentState = getBrowserRouterState();
@@ -706,6 +709,10 @@ export function createAppBrowserNavigationController(
     navId: number;
     visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
   }): Promise<NavigationPayloadOutcome> {
+    if (options.navId === pendingUserNavigationId) {
+      pendingUserNavigationLane = options.operationLane;
+    }
+
     const renderId = allocateRenderId();
     const failureTarget = getAppNavigationFailureTarget(options.targetHref);
     if (failureTarget) {
