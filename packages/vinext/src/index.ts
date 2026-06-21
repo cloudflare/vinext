@@ -1219,6 +1219,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getMiddlewarePath: () => middlewarePath,
       getCanonicalMiddlewarePath: () =>
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
+      isNeutralServerModule: (id) => {
+        const canonicalId = canonicalizePageTransformPath(id);
+        return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
+      },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
