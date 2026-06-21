@@ -2575,6 +2575,56 @@ describe("app browser entry state helpers", () => {
     }
   });
 
+  it("does not let HMR that starts during a pending navigation supersede it", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveNavigationPayload!: (elements: AppElements) => void;
+    const navigationPayload = new Promise<AppElements>((resolve) => {
+      resolveNavigationPayload = resolve;
+    });
+
+    try {
+      const navId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/navigation",
+          {},
+        ),
+        nextElements: navigationPayload,
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/navigation",
+        navId,
+      });
+
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/hmr", "/")),
+        createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+      );
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      resolveNavigationPayload(createResolvedElements("route:/navigation", "/"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(stateRef.current.routeId).toBe("route:/navigation");
+      expect(stateRef.current.activeOperation).toMatchObject({
+        lane: "navigation",
+        state: "committed",
+      });
+    } finally {
+      detach();
+    }
+  });
+
   it("hard-navigates when HMR changes the root layout boundary", async () => {
     const performHardNavigation = vi.fn(() => true);
     const currentState = createState({
