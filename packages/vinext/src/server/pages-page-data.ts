@@ -450,9 +450,37 @@ function buildPagesRedirectResponse(
  * entry with a missing `params` key, return false rather than throwing — the
  * caller will respond with a 404 just like Next.js does for unlisted paths.
  */
+type PagesRouteParam = {
+  key: string;
+  repeat: boolean;
+  optional: boolean;
+};
+
+function getPagesRouteParams(routePattern: string): PagesRouteParam[] {
+  return routePattern
+    .split("/")
+    .map((segment) => {
+      const optionalCatchAll = segment.match(/^\[\[\.\.\.(.+)\]\]$/);
+      if (optionalCatchAll) {
+        return { key: optionalCatchAll[1], repeat: true, optional: true };
+      }
+      const requiredCatchAll = segment.match(/^\[\.\.\.(.+)\]$/);
+      if (requiredCatchAll) {
+        return { key: requiredCatchAll[1], repeat: true, optional: false };
+      }
+      const dynamic = segment.match(/^\[(.+)\]$/);
+      if (dynamic) {
+        return { key: dynamic[1], repeat: false, optional: false };
+      }
+      return null;
+    })
+    .filter((param): param is PagesRouteParam => param !== null);
+}
+
 function matchesPagesStaticPath(
   pathEntry: PagesStaticPathsEntry,
   params: Record<string, unknown>,
+  routeParams: PagesRouteParam[],
   routeUrl: string,
 ): boolean {
   if (typeof pathEntry === "string") {
@@ -462,10 +490,30 @@ function matchesPagesStaticPath(
   if (entryParams === undefined || entryParams === null) {
     return false;
   }
-  return Object.entries(entryParams).every(([key, value]) => {
+
+  return routeParams.every(({ key, repeat, optional }) => {
+    if (!Object.hasOwn(entryParams, key)) {
+      return false;
+    }
+
+    let value = entryParams[key];
+    // Mirrors Next.js build/static-paths/pages.ts: optional catch-all values
+    // explicitly returned as null, undefined, or false normalize to [].
+    if (optional && (value === null || value === undefined || value === false)) {
+      value = [];
+    }
+
+    if (repeat) {
+      if (!Array.isArray(value) || (!optional && value.length === 0)) {
+        return false;
+      }
+    } else if (typeof value !== "string") {
+      return false;
+    }
+
     const actual = params[key];
     if (Array.isArray(value)) {
-      if (value.length === 0 && actual === undefined) {
+      if (optional && value.length === 0 && actual === undefined) {
         return true;
       }
       return Array.isArray(actual) && value.join("/") === actual.join("/");
@@ -631,8 +679,9 @@ export async function resolvePagesPageData(
     });
     const fallback = pathsResult?.fallback ?? false;
     const paths = pathsResult?.paths ?? [];
+    const routeParams = getPagesRouteParams(options.routePattern);
     const isValidPath = paths.some((pathEntry) =>
-      matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
+      matchesPagesStaticPath(pathEntry, options.params, routeParams, options.routeUrl),
     );
 
     if (fallback === false && !isValidPath) {
