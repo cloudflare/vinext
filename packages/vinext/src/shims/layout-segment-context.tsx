@@ -16,7 +16,7 @@
  * The context is shared with navigation.ts via getLayoutSegmentContext()
  * to avoid creating separate contexts in different modules.
  */
-import { createElement, useRef, type ReactNode } from "react";
+import { createElement, useEffect, useRef, type ReactNode } from "react";
 import { getLayoutSegmentContext, type SegmentMap } from "./navigation-server.js";
 
 export function mergeLayoutSegmentMap(previous: SegmentMap | null, next: SegmentMap): SegmentMap {
@@ -44,11 +44,13 @@ export function LayoutSegmentProvider({
 }) {
   const previousSegmentMap = useRef<SegmentMap | null>(null);
   const ctx = getLayoutSegmentContext();
+  const mergedSegmentMap = mergeLayoutSegmentMap(previousSegmentMap.current, segmentMap);
+  useEffect(() => {
+    previousSegmentMap.current = mergedSegmentMap;
+  }, [mergedSegmentMap]);
   if (!ctx) {
     // No context available — expected only in RSC environment, not SSR/browser.
     return children;
   }
-  const mergedSegmentMap = mergeLayoutSegmentMap(previousSegmentMap.current, segmentMap);
-  previousSegmentMap.current = mergedSegmentMap;
   return createElement(ctx.Provider, { value: mergedSegmentMap }, children);
 }

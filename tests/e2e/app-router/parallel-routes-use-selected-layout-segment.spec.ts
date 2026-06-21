@@ -69,6 +69,27 @@ test.describe("parallel routes useSelectedLayoutSegment", () => {
     await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
   });
 
+  test("an abandoned concurrent render cannot replace the committed named segment", async ({
+    page,
+  }) => {
+    await page.goto(BASE);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#concurrentAuthSegment")).toHaveText("visible");
+
+    await page.locator("#start-abandoned-segment-render").click();
+    await page.waitForFunction(
+      () =>
+        (window as Window & { __vinextAbandonedSegmentRenderStarted?: boolean })
+          .__vinextAbandonedSegmentRenderStarted === true,
+    );
+
+    await page.locator("#supersede-segment-render").click();
+    await expect(page.locator("#concurrentAuthSegment")).toHaveText("visible");
+
+    await page.locator("#later-default-only-render").click();
+    await expect(page.locator("#concurrentAuthSegment")).toHaveText("visible");
+  });
+
   test("HMR preserves the named slot selected before navigating to children", async ({ page }) => {
     const pagePath = path.resolve(
       process.cwd(),
