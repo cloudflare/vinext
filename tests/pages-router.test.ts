@@ -2392,6 +2392,80 @@ describe("Pages Router dev server origin check", () => {
   });
 });
 
+describe("Pages Router dev image optimizer configuration", () => {
+  it("matches basePath and trailing-slash image endpoints after Vite strips the basePath", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-image-basepath-"));
+    let server: ViteDevServer | undefined;
+
+    try {
+      await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <div>image optimizer basePath</div>; }`,
+      );
+      await fsp.writeFile(path.join(tmpDir, "public-image.png"), "image");
+      await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default { basePath: "/docs", trailingSlash: true };\n`,
+      );
+
+      const fixture = await startFixtureServer(tmpDir);
+      server = fixture.server;
+
+      const response = await fetch(
+        `${fixture.baseUrl}/docs/_next/image/?url=%2Fpublic-image.png&w=640&q=75`,
+        { redirect: "manual" },
+      );
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/public-image.png");
+    } finally {
+      await server?.close();
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("returns 404 when the built-in optimizer is disabled", async () => {
+    for (const images of [{ unoptimized: true }, { loader: "custom" as const }]) {
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-image-disabled-"));
+      let server: ViteDevServer | undefined;
+
+      try {
+        await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(tmpDir, "node_modules"),
+          "junction",
+        );
+        await fsp.writeFile(
+          path.join(tmpDir, "pages", "index.tsx"),
+          `export default function Home() { return <div>image optimizer disabled</div>; }`,
+        );
+        await fsp.writeFile(
+          path.join(tmpDir, "next.config.mjs"),
+          `export default ${JSON.stringify({ images })};\n`,
+        );
+
+        const fixture = await startFixtureServer(tmpDir);
+        server = fixture.server;
+
+        const response = await fetch(`${fixture.baseUrl}/_next/image?url=%2Fimage.png&w=640&q=75`, {
+          redirect: "manual",
+        });
+
+        expect(response.status).toBe(404);
+      } finally {
+        await server?.close();
+        await fsp.rm(tmpDir, { recursive: true, force: true });
+      }
+    }
+  }, 30000);
+});
+
 // Ported from Next.js: test/development/basic/allowed-dev-origins.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/development/basic/allowed-dev-origins.test.ts
 describe("Pages Router allowedDevOrigins config", () => {

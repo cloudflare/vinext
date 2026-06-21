@@ -9,8 +9,13 @@
  * priority, custom loader, and static image data handling.
  */
 import { describe, it, expect, vi, afterEach } from "vite-plus/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
+import { createServer } from "vite-plus";
+import vinext from "../packages/vinext/src/index.js";
 import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
 
 /** Helper: expected optimization URL matching what the image shim produces. */
@@ -29,6 +34,41 @@ function optUrlHtml(src: string, w: number, q = 75): string {
 // against regression of https://github.com/cloudflare/vinext/issues/1513.
 
 describe("default loader emits /_next/image URLs (issue #1513)", () => {
+  it("uses the normalized configured optimizer path", async () => {
+    process.env.__VINEXT_IMAGE_PATH = "/docs/_next/image/";
+    vi.resetModules();
+
+    try {
+      const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+      expect(imageOptimizationUrl("/photo.png", 828, 75)).toBe(
+        "/docs/_next/image/?url=%2Fphoto.png&w=828&q=75",
+      );
+    } finally {
+      delete process.env.__VINEXT_IMAGE_PATH;
+      vi.resetModules();
+    }
+  });
+
+  it("retains default-loader behavior with a configured optimizer path", async () => {
+    process.env.__VINEXT_IMAGE_PATH = "/docs/_next/image/";
+    process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN = "true";
+    vi.resetModules();
+
+    try {
+      const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+      expect(getImageProps({ alt: "svg", src: "/icon.svg", width: 32, height: 32 }).props.src).toBe(
+        "/icon.svg",
+      );
+      expect(() =>
+        getImageProps({ alt: "query", src: "/photo.png?v=1", width: 32, height: 32 }),
+      ).toThrow("is using a query string which is not configured in images.localPatterns");
+    } finally {
+      delete process.env.__VINEXT_IMAGE_PATH;
+      delete process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN;
+      vi.resetModules();
+    }
+  });
+
   it("imageOptimizationUrl uses /_next/image prefix", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
     const url = imageOptimizationUrl("/photo.png", 828, 85);
@@ -52,9 +92,146 @@ describe("default loader emits /_next/image URLs (issue #1513)", () => {
   });
 });
 
+describe("global loader configuration", () => {
+  it("requires a loader prop when the configured loader is custom", async () => {
+    process.env.__VINEXT_IMAGE_LOADER = "custom";
+    vi.resetModules();
+
+    try {
+      const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+      expect(() =>
+        getImageProps({ alt: "custom", src: "/logo.png", width: 32, height: 32 }),
+      ).toThrow('is missing "loader" prop');
+    } finally {
+      delete process.env.__VINEXT_IMAGE_LOADER;
+      vi.resetModules();
+    }
+  });
+
+  it("uses current next/image semantics for configured built-in loader paths", async () => {
+    process.env.__VINEXT_IMAGE_LOADER = "imgix";
+    process.env.__VINEXT_IMAGE_PATH = "https://example.imgix.net/";
+    vi.resetModules();
+
+    try {
+      const loader = (await import("../packages/vinext/src/shims/image-loader.js")).default;
+      expect(loader({ src: "/logo.png", width: 640, quality: 80 })).toBe(
+        "https://example.imgix.net/?url=%2Flogo.png&w=640&q=80",
+      );
+    } finally {
+      delete process.env.__VINEXT_IMAGE_LOADER;
+      delete process.env.__VINEXT_IMAGE_PATH;
+      vi.resetModules();
+    }
+  });
+
+  it("uses images.loaderFile for Image and getImageProps", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-image-loader-"));
+    fs.mkdirSync(path.join(root, "app"), { recursive: true });
+    fs.symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
+    fs.writeFileSync(
+      path.join(root, "next.config.mjs"),
+      `export default { images: { loader: "custom", loaderFile: "./image-loader.js" } };`,
+    );
+    fs.writeFileSync(
+      path.join(root, "image-loader.js"),
+      `export default function loader({ src, width, quality }) { return \`${"${src}"}#w:${"${width}"},q:${"${quality || 50}"}\`; }`,
+    );
+    fs.writeFileSync(
+      path.join(root, "entry.tsx"),
+      `import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import Image, { getImageProps } from "next/image";
+export function render() {
+  return {
+    html: renderToStaticMarkup(<Image id="img" src="/logo.png" alt="logo" width={400} height={200} />),
+    props: getImageProps({ src: "/logo.png", alt: "logo", width: 400, height: 200 }).props,
+  };
+}`,
+    );
+
+    const server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ appDir: root })],
+      server: { middlewareMode: true },
+    });
+
+    try {
+      const module = await server.ssrLoadModule("/entry.tsx");
+      const result = module.render();
+      expect(result.html).toContain("/logo.png#w:828,q:50");
+      expect(result.html).toContain("/logo.png#w:640,q:50 1x");
+      expect(result.props.src).toBe("/logo.png#w:828,q:50");
+      expect(result.props.srcSet).toContain("/logo.png#w:640,q:50 1x");
+    } finally {
+      await server.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── SSR rendering ──────────────────────────────────────────────────────
 
 describe("Image SSR rendering", () => {
+  it.each(["", "data:image/png;base64,abc", "blob:https://example.com/image"])(
+    "renders special source %s unoptimized without lazy loading",
+    (src) => {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Image, { alt: "special", src, width: 100, height: 100 }),
+      );
+      expect(html).not.toContain("/_next/image?");
+      expect(html).not.toContain('loading="lazy"');
+
+      const { props } = getImageProps({ alt: "special", src, width: 100, height: 100 });
+      expect(props.src).toBe(src);
+      expect(props.srcSet).toBeUndefined();
+      expect(props.loading).toBeUndefined();
+    },
+  );
+
+  it("appends deployment IDs to unoptimized local images without replacing existing IDs", async () => {
+    process.env.__VINEXT_DEPLOYMENT_ID = "deployment-2";
+    vi.resetModules();
+    const { default: ConfiguredImage } = await import("../packages/vinext/src/shims/image.js");
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(ConfiguredImage, {
+        alt: "direct",
+        src: "/photo.jpg?version=1",
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }),
+    );
+    expect(html).toContain('src="/photo.jpg?version=1&amp;dpl=deployment-2"');
+
+    const existing = ReactDOMServer.renderToString(
+      React.createElement(ConfiguredImage, {
+        alt: "existing",
+        src: "/photo.jpg?dpl=deployment-1",
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }),
+    );
+    expect(existing).toContain('src="/photo.jpg?dpl=deployment-1"');
+
+    const { getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    expect(
+      getConfiguredImageProps({
+        alt: "props",
+        src: "/photo.jpg",
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }).props.src,
+    ).toBe("/photo.jpg?dpl=deployment-2");
+    delete process.env.__VINEXT_DEPLOYMENT_ID;
+  });
+
   it("renders a basic <img> tag with correct attributes", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
@@ -66,7 +243,7 @@ describe("Image SSR rendering", () => {
     );
     expect(html).toContain('alt="a nice image"');
     // Local images are routed through the optimization endpoint
-    expect(html).toContain(`src="${optUrlHtml("/test.png", 100)}"`);
+    expect(html).toContain(`src="${optUrlHtml("/test.png", 256)}"`);
     expect(html).toContain('width="100"');
     expect(html).toContain('height="100"');
     expect(html).toContain('decoding="async"');
@@ -90,7 +267,8 @@ describe("Image SSR rendering", () => {
     expect(html).toContain('<link rel="preload"');
     expect(html).toContain('as="image"');
     expect(html).toContain('fetchPriority="high"');
-    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero.png", 640)} 640w`);
+    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero.png", 828)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/hero.png", 1920)} 2x`);
     expect(html).not.toContain(`href="${optUrlHtml("/hero.png", 800)}"`);
     expect(html).toContain('loading="eager"');
     expect(html).toContain('fetchPriority="high"');
@@ -109,7 +287,8 @@ describe("Image SSR rendering", () => {
     );
     expect(html).toContain('<link rel="preload"');
     expect(html).toContain('as="image"');
-    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero-preload.png", 640)} 640w`);
+    expect(html).toContain(`imageSrcSet="${optUrlHtml("/hero-preload.png", 828)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/hero-preload.png", 1920)} 2x`);
     expect(html).not.toContain('loading="lazy"');
     expect(html).not.toContain('fetchPriority="high"');
   });
@@ -166,6 +345,9 @@ describe("Image SSR rendering", () => {
       }),
     );
     expect(html).toContain('sizes="(max-width: 768px) 100vw, 50vw"');
+    expect(html).toContain(`${optUrlHtml("/img.png", 384)} 384w`);
+    expect(html).toContain(`${optUrlHtml("/img.png", 3840)} 3840w`);
+    expect(html).not.toContain(" 1x");
   });
 
   it("renders with blur placeholder styles", () => {
@@ -197,7 +379,10 @@ describe("Image SSR rendering", () => {
         loader,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=200&amp;q=75"');
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=640&amp;q=75"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=256&amp;q=75 1x, https://cdn.example.com/photo.jpg?w=640&amp;q=75 2x"',
+    );
   });
 
   it("renders StaticImageData (import result)", () => {
@@ -214,25 +399,32 @@ describe("Image SSR rendering", () => {
         placeholder: "blur",
       }),
     );
-    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`);
+    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 1920)}"`);
 
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');
     expect(html).toContain("data:image/png;base64,xyz");
   });
 
-  it("bypasses optimization for deployment-tagged SVG static imports", () => {
-    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Image, {
-        alt: "static svg",
-        src: { src, width: 32, height: 32 },
-      }),
-    );
+  it("uses unoptimized attributes for default-loader SVG static imports", () => {
+    process.env.__VINEXT_DEPLOYMENT_ID = "deployment-1";
+    try {
+      const src = "/_next/static/media/icon.0123abcd.svg";
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Image, {
+          alt: "static svg",
+          src: { src, width: 32, height: 32 },
+          sizes: "100vw",
+        }),
+      );
 
-    expect(html).toContain(`src="${src.replaceAll("&", "&amp;")}"`);
-    expect(html).toContain(`srcSet="${src.replaceAll("&", "&amp;")}`);
-    expect(html).not.toContain("/_next/image?");
+      expect(html).toContain('src="/_next/static/media/icon.0123abcd.svg?dpl=deployment-1"');
+      expect(html).not.toContain("srcSet=");
+      expect(html).not.toContain("sizes=");
+      expect(html).not.toContain("/_next/image?");
+    } finally {
+      delete process.env.__VINEXT_DEPLOYMENT_ID;
+    }
   });
 
   it("applies className and custom style", () => {
@@ -278,7 +470,7 @@ describe("Image SSR rendering", () => {
 // ─── srcSet generation ──────────────────────────────────────────────────
 
 describe("Image srcSet generation", () => {
-  it("generates srcSet for local images with width", () => {
+  it("generates fixed-size 1x and 2x srcSet entries", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "test",
@@ -287,17 +479,11 @@ describe("Image srcSet generation", () => {
         height: 400,
       }),
     );
-    // RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840]
-    // Filter: widths <= 500 * 2 = 1000 → [640, 750, 828]
-    expect(html).toContain("srcSet");
-    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 640w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 750)} 750w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 828)} 828w`);
-    // Should not include widths > 1000
-    expect(html).not.toContain("1080w");
+    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 1080)} 2x`);
   });
 
-  it("generates srcSet with all widths for large images", () => {
+  it("caps fixed-size srcSet entries at the largest configured width", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "test",
@@ -306,12 +492,11 @@ describe("Image srcSet generation", () => {
         height: 1500,
       }),
     );
-    // widths <= 4000: all of them
-    expect(html).toContain(`${optUrlHtml("/large.png", 640)} 640w`);
-    expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 3840w`);
+    expect(html).toContain(`${optUrlHtml("/large.png", 2048)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 2x`);
   });
 
-  it("generates fallback srcSet for very small images", () => {
+  it("uses Next.js default image sizes for small fixed images", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "tiny",
@@ -320,12 +505,33 @@ describe("Image srcSet generation", () => {
         height: 16,
       }),
     );
-    // widths <= 32: none of RESPONSIVE_WIDTHS qualify
-    // Falls back to single: optimized icon.png at 16w
-    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 16w`);
+    expect(html).not.toContain(optUrlHtml("/icon.png", 16));
+    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 1x`);
   });
 
-  it("does not generate srcSet for fill mode", () => {
+  it("uses all configured widths for sizes without viewport percentages", () => {
+    const { props } = getImageProps({
+      alt: "responsive",
+      src: "/responsive.png",
+      width: 500,
+      height: 300,
+      sizes: "(max-width: 600px) 320px, 500px",
+    });
+
+    expect(props.srcSet).toContain(`${optUrl("/responsive.png", 32)} 32w`);
+    expect(props.srcSet).toContain(`${optUrl("/responsive.png", 3840)} 3840w`);
+    expect(props.srcSet).not.toContain(" 1x");
+  });
+
+  it("routes configured remote images through the optimizer", () => {
+    const src = "https://image-optimization-test.vercel.app/test.jpg";
+    const { props } = getImageProps({ alt: "remote", src, width: 200, height: 200, quality: 90 });
+
+    expect(props.src).toBe(optUrl(src, 640, 75));
+    expect(props.srcSet).toBe(`${optUrl(src, 256, 75)} 1x, ${optUrl(src, 640, 75)} 2x`);
+  });
+
+  it("generates a 100vw width srcSet for fill mode", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "fill",
@@ -333,8 +539,35 @@ describe("Image srcSet generation", () => {
         fill: true,
       }),
     );
-    // Fill mode: no srcSet (srcSet is only for local non-fill images with width)
-    expect(html).not.toContain("srcSet");
+    expect(html).toContain('sizes="100vw"');
+    expect(html).toContain(`${optUrlHtml("/bg.png", 640)} 640w`);
+    expect(html).toContain(`${optUrlHtml("/bg.png", 3840)} 3840w`);
+  });
+
+  it("sorts configured widths for widthless and fill images", async () => {
+    process.env.__VINEXT_IMAGE_DEVICE_SIZES = JSON.stringify([1080, 640, 828]);
+    process.env.__VINEXT_IMAGE_SIZES = JSON.stringify([384, 32, 256]);
+    vi.resetModules();
+
+    try {
+      const { getImageProps: getConfiguredImageProps } =
+        await import("../packages/vinext/src/shims/image.js");
+      const widthless = getConfiguredImageProps({ alt: "widthless", src: "/widthless.png" });
+      const fill = getConfiguredImageProps({ alt: "fill", src: "/fill.png", fill: true });
+      const expected = [640, 828, 1080]
+        .map((width) => `${optUrl("/widthless.png", width)} ${width}w`)
+        .join(", ");
+      const expectedFill = [640, 828, 1080]
+        .map((width) => `${optUrl("/fill.png", width)} ${width}w`)
+        .join(", ");
+
+      expect(widthless.props.srcSet).toBe(expected);
+      expect(fill.props.srcSet).toBe(expectedFill);
+    } finally {
+      delete process.env.__VINEXT_IMAGE_DEVICE_SIZES;
+      delete process.env.__VINEXT_IMAGE_SIZES;
+      vi.resetModules();
+    }
   });
 });
 
@@ -350,12 +583,55 @@ describe("getImageProps", () => {
     });
 
     expect(props.alt).toBe("a nice desc");
-    expect(props.src).toBe(optUrl("/test.png", 100));
+    expect(props.src).toBe(optUrl("/test.png", 256));
     expect(props.width).toBe(100);
     expect(props.height).toBe(200);
     expect(props.loading).toBe("lazy");
     expect(props.decoding).toBe("async");
     expect((props as any)["data-nimg"]).toBe("1");
+  });
+
+  it("uses direct image URLs when images.unoptimized is enabled", async () => {
+    process.env.__VINEXT_IMAGE_UNOPTIMIZED = "true";
+    vi.resetModules();
+    const { getImageProps: getUnoptimizedImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+
+    const { props } = getUnoptimizedImageProps({
+      alt: "direct",
+      src: "/direct.png",
+      width: 100,
+      height: 100,
+    });
+    expect(props.src).toBe("/direct.png");
+    expect(props.srcSet).toBeUndefined();
+
+    delete process.env.__VINEXT_IMAGE_UNOPTIMIZED;
+    vi.resetModules();
+  });
+
+  it("uses the nearest configured quality for default-loader URLs", async () => {
+    process.env.__VINEXT_IMAGE_QUALITIES = JSON.stringify([60, 90]);
+    vi.resetModules();
+    const { getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+
+    expect(
+      getConfiguredImageProps({ alt: "default quality", src: "/test.png", width: 100, height: 100 })
+        .props.src,
+    ).toContain("q=60");
+    expect(
+      getConfiguredImageProps({
+        alt: "nearest quality",
+        src: "/test.png",
+        width: 100,
+        height: 100,
+        quality: 80,
+      }).props.src,
+    ).toContain("q=90");
+
+    delete process.env.__VINEXT_IMAGE_QUALITIES;
+    vi.resetModules();
   });
 
   it("returns priority props", () => {
@@ -387,7 +663,7 @@ describe("getImageProps", () => {
     expect((props.style as any)?.height).toBe("100%");
   });
 
-  it("returns custom loader URL", () => {
+  it("returns responsive custom loader attributes", () => {
     const loader = ({ src, width }: { src: string; width: number }) =>
       `https://cdn.example.com${src}?w=${width}`;
 
@@ -399,7 +675,74 @@ describe("getImageProps", () => {
       loader,
     });
 
-    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=300");
+    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=640");
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
+    );
+  });
+
+  it("uses overrideSrc with custom loader srcSet in component and getImageProps", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const overrideSrc = "https://images.example.com/original.jpg";
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn",
+        src: "/photo.jpg",
+        width: 300,
+        height: 200,
+        loader,
+        overrideSrc,
+      }),
+    );
+    expect(html).toContain(`src="${overrideSrc}"`);
+    expect(html).toContain("https://cdn.example.com/photo.jpg?w=384 1x");
+    expect(html).toContain("https://cdn.example.com/photo.jpg?w=640 2x");
+
+    const { props } = getImageProps({
+      alt: "cdn",
+      src: "/photo.jpg",
+      width: 300,
+      height: 200,
+      loader,
+      overrideSrc,
+    });
+    expect(props.src).toBe(overrideSrc);
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
+    );
+  });
+
+  it("passes raw quality to custom loaders regardless of configured qualities", async () => {
+    process.env.__VINEXT_IMAGE_QUALITIES = "[60]";
+    vi.resetModules();
+    const { getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const loader = vi.fn(({ quality }: { quality?: number }) => `/photo.jpg?q=${quality}`);
+
+    expect(
+      getConfiguredImageProps({
+        alt: "custom quality",
+        src: "/photo.jpg",
+        width: 300,
+        height: 200,
+        loader,
+        quality: 90,
+      }).props.src,
+    ).toBe("/photo.jpg?q=90");
+    expect(
+      getConfiguredImageProps({
+        alt: "default custom quality",
+        src: "/photo.jpg",
+        width: 300,
+        height: 200,
+        loader,
+      }).props.src,
+    ).toBe("/photo.jpg?q=undefined");
+    expect(loader).toHaveBeenCalledWith(expect.objectContaining({ quality: undefined }));
+
+    delete process.env.__VINEXT_IMAGE_QUALITIES;
   });
 
   it("returns blur placeholder styles", () => {
@@ -414,6 +757,52 @@ describe("getImageProps", () => {
 
     expect((props.style as any)?.backgroundImage).toBe("url(data:image/png;base64,test)");
     expect((props.style as any)?.backgroundSize).toBe("cover");
+  });
+
+  it("retains common image props with a custom loader", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "custom common props",
+        src: "/photo.jpg",
+        width: 300,
+        height: 200,
+        loader: ({ src, width }) => `${src}?w=${width}`,
+        priority: true,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,test",
+      }),
+    );
+    expect(html).toContain('fetchPriority="high"');
+    expect(html).toContain('data-nimg="1"');
+    expect(html).toContain("background-image:url(data:image/png;base64,test)");
+  });
+
+  it("uses custom loaders for SVG sources", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "custom svg",
+        src: "/icon.svg",
+        width: 32,
+        height: 32,
+        loader,
+      }),
+    );
+    expect(html).toContain('src="https://cdn.example.com/icon.svg?w=64"');
+    expect(html).toContain("https://cdn.example.com/icon.svg?w=32 1x");
+
+    const { props } = getImageProps({
+      alt: "custom svg",
+      src: "/icon.svg",
+      width: 32,
+      height: 32,
+      loader,
+    });
+    expect(props.src).toBe("https://cdn.example.com/icon.svg?w=64");
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/icon.svg?w=32 1x, https://cdn.example.com/icon.svg?w=64 2x",
+    );
   });
 
   it("merges user style with default", () => {
@@ -453,20 +842,27 @@ describe("getImageProps", () => {
       src: staticImage,
     });
 
-    expect(props.src).toBe(optUrl("/static/photo.png", 1920));
+    expect(props.src).toBe(optUrl("/static/photo.png", 3840));
     expect(props.width).toBe(1920);
     expect(props.height).toBe(1080);
   });
 
-  it("getImageProps bypasses optimization for deployment-tagged SVG imports", () => {
-    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
-    const { props } = getImageProps({
-      alt: "static svg",
-      src: { src, width: 32, height: 32 },
-    });
+  it("getImageProps uses unoptimized attributes for default-loader SVG imports", () => {
+    process.env.__VINEXT_DEPLOYMENT_ID = "deployment-1";
+    try {
+      const src = "/_next/static/media/icon.0123abcd.svg";
+      const { props } = getImageProps({
+        alt: "static svg",
+        src: { src, width: 32, height: 32 },
+        sizes: "100vw",
+      });
 
-    expect(props.src).toBe(src);
-    expect(props.srcSet).toBeUndefined();
+      expect(props.src).toBe(`${src}?dpl=deployment-1`);
+      expect(props.srcSet).toBeUndefined();
+      expect(props.sizes).toBeUndefined();
+    } finally {
+      delete process.env.__VINEXT_DEPLOYMENT_ID;
+    }
   });
 
   it("generates srcSet for local images", () => {
@@ -480,7 +876,28 @@ describe("getImageProps", () => {
     expect(props.srcSet).toBeDefined();
     expect(props.srcSet).toContain("/_next/image");
     expect(props.srcSet).toContain("photo.png");
-    expect(props.srcSet).toContain("w");
+    expect(props.srcSet).toContain("1x");
+    expect(props.srcSet).toContain("2x");
+  });
+
+  it("moves a static asset deployment id onto optimizer URLs", () => {
+    const { props } = getImageProps({
+      alt: "static",
+      src: {
+        src: "/_next/static/media/test.abc123.png?dpl=deployment-1",
+        width: 400,
+        height: 400,
+      },
+      quality: 85,
+    });
+
+    expect(props.src).toBe(
+      "/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.abc123.png&w=828&q=75&dpl=deployment-1",
+    );
+    expect(props.srcSet).toBe(
+      "/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.abc123.png&w=640&q=75&dpl=deployment-1 1x, " +
+        "/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.abc123.png&w=828&q=75&dpl=deployment-1 2x",
+    );
   });
 
   it("handles loading=eager prop", () => {
@@ -790,6 +1207,33 @@ describe("unoptimized remote images", () => {
     expect(props.srcSet).toBeUndefined();
   });
 
+  it("uses overrideSrc as optimized src while preserving generated srcSet", () => {
+    const overrideSrc = "https://cdn.example.com/original.jpg";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "overridden optimized image",
+        src: "/photo.jpg",
+        overrideSrc,
+        width: 100,
+        height: 100,
+      }),
+    );
+
+    expect(html).toContain(`src="${overrideSrc}"`);
+    expect(html).toContain("srcSet=");
+    expect(html).toContain("/_next/image?url=%2Fphoto.jpg");
+
+    const { props } = getImageProps({
+      alt: "overridden optimized image",
+      src: "/photo.jpg",
+      overrideSrc,
+      width: 100,
+      height: 100,
+    });
+    expect(props.src).toBe(overrideSrc);
+    expect(props.srcSet).toContain("/_next/image?url=%2Fphoto.jpg");
+  });
+
   it("bypasses remote pattern validation in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
@@ -1034,7 +1478,7 @@ describe("onLoad / onError handler attachment (SSR)", () => {
     expect(html).toContain('data-nimg="1"');
   });
 
-  it("renders valid SSR output with both onLoad and onError (remote URL via UnpicImage)", () => {
+  it("renders valid SSR output with both onLoad and onError for a remote URL", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "remote events",
@@ -1062,7 +1506,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     delete process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP;
   });
 
-  it("blocks private-IP remote URLs in production (Image returns null)", async () => {
+  it("defers private-IP rejection to the optimizer in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
@@ -1080,26 +1524,8 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
         height: 300,
       }),
     );
-    // Production: blocked → no img tag rendered
-    expect(html).not.toContain("<img");
-  });
-
-  it("blocks private-IP remote URLs in production (getImageProps returns empty src)", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
-    process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
-
-    vi.resetModules();
-    const { getImageProps: privateIpGetImageProps } =
-      await import("../packages/vinext/src/shims/image.js");
-
-    const { props } = privateIpGetImageProps({
-      alt: "private ip",
-      src: "http://192.168.1.1/photo.jpg",
-      width: 400,
-      height: 300,
-    });
-    expect(props.src).toBe("");
+    expect(html).toContain("<img");
+    expect(html).toContain("/_next/image?url=http%3A%2F%2F127.0.0.1%2Fphoto.jpg");
   });
 
   it("allows private-IP remote URLs when dangerouslyAllowLocalIP = true", async () => {
@@ -1146,30 +1572,257 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     expect(html).toContain('alt="public ip"');
   });
 
-  it("warns but does not block private-IP remote URLs in development", async () => {
+  it("defers configured private-IP rejection to the optimizer in development", async () => {
     vi.stubEnv("NODE_ENV", "development");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
     // Module-level constants in image.tsx are evaluated at import time from
     // process.env, so we must re-evaluate the module after changing env.
     vi.resetModules();
-    const { default: PrivateIpImage } = await import("../packages/vinext/src/shims/image.js");
+    const { default: PrivateIpImage, getImageProps: getPrivateIpImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const props = {
+      alt: "private ip dev",
+      src: "http://172.16.0.1/photo.jpg",
+      width: 400,
+      height: 300,
+    };
 
+    const html = ReactDOMServer.renderToString(React.createElement(PrivateIpImage, props));
+    expect(html).toContain("/_next/image?url=http%3A%2F%2F172.16.0.1%2Fphoto.jpg");
+    expect(getPrivateIpImageProps(props).props.src).toContain(
+      "/_next/image?url=http%3A%2F%2F172.16.0.1%2Fphoto.jpg",
+    );
+  });
+});
+
+describe("remote URL protocol normalization", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
+    delete process.env.__VINEXT_IMAGE_DOMAINS;
+    vi.restoreAllMocks();
+  });
+
+  it("validates mixed-case HTTPS component sources against remotePatterns", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+    ]);
+
+    vi.resetModules();
+    const { default: ConfiguredImage } = await import("../packages/vinext/src/shims/image.js");
     const html = ReactDOMServer.renderToString(
-      React.createElement(PrivateIpImage, {
-        alt: "private ip dev",
-        src: "http://172.16.0.1/photo.jpg",
+      React.createElement(ConfiguredImage, {
+        alt: "configured remote image",
+        src: "HTTPS://images.example.com/allowed/photo.png",
         width: 400,
         height: 300,
       }),
     );
-    // Dev: warn but still render
-    expect(html).toContain("<img");
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("resolved to private IP"));
 
-    warnSpy.mockRestore();
+    expect(html).toContain("<img");
+    expect(html).toContain("/_next/image?");
+  });
+
+  it("defers mixed-case HTTP component validation in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+    ]);
+    vi.resetModules();
+    const { default: ConfiguredImage } = await import("../packages/vinext/src/shims/image.js");
+    const html = ReactDOMServer.renderToString(
+      React.createElement(ConfiguredImage, {
+        alt: "unconfigured remote image",
+        src: "HTTP://unconfigured.example.com/photo.png",
+        width: 400,
+        height: 300,
+      }),
+    );
+
+    expect(html).toContain("<img");
+    expect(html).toContain("/_next/image?url=HTTP%3A%2F%2Funconfigured.example.com%2Fphoto.png");
+  });
+
+  it("validates mixed-case HTTPS getImageProps sources against remotePatterns", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+    ]);
+
+    vi.resetModules();
+    const { getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const { props } = getConfiguredImageProps({
+      alt: "configured remote image",
+      src: "HTTPS://images.example.com/allowed/photo.png",
+      width: 400,
+      height: 300,
+    });
+
+    expect(props.src).toContain("/_next/image?");
+  });
+
+  it("defers mixed-case HTTP getImageProps validation in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+    ]);
+    vi.resetModules();
+    const { getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const { props } = getConfiguredImageProps({
+      alt: "unconfigured remote image",
+      src: "HTTP://unconfigured.example.com/photo.png",
+      width: 400,
+      height: 300,
+    });
+
+    expect(props.src).toContain(
+      "/_next/image?url=HTTP%3A%2F%2Funconfigured.example.com%2Fphoto.png",
+    );
+  });
+});
+
+describe("unconfigured remote image hosts", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
+    delete process.env.__VINEXT_IMAGE_DOMAINS;
+    vi.resetModules();
+  });
+
+  it("emits optimizer URLs for unconfigured remote images in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
+    delete process.env.__VINEXT_IMAGE_DOMAINS;
+    vi.resetModules();
+    const { default: UnconfiguredImage, getImageProps: getUnconfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const src = "https://images.example.com/photo.png";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(UnconfiguredImage, {
+        alt: "unconfigured remote image",
+        src,
+        width: 400,
+        height: 300,
+      }),
+    );
+
+    expect(html).toContain("<img");
+    expect(html).toContain("/_next/image?url=https%3A%2F%2Fimages.example.com%2Fphoto.png");
+    expect(
+      getUnconfiguredImageProps({
+        alt: "unconfigured remote image",
+        src,
+        width: 400,
+        height: 300,
+      }).props.src,
+    ).toContain("/_next/image?url=https%3A%2F%2Fimages.example.com%2Fphoto.png");
+  });
+
+  it.each([
+    ["https://images.example.com/photo.png", 'hostname "images.example.com" is not configured'],
+    [
+      "//images.example.com/photo.png",
+      "protocol-relative URL (//) must be changed to an absolute URL",
+    ],
+    ["images.example.com/photo.png", "if using relative image it must start with a leading slash"],
+  ])("throws for invalid remote src %s in development", async (src, message) => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.resetModules();
+    const { default: InvalidImage, getImageProps: getInvalidImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const props = { alt: "invalid remote image", src, width: 400, height: 300 };
+
+    expect(() => ReactDOMServer.renderToString(React.createElement(InvalidImage, props))).toThrow(
+      message,
+    );
+    expect(() => getInvalidImageProps(props)).toThrow(message);
+  });
+});
+
+describe("local image patterns", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete process.env.__VINEXT_IMAGE_LOCAL_PATTERNS;
+    delete process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN;
+    delete process.env.__VINEXT_IMAGE_QUALITIES;
+    vi.resetModules();
+  });
+
+  it.each(["development", "production"])(
+    "throws for default query-bearing local URLs in %s",
+    async (nodeEnv) => {
+      vi.stubEnv("NODE_ENV", nodeEnv);
+      process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN = "true";
+      vi.resetModules();
+      const { default: ConfiguredImage, getImageProps: getConfiguredImageProps } =
+        await import("../packages/vinext/src/shims/image.js");
+      const props = {
+        alt: "query image",
+        src: "/photo.jpg?v=1",
+        width: 300,
+        height: 200,
+      };
+
+      expect(() =>
+        ReactDOMServer.renderToString(React.createElement(ConfiguredImage, props)),
+      ).toThrow(
+        'Image with src "/photo.jpg?v=1" is using a query string which is not configured in images.localPatterns.',
+      );
+      expect(() => getConfiguredImageProps(props)).toThrow(
+        'Image with src "/photo.jpg?v=1" is using a query string which is not configured in images.localPatterns.',
+      );
+    },
+  );
+
+  it("throws for configured localPatterns mismatches in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    process.env.__VINEXT_IMAGE_LOCAL_PATTERNS = JSON.stringify([
+      { pathname: "/assets/**", search: "" },
+    ]);
+    vi.resetModules();
+    const { default: ConfiguredImage, getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const props = { alt: "unmatched image", src: "/photo.jpg", width: 300, height: 200 };
+
+    expect(() =>
+      ReactDOMServer.renderToString(React.createElement(ConfiguredImage, props)),
+    ).toThrow("does not match `images.localPatterns`");
+    expect(() => getConfiguredImageProps(props)).toThrow("does not match `images.localPatterns`");
+  });
+
+  it("defers configured localPatterns mismatches to the optimizer in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_LOCAL_PATTERNS = JSON.stringify([
+      { pathname: "/assets/**", search: "" },
+    ]);
+    vi.resetModules();
+    const { default: ConfiguredImage, getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const props = { alt: "unmatched image", src: "/photo.jpg", width: 300, height: 200 };
+
+    expect(ReactDOMServer.renderToString(React.createElement(ConfiguredImage, props))).toContain(
+      "/_next/image?url=%2Fphoto.jpg",
+    );
+    expect(getConfiguredImageProps(props).props.src).toContain("/_next/image?url=%2Fphoto.jpg");
+  });
+
+  it("allows configured query-bearing local URLs in production without embedding patterns", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.__VINEXT_IMAGE_LOCAL_PATTERNS;
+    process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN = "false";
+    vi.resetModules();
+    const { default: ConfiguredImage, getImageProps: getConfiguredImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const props = { alt: "query image", src: "/photo.jpg?v=1", width: 300, height: 200 };
+
+    expect(ReactDOMServer.renderToString(React.createElement(ConfiguredImage, props))).toContain(
+      "%2Fphoto.jpg%3Fv%3D1",
+    );
+    expect(getConfiguredImageProps(props).props.src).toContain("%2Fphoto.jpg%3Fv%3D1");
   });
 });

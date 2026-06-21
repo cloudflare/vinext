@@ -29,12 +29,24 @@ import {
   isImageOptimizationPath,
   IMAGE_CONTENT_SECURITY_POLICY,
   parseImageParams,
+  parseRemoteImageUrl,
   isSafeImageContentType,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  createRuntimeImageConfig,
+  DEFAULT_IMAGE_QUALITIES,
+  getImageCacheControl,
+  getImageContentDisposition,
+  handleImageOptimization,
+  imageOptimizationPathAfterBasePath,
+  isImageOptimizationEnabled,
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import {
+  fetchRemoteImageFromValidatedAddresses,
+  resolveRemoteImageHostnames,
+} from "./node-remote-image-fetch.js";
 import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
@@ -83,6 +95,10 @@ import {
   parseAcceptedEncodings,
   selectContentEncoding,
 } from "./accept-encoding.js";
+
+export function getLocalImageLookupPath(imageUrl: string): string {
+  return imageUrl.split("?", 1)[0];
+}
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -1340,21 +1356,55 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
-    if (isImageOptimizationPath(pathname)) {
+    const appRequestHasBasePath = !appRouterBasePath || hasBasePath(pathname, appRouterBasePath);
+    const appRoutingPathname = stripBasePath(pathname, appRouterBasePath);
+    if (
+      appRequestHasBasePath &&
+      isImageOptimizationPath(
+        appRoutingPathname,
+        imageOptimizationPathAfterBasePath(imageConfig?.path, appRouterBasePath),
+      )
+    ) {
+      if (!isImageOptimizationEnabled(imageConfig)) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
       const parsedUrl = new URL(rawUrl, "http://localhost");
       const allowedWidths = [
         ...(imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ];
-      const params = parseImageParams(parsedUrl, allowedWidths, imageConfig?.qualities);
+      const remoteSource = parsedUrl.searchParams.get("url");
+      if (parseRemoteImageUrl(remoteSource)) {
+        const response = await handleImageOptimization(
+          new Request(parsedUrl, { headers: req.headers as HeadersInit }),
+          {
+            fetchAsset: async () => new Response(null, { status: 404 }),
+            fetchRemote: fetchRemoteImageFromValidatedAddresses,
+            resolveHostnames: resolveRemoteImageHostnames,
+          },
+          allowedWidths,
+          imageConfig,
+        );
+        await sendWebResponse(response, req, res, false);
+        return;
+      }
+      const params = parseImageParams(
+        parsedUrl,
+        allowedWidths,
+        imageConfig?.qualities ?? DEFAULT_IMAGE_QUALITIES,
+        { localPatterns: imageConfig?.localPatterns },
+      );
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
         return;
       }
+      const imageLookupPath = getLocalImageLookupPath(params.imageUrl);
       // Block SVG and other unsafe content types by checking the file extension.
       // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
-      const ext = path.extname(params.imageUrl).toLowerCase();
+      const ext = path.extname(imageLookupPath).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
       if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
@@ -1363,18 +1413,22 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
       // Serve the original image with CSP and security headers
       const imageSecurityHeaders: Record<string, string> = {
+        "Cache-Control": getImageCacheControl(params.imageUrl, null, imageConfig?.minimumCacheTTL),
         "Content-Security-Policy":
           imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
+        "Content-Disposition": getImageContentDisposition(
+          imageLookupPath,
+          ct,
+          imageConfig?.contentDispositionType === "inline" ? "inline" : "attachment",
+        ),
       };
       if (
         await tryServeStatic(
           req,
           res,
           clientDir,
-          params.imageUrl,
+          imageLookupPath,
           false,
           staticCache,
           imageSecurityHeaders,
@@ -1552,15 +1606,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
   ];
   // Extract image security config for SVG handling and security headers
-  const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images
-    ? {
-        dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
-        dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
-        qualities: vinextConfig.images.qualities,
-        contentDispositionType: vinextConfig.images.contentDispositionType,
-        contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
-      }
-    : undefined;
+  const pagesImageConfig = createRuntimeImageConfig(
+    vinextConfig?.images as ImageConfig | undefined,
+  );
 
   // Load client asset metadata used by the Pages renderer. Prerendered HTML is
   // rendered through this Node server too, so it needs the same globals that
@@ -1663,6 +1711,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // instead of falling through to the SSR/render handler (which would
     // render the full HTML 404 page). Matches Next.js's behaviour in
     // packages/next/src/server/lib/router-server.ts.
+    const hadBasePath = !basePath || hasBasePath(pathname, basePath);
     const staticLookupPath = stripBasePath(pathname, basePath);
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
     if (pagesAssetLookup) {
@@ -1675,17 +1724,49 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     // ── Image optimization passthrough ──────────────────────────────
-    if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
+    if (
+      hadBasePath &&
+      isImageOptimizationPath(
+        staticLookupPath,
+        imageOptimizationPathAfterBasePath(pagesImageConfig?.path, basePath),
+      )
+    ) {
+      if (!isImageOptimizationEnabled(pagesImageConfig)) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities);
+      const remoteSource = parsedUrl.searchParams.get("url");
+      if (parseRemoteImageUrl(remoteSource)) {
+        const response = await handleImageOptimization(
+          new Request(parsedUrl, { headers: req.headers as HeadersInit }),
+          {
+            fetchAsset: async () => new Response(null, { status: 404 }),
+            fetchRemote: fetchRemoteImageFromValidatedAddresses,
+            resolveHostnames: resolveRemoteImageHostnames,
+          },
+          allowedImageWidths,
+          pagesImageConfig,
+        );
+        await sendWebResponse(response, req, res, false);
+        return;
+      }
+      const params = parseImageParams(
+        parsedUrl,
+        allowedImageWidths,
+        pagesImageConfig?.qualities ?? DEFAULT_IMAGE_QUALITIES,
+        { localPatterns: pagesImageConfig?.localPatterns },
+      );
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
         return;
       }
+      const imageLookupPath = getLocalImageLookupPath(params.imageUrl);
       // Block SVG and other unsafe content types.
       // SVG is only allowed when dangerouslyAllowSVG is enabled.
-      const ext = path.extname(params.imageUrl).toLowerCase();
+      const ext = path.extname(imageLookupPath).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
       if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
@@ -1693,18 +1774,26 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         return;
       }
       const imageSecurityHeaders: Record<string, string> = {
+        "Cache-Control": getImageCacheControl(
+          params.imageUrl,
+          null,
+          pagesImageConfig?.minimumCacheTTL,
+        ),
         "Content-Security-Policy":
           pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
+        "Content-Disposition": getImageContentDisposition(
+          imageLookupPath,
+          ct,
+          pagesImageConfig?.contentDispositionType === "inline" ? "inline" : "attachment",
+        ),
       };
       if (
         await tryServeStatic(
           req,
           res,
           clientDir,
-          params.imageUrl,
+          imageLookupPath,
           false,
           staticCache,
           imageSecurityHeaders,
@@ -1723,7 +1812,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // the basePath gating of rewrites/redirects/headers below — Next.js
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
-      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {

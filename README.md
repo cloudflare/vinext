@@ -417,29 +417,29 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 
 Every `next/*` import is shimmed to a Vite-compatible implementation.
 
-| Module              |     | Notes                                                                                                                                  |
-| ------------------- | --- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `next/link`         | ✅  | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, `basePath`, `locale`                          |
-| `next/image`        | 🟡  | Remote images via [@unpic/react](https://unpic.pics) (28 CDNs). Local images via `<img>` + srcSet. No build-time optimization/resizing |
-| `next/head`         | ✅  | SSR collection + client-side DOM manipulation                                                                                          |
-| `next/router`       | ✅  | `useRouter`, `Router` singleton, events, client-side navigation, SSR context, i18n                                                     |
-| `next/navigation`   | ✅  | `usePathname`, `useSearchParams`, `useParams`, `useRouter`, `redirect`, `notFound`, `forbidden`, `unauthorized`                        |
-| `next/server`       | ✅  | `NextRequest`, `NextResponse`, `NextURL`, cookies, `userAgent`, `after`, `connection`, `URLPattern`                                    |
-| `next/headers`      | ✅  | Async `headers()`, `cookies()`, `draftMode()`                                                                                          |
-| `next/dynamic`      | ✅  | `ssr: true`, `ssr: false`, `loading` component                                                                                         |
-| `next/script`       | ✅  | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`)                                                     |
-| `next/font/google`  | 🟡  | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics                                                             |
-| `next/font/local`   | 🟡  | Runtime `@font-face` injection. Not extracted at build time                                                                            |
-| `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                                  |
-| `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()`       |
-| `next/form`         | ✅  | GET form interception + POST server action delegation                                                                                  |
-| `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                                |
-| `next/error`        | ✅  | Default error page component                                                                                                           |
-| `next/config`       | ✅  | `getConfig` / `setConfig`                                                                                                              |
-| `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                                   |
-| `next/constants`    | ✅  | All phase constants                                                                                                                    |
-| `next/amp`          | ⬜  | No-op (AMP is deprecated)                                                                                                              |
-| `next/web-vitals`   | ⬜  | No-op (use the `web-vitals` library directly)                                                                                          |
+| Module              |     | Notes                                                                                                                            |
+| ------------------- | --- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `next/link`         | ✅  | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, `basePath`, `locale`                    |
+| `next/image`        | ✅  | Responsive image attributes, custom loaders, pattern validation, and runtime image optimization                                  |
+| `next/head`         | ✅  | SSR collection + client-side DOM manipulation                                                                                    |
+| `next/router`       | ✅  | `useRouter`, `Router` singleton, events, client-side navigation, SSR context, i18n                                               |
+| `next/navigation`   | ✅  | `usePathname`, `useSearchParams`, `useParams`, `useRouter`, `redirect`, `notFound`, `forbidden`, `unauthorized`                  |
+| `next/server`       | ✅  | `NextRequest`, `NextResponse`, `NextURL`, cookies, `userAgent`, `after`, `connection`, `URLPattern`                              |
+| `next/headers`      | ✅  | Async `headers()`, `cookies()`, `draftMode()`                                                                                    |
+| `next/dynamic`      | ✅  | `ssr: true`, `ssr: false`, `loading` component                                                                                   |
+| `next/script`       | ✅  | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`)                                               |
+| `next/font/google`  | 🟡  | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics                                                       |
+| `next/font/local`   | 🟡  | Runtime `@font-face` injection. Not extracted at build time                                                                      |
+| `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                            |
+| `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()` |
+| `next/form`         | ✅  | GET form interception + POST server action delegation                                                                            |
+| `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                          |
+| `next/error`        | ✅  | Default error page component                                                                                                     |
+| `next/config`       | ✅  | `getConfig` / `setConfig`                                                                                                        |
+| `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                             |
+| `next/constants`    | ✅  | All phase constants                                                                                                              |
+| `next/amp`          | ⬜  | No-op (AMP is deprecated)                                                                                                        |
+| `next/web-vitals`   | ⬜  | No-op (use the `web-vitals` library directly)                                                                                    |
 
 ### Routing
 
@@ -593,7 +593,7 @@ These are intentional exclusions. For things that are missing today but on the r
 
 These are gaps we'd like to close — distinct from the [intentional exclusions](#whats-not-supported-and-wont-be) above.
 
-- **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_next/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
+- **Image optimization doesn't happen at build time.** Local, public, and static images are routed through a `/_next/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production. Configured remote images are optimized by Node runtimes, but Worker deployments redirect them to the original unoptimized URL because Workers cannot bind DNS validation to the outbound fetch safely. As in Next.js, `remotePatterns` validates the initial source URL; redirects from an allowed source are not re-matched against those patterns.
 - **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.

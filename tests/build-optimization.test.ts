@@ -381,10 +381,17 @@ describe("optimizeDeps.exclude for vinext", () => {
 
   async function setupAppRouterConfigTest(prefix: string) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const mainPlugin = vinext().find(
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
     );
+    const serverDefinePlugin = plugins.find(
+      (plugin: any) =>
+        plugin.name === "vinext:compiler-define-server" &&
+        typeof plugin.configEnvironment === "function",
+    );
     expect(mainPlugin).toBeDefined();
+    expect(serverDefinePlugin).toBeDefined();
 
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
     await fsp.symlink(
@@ -410,9 +417,40 @@ describe("optimizeDeps.exclude for vinext", () => {
           { command },
         );
       },
+      serverDefines(name = "rsc") {
+        return (serverDefinePlugin as any).configEnvironment(name)?.define ?? {};
+      },
       cleanup: () => fsp.rm(root, { recursive: true, force: true }),
     };
   }
+
+  it("keeps production image allowlists out of client defines", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-image-pattern-defines-");
+    const patternDefines = [
+      "process.env.__VINEXT_IMAGE_REMOTE_PATTERNS",
+      "process.env.__VINEXT_IMAGE_LOCAL_PATTERNS",
+      "process.env.__VINEXT_IMAGE_DOMAINS",
+    ];
+
+    try {
+      const development = await fixture.config({}, "serve");
+      for (const define of patternDefines) {
+        expect(development.define).toHaveProperty(define);
+      }
+
+      const production = await fixture.config({}, "build");
+      for (const define of patternDefines) {
+        expect(production.define).not.toHaveProperty(define);
+        expect(fixture.serverDefines()).toHaveProperty(define);
+      }
+      expect(production.define).toHaveProperty(
+        "process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN",
+        '"true"',
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
 
   it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
     const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-true-");

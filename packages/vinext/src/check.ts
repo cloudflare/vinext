@@ -72,7 +72,7 @@ function isAppRouterFile(file: string, type: AppRouterFileType): boolean {
 const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
-  "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/image": { status: "supported", detail: "runtime image optimization and custom loaders" },
   "next/legacy/image": {
     status: "supported",
     detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",

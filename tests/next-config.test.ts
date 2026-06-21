@@ -1334,6 +1334,91 @@ describe("parseBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig image localPatterns", () => {
+  it("does not mutate shared image config across resolutions", async () => {
+    const firstRoot = makeTempDir();
+    const secondRoot = makeTempDir();
+    const sharedImages = {
+      loader: "custom" as const,
+      loaderFile: "./image-loader.js",
+      remotePatterns: [{ protocol: "https", hostname: "images.example.com" }],
+    };
+    fs.writeFileSync(path.join(firstRoot, "image-loader.js"), "export default () => '';");
+    fs.writeFileSync(path.join(secondRoot, "image-loader.js"), "export default () => '';");
+
+    try {
+      const first = await resolveNextConfig(
+        {
+          basePath: "/docs",
+          trailingSlash: true,
+          assetPrefix: "https://cdn.example.com/assets",
+          images: sharedImages,
+        },
+        firstRoot,
+      );
+      const second = await resolveNextConfig({ images: sharedImages }, secondRoot);
+
+      expect(first.images?.path).toBe("/docs/_next/image/");
+      expect(first.images?.loaderFile).toBe(path.join(firstRoot, "image-loader.js"));
+      expect(first.images?.remotePatterns).toContainEqual({
+        protocol: "https",
+        hostname: "cdn.example.com",
+        port: "",
+      });
+      expect(second.images?.path).toBe("/_next/image/");
+      expect(second.images?.loaderFile).toBe(path.join(secondRoot, "image-loader.js"));
+      expect(second.images?.remotePatterns).toEqual([
+        { protocol: "https", hostname: "images.example.com" },
+      ]);
+      expect(sharedImages).toEqual({
+        loader: "custom",
+        loaderFile: "./image-loader.js",
+        remotePatterns: [{ protocol: "https", hostname: "images.example.com" }],
+      });
+    } finally {
+      fs.rmSync(firstRoot, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes the default optimizer path when images is omitted", async () => {
+    const withBasePath = await resolveNextConfig({ basePath: "/docs" });
+    expect(withBasePath.images?.path).toBe("/docs/_next/image");
+
+    const withTrailingSlash = await resolveNextConfig({ trailingSlash: true });
+    expect(withTrailingSlash.images?.path).toBe("/_next/image/");
+  });
+
+  it("allows an absolute assetPrefix origin without broadening remote access", async () => {
+    const resolved = await resolveNextConfig({
+      assetPrefix: "https://cdn.example.com/assets",
+      images: {
+        remotePatterns: [{ protocol: "https", hostname: "images.example.com", pathname: "/ok/**" }],
+      },
+    });
+
+    expect(resolved.images?.remotePatterns).toEqual([
+      { protocol: "https", hostname: "images.example.com", pathname: "/ok/**" },
+      { protocol: "https", hostname: "cdn.example.com", port: "" },
+    ]);
+  });
+
+  it("defaults to rejecting local query strings and allows static imports", async () => {
+    const resolved = await resolveNextConfig({ images: {} });
+    expect(resolved.images?.localPatterns).toEqual([{ pathname: "**", search: "" }]);
+  });
+
+  it("preserves configured patterns and adds the static import pattern", async () => {
+    const resolved = await resolveNextConfig({
+      images: { localPatterns: [{ pathname: "/assets/**", search: "?v=1" }] },
+    });
+    expect(resolved.images?.localPatterns).toEqual([
+      { pathname: "/assets/**", search: "?v=1" },
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+  });
+});
+
 describe("resolveNextConfig serverExternalPackages", () => {
   it("defaults to empty array when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -2469,6 +2554,114 @@ describe("resolveNextConfig cacheHandler", () => {
   it("defaults cacheMaxMemorySize to undefined when not configured", async () => {
     const resolved = await resolveNextConfig({});
     expect(resolved.cacheMaxMemorySize).toBeUndefined();
+  });
+});
+
+describe("resolveNextConfig images", () => {
+  // Ported from Next.js: test/integration/image-optimizer/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/image-optimizer/test/index.test.ts
+  it.each([null, [], "invalid"])("rejects a non-object images value: %j", async (images) => {
+    await expect(resolveNextConfig({ images } as any)).rejects.toThrow(
+      "Specified images should be an object",
+    );
+  });
+
+  it("rejects URL remote patterns with non-http protocols", async () => {
+    await expect(
+      resolveNextConfig({ images: { remotePatterns: [new URL("file://example.com/**")] } }),
+    ).rejects.toThrow(
+      'Specified images.remotePatterns must have protocol "http" or "https" received "file".',
+    );
+  });
+
+  it("validates contentSecurityPolicy as a string", async () => {
+    await expect(
+      resolveNextConfig({ images: { contentSecurityPolicy: 42 as unknown as string } }),
+    ).rejects.toThrow('Expected string, received number at "images.contentSecurityPolicy"');
+  });
+
+  it("prefixes the default image path with basePath and trailingSlash", async () => {
+    const resolved = await resolveNextConfig({
+      basePath: "/docs",
+      trailingSlash: true,
+      images: {},
+    });
+    expect(resolved.images?.path).toBe("/docs/_next/image/");
+  });
+
+  it("preserves explicitly configured image paths", async () => {
+    const resolved = await resolveNextConfig({
+      basePath: "/docs",
+      trailingSlash: true,
+      images: { path: "/media/image" },
+    });
+    expect(resolved.images?.path).toBe("/media/image/");
+  });
+
+  it("resolves loaderFile and normalizes built-in loader paths", async () => {
+    const tmpDir = makeTempDir();
+    const loaderFile = path.join(tmpDir, "image-loader.ts");
+    fs.writeFileSync(loaderFile, "export default ({ src }) => src");
+
+    try {
+      const custom = await resolveNextConfig(
+        { images: { loader: "custom", loaderFile: "./image-loader.ts" } },
+        tmpDir,
+      );
+      expect(custom.images).toMatchObject({
+        loader: "custom",
+        loaderFile,
+        path: "/_next/image/",
+      });
+
+      const imgix = await resolveNextConfig(
+        { images: { loader: "imgix", path: "https://example.imgix.net" } },
+        tmpDir,
+      );
+      expect(imgix.images).toMatchObject({
+        loader: "imgix",
+        path: "https://example.imgix.net/",
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid global loader combinations", async () => {
+    await expect(resolveNextConfig({ images: { loader: "imgix" } })).rejects.toThrow(
+      "also requires images.path",
+    );
+    await expect(
+      resolveNextConfig({ images: { loader: "imgix", path: "/cdn", loaderFile: "loader.js" } }),
+    ).rejects.toThrow("cannot be used with images.loaderFile property");
+  });
+
+  it("rejects an empty qualities array", async () => {
+    await expect(resolveNextConfig({ images: { qualities: [] } })).rejects.toThrow(
+      'Array must contain at least 1 element(s) at "images.qualities"',
+    );
+  });
+
+  it("rejects more than 20 qualities", async () => {
+    await expect(
+      resolveNextConfig({
+        images: { qualities: Array.from({ length: 21 }, (_, index) => index + 1) },
+      }),
+    ).rejects.toThrow('Array must contain at most 20 element(s) at "images.qualities"');
+  });
+
+  it.each([
+    { qualities: [75.5], message: 'Expected integer, received float at "images.qualities[0]"' },
+    {
+      qualities: [0],
+      message: 'Number must be greater than or equal to 1 at "images.qualities[0]"',
+    },
+    {
+      qualities: [101],
+      message: 'Number must be less than or equal to 100 at "images.qualities[0]"',
+    },
+  ])("rejects invalid image qualities: $qualities", async ({ qualities, message }) => {
+    await expect(resolveNextConfig({ images: { qualities } })).rejects.toThrow(message);
   });
 });
 

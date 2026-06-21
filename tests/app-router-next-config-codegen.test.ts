@@ -121,13 +121,42 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         deviceSizes: [320, 640],
         imageSizes: [16],
         qualities: [60, 75],
+        formats: ["image/avif", "image/webp"],
+        dangerouslyAllowSVG: true,
+        contentDispositionType: "inline",
+        contentSecurityPolicy: "sandbox",
       },
     });
     expect(code).toContain("const __imageConfig");
     expect(code).toContain('"deviceSizes":[320,640]');
     expect(code).toContain('"qualities":[60,75]');
+    expect(code).toContain('"formats":["image/avif","image/webp"]');
+    expect(code).toContain('"dangerouslyAllowSVG":true');
+    expect(code).toContain('"contentDispositionType":"inline"');
+    expect(code).toContain('"contentSecurityPolicy":"sandbox"');
     expect(code).toContain("imageConfig: __imageConfig");
-    expect(code).toContain('isDev: process.env.NODE_ENV !== "production"');
+    expect(code).toContain("fetchRemoteImageFromValidatedAddresses");
+    expect(code).toContain("resolveRemoteImageHostnames");
+    expect(code).toContain("imageHandlers: __imageHandlers");
+    expect(code).toContain('const __imageRuntime = "node"');
+    expect(code).toContain("imageRuntime: __imageRuntime");
+    expect(code).toContain("isDev: import.meta.env.DEV");
+  });
+
+  it("omits Node image modules from Worker-targeted App Router entries", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      imageConfig: {
+        deviceSizes: [320],
+        remotePatterns: [{ protocol: "https", hostname: "images.example.com" }],
+      },
+      imageRuntime: "worker",
+    });
+
+    expect(code).toContain('const __imageRuntime = "worker"');
+    expect(code).toContain("const __imageHandlers = undefined");
+    expect(code).not.toContain("node-remote-image-fetch");
+    expect(code).not.toContain("fetchRemoteImageFromValidatedAddresses");
+    expect(code).not.toContain("resolveRemoteImageHostnames");
   });
 
   it("routes hybrid Pages API misses through the Pages server entry", () => {

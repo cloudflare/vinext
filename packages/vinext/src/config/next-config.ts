@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
+import { hasRemoteMatch, normalizeLocalPatterns } from "vinext/shims/image-config";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -74,6 +75,254 @@ export type HasCondition = {
   key: string;
   value?: string;
 };
+
+function validateImageNumberArray(
+  values: number[] | undefined,
+  name: "deviceSizes" | "imageSizes" | "qualities",
+  options: { minItems?: number; maxItems: number; min: number; max: number },
+): void {
+  if (values === undefined) return;
+  const path = `images.${name}`;
+  if (!Array.isArray(values)) {
+    throw new Error(`Expected array, received ${typeof values} at "${path}"`);
+  }
+  if (options.minItems !== undefined && values.length < options.minItems) {
+    throw new Error(`Array must contain at least ${options.minItems} element(s) at "${path}"`);
+  }
+  if (values.length > options.maxItems) {
+    throw new Error(`Array must contain at most ${options.maxItems} element(s) at "${path}"`);
+  }
+  for (const [index, value] of values.entries()) {
+    if (!Number.isInteger(value)) {
+      throw new Error(`Expected integer, received float at "${path}[${index}]"`);
+    }
+    if (value < options.min) {
+      throw new Error(
+        `Number must be greater than or equal to ${options.min} at "${path}[${index}]"`,
+      );
+    }
+    if (value > options.max) {
+      throw new Error(`Number must be less than or equal to ${options.max} at "${path}[${index}]"`);
+    }
+  }
+}
+
+function validateImageInteger(
+  value: number | undefined,
+  name: "maximumRedirects" | "maximumResponseBody" | "minimumCacheTTL",
+  min: number,
+  max?: number,
+): void {
+  if (value === undefined) return;
+  const path = `images.${name}`;
+  if (!Number.isInteger(value)) {
+    throw new Error(`Expected integer, received float at "${path}"`);
+  }
+  if (value < min) {
+    throw new Error(`Number must be greater than or equal to ${min} at "${path}"`);
+  }
+  if (max !== undefined && value > max) {
+    throw new Error(`Number must be less than or equal to ${max} at "${path}"`);
+  }
+}
+
+function validateImageBoolean(
+  value: boolean | undefined,
+  name: "dangerouslyAllowSVG" | "dangerouslyAllowLocalIP" | "disableStaticImages" | "unoptimized",
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw new Error(`Expected boolean, received ${typeof value} at "images.${name}"`);
+  }
+}
+
+function validateOptionalString(
+  value: unknown,
+  path: string,
+  options: { maxLength?: number } = {},
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") {
+    throw new Error(`Expected string, received ${typeof value} at "${path}"`);
+  }
+  if (options.maxLength !== undefined && value.length > options.maxLength) {
+    throw new Error(`String must contain at most ${options.maxLength} character(s) at "${path}"`);
+  }
+}
+
+function validateLocalPattern(pattern: unknown, index: number): void {
+  const path = `images.localPatterns[${index}]`;
+  if (!isUnknownRecord(pattern) || pattern instanceof URL) {
+    throw new Error(`Expected object at "${path}"`);
+  }
+  for (const key of Object.keys(pattern)) {
+    if (key !== "pathname" && key !== "search") {
+      throw new Error(`Unrecognized key '${key}' at "${path}"`);
+    }
+  }
+  validateOptionalString(pattern.pathname, `${path}.pathname`);
+  validateOptionalString(pattern.search, `${path}.search`);
+}
+
+function validateRemotePattern(pattern: unknown, index: number): void {
+  if (pattern instanceof URL) {
+    const protocol = pattern.protocol.replace(/:$/, "");
+    if (protocol !== "http" && protocol !== "https") {
+      throw new Error(
+        `Specified images.remotePatterns must have protocol "http" or "https" received "${protocol}".`,
+      );
+    }
+    return;
+  }
+  const path = `images.remotePatterns[${index}]`;
+  if (!isUnknownRecord(pattern)) {
+    throw new Error(`Expected object at "${path}"`);
+  }
+  for (const key of Object.keys(pattern)) {
+    if (!["protocol", "hostname", "port", "pathname", "search"].includes(key)) {
+      throw new Error(`Unrecognized key '${key}' at "${path}"`);
+    }
+  }
+  if (typeof pattern.hostname !== "string") {
+    throw new Error(`Expected string, received ${typeof pattern.hostname} at "${path}.hostname"`);
+  }
+  if (
+    pattern.protocol !== undefined &&
+    pattern.protocol !== "http" &&
+    pattern.protocol !== "https"
+  ) {
+    throw new Error(
+      `Invalid enum value. Expected 'http' | 'https', received '${JSON.stringify(pattern.protocol)}' at "${path}.protocol"`,
+    );
+  }
+  validateOptionalString(pattern.port, `${path}.port`, { maxLength: 5 });
+  validateOptionalString(pattern.pathname, `${path}.pathname`);
+  validateOptionalString(pattern.search, `${path}.search`);
+}
+
+function validateImageConfig(images: unknown): void {
+  if (images === undefined) return;
+  if (
+    !isUnknownRecord(images) ||
+    Array.isArray(images) ||
+    (Object.getPrototypeOf(images) !== Object.prototype && Object.getPrototypeOf(images) !== null)
+  ) {
+    throw new Error(
+      `Specified images should be an object received ${images === null ? "null" : typeof images}.\nSee more info here: https://nextjs.org/docs/messages/invalid-images-config`,
+    );
+  }
+  const imageConfig = images as NonNullable<NextConfig["images"]>;
+  validateImageNumberArray(imageConfig.deviceSizes, "deviceSizes", {
+    maxItems: 25,
+    min: 1,
+    max: 10000,
+  });
+  validateImageNumberArray(imageConfig.imageSizes, "imageSizes", {
+    maxItems: 25,
+    min: 1,
+    max: 10000,
+  });
+  validateImageNumberArray(imageConfig.qualities, "qualities", {
+    minItems: 1,
+    maxItems: 20,
+    min: 1,
+    max: 100,
+  });
+  if (imageConfig.formats !== undefined) {
+    if (!Array.isArray(imageConfig.formats)) {
+      throw new Error(`Expected array, received ${typeof imageConfig.formats} at "images.formats"`);
+    }
+    if (imageConfig.formats.length > 4) {
+      throw new Error('Array must contain at most 4 element(s) at "images.formats"');
+    }
+    for (const [index, format] of imageConfig.formats.entries()) {
+      if (format !== "image/avif" && format !== "image/webp") {
+        throw new Error(
+          `Invalid enum value. Expected 'image/avif' | 'image/webp', received '${String(format)}' at "images.formats[${index}]"`,
+        );
+      }
+    }
+  }
+  if (imageConfig.localPatterns !== undefined) {
+    if (!Array.isArray(imageConfig.localPatterns)) {
+      throw new Error(
+        `Specified images.localPatterns should be an Array received ${typeof imageConfig.localPatterns}.\nSee more info here: https://nextjs.org/docs/messages/invalid-images-config`,
+      );
+    }
+    if (imageConfig.localPatterns.length > 25) {
+      throw new Error('Array must contain at most 25 element(s) at "images.localPatterns"');
+    }
+    for (const [index, pattern] of imageConfig.localPatterns.entries()) {
+      validateLocalPattern(pattern, index);
+    }
+  }
+  if (imageConfig.remotePatterns !== undefined) {
+    if (!Array.isArray(imageConfig.remotePatterns)) {
+      throw new Error(
+        `Specified images.remotePatterns should be an Array received ${typeof imageConfig.remotePatterns}.\nSee more info here: https://nextjs.org/docs/messages/invalid-images-config`,
+      );
+    }
+    if (imageConfig.remotePatterns.length > 50) {
+      throw new Error('Array must contain at most 50 element(s) at "images.remotePatterns"');
+    }
+    for (const [index, pattern] of imageConfig.remotePatterns.entries()) {
+      validateRemotePattern(pattern, index);
+    }
+  }
+  if (imageConfig.domains !== undefined) {
+    if (!Array.isArray(imageConfig.domains)) {
+      throw new Error(`Expected array, received ${typeof imageConfig.domains} at "images.domains"`);
+    }
+    if (imageConfig.domains.length > 50) {
+      throw new Error('Array must contain at most 50 element(s) at "images.domains"');
+    }
+    for (const [index, domain] of imageConfig.domains.entries()) {
+      validateOptionalString(domain, `images.domains[${index}]`);
+    }
+  }
+  if (
+    imageConfig.contentDispositionType !== undefined &&
+    imageConfig.contentDispositionType !== "inline" &&
+    imageConfig.contentDispositionType !== "attachment"
+  ) {
+    throw new Error(
+      `Invalid enum value. Expected 'inline' | 'attachment', received '${String(imageConfig.contentDispositionType)}' at "images.contentDispositionType"`,
+    );
+  }
+  validateOptionalString(imageConfig.contentSecurityPolicy, "images.contentSecurityPolicy");
+  if (
+    imageConfig.loader !== undefined &&
+    !["default", "imgix", "cloudinary", "akamai", "custom"].includes(imageConfig.loader)
+  ) {
+    throw new Error(
+      `Invalid enum value. Expected 'default' | 'imgix' | 'cloudinary' | 'akamai' | 'custom', received '${String(imageConfig.loader)}' at "images.loader"`,
+    );
+  }
+  validateOptionalString(imageConfig.loaderFile, "images.loaderFile");
+  validateOptionalString(imageConfig.path, "images.path");
+  validateImageBoolean(imageConfig.dangerouslyAllowSVG, "dangerouslyAllowSVG");
+  validateImageBoolean(imageConfig.dangerouslyAllowLocalIP, "dangerouslyAllowLocalIP");
+  validateImageBoolean(imageConfig.disableStaticImages, "disableStaticImages");
+  validateImageBoolean(imageConfig.unoptimized, "unoptimized");
+  validateImageInteger(imageConfig.maximumRedirects, "maximumRedirects", 0, 20);
+  validateImageInteger(
+    imageConfig.maximumResponseBody,
+    "maximumResponseBody",
+    1,
+    Number.MAX_SAFE_INTEGER,
+  );
+  validateImageInteger(imageConfig.minimumCacheTTL, "minimumCacheTTL", 0);
+  if (imageConfig.maximumDiskCacheSize !== undefined) {
+    throw new Error(
+      "images.maximumDiskCacheSize is not supported by vinext because image caching is runtime-adapter based rather than Next.js's Node disk cache",
+    );
+  }
+  if (imageConfig.customCacheHandler === true) {
+    throw new Error(
+      "images.customCacheHandler is not supported by vinext; configure vinext cache adapters instead",
+    );
+  }
+}
 
 export type NextRedirect = {
   source: string;
@@ -189,26 +438,53 @@ export type NextConfig = {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
-    remotePatterns?: Array<{
-      protocol?: string;
-      hostname: string;
-      port?: string;
+    localPatterns?: Array<{
       pathname?: string;
       search?: string;
     }>;
+    remotePatterns?: Array<
+      | URL
+      | {
+          protocol?: string;
+          hostname: string;
+          port?: string;
+          pathname?: string;
+          search?: string;
+        }
+    >;
     domains?: string[];
+    /** Global image loader implementation. */
+    loader?: "default" | "imgix" | "cloudinary" | "akamai" | "custom";
+    /** Project-relative custom loader module with a default export. */
+    loaderFile?: string;
+    /** URL prefix used by the configured image loader. Defaults to "/_next/image". */
+    path?: string;
+    /** Disable transforming imported image files into StaticImageData objects. */
+    disableStaticImages?: boolean;
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
-    /** Allowed image qualities. When unset, any quality from 1-100 is permitted (matches Next.js). */
+    /** Allowed image qualities. Defaults to Next.js default: [75]. */
     qualities?: number[];
+    /** Preferred optimized image formats. Defaults to Next.js default: ["image/webp"]. */
+    formats?: Array<"image/avif" | "image/webp">;
+    /** Minimum cache lifetime in seconds for mutable optimized sources. Defaults to 14400 (4 hours). */
+    minimumCacheTTL?: number;
+    /** Next.js Node disk-cache limit. Unsupported by vinext's runtime-adapter image cache. */
+    maximumDiskCacheSize?: number;
+    /** Next.js custom image cache handler opt-in. Use vinext cache adapters instead. */
+    customCacheHandler?: boolean;
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
     /** Allow image optimization for hostnames that resolve to private IP addresses. This is a security risk (SSRF) — only enable for private networks when you understand the risk. */
     dangerouslyAllowLocalIP?: boolean;
-    /** Content-Disposition header for image responses. Defaults to "inline". */
+    /** Maximum number of redirects followed when fetching remote images. */
+    maximumRedirects?: number;
+    /** Maximum remote image response size in bytes. */
+    maximumResponseBody?: number;
+    /** Content-Disposition header for image responses. Defaults to "attachment". */
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
@@ -1324,6 +1600,92 @@ export async function resolveNextConfig(
     return resolved;
   }
 
+  validateImageConfig(config.images);
+
+  config = {
+    ...config,
+    images: config.images
+      ? {
+          ...config.images,
+          localPatterns: config.images.localPatterns?.map((pattern) => ({ ...pattern })),
+          remotePatterns: config.images.remotePatterns?.map((pattern) =>
+            pattern instanceof URL ? new URL(pattern) : { ...pattern },
+          ),
+          domains: config.images.domains ? [...config.images.domains] : undefined,
+          deviceSizes: config.images.deviceSizes ? [...config.images.deviceSizes] : undefined,
+          imageSizes: config.images.imageSizes ? [...config.images.imageSizes] : undefined,
+          qualities: config.images.qualities ? [...config.images.qualities] : undefined,
+          formats: config.images.formats ? [...config.images.formats] : undefined,
+        }
+      : undefined,
+  };
+
+  const normalizedAssetPrefix = normalizeAssetPrefix(config.assetPrefix);
+  if (
+    config.images ||
+    config.basePath ||
+    config.trailingSlash ||
+    normalizedAssetPrefix.startsWith("http://") ||
+    normalizedAssetPrefix.startsWith("https://")
+  ) {
+    config.images ??= {};
+  }
+
+  if (config.images) {
+    config.images.loader ??= "default";
+    config.images.path ??= "/_next/image";
+    if (
+      config.images.loader !== "default" &&
+      config.images.loader !== "custom" &&
+      config.images.path === "/_next/image"
+    ) {
+      throw new Error(
+        `Specified images.loader property (${config.images.loader}) also requires images.path property to be assigned to a URL prefix.\nSee more info here: https://nextjs.org/docs/api-reference/next/legacy/image#loader-configuration`,
+      );
+    }
+    if (
+      config.images.path === "/_next/image" &&
+      config.basePath &&
+      !config.images.path.startsWith(config.basePath)
+    ) {
+      config.images.path = `${config.basePath}${config.images.path}`;
+    }
+    if (
+      !config.images.path.endsWith("/") &&
+      (config.images.loader !== "default" || config.trailingSlash)
+    ) {
+      config.images.path += "/";
+    }
+    if (
+      normalizedAssetPrefix.startsWith("http://") ||
+      normalizedAssetPrefix.startsWith("https://")
+    ) {
+      const assetPrefixUrl = new URL(normalizedAssetPrefix);
+      config.images.remotePatterns ??= [];
+      if (
+        !hasRemoteMatch(config.images.domains ?? [], config.images.remotePatterns, assetPrefixUrl)
+      ) {
+        config.images.remotePatterns.push({
+          protocol: assetPrefixUrl.protocol.slice(0, -1),
+          hostname: assetPrefixUrl.hostname,
+          port: assetPrefixUrl.port,
+        });
+      }
+    }
+    if (config.images.loaderFile) {
+      if (config.images.loader !== "default" && config.images.loader !== "custom") {
+        throw new Error(
+          `Specified images.loader property (${config.images.loader}) cannot be used with images.loaderFile property. Please set images.loader to "custom".`,
+        );
+      }
+      const loaderFile = path.resolve(root, config.images.loaderFile);
+      if (!fs.existsSync(loaderFile)) {
+        throw new Error(`Specified images.loaderFile does not exist at "${loaderFile}".`);
+      }
+      config.images.loaderFile = loaderFile;
+    }
+  }
+
   // Resolve redirects
   let redirects: NextRedirect[] = [];
   if (config.redirects) {
@@ -1587,7 +1949,7 @@ export async function resolveNextConfig(
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
-    assetPrefix: normalizeAssetPrefix(config.assetPrefix),
+    assetPrefix: normalizedAssetPrefix,
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
@@ -1605,7 +1967,12 @@ export async function resolveNextConfig(
     redirects,
     rewrites,
     headers,
-    images: config.images,
+    images: config.images
+      ? {
+          ...config.images,
+          localPatterns: normalizeLocalPatterns(config.images.localPatterns),
+        }
+      : undefined,
     i18n,
     mdx,
     aliases,

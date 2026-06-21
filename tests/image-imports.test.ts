@@ -1,14 +1,25 @@
-import { describe, it, expect } from "vite-plus/test";
+import { afterEach, describe, it, expect } from "vite-plus/test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import vinext from "../packages/vinext/src/index.js";
 import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
-import type { Plugin } from "vite-plus";
+import { createServer, type Plugin, type ViteDevServer } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 const IMAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/images");
 const PNG_PATH = path.join(IMAGES_DIR, "test-4x3.png");
 const JPG_PATH = path.join(IMAGES_DIR, "test-8x6.jpg");
+let fixtureServer: ViteDevServer | undefined;
+let fixtureRoot: string | undefined;
+
+afterEach(async () => {
+  await fixtureServer?.close();
+  fixtureServer = undefined;
+  if (fixtureRoot) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  fixtureRoot = undefined;
+});
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
@@ -111,10 +122,65 @@ describe("vinext:image-imports — load", () => {
     const result = await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
     expect(result).toContain('"width":4');
   });
+
+  it("emits optimized static imports from an absolute assetPrefix", async () => {
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-image-asset-prefix-"));
+    fs.mkdirSync(path.join(fixtureRoot, "app"));
+    fs.writeFileSync(
+      path.join(fixtureRoot, "app", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+
+    const plugins = vinext({
+      nextConfig: { assetPrefix: "https://cdn.example.com/assets" },
+    }) as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    const imagePlugin = plugins.find((plugin) => plugin.name === "vinext:image-imports");
+    expect(configPlugin).toBeDefined();
+    expect(imagePlugin).toBeDefined();
+
+    await unwrapHook(configPlugin!.config).call(
+      configPlugin,
+      { root: fixtureRoot, plugins: [] },
+      { command: "build", mode: "production" },
+    );
+
+    const result = await unwrapHook(imagePlugin!.load).call(
+      Object.assign(Object.create(imagePlugin!), {
+        addWatchFile() {},
+        environment: { config: { command: "build" } },
+      }),
+      `\0vinext-image-url:${PNG_PATH}`,
+    );
+    expect(result).toContain("https://cdn.example.com/assets/_next/static/media/");
+  });
 });
 
 // ── transform ─────────────────────────────────────────────────
 describe("vinext:image-imports — transform", () => {
+  it("leaves image imports as ordinary Vite URLs when disableStaticImages is true", async () => {
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-disable-static-images-"));
+    fs.writeFileSync(
+      path.join(fixtureRoot, "next.config.mjs"),
+      "export default { images: { disableStaticImages: true } };\n",
+    );
+    fs.copyFileSync(PNG_PATH, path.join(fixtureRoot, "image.png"));
+    fs.writeFileSync(
+      path.join(fixtureRoot, "entry.ts"),
+      'import image from "./image.png"; export default image;\n',
+    );
+    fixtureServer = await createServer({
+      root: fixtureRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext()],
+      server: { middlewareMode: true },
+    });
+
+    const module = await fixtureServer.ssrLoadModule("/entry.ts");
+    expect(module.default).toBeTypeOf("string");
+    expect(module.default).toContain("/image.png");
+  });
   // Fake file ID in the images directory so path.resolve works
   const fakeId = path.join(IMAGES_DIR, "page.tsx");
 

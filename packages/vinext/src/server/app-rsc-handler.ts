@@ -61,9 +61,15 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  getWorkerRemoteImageRedirect,
+  handleImageOptimization,
+  imageOptimizationPathAfterBasePath,
+  isImageOptimizationEnabled,
   isImageOptimizationPath,
+  parseRemoteImageUrl,
   resolveDevImageRedirect,
   type ImageConfig,
+  type ImageHandlers,
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
@@ -302,6 +308,8 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
+  imageHandlers?: Pick<ImageHandlers, "fetchRemote" | "resolveHostnames">;
+  imageRuntime?: "node" | "worker";
   isDev: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
@@ -650,19 +658,48 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  if (isImageOptimizationPath(cleanPathname)) {
+  if (
+    isImageOptimizationPath(
+      cleanPathname,
+      imageOptimizationPathAfterBasePath(options.imageConfig?.path, options.basePath),
+    )
+  ) {
+    if (!isImageOptimizationEnabled(options.imageConfig)) {
+      return new Response("This page could not be found", { status: 404 });
+    }
+    const allowedWidths = [
+      ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+      ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+    ];
     const imageRedirect = resolveDevImageRedirect(
       url,
-      [
-        ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-        ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-      ],
+      allowedWidths,
       options.imageConfig?.qualities,
-      { isDev: options.isDev },
+      { isDev: options.isDev, localPatterns: options.imageConfig?.localPatterns },
     );
-    if (!imageRedirect)
-      return new Response("Invalid image optimization parameters", { status: 400 });
-    return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
+    if (imageRedirect) return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
+
+    const imageSource = url.searchParams.get("url");
+    if (options.isDev && parseRemoteImageUrl(imageSource)) {
+      if (options.imageRuntime === "worker") {
+        return (
+          getWorkerRemoteImageRedirect(request, allowedWidths, options.imageConfig) ??
+          new Response("Invalid image optimization parameters", { status: 400 })
+        );
+      }
+      return handleImageOptimization(
+        request,
+        {
+          fetchAsset: async () => new Response(null, { status: 404 }),
+          ...options.imageHandlers,
+        },
+        allowedWidths,
+        options.imageConfig,
+        { isDev: true },
+      );
+    }
+
+    return new Response("Invalid image optimization parameters", { status: 400 });
   }
 
   if (options.handleMetadataRouteRequest) {

@@ -14,6 +14,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { normalizeLocalPatterns, normalizeRemotePatterns } from "vinext/shims/image-config";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -122,9 +123,19 @@ export async function generateServerEntry(
     disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
     clientTraceMetadata: nextConfig?.clientTraceMetadata,
     images: {
+      path: nextConfig?.images?.path,
+      loader: nextConfig?.images?.loader,
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       qualities: nextConfig?.images?.qualities,
+      formats: nextConfig?.images?.formats,
+      localPatterns: normalizeLocalPatterns(nextConfig?.images?.localPatterns),
+      remotePatterns: normalizeRemotePatterns(nextConfig?.images?.remotePatterns ?? []),
+      unoptimized: nextConfig?.images?.unoptimized,
+      domains: nextConfig?.images?.domains,
+      maximumRedirects: nextConfig?.images?.maximumRedirects,
+      maximumResponseBody: nextConfig?.images?.maximumResponseBody,
+      minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,

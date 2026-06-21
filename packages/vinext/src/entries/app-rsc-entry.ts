@@ -105,6 +105,10 @@ const appHookWarningSuppressionPath = resolveEntryPath(
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
+const nodeRemoteImageFetchPath = resolveEntryPath(
+  "../server/node-remote-image-fetch.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -161,6 +165,8 @@ type AppRouterConfig = {
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
+  /** Runtime that owns image I/O for the generated RSC entry. */
+  imageRuntime?: "node" | "worker";
   /**
    * Absolute path to `app/global-not-found.{tsx,ts,js,jsx}` when present.
    * When provided, route-miss 404s render this module standalone (it owns its
@@ -220,6 +226,7 @@ export function generateRscEntry(
   const inlineCss = config?.inlineCss === true;
   const cacheComponents = config?.cacheComponents === true;
   const hasServerActions = config?.hasServerActions !== false;
+  const imageRuntime = config?.imageRuntime ?? "node";
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -598,6 +605,23 @@ export const __inlineCss = ${JSON.stringify(inlineCss)};
 export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
 const __cacheComponents = ${JSON.stringify(cacheComponents)};
+const __imageRuntime = ${JSON.stringify(imageRuntime)};
+const __imageHandlers = ${
+    imageRuntime === "node"
+      ? `import.meta.env.DEV
+  ? {
+      async fetchRemote(url, addresses, signal) {
+        const { fetchRemoteImageFromValidatedAddresses } = await import(${JSON.stringify(nodeRemoteImageFetchPath)});
+        return fetchRemoteImageFromValidatedAddresses(url, addresses, signal);
+      },
+      async resolveHostnames(hostname) {
+        const { resolveRemoteImageHostnames } = await import(${JSON.stringify(nodeRemoteImageFetchPath)});
+        return resolveRemoteImageHostnames(hostname);
+      },
+    }
+  : undefined`
+      : "undefined"
+  };
 
 export async function seedMemoryCacheFromPrerender(serverDir) {
   const { seedMemoryCacheFromPrerender: __seedMemoryCacheFromPrerender } =
@@ -656,7 +680,9 @@ export default createAppRscHandler({
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
   imageConfig: __imageConfig,
-  isDev: process.env.NODE_ENV !== "production",
+  imageHandlers: __imageHandlers,
+  imageRuntime: __imageRuntime,
+  isDev: import.meta.env.DEV,
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     clientReuseManifest,

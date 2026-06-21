@@ -963,9 +963,6 @@ importers:
 
   packages/vinext:
     dependencies:
-      '@unpic/react':
-        specifier: 'catalog:'
-        version: 1.0.2(next@16.2.7(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.100.0))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@vercel/og':
         specifier: 'catalog:'
         version: 0.8.6

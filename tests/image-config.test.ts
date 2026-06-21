@@ -7,11 +7,63 @@
  */
 import { describe, it, expect } from "vite-plus/test";
 import {
+  hasLocalMatch,
   matchRemotePattern,
   hasRemoteMatch,
   isPrivateIp,
+  normalizeRemotePatterns,
+  normalizeLocalPatterns,
   type RemotePattern,
 } from "../packages/vinext/src/shims/image-config.js";
+
+describe("localPatterns", () => {
+  it("defaults to allowing local paths without query strings", () => {
+    expect(hasLocalMatch(undefined, "/images/hero.png")).toBe(true);
+    expect(hasLocalMatch(undefined, "/images/hero.png?v=1")).toBe(false);
+  });
+
+  it("matches configured pathname and query patterns", () => {
+    const patterns = normalizeLocalPatterns([{ pathname: "/images/**", search: "?v=1" }]);
+    expect(hasLocalMatch(patterns, "/images/hero.png?v=1")).toBe(true);
+    expect(hasLocalMatch(patterns, "/images/hero.png?v=2")).toBe(false);
+    expect(hasLocalMatch(patterns, "/other/hero.png?v=1")).toBe(false);
+  });
+
+  it("automatically allows static image imports", () => {
+    const patterns = normalizeLocalPatterns([{ pathname: "/images/**", search: "" }]);
+    expect(hasLocalMatch(patterns, "/_next/static/media/hero.1234.png")).toBe(true);
+  });
+});
+
+describe("URL remotePatterns", () => {
+  it("normalizes and matches URL-form patterns", () => {
+    const patterns = normalizeRemotePatterns([new URL("https://assets.example.com/images/**?v=1")]);
+    expect(patterns).toEqual([
+      {
+        protocol: "https",
+        hostname: "assets.example.com",
+        port: "",
+        pathname: "/images/**",
+        search: "?v=1",
+      },
+    ]);
+    expect(
+      hasRemoteMatch([], patterns, new URL("https://assets.example.com/images/hero.png?v=1")),
+    ).toBe(true);
+    expect(
+      hasRemoteMatch([], patterns, new URL("https://assets.example.com/images/hero.png?v=2")),
+    ).toBe(false);
+  });
+
+  it("accepts URL-form patterns directly at runtime", () => {
+    expect(
+      matchRemotePattern(
+        new URL("https://assets.example.com/images/**"),
+        new URL("https://assets.example.com/images/hero.png"),
+      ),
+    ).toBe(true);
+  });
+});
 
 // ─── matchRemotePattern: hostname matching ──────────────────────────────
 
@@ -26,17 +78,11 @@ describe("matchRemotePattern hostname", () => {
     expect(matchRemotePattern(pattern, new URL("https://other.com/img.png"))).toBe(false);
   });
 
-  it("matches single-segment wildcard (*)", () => {
+  it("matches wildcard (*) across nested subdomains like Next.js picomatch", () => {
     const pattern: RemotePattern = { hostname: "*.example.com" };
     expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.png"))).toBe(true);
     expect(matchRemotePattern(pattern, new URL("https://images.example.com/img.png"))).toBe(true);
-  });
-
-  it("single wildcard does not match deep subdomains", () => {
-    const pattern: RemotePattern = { hostname: "*.example.com" };
-    expect(matchRemotePattern(pattern, new URL("https://deep.cdn.example.com/img.png"))).toBe(
-      false,
-    );
+    expect(matchRemotePattern(pattern, new URL("https://deep.cdn.example.com/img.png"))).toBe(true);
   });
 
   it("matches double-star wildcard (**) for deep subdomains", () => {

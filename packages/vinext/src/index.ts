@@ -33,11 +33,20 @@ import { handleApiRoute } from "./server/api-handler.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  handleImageOptimization,
+  imageOptimizationPathAfterBasePath,
+  isImageOptimizationEnabled,
   isImageOptimizationPath,
+  parseRemoteImageUrl,
   resolveDevImageRedirect,
 } from "./server/image-optimization.js";
+import { normalizeLocalPatterns, normalizeRemotePatterns } from "vinext/shims/image-config";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
+import {
+  fetchRemoteImageFromValidatedAddresses,
+  resolveRemoteImageHostnames,
+} from "./server/node-remote-image-fetch.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
@@ -69,7 +78,6 @@ import {
   type NextConfigInput,
   type ResolvedNextConfig,
 } from "./config/next-config.js";
-
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
@@ -549,6 +557,8 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_IMAGE_LOADER = "virtual:vinext-image-loader";
+const RESOLVED_IMAGE_LOADER = VIRTUAL_PREFIX + VIRTUAL_IMAGE_LOADER;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
@@ -1444,12 +1454,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
-        // Expose image remote patterns for validation in next/image shim
-        defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
-          JSON.stringify(nextConfig.images?.remotePatterns ?? []),
-        );
-        defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
-          JSON.stringify(nextConfig.images?.domains ?? []),
+        // Next.js only embeds image allowlists in development client bundles.
+        // Production clients defer validation to the optimizer endpoint, while
+        // server environments still receive the full config for SSR.
+        if (env?.command === "serve") {
+          defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
+            JSON.stringify(normalizeRemotePatterns(nextConfig.images?.remotePatterns ?? [])),
+          );
+          defines["process.env.__VINEXT_IMAGE_LOCAL_PATTERNS"] = JSON.stringify(
+            JSON.stringify(normalizeLocalPatterns(nextConfig.images?.localPatterns)),
+          );
+          defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
+            JSON.stringify(nextConfig.images?.domains ?? []),
+          );
+        }
+        defines["process.env.__VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN"] = JSON.stringify(
+          String(nextConfig.images?.localPatterns === undefined),
         );
         // Expose allowed image widths (union of deviceSizes + imageSizes) for
         // server-side validation. Matches Next.js behavior: only configured
@@ -1458,16 +1478,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const deviceSizes = nextConfig.images?.deviceSizes ?? [
             640, 750, 828, 1080, 1200, 1920, 2048, 3840,
           ];
-          const imageSizes = nextConfig.images?.imageSizes ?? [16, 32, 48, 64, 96, 128, 256, 384];
+          const imageSizes = nextConfig.images?.imageSizes ?? [32, 48, 64, 96, 128, 256, 384];
           defines["process.env.__VINEXT_IMAGE_DEVICE_SIZES"] = JSON.stringify(
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
-          // Emit the configured qualities allowlist, or `null` when unset so the
-          // runtime permits any quality 1-100 (matches Next.js: an unset
-          // `images.qualities` is not restricted to a single value).
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
-            JSON.stringify(nextConfig.images?.qualities ?? null),
+            JSON.stringify(nextConfig.images?.qualities ?? [75]),
+          );
+          defines["process.env.__VINEXT_IMAGE_FORMATS"] = JSON.stringify(
+            JSON.stringify(nextConfig.images?.formats ?? ["image/webp"]),
+          );
+          defines["process.env.__VINEXT_IMAGE_MINIMUM_CACHE_TTL"] = JSON.stringify(
+            String(nextConfig.images?.minimumCacheTTL ?? 14_400),
           );
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
@@ -1479,6 +1502,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // When false (default), remote image URLs with literal private-IP hostnames are blocked.
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
+        );
+        defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
+          String(nextConfig.images?.unoptimized ?? false),
+        );
+        defines["process.env.__VINEXT_IMAGE_LOADER"] = JSON.stringify(
+          nextConfig.images?.loader ?? "default",
+        );
+        defines["process.env.__VINEXT_IMAGE_LOADER_FILE"] = JSON.stringify(
+          String(Boolean(nextConfig.images?.loaderFile)),
+        );
+        defines["process.env.__VINEXT_IMAGE_PATH"] = JSON.stringify(
+          nextConfig.images?.path ?? "/_next/image",
+        );
+        defines["process.env.__VINEXT_IMAGE_MAXIMUM_REDIRECTS"] = JSON.stringify(
+          String(nextConfig.images?.maximumRedirects ?? 3),
+        );
+        defines["process.env.__VINEXT_IMAGE_MAXIMUM_RESPONSE_BODY"] = JSON.stringify(
+          String(nextConfig.images?.maximumResponseBody ?? 50_000_000),
+        );
+        defines["process.env.__VINEXT_IMAGE_CONTENT_DISPOSITION_TYPE"] = JSON.stringify(
+          nextConfig.images?.contentDispositionType ?? "attachment",
+        );
+        defines["process.env.__VINEXT_IMAGE_CONTENT_SECURITY_POLICY"] = JSON.stringify(
+          nextConfig.images?.contentSecurityPolicy ??
+            "script-src 'none'; frame-src 'none'; sandbox;",
         );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
@@ -1685,6 +1733,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/pages-router-runtime": path.posix.join(shimsDir, "pages-router-runtime"),
             "vinext/router-state": path.posix.join(shimsDir, "router-state"),
             "vinext/head-state": path.posix.join(shimsDir, "head-state"),
+            "vinext/shims/image-loader": VIRTUAL_IMAGE_LOADER,
             "vinext/i18n-state": path.posix.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.posix.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
@@ -2750,6 +2799,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId === VIRTUAL_IMAGE_LOADER) return RESOLVED_IMAGE_LOADER;
           if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
             return RESOLVED_ROOT_PARAMS;
           }
@@ -2870,10 +2920,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               hasServerActions,
               i18n: nextConfig?.i18n,
               imageConfig: {
+                path: nextConfig?.images?.path,
+                loader: nextConfig?.images?.loader,
                 deviceSizes: nextConfig?.images?.deviceSizes,
                 imageSizes: nextConfig?.images?.imageSizes,
                 qualities: nextConfig?.images?.qualities,
+                formats: nextConfig?.images?.formats,
+                localPatterns: normalizeLocalPatterns(nextConfig?.images?.localPatterns),
+                remotePatterns: normalizeRemotePatterns(nextConfig?.images?.remotePatterns ?? []),
+                unoptimized: nextConfig?.images?.unoptimized,
+                domains: nextConfig?.images?.domains,
+                maximumRedirects: nextConfig?.images?.maximumRedirects,
+                maximumResponseBody: nextConfig?.images?.maximumResponseBody,
+                minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+                dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+                dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
+                contentDispositionType: nextConfig?.images?.contentDispositionType,
+                contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
               },
+              imageRuntime: hasCloudflarePlugin ? "worker" : "node",
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
               globalNotFoundPath,
@@ -2924,6 +2989,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             pagesPrefetchRoutes,
             nextConfig.rewrites,
           );
+        }
+        if (id === RESOLVED_IMAGE_LOADER) {
+          const loaderModule =
+            nextConfig.images?.loaderFile ?? resolveShimModulePath(shimsDir, "image-loader");
+          return nextConfig.images?.loaderFile
+            ? `import * as __loaderModule from ${JSON.stringify(loaderModule)};
+const __loader = __loaderModule.default;
+if (typeof __loader !== "function") {
+  throw new Error("images.loaderFile detected but the file is missing default export.\\nRead more: https://nextjs.org/docs/messages/invalid-images-config");
+}
+export default __loader;`
+            : `export { default } from ${JSON.stringify(loaderModule)};`;
         }
         if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
           return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
@@ -3779,7 +3856,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
-              if (isImageOptimizationPath(url.split("?")[0]!)) {
+              if (
+                isImageOptimizationEnabled(nextConfig.images) &&
+                isImageOptimizationPath(
+                  url.split("?")[0]!,
+                  imageOptimizationPathAfterBasePath(
+                    nextConfig.images?.path,
+                    nextConfig.basePath ?? "",
+                  ),
+                )
+              ) {
                 const imageRequestUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
                 const allowedWidths = [
                   ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
@@ -3789,7 +3875,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   imageRequestUrl,
                   allowedWidths,
                   nextConfig.images?.qualities,
+                  { isDev: true, localPatterns: nextConfig.images?.localPatterns },
                 );
+                const remoteSource = imageRequestUrl.searchParams.get("url");
+                if (!encodedLocation && parseRemoteImageUrl(remoteSource)) {
+                  const response = await handleImageOptimization(
+                    new Request(imageRequestUrl, { headers: req.headers as HeadersInit }),
+                    {
+                      fetchAsset: async () => new Response(null, { status: 404 }),
+                      fetchRemote: fetchRemoteImageFromValidatedAddresses,
+                      resolveHostnames: resolveRemoteImageHostnames,
+                    },
+                    allowedWidths,
+                    nextConfig.images,
+                    { isDev: true },
+                  );
+                  await writeWebResponseToNodeRes(res, response);
+                  return;
+                }
                 if (!encodedLocation) {
                   res.writeHead(400);
                   res.end("Invalid image optimization parameters");
@@ -4476,6 +4579,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
 
+        serverDefines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
+          JSON.stringify(normalizeRemotePatterns(nextConfig.images?.remotePatterns ?? [])),
+        );
+        serverDefines["process.env.__VINEXT_IMAGE_LOCAL_PATTERNS"] = JSON.stringify(
+          JSON.stringify(normalizeLocalPatterns(nextConfig.images?.localPatterns)),
+        );
+        serverDefines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
+          JSON.stringify(nextConfig.images?.domains ?? []),
+        );
+
         // Mirror Next.js's compile-time `process.env.NEXT_RUNTIME` constant
         // (see packages/next/src/build/define-env.ts).  This is a build-time
         // define — it is inlined at compile time and has no runtime equivalent.
@@ -4606,6 +4719,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
         },
         async handler(code, id) {
+          if (nextConfig?.images?.disableStaticImages) return null;
           // The `code` filter above (a regex) only decides whether to invoke
           // this handler; it can fire on text inside comments, strings, or
           // template literals. Scanning must therefore be AST-based so we only
@@ -5015,9 +5129,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!outDir) return;
 
           const imageConfig = {
+            path: nextConfig?.images?.path,
+            loader: nextConfig?.images?.loader,
             deviceSizes: nextConfig?.images?.deviceSizes,
             imageSizes: nextConfig?.images?.imageSizes,
             qualities: nextConfig?.images?.qualities,
+            formats: nextConfig?.images?.formats,
+            localPatterns: normalizeLocalPatterns(nextConfig?.images?.localPatterns),
+            remotePatterns: normalizeRemotePatterns(nextConfig?.images?.remotePatterns ?? []),
+            unoptimized: nextConfig?.images?.unoptimized,
+            domains: nextConfig?.images?.domains,
+            maximumRedirects: nextConfig?.images?.maximumRedirects,
+            maximumResponseBody: nextConfig?.images?.maximumResponseBody,
+            minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+            dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,

@@ -438,6 +438,8 @@ declare global {
        * `next.config.js` → `images.remotePatterns`.
        */
       __VINEXT_IMAGE_REMOTE_PATTERNS?: string;
+      __VINEXT_IMAGE_LOCAL_PATTERNS?: string;
+      __VINEXT_IMAGE_REJECT_LOCAL_QUERY_WITHOUT_PATTERN?: string;
 
       /**
        * JSON-encoded array of allowed hostname strings from
@@ -468,6 +470,11 @@ declare global {
        * are allowed (`next.config.js` → `images.dangerouslyAllowLocalIP`).
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP?: string;
+      __VINEXT_IMAGE_UNOPTIMIZED?: string;
+      __VINEXT_IMAGE_MINIMUM_CACHE_TTL?: string;
+      __VINEXT_IMAGE_LOADER?: string;
+      __VINEXT_IMAGE_LOADER_FILE?: string;
+      __VINEXT_IMAGE_PATH?: string;
 
       /**
        * Next.js-compatible version string. vinext mirrors Next.js's

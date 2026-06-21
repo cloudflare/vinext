@@ -100,6 +100,8 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
         : async () => null,
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
+    imageHandlers: overrides.imageHandlers,
+    imageRuntime: overrides.imageRuntime,
     isDev: overrides.isDev ?? true,
     matchRoute:
       overrides.matchRoute ??
@@ -172,10 +174,125 @@ describe("createAppRscHandler", () => {
     expect(defaultOnly.status).toBe(400);
   });
 
+  it("matches configured image paths after stripping basePath", async () => {
+    const handler = createHandler({
+      imageConfig: { path: "/docs/_next/image", qualities: [75] },
+    });
+    const response = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://example.test/img.jpg");
+
+    const outsideBasePath = await handler(
+      new Request("https://example.test/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(outsideBasePath.status).toBe(404);
+  });
+
+  it.each([
+    { imageConfig: { unoptimized: true }, label: "globally unoptimized images" },
+    { imageConfig: { loader: "custom" as const }, label: "a custom image loader" },
+  ])("returns 404 for manual optimizer requests with $label", async ({ imageConfig }) => {
+    const handler = createHandler({ imageConfig });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("optimizes configured remote images in pure App Router dev", async () => {
+    const fetchRemote = vi.fn(
+      async () =>
+        new Response(Buffer.from([1, 2, 3]), { headers: { "Content-Type": "image/png" } }),
+    );
+    const handler = createHandler({
+      imageConfig: {
+        deviceSizes: [320],
+        remotePatterns: [
+          { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+        ],
+      },
+      imageHandlers: {
+        fetchRemote,
+        resolveHostnames: async () => ["8.8.8.8"],
+      },
+    });
+
+    const response = await handler(
+      new Request(
+        "https://example.test/docs/_next/image?url=HTTPS%3A%2F%2Fimages.example.com%2Fallowed%2Fphoto.png&w=320&q=75",
+      ),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    expect(fetchRemote).toHaveBeenCalledOnce();
+  });
+
+  it("uses the Worker remote-image redirect path in Cloudflare App Router dev", async () => {
+    const handler = createHandler({
+      imageConfig: {
+        deviceSizes: [320],
+        remotePatterns: [
+          { protocol: "https", hostname: "images.example.com", pathname: "/allowed/**" },
+        ],
+      },
+      imageRuntime: "worker",
+    });
+
+    const response = await handler(
+      new Request(
+        "https://example.test/docs/_next/image?url=https%3A%2F%2Fimages.example.com%2Fallowed%2Fphoto.png&w=320&q=75",
+      ),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("https://images.example.com/allowed/photo.png");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("uses App Router dev SVG and response security image config", async () => {
+    const handler = createHandler({
+      imageConfig: {
+        deviceSizes: [320],
+        remotePatterns: [{ protocol: "https", hostname: "images.example.com" }],
+        dangerouslyAllowSVG: true,
+        contentDispositionType: "inline",
+        contentSecurityPolicy: "sandbox allow-scripts",
+      },
+      imageHandlers: {
+        fetchRemote: async () =>
+          new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
+            headers: { "Content-Type": "image/svg+xml" },
+          }),
+        resolveHostnames: async () => ["8.8.8.8"],
+      },
+    });
+
+    const response = await handler(
+      new Request(
+        "https://example.test/docs/_next/image?url=https%3A%2F%2Fimages.example.com%2Fphoto.svg&w=320&q=75",
+      ),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml");
+    expect(response.headers.get("content-disposition")).toBe('inline; filename="photo.svg"');
+    expect(response.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+  });
+
   it("allows independent Next.js blur width and quality exceptions in pure App Router dev", async () => {
-    // The blur quality exception (q=70) is only observable when `qualities` is
-    // configured — with an unset allowlist any quality 1-100 is permitted, so
-    // pin it to [75] to exercise the dev-only exception itself.
+    // Pin the default explicitly to exercise the dev-only exception itself.
     const handler = createHandler({ imageConfig: { qualities: [75] } });
     for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
       const response = await handler(
@@ -197,15 +314,13 @@ describe("createAppRscHandler", () => {
     }
   });
 
-  it("allows any quality 1-100 in production when images.qualities is unset", async () => {
-    // Matches Next.js: an unset `qualities` is not restricted to a single value,
-    // so q=70 (and any 1-100) is a normal quality even in production.
+  it("defaults production image qualities to [75]", async () => {
     const handler = createHandler({ isDev: false });
     const response = await handler(
       new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=70"),
       null,
     );
-    expect(response.status).toBe(302);
+    expect(response.status).toBe(400);
   });
 
   it("wraps dispatch responses with request-scoped finalization", async () => {

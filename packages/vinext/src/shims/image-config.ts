@@ -8,9 +8,9 @@ import ipaddr from "ipaddr.js";
  * open-redirect attacks by blocking URLs that don't match any configured
  * pattern.
  *
- * Pattern matching follows Next.js semantics:
- * - `*` matches a single segment (subdomain in hostname, path segment in pathname)
- * - `**` matches any number of segments
+ * Pattern matching follows Next.js's picomatch semantics:
+ * - hostname `*` and `**` can match across dot-separated subdomains
+ * - pathname `*` matches one path segment and `**` matches across segments
  * - protocol, port, and search are matched exactly when specified
  */
 
@@ -22,6 +22,46 @@ export type RemotePattern = {
   search?: string;
 };
 
+export type RemotePatternInput = RemotePattern | URL | string;
+
+export type LocalPattern = {
+  pathname?: string;
+  search?: string;
+};
+
+export const DEFAULT_LOCAL_PATTERNS: LocalPattern[] = [{ pathname: "**", search: "" }];
+
+export function normalizeLocalPatterns(patterns?: LocalPattern[]): LocalPattern[] {
+  if (patterns === undefined) return DEFAULT_LOCAL_PATTERNS;
+  const normalized = patterns.map((pattern) => ({ ...pattern }));
+  if (
+    !normalized.some(
+      (pattern) => pattern.pathname === "/_next/static/media/**" && pattern.search === "",
+    )
+  ) {
+    normalized.push({ pathname: "/_next/static/media/**", search: "" });
+  }
+  return normalized;
+}
+
+export function normalizeRemotePattern(pattern: RemotePatternInput): RemotePattern {
+  if (typeof pattern === "string" || pattern instanceof URL) {
+    const url = typeof pattern === "string" ? new URL(pattern) : pattern;
+    return {
+      protocol: url.protocol.slice(0, -1),
+      hostname: url.hostname,
+      port: url.port,
+      pathname: url.pathname,
+      search: url.search,
+    };
+  }
+  return pattern;
+}
+
+export function normalizeRemotePatterns(patterns: RemotePatternInput[]): RemotePattern[] {
+  return patterns.map(normalizeRemotePattern);
+}
+
 // Cache compiled glob regexes — bounded by the number of distinct configured
 // remotePatterns. Key uses \0 as a separator; \0 cannot appear in a valid glob
 // or separator character, so there are no collisions. Compiled regexes are
@@ -31,9 +71,8 @@ const globRegexCache = new Map<string, RegExp>();
 /**
  * Convert a glob pattern (with `*` and `**`) to a RegExp.
  *
- * For hostnames, segments are separated by `.`:
- *   - `*` matches a single segment (no dots): [^.]+
- *   - `**` matches any number of segments: .+
+ * For hostnames, Next.js uses picomatch without treating `.` as a path
+ * separator, so both `*` and `**` can match nested subdomains.
  *
  * For pathnames, segments are separated by `/`:
  *   - `*` matches a single segment (no slashes): [^/]+
@@ -47,8 +86,8 @@ function globToRegex(pattern: string, separator: "." | "/"): RegExp {
   if (cached !== undefined) return cached;
   // Split by ** first, then handle * within each part
   let regexStr = "^";
-  const doubleStar = separator === "." ? ".+" : ".*";
-  const singleStar = separator === "." ? "[^.]+" : "[^/]+";
+  const doubleStar = ".*";
+  const singleStar = separator === "." ? ".*" : "[^/]+";
 
   const parts = pattern.split("**");
   for (let i = 0; i < parts.length; i++) {
@@ -75,7 +114,8 @@ function globToRegex(pattern: string, separator: "." | "/"): RegExp {
  * Check whether a URL matches a single remote pattern.
  * Follows the same semantics as Next.js's matchRemotePattern().
  */
-export function matchRemotePattern(pattern: RemotePattern, url: URL): boolean {
+export function matchRemotePattern(patternInput: RemotePatternInput, url: URL): boolean {
+  const pattern = normalizeRemotePattern(patternInput);
   // Protocol check (strip trailing colon for comparison)
   if (pattern.protocol !== undefined) {
     if (pattern.protocol.replace(/:$/, "") !== url.protocol.replace(/:$/, "")) {
@@ -116,12 +156,24 @@ export function matchRemotePattern(pattern: RemotePattern, url: URL): boolean {
  */
 export function hasRemoteMatch(
   domains: string[],
-  remotePatterns: RemotePattern[],
+  remotePatterns: RemotePatternInput[],
   url: URL,
 ): boolean {
   return (
     domains.some((domain) => url.hostname === domain) ||
     remotePatterns.some((p) => matchRemotePattern(p, url))
+  );
+}
+
+export function matchLocalPattern(pattern: LocalPattern, url: URL): boolean {
+  if (pattern.search !== undefined && pattern.search !== url.search) return false;
+  return globToRegex(pattern.pathname ?? "**", "/").test(url.pathname);
+}
+
+export function hasLocalMatch(localPatterns: LocalPattern[] | undefined, url: string): boolean {
+  const parsedUrl = new URL(url, "http://n");
+  return normalizeLocalPatterns(localPatterns).some((pattern) =>
+    matchLocalPattern(pattern, parsedUrl),
   );
 }
 

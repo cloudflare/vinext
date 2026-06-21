@@ -29,6 +29,78 @@ import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
+describe("image config validation", () => {
+  const invalidCases: Array<[string, Record<string, unknown>, string]> = [
+    ["device size bounds", { deviceSizes: [0] }, "images.deviceSizes[0]"],
+    ["image size count", { imageSizes: Array.from({ length: 26 }, () => 32) }, "images.imageSizes"],
+    ["format enum", { formats: ["image/png"] }, "images.formats[0]"],
+    [
+      "local pattern count",
+      { localPatterns: Array.from({ length: 26 }, () => ({ pathname: "/**" })) },
+      "images.localPatterns",
+    ],
+    [
+      "remote pattern count",
+      { remotePatterns: Array.from({ length: 51 }, () => ({ hostname: "example.com" })) },
+      "images.remotePatterns",
+    ],
+    ["redirect bounds", { maximumRedirects: 21 }, "images.maximumRedirects"],
+    ["body bounds", { maximumResponseBody: 0 }, "images.maximumResponseBody"],
+    ["ttl integer", { minimumCacheTTL: 1.5 }, "images.minimumCacheTTL"],
+    [
+      "local pattern field",
+      { localPatterns: [{ pathname: 1 }] },
+      "images.localPatterns[0].pathname",
+    ],
+    [
+      "local pattern shape",
+      { localPatterns: [{ hostname: "example.com" }] },
+      "Unrecognized key 'hostname'",
+    ],
+    ["remote hostname", { remotePatterns: [{}] }, "images.remotePatterns[0].hostname"],
+    [
+      "remote protocol",
+      { remotePatterns: [{ hostname: "example.com", protocol: "ftp" }] },
+      "images.remotePatterns[0].protocol",
+    ],
+    [
+      "remote port",
+      { remotePatterns: [{ hostname: "example.com", port: "123456" }] },
+      "images.remotePatterns[0].port",
+    ],
+    [
+      "remote search",
+      { remotePatterns: [{ hostname: "example.com", search: 1 }] },
+      "images.remotePatterns[0].search",
+    ],
+    ["domain type", { domains: [1] }, "images.domains[0]"],
+    [
+      "domain count",
+      { domains: Array.from({ length: 51 }, () => "example.com") },
+      "images.domains",
+    ],
+    ["disposition enum", { contentDispositionType: "download" }, "images.contentDispositionType"],
+    ["SVG boolean", { dangerouslyAllowSVG: "true" }, "images.dangerouslyAllowSVG"],
+    ["local IP boolean", { dangerouslyAllowLocalIP: 1 }, "images.dangerouslyAllowLocalIP"],
+    ["unoptimized boolean", { unoptimized: null }, "images.unoptimized"],
+    [
+      "disk cache size",
+      { maximumDiskCacheSize: 0 },
+      "images.maximumDiskCacheSize is not supported by vinext",
+    ],
+    [
+      "custom cache handler",
+      { customCacheHandler: true },
+      "images.customCacheHandler is not supported by vinext",
+    ],
+  ];
+
+  it.each(invalidCases)("rejects invalid %s", async (_name, images, expectedPath) => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    await expect(resolveNextConfig({ images: images as never })).rejects.toThrow(expectedPath);
+  });
+});
+
 class CapturingNodeResponse extends PassThrough {
   statusCode = 0;
   headers: Record<string, string | string[]> = {};

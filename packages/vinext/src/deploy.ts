@@ -479,19 +479,37 @@ export function generateAppRouterWorkerEntry(): string {
  * For apps without image optimization, you can use vinext/server/app-router-entry
  * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
-import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isImageOptimizationPath } from "vinext/server/image-optimization";
+import { getWorkerRemoteImageRedirect, handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isImageOptimizationEnabled, isImageOptimizationPath } from "vinext/server/image-optimization";
 import type { ImageConfig } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
 const imageConfig: ImageConfig = {
+  path: process.env.__VINEXT_IMAGE_PATH ?? "/_next/image",
+  loader: (process.env.__VINEXT_IMAGE_LOADER ?? "default") as ImageConfig["loader"],
   deviceSizes: JSON.parse(
     process.env.__VINEXT_IMAGE_DEVICE_SIZES ?? JSON.stringify(DEFAULT_DEVICE_SIZES),
   ),
   imageSizes: JSON.parse(
     process.env.__VINEXT_IMAGE_SIZES ?? JSON.stringify(DEFAULT_IMAGE_SIZES),
   ),
-  qualities: JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "null") ?? undefined,
+  qualities: JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "[75]"),
+  formats: JSON.parse(process.env.__VINEXT_IMAGE_FORMATS ?? '["image/webp"]'),
+  localPatterns: JSON.parse(
+    process.env.__VINEXT_IMAGE_LOCAL_PATTERNS ?? '[{"pathname":"**","search":""}]',
+  ),
+  remotePatterns: JSON.parse(process.env.__VINEXT_IMAGE_REMOTE_PATTERNS ?? "[]"),
+  unoptimized: process.env.__VINEXT_IMAGE_UNOPTIMIZED === "true",
+  domains: JSON.parse(process.env.__VINEXT_IMAGE_DOMAINS ?? "[]"),
+  maximumRedirects: Number(process.env.__VINEXT_IMAGE_MAXIMUM_REDIRECTS ?? "3"),
+  maximumResponseBody: Number(process.env.__VINEXT_IMAGE_MAXIMUM_RESPONSE_BODY ?? "50000000"),
+  minimumCacheTTL: Number(process.env.__VINEXT_IMAGE_MINIMUM_CACHE_TTL ?? "14400"),
   dangerouslyAllowSVG: process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true",
+  dangerouslyAllowLocalIP: process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP === "true",
+  contentDispositionType:
+    process.env.__VINEXT_IMAGE_CONTENT_DISPOSITION_TYPE === "inline" ? "inline" : "attachment",
+  contentSecurityPolicy:
+    process.env.__VINEXT_IMAGE_CONTENT_SECURITY_POLICY ??
+    "script-src 'none'; frame-src 'none'; sandbox;",
 };
 
 interface Env {
@@ -523,11 +541,16 @@ export default {
     // Image optimization via Cloudflare Images binding.
     // The parseImageParams validation inside handleImageOptimization
     // normalizes backslashes and validates the origin hasn't changed.
-    if (isImageOptimizationPath(url.pathname)) {
+    if (isImageOptimizationPath(url.pathname, imageConfig.path)) {
+      if (!isImageOptimizationEnabled(imageConfig)) {
+        return new Response("This page could not be found", { status: 404 });
+      }
       const allowedWidths = [
         ...(imageConfig.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(imageConfig.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ];
+      const remoteRedirect = getWorkerRemoteImageRedirect(request, allowedWidths, imageConfig);
+      if (remoteRedirect) return remoteRedirect;
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
@@ -554,7 +577,7 @@ export function generatePagesRouterWorkerEntry(): string {
  */
 import { fetchWorkerFilesystemRoute, runPagesRequest, wrapMiddlewareWithBasePath } from "vinext/server/pages-request-pipeline";
 import type { PagesPipelineDeps } from "vinext/server/pages-request-pipeline";
-import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isImageOptimizationPath } from "vinext/server/image-optimization";
+import { getWorkerRemoteImageRedirect, handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, imageOptimizationPathAfterBasePath, isImageOptimizationEnabled, isImageOptimizationPath } from "vinext/server/image-optimization";
 import type { ImageConfig } from "vinext/server/image-optimization";
 import { cloneRequestWithHeaders, cloneRequestWithUrl, filterInternalHeaders, isOpenRedirectShaped } from "vinext/server/request-pipeline";
 import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
@@ -591,7 +614,19 @@ const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  path: vinextConfig.images.path,
+  loader: vinextConfig.images.loader,
+  deviceSizes: vinextConfig.images.deviceSizes,
+  imageSizes: vinextConfig.images.imageSizes,
   qualities: vinextConfig.images.qualities,
+  formats: vinextConfig.images.formats,
+  localPatterns: vinextConfig.images.localPatterns,
+  remotePatterns: vinextConfig.images.remotePatterns,
+  unoptimized: vinextConfig.images.unoptimized,
+  domains: vinextConfig.images.domains,
+  maximumRedirects: vinextConfig.images.maximumRedirects,
+  maximumResponseBody: vinextConfig.images.maximumResponseBody,
+  minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
   dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
   contentDispositionType: vinextConfig.images.contentDispositionType,
@@ -659,11 +694,16 @@ export default {
 
       // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_next/image works.
-      if (isImageOptimizationPath(pathname)) {
+      if (hadBasePath && isImageOptimizationPath(pathname, imageOptimizationPathAfterBasePath(imageConfig?.path, basePath))) {
+        if (!isImageOptimizationEnabled(imageConfig)) {
+          return new Response("This page could not be found", { status: 404 });
+        }
         const allowedWidths = [
           ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
           ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
         ];
+        const remoteRedirect = getWorkerRemoteImageRedirect(request, allowedWidths, imageConfig);
+        if (remoteRedirect) return remoteRedirect;
         return handleImageOptimization(request, {
           fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
           transformImage: async (body, { width, format, quality }) => {

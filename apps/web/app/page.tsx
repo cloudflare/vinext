@@ -96,7 +96,7 @@ const PLATFORM_FEATURES: readonly PlatformFeature[] = [
     icon: GaugeIcon,
     title: "Image optimization",
     description:
-      "Local images route through a runtime resize/transcode endpoint that integrates with the Cloudflare Images binding. Remote images use @unpic/react with auto-detection for 28 CDNs.",
+      "Local and remote images use Next.js-compatible responsive attributes, pattern validation, custom loaders, and runtime optimization.",
   },
 ];
 

@@ -92,7 +92,6 @@
     "dev": "vp pack --watch"
   },
   "dependencies": {
-    "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",

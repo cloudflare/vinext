@@ -911,6 +911,19 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("handleServerActionRequest({");
   });
 
+  it("generateRscEntry serializes local image patterns and unoptimized config", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      imageConfig: {
+        localPatterns: [{ pathname: "/assets/**", search: "?v=1" }],
+        unoptimized: true,
+      },
+    });
+
+    expect(code).toContain(
+      'const __imageConfig = {"localPatterns":[{"pathname":"/assets/**","search":"?v=1"}],"unoptimized":true};',
+    );
+  });
+
   it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
@@ -966,6 +979,47 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("serializes the complete image optimizer config", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-image-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({
+          images: {
+            path: "/docs/custom-image/",
+            qualities: [60],
+            formats: ["image/avif", "image/webp"],
+            localPatterns: [{ pathname: "/assets/**", search: "?v=1" }],
+            remotePatterns: [{ protocol: "https", hostname: "images.example.com" }],
+            unoptimized: true,
+            domains: ["legacy.example.com"],
+            maximumRedirects: 2,
+            maximumResponseBody: 1024,
+            minimumCacheTTL: 300,
+          },
+        }),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toContain('"path":"/docs/custom-image/"');
+      expect(code).toContain(
+        '"qualities":[60],"formats":["image/avif","image/webp"],"localPatterns":[{"pathname":"/assets/**","search":"?v=1"},{"pathname":"/_next/static/media/**","search":""}],"remotePatterns":[{"protocol":"https","hostname":"images.example.com"}],"unoptimized":true,"domains":["legacy.example.com"],"maximumRedirects":2,"maximumResponseBody":1024,"minimumCacheTTL":300',
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports trusted _next/data classification from URL normalization", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
     const pagesDir = path.join(tmpDir, "pages");

@@ -150,11 +150,19 @@ describe("compiler.define forwarding to Vite", () => {
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.__VINEXT_IMAGE_REMOTE_PATTERNS": '"[]"',
+        "process.env.__VINEXT_IMAGE_LOCAL_PATTERNS":
+          '"[{\\"pathname\\":\\"**\\",\\"search\\":\\"\\"}]"',
+        "process.env.__VINEXT_IMAGE_DOMAINS": '"[]"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.__VINEXT_IMAGE_REMOTE_PATTERNS": '"[]"',
+        "process.env.__VINEXT_IMAGE_LOCAL_PATTERNS":
+          '"[{\\"pathname\\":\\"**\\",\\"search\\":\\"\\"}]"',
+        "process.env.__VINEXT_IMAGE_DOMAINS": '"[]"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
       });
       // Client environment must never receive server-only defines.
@@ -296,9 +304,13 @@ describe("compiler.define forwarding to Vite", () => {
       // always returns a define object (never null) even without user defineServer.
       expect(rscResult).not.toBeNull();
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
-      // No other keys should be present when neither defineServer nor revalidate
-      // secret are configured.
-      expect(Object.keys(rscResult!.define!)).toEqual(["process.env.NEXT_RUNTIME"]);
+      expect(rscResult?.define).toEqual({
+        "process.env.__VINEXT_IMAGE_REMOTE_PATTERNS": '"[]"',
+        "process.env.__VINEXT_IMAGE_LOCAL_PATTERNS":
+          '"[{\\"pathname\\":\\"**\\",\\"search\\":\\"\\"}]"',
+        "process.env.__VINEXT_IMAGE_DOMAINS": '"[]"',
+        "process.env.NEXT_RUNTIME": '"nodejs"',
+      });
     } finally {
       if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
       else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;

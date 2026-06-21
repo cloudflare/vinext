@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
+import { transformWithOxc } from "vite";
 import {
   detectProject,
   deploy,
@@ -80,6 +81,49 @@ function readVinextPackageExports(): Record<string, unknown> {
     throw new Error("packages/vinext/package.json must define an exports object");
   }
   return parsed.exports;
+}
+
+async function loadGeneratedAppWorker(imageEnv: {
+  loader?: string;
+  unoptimized?: string;
+}): Promise<{ fetch(request: Request, env: unknown, ctx: unknown): Promise<Response> }> {
+  const previousLoader = process.env.__VINEXT_IMAGE_LOADER;
+  const previousUnoptimized = process.env.__VINEXT_IMAGE_UNOPTIMIZED;
+  if (imageEnv.loader === undefined) delete process.env.__VINEXT_IMAGE_LOADER;
+  else process.env.__VINEXT_IMAGE_LOADER = imageEnv.loader;
+  if (imageEnv.unoptimized === undefined) delete process.env.__VINEXT_IMAGE_UNOPTIMIZED;
+  else process.env.__VINEXT_IMAGE_UNOPTIMIZED = imageEnv.unoptimized;
+
+  try {
+    const source = generateAppRouterWorkerEntry()
+      .replace(
+        /import \{[^\n]+\} from "vinext\/server\/image-optimization";/,
+        `const DEFAULT_DEVICE_SIZES = [640];
+const DEFAULT_IMAGE_SIZES = [32];
+const isImageOptimizationPath = (pathname, configuredPath) => pathname === configuredPath;
+const isImageOptimizationEnabled = (config) => config.unoptimized !== true && config.loader === "default";
+const getWorkerRemoteImageRedirect = () => { throw new Error("optimizer should not run"); };
+const handleImageOptimization = () => { throw new Error("optimizer should not run"); };`,
+      )
+      .replace(/import type \{ ImageConfig \}[^\n]+\n/, "")
+      .replace(
+        'import handler from "vinext/server/app-router-entry";',
+        'const handler = { fetch() { return new Response("handler"); } };',
+      );
+    const transformed = await transformWithOxc(source, "generated-app-worker.ts", {
+      lang: "ts",
+    });
+    const moduleUrl = `data:text/javascript;base64,${Buffer.from(transformed.code).toString("base64")}#${crypto.randomUUID()}`;
+    const loaded = (await import(moduleUrl)) as {
+      default: { fetch(request: Request, env: unknown, ctx: unknown): Promise<Response> };
+    };
+    return loaded.default;
+  } finally {
+    if (previousLoader === undefined) delete process.env.__VINEXT_IMAGE_LOADER;
+    else process.env.__VINEXT_IMAGE_LOADER = previousLoader;
+    if (previousUnoptimized === undefined) delete process.env.__VINEXT_IMAGE_UNOPTIMIZED;
+    else process.env.__VINEXT_IMAGE_UNOPTIMIZED = previousUnoptimized;
+  }
 }
 
 function extractVinextImportSubpaths(source: string): string[] {
@@ -675,12 +719,25 @@ describe("generateAppRouterWorkerEntry", () => {
 
   it("threads configured image widths and qualities into the App Router worker", () => {
     const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("process.env.__VINEXT_IMAGE_PATH");
     expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
     expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
     expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_FORMATS");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_LOCAL_PATTERNS");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_UNOPTIMIZED");
     expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
     expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
     expect(content).toContain("}, allowedWidths, imageConfig)");
+  });
+
+  it("threads custom image response security headers into the App Router worker", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("process.env.__VINEXT_IMAGE_CONTENT_DISPOSITION_TYPE");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_CONTENT_SECURITY_POLICY");
+    expect(content).toContain("contentDispositionType:");
+    expect(content).toContain("contentSecurityPolicy:");
+    expect(content).toContain('=== "inline" ? "inline" : "attachment"');
   });
 
   it("declares Env interface with IMAGES binding", () => {
@@ -702,6 +759,44 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+    expect(content).toContain("getWorkerRemoteImageRedirect");
+    expect(content).toContain("if (remoteRedirect) return remoteRedirect");
+    expect(content).not.toContain("resolveHostnamesWithDnsOverHttps");
+    expect(content).toContain("__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP");
+    expect(content).toContain("handleImageOptimization(request");
+  });
+
+  it("disables manual optimizer requests for unoptimized and non-default loaders", () => {
+    const content = generateAppRouterWorkerEntry();
+    const endpointCheck = content.indexOf("isImageOptimizationPath(url.pathname");
+    const enabledCheck = content.indexOf("isImageOptimizationEnabled(imageConfig)");
+    const optimizerCall = content.indexOf("handleImageOptimization(request");
+
+    expect(content).toContain('loader: (process.env.__VINEXT_IMAGE_LOADER ?? "default")');
+    expect(endpointCheck).toBeGreaterThanOrEqual(0);
+    expect(enabledCheck).toBeGreaterThan(endpointCheck);
+    expect(optimizerCall).toBeGreaterThan(enabledCheck);
+  });
+
+  it.each([
+    { imageEnv: { unoptimized: "true" }, label: "unoptimized images" },
+    { imageEnv: { loader: "custom" }, label: "a custom loader" },
+  ])("returns 404 for generated Worker optimizer requests with $label", async ({ imageEnv }) => {
+    const worker = await loadGeneratedAppWorker(imageEnv);
+    const response = await worker.fetch(
+      new Request("https://example.test/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      {},
+      {},
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("checks Worker remote redirects before invoking the image optimizer", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content.indexOf("getWorkerRemoteImageRedirect(request")).toBeLessThan(
+      content.indexOf("handleImageOptimization(request"),
+    );
   });
 
   it("never wires a cache handler into the Worker entry", () => {
@@ -854,6 +949,36 @@ describe("scanPublicFileRoutes", () => {
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
+  it("propagates remote image security config into the Worker adapter", () => {
+    const content = generatePagesRouterWorkerEntry();
+    for (const field of [
+      "path",
+      "localPatterns",
+      "remotePatterns",
+      "domains",
+      "maximumRedirects",
+      "maximumResponseBody",
+      "minimumCacheTTL",
+      "formats",
+      "unoptimized",
+      "loader",
+      "dangerouslyAllowLocalIP",
+    ]) {
+      expect(content).toContain(`${field}: vinextConfig.images.${field}`);
+    }
+  });
+
+  it("gates Pages Worker optimizer requests before image handling", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const endpointCheck = content.indexOf("hadBasePath && isImageOptimizationPath");
+    const enabledCheck = content.indexOf("isImageOptimizationEnabled(imageConfig)");
+    const optimizerCall = content.indexOf("handleImageOptimization(request");
+
+    expect(endpointCheck).toBeGreaterThanOrEqual(0);
+    expect(enabledCheck).toBeGreaterThan(endpointCheck);
+    expect(optimizerCall).toBeGreaterThan(enabledCheck);
+  });
+
   it("keeps Cloudflare dev _next/data URLs intact for Worker normalization", () => {
     const indexSource = fs.readFileSync(
       path.join(import.meta.dirname, "../packages/vinext/src/index.ts"),
@@ -1036,6 +1161,16 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+    expect(content).toContain("getWorkerRemoteImageRedirect");
+    expect(content).toContain("if (remoteRedirect) return remoteRedirect");
+    expect(content).not.toContain("resolveHostnamesWithDnsOverHttps");
+  });
+
+  it("checks Worker remote redirects before invoking the image optimizer", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content.indexOf("getWorkerRemoteImageRedirect(request")).toBeLessThan(
+      content.indexOf("handleImageOptimization(request"),
+    );
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
@@ -1298,10 +1433,16 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("checks image optimization after basePath stripping", () => {
     const content = generatePagesRouterWorkerEntry();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const imagePos = content.indexOf("isImageOptimizationPath(pathname)");
+    const imagePos = content.indexOf(
+      "isImageOptimizationPath(pathname, imageOptimizationPathAfterBasePath(imageConfig?.path, basePath))",
+    );
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
     expect(basePathPos).toBeLessThan(imagePos);
+    expect(content).toContain(
+      "hadBasePath && isImageOptimizationPath(pathname, imageOptimizationPathAfterBasePath(imageConfig?.path, basePath))",
+    );
+    expect(content).not.toContain("isImageOptimizationPath(pathname, imageConfig?.path) ||");
   });
 
   it("threads configured image widths and qualities into optimization validation", () => {
@@ -1309,6 +1450,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
+    expect(content).toContain("formats: vinextConfig.images.formats");
+    expect(content).toContain("deviceSizes: vinextConfig.images.deviceSizes");
+    expect(content).toContain("imageSizes: vinextConfig.images.imageSizes");
     expect(content).toContain("}, allowedWidths, imageConfig)");
   });
 
