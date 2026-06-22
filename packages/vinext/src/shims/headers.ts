@@ -977,6 +977,19 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
   );
 }
 
+/**
+ * Read the active request's draft-mode state without recording request API usage.
+ * Internal cache implementations use this to bypass persistent reads and writes,
+ * matching Next.js's request-level `workStore.isDraftMode` guard.
+ */
+export function isDraftModeEnabled(): boolean {
+  const context = _getState().headersContext;
+  if (!context || context.accessError) return false;
+  const secret = context.draftModeSecret;
+  if (secret === undefined) return false;
+  return context.cookies.get(DRAFT_MODE_COOKIE) === validateDraftModeSecret(secret);
+}
+
 type DraftModeResult = {
   readonly isEnabled: boolean;
   enable(): void;

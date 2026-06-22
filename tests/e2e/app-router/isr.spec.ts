@@ -374,4 +374,36 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
 
     expect(value2).toBe(value1);
   });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  test("unstable_cache bypasses persistent data in draft mode", async ({ request }) => {
+    const readPage = async () => {
+      const response = await request.get(`${BASE}/nextjs-compat/unstable-cache-draft`);
+      expect(response.status()).toBe(200);
+      const html = await response.text();
+      return {
+        data: html.match(/id="cached-data">([^<]+)/)?.[1],
+        draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1],
+      };
+    };
+
+    const normal1 = await readPage();
+    const normal2 = await readPage();
+    expect(normal1.data).toBeDefined();
+    expect(normal2.data).toBe(normal1.data);
+    expect(normal2.draftMode).toBe("false");
+
+    expect((await request.get(`${BASE}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+    const draft1 = await readPage();
+    const draft2 = await readPage();
+    expect(draft1.data).not.toBe(normal1.data);
+    expect(draft2.data).not.toBe(draft1.data);
+    expect(draft2.draftMode).toBe("true");
+
+    expect((await request.get(`${BASE}/nextjs-compat/api/draft-disable`)).status()).toBe(200);
+    const normal3 = await readPage();
+    expect(normal3.data).toBe(normal1.data);
+    expect(normal3.draftMode).toBe("false");
+  });
 });

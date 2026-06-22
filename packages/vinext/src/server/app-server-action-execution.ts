@@ -246,6 +246,7 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  draftModeSecret?: string;
   /**
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
@@ -1221,7 +1222,11 @@ export async function handleServerActionRscRequest<
         request: options.request,
         url: redirectTarget,
       });
-      setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      setHeadersContext(
+        headersContextFromRequest(redirectRenderRequest, {
+          draftModeSecret: options.draftModeSecret,
+        }),
+      );
       const redirectNavigationParams = resolveAppPageNavigationParams(
         targetMatch.route,
         targetMatch.params,
