@@ -288,6 +288,29 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("uses slot-only route config values", () => {
+    // Next.js collectAppPageSegments() includes parallel route layouts/pages
+    // before reduceAppConfig() selects the route-level config.
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelSegments: [
+          {
+            dynamic: "error",
+            dynamicParams: false,
+            fetchCache: "default-cache",
+            runtime: "edge",
+          },
+        ],
+      }),
+    ).toEqual({
+      dynamicConfig: "error",
+      dynamicParamsConfig: false,
+      fetchCache: "default-cache",
+      revalidateSeconds: null,
+      runtime: "edge",
+    });
+  });
+
   it("does not invent last-wins ordering for ambiguous parallel branch configs", () => {
     expect(
       resolveAppPageSegmentConfig({
