@@ -295,7 +295,12 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
     resolveModuleViewport(layoutModule, params),
   );
   const pageViewportPromise = parallelRoute.pageModule
-    ? resolveModuleViewport(parallelRoute.pageModule, params)
+    ? resolveModuleViewport(
+        parallelRoute.pageModule,
+        params,
+        pageSearchParams,
+        searchParamsObserver,
+      )
     : Promise.resolve(null);
   for (const layoutViewportPromise of layoutViewportPromises) {
     void layoutViewportPromise.catch(() => null);
@@ -384,7 +389,12 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
       )
     : Promise.resolve(null);
   const pageViewportPromise = options.pageModule
-    ? resolveModuleViewport(options.pageModule, options.params)
+    ? resolveModuleViewport(
+        options.pageModule,
+        options.params,
+        pageSearchParams,
+        options.searchParamsObserver,
+      )
     : Promise.resolve(null);
   const parallelRouteHeadPromise = Promise.all(
     (options.parallelRoutes ?? []).map((parallelRoute) =>

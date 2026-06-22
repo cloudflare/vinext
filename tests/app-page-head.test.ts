@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   collectAppPageSearchParams,
   resolveAppPageHead,
@@ -266,6 +266,41 @@ describe("app page head resolution", () => {
       description: "category",
       keywords: ["page"],
     });
+  });
+
+  it("passes observed searchParams to primary and parallel page viewports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-search-params/
+    // app/search-params-used-generate-viewport/page.tsx
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-search-params/app/search-params-used-generate-viewport/page.tsx
+    const observeParamAccess = vi.fn();
+    const viewportColors: string[] = [];
+    const createPageModule = () => ({
+      async generateViewport({
+        searchParams,
+      }: {
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) {
+        const query = await searchParams;
+        viewportColors.push(typeof query.color === "string" ? query.color : "missing");
+        return { themeColor: typeof query.color === "string" ? query.color : "black" };
+      },
+    });
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: createPageModule(),
+      parallelRoutes: [{ pageModule: createPageModule(), routeSegments: ["dashboard"] }],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+      searchParams: new URLSearchParams("color=red"),
+      searchParamsObserver: { observeParamAccess },
+    });
+
+    expect(viewportColors).toEqual(["red", "red"]);
+    expect(observeParamAccess).toHaveBeenCalled();
+    expect(result.viewport.themeColor).toBe("red");
   });
 
   it("bubbles layout metadata errors", async () => {

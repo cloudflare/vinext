@@ -38,10 +38,19 @@ export type Viewport = {
 export async function resolveModuleViewport(
   mod: Record<string, unknown>,
   params: Record<string, string | string[]>,
+  searchParams?: Record<string, string | string[]>,
+  searchParamsObserver?: ThenableParamsObserver,
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
     const asyncParams = makeThenableParams(params);
-    return await mod.generateViewport({ params: asyncParams });
+    const props =
+      searchParams === undefined
+        ? { params: asyncParams }
+        : {
+            params: asyncParams,
+            searchParams: makeThenableParams(searchParams, searchParamsObserver),
+          };
+    return await mod.generateViewport(props);
   }
   if (mod.viewport && typeof mod.viewport === "object") {
     return mod.viewport as Viewport;
