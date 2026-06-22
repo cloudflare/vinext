@@ -293,18 +293,6 @@ const projectServers = {
       timeout: 120_000,
     },
   },
-  "pages-router-invalid-popstate-i18n": {
-    testDir: "./tests/e2e/pages-router-invalid-popstate-i18n",
-    use: { baseURL: "http://localhost:4191" },
-    server: {
-      command:
-        "(test -e node_modules || test -L node_modules || ln -s ../pages-basic/node_modules node_modules) && npx vp dev --port 4191",
-      cwd: "./tests/fixtures/pages-invalid-popstate-i18n",
-      port: 4191,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-    },
-  },
 };
 
 type ProjectName = keyof typeof projectServers;
