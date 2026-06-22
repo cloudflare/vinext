@@ -21574,10 +21574,12 @@ describe("shim alias map .js variants", () => {
     const hook = configPlugin.resolveId as {
       handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
     };
-    const clientShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx");
-    const reactServerShim = path.resolve(
-      import.meta.dirname,
-      "../packages/vinext/src/shims/error.react-server.ts",
+    // resolveId returns Vite-style ids: forward slashes on every platform.
+    const clientShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx"),
+    );
+    const reactServerShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.react-server.ts"),
     );
 
     expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error")).toBe(reactServerShim);
@@ -21696,15 +21698,16 @@ describe("vinext shim package-subpath resolution", () => {
 
   it("strips JavaScript extensions and Vite queries from package subpaths", () => {
     const hook = getResolveIdHook();
-    const expectedShim = path.resolve(
-      import.meta.dirname,
-      "../packages/vinext/src/shims/navigation.ts",
+    // resolveId returns Vite-style ids: forward slashes on every platform.
+    const expectedShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.ts"),
     );
-    const expectedReactServerShim = path.resolve(
-      import.meta.dirname,
-      "../packages/vinext/src/shims/navigation.react-server.ts",
+    const expectedReactServerShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.react-server.ts"),
     );
-    const expectedOgShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx");
+    const expectedOgShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
+    );
 
     expect(hook.filter.id.test("vinext/shims/navigation.js?v=123")).toBe(true);
     expect(hook.filter.id.test("\0vinext/shims/navigation.js?v=123")).toBe(true);
