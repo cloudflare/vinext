@@ -2011,6 +2011,9 @@ function patternsStructurallyEquivalent(a: readonly string[], b: readonly string
  *
  * Returns the absolute page path, or null if no root-level page is found.
  *
+ * `slotDir` must be forward-slash: the `path.posix.join` descent stays a
+ * canonical id only when the base already is.
+ *
  * Only descends into route-group directories (those whose name starts with `(`
  * and ends with `)`). Dynamic segments, regular named dirs, and `@slot` dirs
  * are not transparent and are therefore not searched.
@@ -2030,7 +2033,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
-    const found = findSlotRootPage(path.join(slotDir, entry.name), matcher);
+    const found = findSlotRootPage(path.posix.join(slotDir, entry.name), matcher);
     if (found) return found;
   }
   return null;
