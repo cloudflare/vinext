@@ -68,7 +68,7 @@ type TestRoute = {
       string,
       {
         default?: { default?: unknown } | null;
-        page?: { default?: unknown } | null;
+        page?: { default?: unknown; generateMetadata?: unknown } | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
       }
@@ -866,6 +866,121 @@ describe("app page dispatch", () => {
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
   });
+
+  it.each(["primary", "parallel"] as const)(
+    "does not reuse queryless RSC when %s generateMetadata reads searchParams",
+    async (metadataOwner) => {
+      const metadataPage = {
+        default: () => React.createElement("h1", null, `${metadataOwner} body`),
+        async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
+          const query = await props.searchParams;
+          return { title: typeof query.q === "string" ? query.q : "empty" };
+        },
+      };
+      const route = createRoute({
+        pattern: "/rsc-metadata-proof",
+        routeSegments: ["rsc-metadata-proof"],
+        ...(metadataOwner === "parallel"
+          ? {
+              slots: {
+                sidebar: {
+                  page: metadataPage,
+                },
+              },
+            }
+          : {}),
+      });
+      const cache = new Map<string, ISRCacheEntry>();
+      const isrGet = vi.fn(async (key: string) => cache.get(key) ?? null);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+        cache.set(key, {
+          isStale: false,
+          value: { lastModified: Date.now(), value: data },
+        });
+      });
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const executionContext = {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      } satisfies ExecutionContextLike;
+      const buildPageElement: DispatchOptions["buildPageElement"] = (
+        _route,
+        params,
+        _opts,
+        searchParams,
+        layoutParamAccess,
+        buildOptions,
+      ) => {
+        const buildRoute: AppPageBuildRoute = {
+          layouts: [],
+          page:
+            metadataOwner === "primary"
+              ? metadataPage
+              : { default: () => React.createElement("h1", null, "primary body") },
+          pattern: "/rsc-metadata-proof",
+          routeSegments: ["rsc-metadata-proof"],
+          ...(metadataOwner === "parallel"
+            ? {
+                slots: {
+                  sidebar: {
+                    layoutIndex: -1,
+                    name: "sidebar",
+                    page: metadataPage,
+                  },
+                },
+              }
+            : {}),
+        };
+        return buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest: true,
+            mountedSlotsHeader: null,
+            observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+            opts: undefined,
+            request: new Request(`https://example.test/rsc-metadata-proof?${searchParams}`),
+            searchParams,
+          },
+          route: buildRoute,
+          routePath: "/rsc-metadata-proof",
+        }).then(toDispatchElementRecord);
+      };
+
+      async function request(searchParams: URLSearchParams): Promise<Response> {
+        const { options } = createDispatchOptions({
+          buildPageElement,
+          cleanPathname: "/rsc-metadata-proof",
+          isProduction: true,
+          isRscRequest: true,
+          isrGet,
+          isrSet,
+          probePage() {
+            return null;
+          },
+          renderToReadableStream: renderPagePayloadToStream,
+          revalidateSeconds: 60,
+          route,
+          searchParams,
+        });
+        const response = await runWithExecutionContext(executionContext, () =>
+          dispatchAppPage(options),
+        );
+        await response.text();
+        await Promise.all(waitUntilPromises.splice(0));
+        return response;
+      }
+
+      const queryless = await request(new URLSearchParams());
+      expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
+      expect(cache.has("rsc:/rsc-metadata-proof")).toBe(false);
+
+      const withQuery = await request(new URLSearchParams({ q: "hello" }));
+      expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
+    },
+  );
 
   it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
     const isrGet = vi.fn(async () =>

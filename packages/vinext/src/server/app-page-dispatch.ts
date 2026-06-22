@@ -842,7 +842,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.searchParams,
           layoutParamAccess,
           {
-            observePageSearchParamsAccess: !options.isRscRequest && !isForceStatic,
+            observePageSearchParamsAccess: !isForceStatic,
           },
         );
       },
