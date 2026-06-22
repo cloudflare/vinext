@@ -300,6 +300,28 @@ require(request);
     expect(transformed).toContain("require(request);");
   });
 
+  it("excludes function body bindings from default parameter initializers", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `function withConst(value = require(request)) {
+  const require = load;
+  return require(value);
+}
+function withVar(value = require(request)) {
+  var require = load;
+  return require(value);
+}
+function withDeclaration(value = require(request)) {
+  function require(value) { return value; }
+  return require(value);
+}
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+    expect(transformed?.match(/return require\(value\);/g)).toHaveLength(3);
+  });
+
   it("rewrites fully dynamic requests in dependency modules", () => {
     const transformed = _transformVeryDynamicRequests(
       `export function load(request) { require(request); return import(request); }`,

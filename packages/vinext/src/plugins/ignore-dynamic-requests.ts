@@ -427,15 +427,39 @@ function transformVeryDynamicRequests(code: string, id: string) {
   function visit(node: AstRecord, parentScope: Scope): void {
     let scope = parentScope;
     if (isFunction(node)) {
-      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
-      collectBindingNames(node.id, scope.bindings);
+      const parameterScope: Scope = {
+        parent: parentScope,
+        bindings: new Set(),
+        constants: new Map(),
+      };
+      collectBindingNames(node.id, parameterScope.bindings);
       for (const parameter of nodeArray(node.params))
-        collectBindingNames(parameter, scope.bindings);
+        collectBindingNames(parameter, parameterScope.bindings);
+
+      for (const parameter of nodeArray(node.params)) {
+        const parameterNode = astNode(parameter);
+        if (parameterNode) visit(parameterNode, parameterScope);
+      }
+
       const body = astNode(node.body);
       if (body) {
-        collectDirectBindings(body, scope);
-        collectVarBindings(body, scope);
+        const bodyScope: Scope = {
+          parent: parameterScope,
+          bindings: new Set(),
+          constants: new Map(),
+        };
+        collectDirectBindings(body, bodyScope);
+        collectVarBindings(body, bodyScope);
+        if (body.type === "BlockStatement") {
+          for (const statement of nodeArray(body.body)) {
+            const statementNode = astNode(statement);
+            if (statementNode) visit(statementNode, bodyScope);
+          }
+        } else {
+          visit(body, bodyScope);
+        }
       }
+      return;
     } else if ((node.type === "BlockStatement" && node !== root) || node.type === "StaticBlock") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
