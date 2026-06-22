@@ -1026,6 +1026,95 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("does not reuse loading-boundary RSC when the page reads searchParams", async () => {
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+      return React.createElement(
+        "h1",
+        null,
+        isQueryRecord(query) && typeof query.q === "string" ? query.q : "empty",
+      );
+    }
+    const route = createRoute({
+      loading: { default: () => null },
+      pattern: "/rsc-loading-proof",
+      routeSegments: ["rsc-loading-proof"],
+    });
+    const cache = new Map<string, ISRCacheEntry>();
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/rsc-loading-proof?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          loading: { default: () => null },
+          page: { default: Page },
+          pattern: "/rsc-loading-proof",
+          routeSegments: ["rsc-loading-proof"],
+        },
+        routePath: "/rsc-loading-proof",
+      }).then(toDispatchElementRecord);
+
+    async function request(q: string): Promise<string> {
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/rsc-loading-proof",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: async (key) => cache.get(key) ?? null,
+        isrSet: async (key, value) => {
+          cache.set(key, {
+            isStale: false,
+            value: { lastModified: Date.now(), value },
+          });
+        },
+        params: {},
+        probePage() {
+          throw new Error("loading.tsx should skip the eager page probe");
+        },
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        searchParams: new URLSearchParams({ q }),
+      });
+      const response = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(options),
+      );
+      const text = await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+      return text;
+    }
+
+    await expect(request("first")).resolves.toBe("first");
+    await expect(request("second")).resolves.toBe("second");
+    expect(cache.has("rsc:/rsc-loading-proof")).toBe(false);
+  });
+
   it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(
@@ -1199,7 +1288,7 @@ describe("app page dispatch", () => {
     }
   });
 
-  it("caches queryless loading-boundary HTML with a conservative searchParams proof", async () => {
+  it("caches queryless loading-boundary HTML with a complete searchParams proof", async () => {
     const route = createRoute({
       loading: { default: () => null },
       pattern: "/loading-static",
@@ -1280,13 +1369,13 @@ describe("app page dispatch", () => {
     const cached = cache.get("html:/loading-static")?.value.value;
     expect(isCachedAppPageValue(cached)).toBe(true);
     if (!isCachedAppPageValue(cached)) throw new Error("expected cached loading page");
-    expect(cached.renderObservation?.completeness).toBe("partial");
+    expect(cached.renderObservation?.completeness).toBe("complete");
     expect(
       cached.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
-    ).toBe("unknown");
+    ).toBe("notObserved");
 
     const queried = await request(new URLSearchParams({ q: "hello" }));
-    expect(queried.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(queried.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
@@ -1913,7 +2002,7 @@ describe("app page dispatch", () => {
   });
 
   it.each(["page", "metadata"] as const)(
-    "writes conservative searchParams proofs when stale regeneration reads them in %s",
+    "records searchParams access when stale regeneration reads them in %s",
     async (reader) => {
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
         if (reader !== "page") return React.createElement("main", null, "static body");
@@ -2015,7 +2104,7 @@ describe("app page dispatch", () => {
           (value) =>
             value.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
         ),
-      ).toEqual(["unknown", "unknown"]);
+      ).toEqual(["observed", "observed"]);
     },
   );
 

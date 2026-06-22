@@ -188,6 +188,10 @@ type BuildAppPageRouteElementOptions<
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
   route: AppPageRouteWiringRoute<TModule, TErrorModule>;
+  createPageElement?: (
+    component: AppPageComponent,
+    props: Readonly<Record<string, unknown>>,
+  ) => ReactNode;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -784,8 +788,12 @@ export function buildAppPageElements<
       Object.assign(slotProps, slotOverride.props);
     }
 
-    const SlotComponent = slotComponent;
-    let slotElement: ReactNode = <SlotComponent {...slotProps} />;
+    let slotElement: ReactNode = options.createPageElement
+      ? options.createPageElement(slotComponent, slotProps)
+      : (() => {
+          const SlotComponent = slotComponent;
+          return <SlotComponent {...slotProps} />;
+        })();
     const interceptLayouts = slotOverride?.layoutModules ?? [];
 
     for (let layoutIndex = interceptLayouts.length - 1; layoutIndex >= 0; layoutIndex--) {

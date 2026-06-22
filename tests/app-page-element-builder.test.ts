@@ -94,7 +94,9 @@ function createBaseOptions(overrides?: {
 async function buildSearchPageSearchParams(options?: {
   loadingBoundary?: boolean;
 }): Promise<{ searchParams: Promise<Record<string, unknown>> }> {
-  function SearchPage(): React.ReactNode {
+  let capturedSearchParams: Promise<Record<string, unknown>> | undefined;
+  function SearchPage(props: { searchParams: Promise<Record<string, unknown>> }): React.ReactNode {
+    capturedSearchParams = props.searchParams;
     return React.createElement("div", null, "Search");
   }
 
@@ -115,14 +117,15 @@ async function buildSearchPageSearchParams(options?: {
   );
   const record = result as Record<string, unknown>;
   const pageElement = record["page:/search"];
-  if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
+  if (!React.isValidElement(pageElement)) {
     throw new Error("Expected page element");
   }
-  if (!pageElement.props.searchParams) {
+  await renderNode(pageElement);
+  if (!capturedSearchParams) {
     throw new Error("Expected searchParams prop");
   }
 
-  return { searchParams: pageElement.props.searchParams };
+  return { searchParams: capturedSearchParams };
 }
 
 async function resetUseCacheRuntime(): Promise<void> {
@@ -1019,7 +1022,11 @@ describe("buildPageElements", () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function SlotPage(): React.ReactNode {
+    let capturedSearchParams: PromiseLike<Record<string, unknown>> | undefined;
+    function SlotPage(props: {
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }): React.ReactNode {
+      capturedSearchParams = props.searchParams;
       return React.createElement("span", null, "slot");
     }
 
@@ -1047,18 +1054,21 @@ describe("buildPageElements", () => {
     );
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:modal:/"] as React.ReactElement<{
-      searchParams: PromiseLike<Record<string, unknown>>;
-    }>;
+    const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
+    await renderNode(slotElement);
+    await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
   it("passes page searchParams to intercepting slot pages", async () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function InterceptPage(): React.ReactNode {
+    let capturedSearchParams: PromiseLike<Record<string, unknown>> | undefined;
+    function InterceptPage(props: {
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }): React.ReactNode {
+      capturedSearchParams = props.searchParams;
       return React.createElement("span", null, "intercept");
     }
 
@@ -1090,18 +1100,19 @@ describe("buildPageElements", () => {
     );
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:modal:/"] as React.ReactElement<{
-      searchParams: PromiseLike<Record<string, unknown>>;
-    }>;
+    const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
+    await renderNode(slotElement);
+    await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
   it("extracts slot params from routePath, not request.url, so basePath does not break the match", async () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function SlotPage(): React.ReactNode {
+    let capturedParams: PromiseLike<AppPageParams> | undefined;
+    function SlotPage(props: { params: PromiseLike<AppPageParams> }): React.ReactNode {
+      capturedParams = props.params;
       return React.createElement("span", null, "slot");
     }
 
@@ -1145,11 +1156,10 @@ describe("buildPageElements", () => {
     });
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:bc:/"] as React.ReactElement<{
-      params: PromiseLike<AppPageParams>;
-    }>;
+    const slotElement = record["slot:bc:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    const slotParams = await slotElement.props.params;
+    await renderNode(slotElement);
+    const slotParams = await capturedParams;
     // Without the fix, urlParts would be ["base","distinct","alice"], the
     // pattern match would fail, and slotParams would silently fall back to
     // the route's matched params ({ id: "alice" }) — leaving the slot

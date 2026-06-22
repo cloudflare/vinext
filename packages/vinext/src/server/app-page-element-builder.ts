@@ -31,6 +31,19 @@ import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
+type AppPageComponent = NonNullable<AppPageModule["default"]>;
+const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
+
+function isReactOwnedPageComponent(component: AppPageComponent): boolean {
+  const candidate = component as AppPageComponent & {
+    $$typeof?: symbol;
+    prototype?: { isReactComponent?: unknown };
+  };
+  return (
+    candidate.$$typeof === REACT_CLIENT_REFERENCE || candidate.prototype?.isReactComponent != null
+  );
+}
+
 /**
  * Route shape passed from the generated entry. Extends the wiring route with
  * the page module reference (used to extract the default export for the page
@@ -269,13 +282,35 @@ export async function buildPageElements<
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
-  let pageSearchParamsThenable: unknown;
-  if (searchParams) {
-    pageSearchParamsThenable = observePageSearchParamsAccess
-      ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
-      : makeThenableParams(pageSearchParams);
-    pageProps.searchParams = pageSearchParamsThenable;
-  }
+  const createPageElement = (
+    PageComponent: AppPageComponent,
+    props: Readonly<Record<string, unknown>>,
+  ) => {
+    if (isReactOwnedPageComponent(PageComponent)) {
+      const invocationProps = { ...props };
+      if (searchParams) {
+        invocationProps.searchParams = observePageSearchParamsAccess
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          : makeThenableParams(pageSearchParams);
+      }
+      return createElement(PageComponent, invocationProps);
+    }
+
+    const ServerPageComponent = PageComponent as unknown as (
+      props: Readonly<Record<string, unknown>>,
+    ) => ReturnType<typeof createElement> | Promise<unknown> | string | number | null;
+    const PageInvoker = () => {
+      const invocationProps = { ...props };
+      if (searchParams) {
+        invocationProps.searchParams = observePageSearchParamsAccess
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          : makeThenableParams(pageSearchParams);
+      }
+      return ServerPageComponent(invocationProps);
+    };
+    return createElement(PageInvoker as unknown as AppPageComponent);
+  };
+  const pageSearchParamsThenable = searchParams ? makeThenableParams(pageSearchParams) : undefined;
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
@@ -297,7 +332,7 @@ export async function buildPageElements<
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
   let siblingInterceptElement: ReturnType<typeof createElement> | null =
     isSiblingIntercept && EffectivePageComponent
-      ? createElement(EffectivePageComponent, pageProps)
+      ? createPageElement(EffectivePageComponent, pageProps)
       : null;
   if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
     const siblingThenableParams = makeThenableParams(effectiveParams);
@@ -322,8 +357,9 @@ export async function buildPageElements<
     element: isSiblingIntercept
       ? siblingInterceptElement
       : EffectivePageComponent
-        ? createElement(EffectivePageComponent, pageProps)
+        ? createPageElement(EffectivePageComponent, pageProps)
         : null,
+    createPageElement,
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
     // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring

@@ -686,6 +686,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationTarget.params,
               revalidationTarget.interceptOpts,
               new URLSearchParams(),
+              undefined,
+              {
+                observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+              },
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
@@ -706,7 +711,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
-              observationCompleteness: "partial",
               onError: revalidatedOnError,
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               renderToReadableStream: options.renderToReadableStream,
@@ -859,7 +863,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           layoutParamAccess,
           {
             observeMetadataSearchParamsAccess: !isForceStatic,
-            observePageSearchParamsAccess: !options.isRscRequest && hasRequestSearchParams,
+            observePageSearchParamsAccess: !isForceStatic,
           },
         );
       },
@@ -1002,10 +1006,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probePage();
     },
     probePageBeforeRender: options.isRscRequest || shouldProbeQuerylessHtmlForCacheProof,
-    renderObservationCompleteness:
-      hasActiveLoadingBoundary && !hasRequestSearchParams && !isForceStatic
-        ? "partial"
-        : "complete",
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

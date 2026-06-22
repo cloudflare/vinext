@@ -43,7 +43,6 @@ export type RenderAppPageCacheArtifactsOptions = {
   ) => ReadableStream<Uint8Array>;
   rootParams?: RootParams;
   route: AppPageCacheRoute;
-  observationCompleteness?: "complete" | "partial";
   waitForAllReady?: boolean;
 };
 
@@ -122,7 +121,7 @@ export async function renderAppPageCacheArtifacts(
     cacheability: "public",
     cacheTags: tags,
     cleanPathname: options.cleanPathname,
-    completeness: options.observationCompleteness ?? "complete",
+    completeness: "complete",
     output: createAppPageHtmlOutputScope({
       element: options.element,
       renderEpoch: null,
@@ -150,7 +149,7 @@ export async function renderAppPageCacheArtifacts(
       cacheability: "public",
       cacheTags: tags,
       cleanPathname: options.cleanPathname,
-      completeness: options.observationCompleteness ?? "complete",
+      completeness: "complete",
       output: createAppPageRscOutputScope({
         element: options.element,
         mountedSlotsHeader: options.mountedSlotsHeader,
