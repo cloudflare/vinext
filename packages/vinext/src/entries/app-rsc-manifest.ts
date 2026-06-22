@@ -279,6 +279,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         __loadLayout: ${slot.layoutPath ? imports.getLazyLoaderVar(slot.layoutPath) : "null"},
         configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
         __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
+        configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
         error: null,

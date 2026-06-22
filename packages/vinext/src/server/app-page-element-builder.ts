@@ -272,6 +272,7 @@ export async function buildPageElements<
       interceptPage: opts?.interceptPage ?? null,
       interceptParams: opts?.interceptParams ?? null,
       interceptSlotKey: opts?.interceptSlotKey ?? null,
+      layoutTreePositions: route.layoutTreePositions,
       params,
       routeSegments: route.routeSegments ?? [],
       slotParams: slotParamOverrides,

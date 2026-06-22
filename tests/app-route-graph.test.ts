@@ -622,6 +622,7 @@ describe("App Router route graph builder", () => {
       expect(slot).toMatchObject({
         pagePath: path.join(appDir, "@slot/dashboard/page.tsx"),
         configLayoutPaths: [path.join(appDir, "@slot/dashboard/layout.tsx")],
+        configLayoutTreePositions: [1],
       });
     });
   });

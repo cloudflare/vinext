@@ -430,14 +430,16 @@ describe("app page head resolution", () => {
         params: { primary: "value" },
         routeSegments: ["dashboard"],
         slotParams: { sidebar: { member: "alice" } },
-        slots: { sidebar: { page: slotPage } },
+        slots: { sidebar: { page: slotPage, routeSegments: ["[member]"] } },
       }),
     ).toEqual([
       {
         layoutModules: [],
+        layoutParams: [],
+        layoutTreePositions: [],
         pageModule: slotPage,
         params: { member: "alice" },
-        routeSegments: ["dashboard"],
+        routeSegments: ["[member]"],
       },
     ]);
   });
@@ -458,11 +460,41 @@ describe("app page head resolution", () => {
     ).toEqual([
       {
         layoutModules: [slotLayout, interceptLayout],
+        layoutParams: [{}, {}],
+        layoutTreePositions: [0, 1],
         pageModule: interceptPage,
         params: {},
         routeSegments: ["photos"],
       },
     ]);
+  });
+
+  it("scopes parallel layout metadata params by tree position", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const makeLayout = () => ({
+      async generateMetadata({ params }: { params: Promise<Record<string, unknown>> }) {
+        seen.push(await params);
+        return null;
+      },
+    });
+
+    await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [makeLayout(), makeLayout()],
+          layoutTreePositions: [0, 1],
+          params: { owner: "root", team: "alpha", member: "bob" },
+          routeSegments: ["[team]", "[member]"],
+        },
+      ],
+      params: {},
+      routePath: "/alpha/bob",
+      routeSegments: [],
+    });
+
+    expect(seen).toEqual([{ owner: "root" }, { owner: "root", team: "alpha" }]);
   });
 
   // Regression: a `generateMetadata` that does not declare the `parent`

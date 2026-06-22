@@ -70,6 +70,8 @@ type ParallelSlot = {
   layoutPath: string | null;
   /** Nested active-branch layouts whose exports contribute route config. */
   configLayoutPaths?: string[];
+  /** Tree positions of configLayoutPaths relative to the slot root. */
+  configLayoutTreePositions?: number[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
@@ -1073,10 +1075,15 @@ function discoverSlotSubRoutes(
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
+        const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
         return {
           ...slot,
           pagePath: subPage,
-          configLayoutPaths: findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher),
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           routeSegments: rawSegments,
         };
       }
@@ -1231,10 +1238,19 @@ function discoverSlotSubRoutes(
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
         const subPage = slotPages.get(slot.key);
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          subPage ?? null,
+          matcher,
+        );
         return {
           ...slot,
           pagePath: subPage || null,
-          configLayoutPaths: findSlotConfigLayoutPaths(slot.ownerDir, subPage ?? null, matcher),
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           routeSegments: subPage ? rawSegments : null,
         };
       });
@@ -1353,6 +1369,16 @@ function findSlotConfigLayoutPaths(
     dir = path.dirname(dir);
   }
   return layouts;
+}
+
+function findSlotConfigLayoutTreePositions(
+  slotDir: string,
+  layoutPaths: readonly string[],
+): number[] {
+  return layoutPaths.map((layoutPath) => {
+    const relativeDir = path.relative(slotDir, path.dirname(layoutPath));
+    return relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0;
+  });
 }
 
 /**
@@ -1859,13 +1885,18 @@ function discoverInheritedParallelSlots(
           slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
           slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
         }
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          mirror?.pagePath ?? null,
+          matcher,
+        );
         const inheritedSlot: AppRouteGraphParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
-          configLayoutPaths: findSlotConfigLayoutPaths(
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
             slot.ownerDir,
-            mirror?.pagePath ?? null,
-            matcher,
+            configLayoutPaths,
           ),
           layoutIndex: slotLayoutIdx,
           routeSegments: mirror?.segments ?? null,
@@ -2108,6 +2139,7 @@ function discoverParallelSlots(
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
+    const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
@@ -2118,7 +2150,8 @@ function discoverParallelSlots(
       pagePath,
       defaultPath,
       layoutPath: findFile(slotDir, "layout", matcher),
-      configLayoutPaths: findSlotConfigLayoutPaths(slotDir, pagePath, matcher),
+      configLayoutPaths,
+      configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
       loadingPath: findFile(slotDir, "loading", matcher),
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,

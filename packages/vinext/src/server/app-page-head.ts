@@ -12,7 +12,7 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import { getAppPageSegmentParamName, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
 /**
@@ -55,8 +55,10 @@ type AppPageHeadLayout<TModule extends AppPageHeadModule> = {
 };
 
 type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  layoutParams?: readonly AppPageParams[] | null;
   layoutModule?: TModule | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
+  layoutTreePositions?: readonly number[] | null;
   pageModule?: TModule | null;
   params?: AppPageParams | null;
   routeSegments?: readonly string[] | null;
@@ -64,8 +66,11 @@ type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPageHeadMod
 
 type AppPageHeadSlot<TModule extends AppPageHeadModule = AppPageHeadModule> = {
   configLayouts?: readonly (TModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   layout?: TModule | null;
+  layoutIndex?: number;
   page?: TModule | null;
+  routeSegments?: readonly string[] | null;
 };
 
 type ResolveActiveParallelRouteHeadInputsOptions<
@@ -75,6 +80,7 @@ type ResolveActiveParallelRouteHeadInputsOptions<
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotKey?: string | null;
+  layoutTreePositions?: readonly number[] | null;
   params: AppPageParams;
   routeSegments: readonly string[];
   slotParams?: Readonly<Record<string, AppPageParams>> | null;
@@ -127,9 +133,26 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
   options: ResolveActiveParallelRouteHeadInputsOptions<TModule>,
 ): AppPageHeadParallelRoute<TModule>[] {
   return Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
+    const ownerTreePosition = options.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0;
+    const ownerParams = resolveAppPageSegmentParams(
+      options.routeSegments,
+      ownerTreePosition,
+      options.params,
+    );
     if (options.interceptSlotKey === slotKey && options.interceptPage) {
+      const interceptLayouts = options.interceptLayouts ?? [];
       return {
-        layoutModules: [slot.layout, ...(options.interceptLayouts ?? [])].filter(isPresent),
+        layoutModules: [slot.layout, ...interceptLayouts].filter(isPresent),
+        layoutParams: [
+          ...(slot.layout ? [ownerParams] : []),
+          ...interceptLayouts
+            .filter(isPresent)
+            .map(() => options.interceptParams ?? options.params),
+        ],
+        layoutTreePositions: [
+          ...(slot.layout ? [0] : []),
+          ...interceptLayouts.filter(isPresent).map(() => options.routeSegments.length),
+        ],
         pageModule: options.interceptPage,
         params: options.interceptParams ?? options.params,
         routeSegments: options.routeSegments,
@@ -138,15 +161,43 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
 
     return {
       layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
+      layoutParams: [
+        ...(slot.layout ? [ownerParams] : []),
+        ...(slot.configLayoutTreePositions ?? []).map((treePosition) => ({
+          ...ownerParams,
+          ...resolveParallelLayoutParams(
+            slot.routeSegments ?? options.routeSegments,
+            treePosition,
+            options.slotParams?.[slotKey] ?? options.params,
+          ),
+        })),
+      ],
+      layoutTreePositions: [...(slot.layout ? [0] : []), ...(slot.configLayoutTreePositions ?? [])],
       pageModule: slot.page,
       params: options.slotParams?.[slotKey] ?? options.params,
-      routeSegments: options.routeSegments,
+      routeSegments: slot.routeSegments ?? options.routeSegments,
     };
   });
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function resolveParallelLayoutParams(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): AppPageParams {
+  const branchParamNames = new Set(
+    routeSegments.map(getAppPageSegmentParamName).filter((name): name is string => name !== null),
+  );
+  const scopedParams: AppPageParams = {};
+  for (const [name, value] of Object.entries(params)) {
+    if (!branchParamNames.has(name)) scopedParams[name] = value;
+  }
+  Object.assign(scopedParams, resolveAppPageSegmentParams(routeSegments, treePosition, params));
+  return scopedParams;
 }
 
 function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): boolean {
@@ -291,10 +342,16 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   const layoutModules = [...(parallelRoute.layoutModules ?? []), parallelRoute.layoutModule].filter(
     isPresent,
   );
+  const layoutTreePositions = parallelRoute.layoutTreePositions ?? [];
+  const layoutParams = parallelRoute.layoutParams ?? [];
   const hasDynamicMetadata =
     layoutModules.some(hasGenerateMetadata) || hasGenerateMetadata(parallelRoute.pageModule);
-  const layoutViewportPromises = layoutModules.map((layoutModule) =>
-    resolveModuleViewport(layoutModule, params),
+  const layoutViewportPromises = layoutModules.map((layoutModule, index) =>
+    resolveModuleViewport(
+      layoutModule,
+      layoutParams[index] ??
+        resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params),
+    ),
   );
   const pageViewportPromise = parallelRoute.pageModule
     ? resolveModuleViewport(
@@ -309,10 +366,13 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   }
   void pageViewportPromise.catch(() => null);
 
-  for (const layoutModule of layoutModules) {
+  for (const [index, layoutModule] of layoutModules.entries()) {
+    const currentLayoutParams =
+      layoutParams[index] ??
+      resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params);
     const layoutMetadata = await resolveModuleMetadata(
       layoutModule,
-      params,
+      currentLayoutParams,
       undefined,
       accumulatedMetadata,
     );
