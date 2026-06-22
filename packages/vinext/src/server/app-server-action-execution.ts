@@ -153,6 +153,7 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
 
 type AppServerActionIntercept<TPage = unknown> = {
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   slotId?: string | null;
   slotKey: string;
