@@ -484,6 +484,62 @@ describe("buildPageElements", () => {
     expect(Object.prototype.hasOwnProperty.call(record, "route:/hello")).toBe(true);
   });
 
+  it.each([
+    ["memo", React.memo(() => React.createElement("div", null, "memo page"))],
+    [
+      "forwardRef",
+      React.forwardRef(function ForwardRefPage() {
+        return React.createElement("div", null, "forwardRef page");
+      }),
+    ],
+    [
+      "lazy",
+      React.lazy(async () => ({
+        default: () => React.createElement("div", null, "lazy page"),
+      })),
+    ],
+  ] as const)("renders a %s page export through React", async (_kind, PageComponent) => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(PageComponent),
+      layouts: [],
+      routeSegments: ["exotic"],
+      pattern: "/exotic",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/exotic", searchParams: new URLSearchParams("q=ok") }),
+    );
+
+    await expect(
+      renderNode((result as Record<string, React.ReactNode>)["page:/exotic"]),
+    ).resolves.toContain("page");
+  });
+
+  it("renders memo page exports in parallel slots", async () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [],
+      routeSegments: ["exotic-slot"],
+      pattern: "/exotic-slot",
+      slots: {
+        modal: {
+          layoutIndex: -1,
+          name: "modal",
+          page: createSyntheticPageModule(
+            React.memo(() => React.createElement("div", null, "memo slot")),
+          ),
+          routeSegments: [],
+        },
+      },
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/exotic-slot" }));
+
+    await expect(
+      renderNode((result as Record<string, React.ReactNode>)["slot:modal:/"]),
+    ).resolves.toContain("memo slot");
+  });
+
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Hello");

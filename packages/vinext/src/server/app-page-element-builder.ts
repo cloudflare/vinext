@@ -35,6 +35,9 @@ type AppPageComponent = NonNullable<AppPageModule["default"]>;
 const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
 
 function isReactOwnedPageComponent(component: AppPageComponent): boolean {
+  if (typeof component !== "function") {
+    return true;
+  }
   const candidate = component as AppPageComponent & {
     $$typeof?: symbol;
     prototype?: { isReactComponent?: unknown };
