@@ -442,6 +442,29 @@ describe("app page head resolution", () => {
     ]);
   });
 
+  it("keeps slot-root layout head inputs for intercepted slots", () => {
+    const slotLayout = { metadata: { description: "slot root" } };
+    const interceptLayout = { metadata: { title: "intercept" } };
+    const interceptPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptLayouts: [interceptLayout],
+        interceptPage,
+        interceptSlotKey: "modal",
+        params: {},
+        routeSegments: ["photos"],
+        slots: { modal: { layout: slotLayout } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [slotLayout, interceptLayout],
+        pageModule: interceptPage,
+        params: {},
+        routeSegments: ["photos"],
+      },
+    ]);
+  });
+
   // Regression: a `generateMetadata` that does not declare the `parent`
   // argument must NOT receive it. Matches Next.js, which omits the parent
   // argument for cached `generateMetadata` functions that don't use it

@@ -129,7 +129,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
   return Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
     if (options.interceptSlotKey === slotKey && options.interceptPage) {
       return {
-        layoutModules: options.interceptLayouts ?? [],
+        layoutModules: [slot.layout, ...(options.interceptLayouts ?? [])].filter(isPresent),
         pageModule: options.interceptPage,
         params: options.interceptParams ?? options.params,
         routeSegments: options.routeSegments,
