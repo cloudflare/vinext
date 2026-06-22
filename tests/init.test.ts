@@ -39,6 +39,24 @@ function readFile(dir: string, relativePath: string): string {
   return fs.readFileSync(path.join(dir, relativePath), "utf-8");
 }
 
+function snapshotProject(dir: string): string {
+  const entries: string[] = [];
+  const walk = (currentDir: string): void => {
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      const relativePath = path.relative(dir, fullPath).replaceAll(path.sep, "/");
+      entries.push(`--- ${relativePath} ---\n${fs.readFileSync(fullPath, "utf-8").trimEnd()}`);
+    }
+  };
+  walk(dir);
+  return entries.sort().join("\n\n");
+}
+
 function readPluginRscVendoredEdgeBundle(fileName: string): string {
   return fs.readFileSync(
     path.resolve(
@@ -527,6 +545,45 @@ describe("init — basic functionality", () => {
   });
 });
 
+describe("init — generated project snapshots", () => {
+  it("snapshots a fresh Cloudflare App Router init", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+
+    expect(snapshotProject(tmpDir)).toMatchSnapshot();
+  });
+
+  it("snapshots a fresh Node Pages Router init", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    await runInit(tmpDir, { platform: "node" });
+
+    expect(snapshotProject(tmpDir)).toMatchSnapshot();
+  });
+
+  it("snapshots an AST update to an existing Vite config", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { defineConfig } from "vite";
+import vinext from "vinext";
+import custom from "./custom.js";
+
+export default defineConfig({
+  plugins: [custom(), vinext()],
+  server: { port: 4321 },
+});
+`,
+    );
+
+    await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
+
+    expect(snapshotProject(tmpDir)).toMatchSnapshot();
+  });
+});
+
 // ─── CJS Config Renaming ────────────────────────────────────────────────────
 
 describe("init — CJS config renaming", () => {
@@ -783,17 +840,19 @@ describe("init — guard rails", () => {
     expect(result.skippedViteConfig).toBe(true);
   });
 
-  it("rejects a Cloudflare init when the existing Vite config lacks cloudflare()", async () => {
+  it("AST-updates a Cloudflare init when the existing Vite config lacks plugins", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
 
-    await expect(runInit(tmpDir)).rejects.toThrow(
-      "Add the cloudflare() plugin, re-run with --force to replace the config, or choose --platform=node.",
-    );
-    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    await runInit(tmpDir);
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('import vinext from "vinext"');
+    expect(config).toContain("vinext()");
+    expect(config).toContain("cloudflare(");
   });
 
-  it("rejects an unused Cloudflare plugin import", async () => {
+  it("uses an existing Cloudflare plugin import when adding the call", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(
       tmpDir,
@@ -801,10 +860,14 @@ describe("init — guard rails", () => {
       'import { cloudflare } from "@cloudflare/vite-plugin";\nexport default {};',
     );
 
-    await expect(runInit(tmpDir)).rejects.toThrow("existing Vite config");
+    await runInit(tmpDir);
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config.match(/@cloudflare\/vite-plugin/g)).toHaveLength(1);
+    expect(config).toContain("cloudflare(");
   });
 
-  it("overwrites vite.config.ts with --force", async () => {
+  it("AST-updates vite.config.ts with --force", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
 
@@ -839,14 +902,46 @@ describe("init — guard rails", () => {
     expect(readFile(tmpDir, "vite.config.ts")).toContain("ignored: true");
   });
 
-  it("rejects --force for a CommonJS Vite config", async () => {
+  it("AST-updates a CommonJS Vite config with --force", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.cjs", "module.exports = {}");
 
+    await runInit(tmpDir, { force: true });
+
+    const config = readFile(tmpDir, "vite.config.cjs");
+    expect(config).toContain('const vinext = require("vinext")');
+    expect(config).toContain('require("@cloudflare/vite-plugin")');
+    expect(config).toContain("cloudflare(");
+  });
+
+  it("renames and AST-updates a CommonJS vite.config.js before enabling ESM", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.js", "module.exports = { server: { port: 4321 } };\n");
+
+    const { result } = await runInit(tmpDir, { force: true });
+
+    expect(result.renamedConfigs).toContainEqual(["vite.config.js", "vite.config.cjs"]);
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.js"))).toBe(false);
+    const config = readFile(tmpDir, "vite.config.cjs");
+    expect(config).toContain('const vinext = require("vinext")');
+    expect(config).toContain('const { cloudflare } = require("@cloudflare/vite-plugin")');
+    expect(config).toContain("server: { port: 4321 }");
+    expect(config).not.toContain("import ");
+  });
+
+  it("refuses to overwrite an existing vite.config.cjs during CommonJS migration", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.js", "module.exports = {};\n");
+    writeFile(tmpDir, "vite.config.cjs", "module.exports = { existing: true };\n");
+    const packageJsonBefore = readFile(tmpDir, "package.json");
+
     await expect(runInit(tmpDir, { force: true })).rejects.toThrow(
-      "Rename or remove it, then re-run with --force.",
+      "vite.config.cjs already exists",
     );
-    expect(readFile(tmpDir, "vite.config.cjs")).toBe("module.exports = {}");
+
+    expect(readFile(tmpDir, "vite.config.js")).toBe("module.exports = {};\n");
+    expect(readFile(tmpDir, "vite.config.cjs")).toContain("existing: true");
+    expect(readFile(tmpDir, "package.json")).toBe(packageJsonBefore);
   });
 
   it("exits when no package.json exists", async () => {

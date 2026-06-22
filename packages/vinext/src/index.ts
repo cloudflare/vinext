@@ -155,7 +155,8 @@ import {
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
-import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
+import { hasWranglerConfig } from "./cloudflare/project.js";
+import { formatMissingCloudflarePluginError } from "./cloudflare/deploy-config.js";
 import {
   computeClientRuntimeMetadata,
   buildRuntimeGlobalsScript,

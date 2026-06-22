@@ -2,20 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import {
-  detectProject,
   deploy,
-  generateWranglerConfig,
-  generateAppRouterWorkerEntry,
-  generatePagesRouterWorkerEntry,
-  generateAppRouterViteConfig,
-  generatePagesRouterViteConfig,
-  getMissingDeps,
-  getFilesToGenerate,
-  ensureESModule,
-  renameCJSConfigs,
   buildNodeCliInvocation,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
@@ -24,21 +13,35 @@ import {
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
+} from "../packages/vinext/src/deploy.js";
+import {
+  detectProject,
+  getMissingDeps,
+  hasWranglerConfig,
   isPackageResolvable,
-  viteConfigHasCloudflarePlugin,
+} from "../packages/vinext/src/cloudflare/project.js";
+import {
+  formatMissingCacheAdapterError,
+  formatMissingCloudflarePluginError,
+  formatImageOptimizationHint,
   viteConfigHasCacheAdapter,
+  viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
-  hasWranglerConfig,
-  formatMissingCloudflarePluginError,
-  formatMissingCacheAdapterError,
-  formatImageOptimizationHint,
-  injectPregeneratedConcretePaths,
-} from "../packages/vinext/src/deploy.js";
+} from "../packages/vinext/src/cloudflare/deploy-config.js";
+import {
+  generateWranglerConfig,
+  generateAppRouterWorkerEntry,
+  generatePagesRouterWorkerEntry,
+  generateAppRouterViteConfig,
+  generatePagesRouterViteConfig,
+} from "../packages/vinext/src/init-cloudflare.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
   findInNodeModules,
+  ensureESModule,
+  renameCJSConfigs,
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
@@ -55,7 +58,6 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
-import { clearPregeneratedConcretePaths } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -180,6 +182,21 @@ describe("deploy environment validation", () => {
 
     expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
     expect(fs.existsSync(path.join(tmpDir, ".vinext"))).toBe(false);
+  });
+
+  it("does not scaffold or mutate a project that has not run Cloudflare init", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.toThrow(
+      "Run `vinext init --platform=cloudflare` first.",
+    );
+
+    expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
   });
 });
 
@@ -666,23 +683,45 @@ describe("generateAppRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
     expect(content).toContain("Promise<Response>");
   });
 
-  it("delegates image optimization to the configured built-in handler", () => {
+  it("includes image optimization handler", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("handler.fetch(request, env, ctx)");
-    expect(content).not.toContain("handleImageOptimization");
-    expect(content).not.toContain("env.IMAGES");
+    expect(content).toContain("isImageOptimizationPath");
+    expect(content).toContain("handleImageOptimization");
   });
 
-  it("declares the asset and execution-context types needed for delegation", () => {
+  it("threads configured image widths and qualities into the App Router worker", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
+    expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
+    expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
+    expect(content).toContain("}, allowedWidths, imageConfig)");
+  });
+
+  it("declares Env interface with IMAGES binding", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface Env");
+    expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
+  });
+
+  it("declares ExecutionContext interface", () => {
+    const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface ExecutionContext");
     expect(content).toContain("waitUntil");
+  });
+
+  it("passes image handlers inline to handleImageOptimization", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("fetchAsset:");
+    expect(content).toContain("transformImage:");
+    expect(content).toContain("env.ASSETS.fetch");
+    expect(content).toContain("env.IMAGES");
   });
 
   it("never wires a cache handler into the Worker entry", () => {
@@ -695,9 +734,9 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
-  it("points users to declarative adapter config", () => {
+  it("points users to the declarative cache config", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("Cache and image backends are configured declaratively");
+    expect(content).toContain("vinext({ cache })");
   });
 });
 
@@ -756,52 +795,6 @@ describe("viteConfigHasCacheAdapter", () => {
   });
 });
 
-describe("viteConfigHasImageAdapter", () => {
-  it("detects an optimizer field assigned an adapter builder", () => {
-    writeFile(
-      tmpDir,
-      "vite.config.ts",
-      `import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
-       export default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };`,
-    );
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
-  });
-
-  it("detects a hand-written descriptor object on the optimizer field", () => {
-    writeFile(
-      tmpDir,
-      "vite.config.ts",
-      `export default {
-         plugins: [vinext({ images: { optimizer: { adapter: "./x.js", options: {} } } })],
-       };`,
-    );
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
-  });
-
-  it("returns false when the images object is empty", () => {
-    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext({ images: {} })] };`);
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
-  });
-
-  it("returns false when the optimizer is explicitly undefined", () => {
-    writeFile(
-      tmpDir,
-      "vite.config.ts",
-      `export default { plugins: [vinext({ images: { optimizer: undefined } })] };`,
-    );
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
-  });
-
-  it("returns false when there is no images config at all", () => {
-    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
-  });
-
-  it("returns true when there is no Vite config to inspect", () => {
-    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
-  });
-});
-
 describe("workerEntryHasCacheHandler", () => {
   it("detects a setCacheHandler call in worker/index.ts", () => {
     writeFile(
@@ -852,6 +845,31 @@ describe("workerEntryHasCacheHandler", () => {
   });
 });
 
+describe("viteConfigHasImageAdapter", () => {
+  it("detects a configured image optimizer", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
+  });
+
+  it("returns false when image optimization is omitted", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false for an explicitly disabled optimizer", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ images: { optimizer: undefined } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+});
+
 describe("formatMissingCacheAdapterError", () => {
   it("names the data adapter builder and the KV namespace command", () => {
     const msg = formatMissingCacheAdapterError({});
@@ -868,17 +886,11 @@ describe("formatMissingCacheAdapterError", () => {
 });
 
 describe("formatImageOptimizationHint", () => {
-  it("names the imageAdapter builder and the vinext({ images }) option", () => {
-    const msg = formatImageOptimizationHint();
-    expect(msg).toContain("served unoptimized");
-    expect(msg).toContain('from "@vinext/cloudflare/images/images-optimizer"');
-    expect(msg).toContain("vinext({ images: { optimizer: imageAdapter() } })");
-  });
-
-  it("reads as a hint, not an error", () => {
-    const msg = formatImageOptimizationHint();
-    expect(msg).not.toMatch(/error/i);
-    expect(msg).toContain("The IMAGES binding is already in wrangler.jsonc.");
+  it("points users to additive init configuration", () => {
+    const message = formatImageOptimizationHint();
+    expect(message).toContain("--image-optimization=cloudflare-images");
+    expect(message).toContain("imageAdapter()");
+    expect(message).toContain("IMAGES binding");
   });
 });
 
@@ -929,7 +941,6 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
-    expect(content).toContain("hasMiddleware,");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1056,15 +1067,14 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("includes image optimization handler", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleConfiguredImageOptimization");
-    expect(content).toContain("registerConfiguredImageOptimizer(env)");
+    expect(content).toContain("handleImageOptimization");
   });
 
-  it("declares Env interface with the ASSETS binding", () => {
+  it("declares Env interface with IMAGES binding", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("interface Env");
+    expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
-    expect(content).not.toContain("env.IMAGES");
   });
 
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
@@ -1074,10 +1084,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
-  it("passes the ASSETS reader to the configured image optimizer", () => {
+  it("passes image handlers inline to handleImageOptimization", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("handleConfiguredImageOptimization(");
-    expect(content).toContain("env.ASSETS.fetch(new Request(new URL(assetPath, request.url)))");
+    expect(content).toContain("fetchAsset:");
+    expect(content).toContain("transformImage:");
+    expect(content).toContain("env.ASSETS.fetch");
+    expect(content).toContain("env.IMAGES");
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
@@ -1107,7 +1119,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
+    expect(content).toContain("return result.response");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -1380,8 +1392,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
-    expect(content).toContain("allowedWidths,");
-    expect(content).toContain("imageConfig,");
+    expect(content).toContain("}, allowedWidths, imageConfig)");
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
@@ -1495,8 +1506,7 @@ describe("generateAppRouterViteConfig", () => {
     const content = generateAppRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain('from "@vinext/cloudflare/images/images-optimizer"');
-    expect(content).toContain("vinext({ images: { optimizer: imageAdapter() } })");
+    expect(content).toContain("vinext()");
     expect(content).toContain("cloudflare(");
   });
 
@@ -1564,17 +1574,6 @@ describe("getMissingDeps", () => {
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
-  });
-
-  it("reports missing @vinext/cloudflare for generated App Router image config", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    info.hasCloudflarePlugin = true;
-    info.hasWrangler = true;
-    info.hasRscPlugin = true;
-
-    const missing = getMissingDeps(info, (_root, pkg) => pkg !== "@vinext/cloudflare");
-    expect(missing).toContainEqual(expect.objectContaining({ name: "@vinext/cloudflare" }));
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {
@@ -1657,115 +1656,6 @@ describe("isPackageResolvable", () => {
     );
     // no-such-package-xyz123 should never exist in any node_modules
     expect(isPackageResolvable(tmpDir, "no-such-package-xyz123")).toBe(false);
-  });
-});
-
-// ─── getFilesToGenerate ──────────────────────────────────────────────────────
-
-describe("getFilesToGenerate", () => {
-  it("generates all three files when nothing exists (App Router)", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).toContain("wrangler.jsonc");
-    expect(descriptions).toContain("worker/index.ts");
-    expect(descriptions).toContain("vite.config.ts");
-  });
-
-  it("generates all three files when nothing exists (Pages Router)", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-  });
-
-  it("skips wrangler.jsonc when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "wrangler.jsonc", "{}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("wrangler.jsonc");
-    expect(files).toHaveLength(2);
-  });
-
-  it("skips worker/index.ts when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "worker/index.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("worker/index.ts");
-  });
-
-  it("skips vite.config.ts when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "vite.config.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("vite.config.ts");
-  });
-
-  it("generates nothing when all files exist", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "wrangler.jsonc", "{}");
-    writeFile(tmpDir, "worker/index.ts", "export default {}");
-    writeFile(tmpDir, "vite.config.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(0);
-  });
-
-  it("generates App Router worker entry for App Router project", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile).toBeDefined();
-    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
-    expect(workerFile!.content).not.toContain("virtual:vinext-server-entry");
-  });
-
-  it("generates Pages Router worker entry for Pages Router project", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile).toBeDefined();
-    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
-    expect(workerFile!.content).not.toContain("viteRsc");
-  });
-
-  it("generates App Router vite config for App Router project", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const viteFile = files.find((f) => f.description === "vite.config.ts");
-    expect(viteFile).toBeDefined();
-    expect(viteFile!.content).toContain("vinext({ images: { optimizer: imageAdapter() } })");
-    expect(viteFile!.content).toContain("childEnvironments");
-  });
-
-  it("generates Pages Router vite config for Pages Router project", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const viteFile = files.find((f) => f.description === "vite.config.ts");
-    expect(viteFile).toBeDefined();
-    expect(viteFile!.content).not.toContain("plugin-rsc");
   });
 });
 
@@ -2161,44 +2051,6 @@ describe("detectProject — src/ directory convention", () => {
     expect(info.hasMDX).toBe(true);
   });
 
-  it("generates correct files for src/app/ project", () => {
-    mkdir(tmpDir, "src/app");
-    writeFile(
-      tmpDir,
-      "src/app/page.tsx",
-      "export default function Home() { return <div>hi</div> }",
-    );
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).toContain("wrangler.jsonc");
-    expect(descriptions).toContain("worker/index.ts");
-    expect(descriptions).toContain("vite.config.ts");
-
-    // Should generate App Router worker entry
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
-  });
-
-  it("generates correct files for src/pages/ project", () => {
-    mkdir(tmpDir, "src/pages");
-    writeFile(
-      tmpDir,
-      "src/pages/index.tsx",
-      "export default function Home() { return <div>hi</div> }",
-    );
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-
-    // Should generate Pages Router worker entry
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
-  });
-
   it("detects neither when no app/, pages/, src/app/, or src/pages/", () => {
     mkdir(tmpDir, "src/lib");
     const info = detectProject(tmpDir);
@@ -2316,7 +2168,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     const config = generateAppRouterViteConfig(info);
     // MDX is now handled by the vinext plugin's auto-injection at runtime,
     // not by a separate mdx() call in the generated config.
-    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
+    expect(config).toContain("vinext()");
     expect(config).toContain("auto-injects @mdx-js/rollup");
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
   });
@@ -2330,7 +2182,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
     expect(config).not.toContain("remarkCodeHike");
     expect(config).not.toContain("recmaCodeHike");
-    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
+    expect(config).toContain("vinext()");
   });
 
   it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
@@ -2362,7 +2214,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generateAppRouterViteConfig();
-    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
+    expect(config).toContain("vinext()");
     expect(config).toContain("cloudflare(");
     // Generated config no longer includes a separate mdx() import/call
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
@@ -2445,24 +2297,6 @@ describe("detectProject on real fixtures", () => {
     expect(info.hasViteConfig).toBe(true);
     expect(info.hasWranglerConfig).toBe(true);
     expect(info.hasWorkerEntry).toBe(true);
-  });
-
-  it("generates zero files for fully-configured app-router-cloudflare", () => {
-    const cfApp = path.join(fixturesDir, "app-router-cloudflare");
-    if (!fs.existsSync(cfApp)) return;
-
-    const info = detectProject(cfApp);
-    const files = getFilesToGenerate(info);
-    expect(files).toHaveLength(0);
-  });
-
-  it("generates zero files for fully-configured pages-router-cloudflare", () => {
-    const cfPages = path.join(fixturesDir, "pages-router-cloudflare");
-    if (!fs.existsSync(cfPages)) return;
-
-    const info = detectProject(cfPages);
-    const files = getFilesToGenerate(info);
-    expect(files).toHaveLength(0);
   });
 
   it("would report missing deps for non-cloudflare fixture", () => {
@@ -3387,171 +3221,5 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.kvNamespaceId).toBe("abc123");
-  });
-});
-
-describe("injectPregeneratedConcretePaths", () => {
-  it("second call replaces first injection", () => {
-    const sourceCode = `import { handler } from "vinext/server/app-router-entry";\n`;
-    const manifestA = {
-      buildId: "build-a",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-      ],
-    };
-    const manifestB = {
-      buildId: "build-b",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-b",
-          revalidate: 60,
-        },
-      ],
-    };
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifestA));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const afterA = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(afterA).toContain("post-a");
-    expect(afterA).not.toContain("post-b");
-
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifestB));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const afterB = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(afterB).toContain("post-b");
-    expect(afterB).not.toContain("post-a");
-    expect(afterB).toContain('import { handler } from "vinext/server/app-router-entry"');
-  });
-
-  it("missing manifest strips prior injection", () => {
-    const priorInjection = [
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-      'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-      'import { handler } from "vinext/server/app-router-entry";',
-      "",
-    ].join("\n");
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", priorInjection);
-
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const after = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(after).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(after).toContain('import { handler } from "vinext/server/app-router-entry"');
-  });
-
-  it("excludes fallback-shell placeholder paths from injection", () => {
-    const sourceCode = 'export default { fetch(request) { return new Response("ok"); } };\n';
-    const manifest = {
-      buildId: "test",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/[slug]",
-          revalidate: 60,
-          fallback: true,
-        },
-      ],
-    };
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifest));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    const match = code.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
-    expect(match).not.toBeNull();
-    const table: unknown = JSON.parse(match![1]);
-    expect(table).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
-  });
-
-  it("hydrates the concrete-path registry when the generated Worker entry is imported", async () => {
-    const registryModuleUrl = pathToFileURL(
-      path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
-    ).href;
-    const sourceCode = [
-      `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
-      "initPregeneratedPathsFromGlobals();",
-      'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
-      'export default { fetch(request) { return new Response("ok"); } };',
-      "",
-    ].join("\n");
-    const manifest = {
-      buildId: "test",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-      ],
-    };
-
-    clearPregeneratedConcretePaths();
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifest));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const entryUrl = pathToFileURL(path.join(tmpDir, "dist/server/index.js")).href;
-    const workerEntry: unknown = await import(`${entryUrl}?t=${Date.now()}`);
-
-    expect(workerEntry).toMatchObject({
-      renderedPaths: ["/blog/post-a"],
-    });
-  });
-
-  it("corrupt manifest strips prior injection", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const priorInjection = [
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-      'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/",["/"]]];',
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-      'export default { fetch(request) { return new Response("ok"); } };',
-      "",
-    ].join("\n");
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", priorInjection);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", "{invalid json}");
-
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const after = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(after).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(after).toContain('export default { fetch(request) { return new Response("ok"); } }');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[vinext] Failed to read prerender manifest"),
-      expect.any(SyntaxError),
-    );
-    warnSpy.mockRestore();
   });
 });

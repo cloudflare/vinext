@@ -919,7 +919,7 @@ function printHelp(cmd?: string) {
     vinext deploy                              Build and deploy to production
     vinext deploy --preview                    Deploy to a preview URL
     vinext deploy --env staging                Deploy using wrangler env.staging
-    vinext deploy --dry-run                    See what files would be generated
+    vinext deploy --dry-run                    Validate setup without building or deploying
     vinext deploy --name my-app                Deploy with a custom Worker name
     vinext deploy --experimental-tpr           Enable TPR during deploy
     vinext deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic

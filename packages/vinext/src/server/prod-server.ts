@@ -439,7 +439,7 @@ function logProdServerStarted(host: string, port: number, purpose: ProdServerOpt
  * arguments in (headers, response) order. The request path now calls
  * `runPagesRequest`, which uses `mergeHeaders` directly; this wrapper is retained
  * only for its existing tests and any external callers, so there is a single
- * implementation to keep in sync. (deploy.ts still emits its own generated copy.)
+ * implementation to keep in sync. The init-owned Cloudflare Worker template delegates here.
  */
 function mergeWebResponse(
   middlewareHeaders: Record<string, string | string[]>,
