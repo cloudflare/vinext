@@ -28,7 +28,7 @@ export async function generateRouteTypes(options: GenerateRouteTypesOptions): Pr
   const root = normalizePathSeparators(path.resolve(options.root));
   const appDir = options.appDir
     ? normalizePathSeparators(path.resolve(options.appDir))
-    : findDir(root, "app", path.posix.join("src", "app"));
+    : findDir(root, "app", "src/app");
   const outPath = path.posix.join(root, ".next", "types", "routes.d.ts");
 
   const content = appDir
