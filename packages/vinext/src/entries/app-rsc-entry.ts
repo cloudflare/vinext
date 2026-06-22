@@ -1216,6 +1216,19 @@ export default createAppRscHandler({
   }
   matchRoute,
   matchRequestRoute,
+  matchInterceptRoute(pathname, sourcePathname) {
+    const intercept = findIntercept(pathname, sourcePathname);
+    if (!intercept) return null;
+    const route = routes[intercept.sourceRouteIndex];
+    if (!route) return null;
+    const params = Object.create(null);
+    for (const name of route.params) {
+      if (Object.prototype.hasOwnProperty.call(intercept.matchedParams, name)) {
+        params[name] = intercept.matchedParams[name];
+      }
+    }
+    return { route, params };
+  },
   ${
     middlewarePath
       ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request }) {

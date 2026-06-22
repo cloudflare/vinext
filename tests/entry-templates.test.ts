@@ -961,6 +961,15 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("promotes interception-only RSC targets before not-found dispatch", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
+    expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
+    expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
+    expect(code).toContain("return { route, params }");
+  });
+
   it("installs server globals before App Router user modules are imported", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 

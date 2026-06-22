@@ -111,6 +111,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
+    matchInterceptRoute: overrides.matchInterceptRoute,
     matchRoute:
       overrides.matchRoute ??
       ((pathname: string) =>
@@ -548,6 +549,65 @@ describe("createAppRscHandler", () => {
       null,
     );
     expect(defaultOnly.status).toBe(400);
+  });
+
+  it("dispatches an RSC interception target without a direct route", async () => {
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/:locale/example",
+      rootParamNames: ["locale"],
+      routeSegments: ["[locale]", "example"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
+    const renderPagesFallback = vi.fn(async () => new Response("pages", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute(pathname, sourcePathname) {
+        if (pathname !== "/en/intercepted" || sourcePathname !== "/en/example") return null;
+        return { route: sourceRoute, params: { locale: "en" } };
+      },
+      matchRoute: () => null,
+      renderPagesFallback,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/en/example" });
+    const rscUrl = await createRscRequestUrl("/docs/en/intercepted", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("intercepted");
+    expect(renderPagesFallback).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanPathname: "/en/intercepted",
+        interceptionContext: "/en/example",
+        params: { locale: "en" },
+        route: sourceRoute,
+      }),
+    );
+  });
+
+  it("keeps interception-only targets unavailable to direct document requests", async () => {
+    const matchInterceptRoute = vi.fn(() => ({ route: createPageRoute(), params: {} }));
+    const dispatchMatchedPage = vi.fn(async () => new Response("intercepted", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: () => null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/en/intercepted", {
+        headers: { "x-vinext-interception-context": "/en/example" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(matchInterceptRoute).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("allows independent Next.js blur width and quality exceptions in pure App Router dev", async () => {
