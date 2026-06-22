@@ -270,6 +270,7 @@ import(/* turbopackIgnore: true */ request);
 require(/* webpackIgnore: false */ request);
 import(/* turbopackIgnore: false */ request);
 require(/* unrelated: true */ request);
+require(${"/* unrelated */".repeat(10_000)} /* webpackIgnore: true */ request);
 `,
       "/app/page.tsx",
     )?.code;
