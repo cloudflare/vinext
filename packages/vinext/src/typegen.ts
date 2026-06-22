@@ -6,6 +6,7 @@ import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
 import { compareStrings } from "./utils/compare.js";
 import { findDir } from "./utils/project.js";
+import { normalizePathSeparators } from "./utils/path.js";
 
 type GenerateRouteTypesOptions = {
   root: string;
@@ -24,24 +25,24 @@ import "./.next/types/routes.d.ts";
 `;
 
 export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
-  const root = path.resolve(options.root);
+  const root = normalizePathSeparators(path.resolve(options.root));
   const appDir = options.appDir
-    ? path.resolve(options.appDir)
-    : findDir(root, "app", path.join("src", "app"));
-  const outPath = path.join(root, ".next", "types", "routes.d.ts");
+    ? normalizePathSeparators(path.resolve(options.appDir))
+    : findDir(root, "app", path.posix.join("src", "app"));
+  const outPath = path.posix.join(root, ".next", "types", "routes.d.ts");
 
   const content = appDir
     ? renderRouteTypes(await collectRouteTypeModel(appDir, options.pageExtensions))
     : renderRouteTypes(emptyRouteTypeModel());
 
-  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await fs.mkdir(path.posix.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
   await ensureNextEnvFile(root);
   return outPath;
 }
 
 async function ensureNextEnvFile(root: string): Promise<void> {
-  const envPath = path.join(root, "next-env.d.ts");
+  const envPath = path.posix.join(root, "next-env.d.ts");
   try {
     await fs.writeFile(envPath, NEXT_ENV_FILE_CONTENT, { encoding: "utf-8", flag: "wx" });
   } catch (error) {
