@@ -119,6 +119,10 @@ function dynamic() {
 
 describe("App Router dynamic requests", () => {
   it("only rewrites fully dynamic unbound requests", () => {
+    expect(
+      _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),
+    ).toBeNull();
+
     const transformed = _transformVeryDynamicRequests(
       `const request = getRequest();
 require(request);

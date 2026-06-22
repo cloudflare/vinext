@@ -471,6 +471,8 @@ function dynamicImportReplacement(): string {
 }
 
 function transformVeryDynamicRequests(code: string, id: string) {
+  if (!code.includes("require") && !code.includes("import")) return null;
+
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =
     extension === ".ts" || extension === ".mts" || extension === ".cts"
