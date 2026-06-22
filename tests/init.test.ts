@@ -321,6 +321,7 @@ describe("getInitDeps", () => {
     const deps = getInitDeps(true, "cloudflare");
     expect(deps).toContain("@cloudflare/vite-plugin");
     expect(deps).toContain("wrangler");
+    expect(deps).toContain("@vinext/cloudflare");
   });
 
   it("does not add Cloudflare dependencies for the Node platform", () => {

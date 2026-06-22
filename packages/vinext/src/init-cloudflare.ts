@@ -1312,7 +1312,13 @@ function ensurePlugins(
 
   const closingOffset = array.end - 1;
   const hasExistingElements = array.elements.some(Boolean);
-  const finalElement = array.elements.findLast((element) => element !== null);
+  let finalElement: ESTree.ArrayExpressionElement | null = null;
+  for (let index = array.elements.length - 1; index >= 0; index--) {
+    if (array.elements[index] !== null) {
+      finalElement = array.elements[index];
+      break;
+    }
+  }
   const arraySuffix = code.slice(
     (finalElement as AstNode | undefined)?.end ?? array.start + 1,
     closingOffset,

@@ -156,7 +156,7 @@ export function getInitDeps(isAppRouter: boolean, platform: InitPlatform = "clou
     deps.push("react-server-dom-webpack");
   }
   if (platform === "cloudflare") {
-    deps.push("@cloudflare/vite-plugin", "wrangler");
+    deps.push("@cloudflare/vite-plugin", "@vinext/cloudflare", "wrangler");
   }
   return deps;
 }
