@@ -28,32 +28,14 @@ import {
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams } from "./app-page-params.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
   layoutSegments: readonly string[],
   params: AppPageParams,
 ): AppPageParams {
-  const localParamNames = new Set(
-    branchSegments
-      .map((segment) => {
-        if (segment.startsWith("[[...") && segment.endsWith("]]")) return segment.slice(5, -2);
-        if (segment.startsWith("[...") && segment.endsWith("]")) return segment.slice(4, -1);
-        if (segment.startsWith("[") && segment.endsWith("]")) return segment.slice(1, -1);
-        return null;
-      })
-      .filter((name): name is string => name !== null),
-  );
-  const scopedParams: AppPageParams = {};
-  for (const [name, value] of Object.entries(params)) {
-    if (!localParamNames.has(name)) scopedParams[name] = value;
-  }
-  Object.assign(
-    scopedParams,
-    resolveAppPageSegmentParams(layoutSegments, layoutSegments.length, params),
-  );
-  return scopedParams;
+  return resolveAppPageBranchParams(branchSegments, layoutSegments.length, params, layoutSegments);
 }
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";

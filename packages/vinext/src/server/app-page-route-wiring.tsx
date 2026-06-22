@@ -39,7 +39,7 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
-  getAppPageSegmentParamName,
+  resolveAppPageBranchParams,
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
 } from "./app-page-params.js";
@@ -76,15 +76,7 @@ function resolveSlotLayoutParams(
   treePosition: number,
   params: AppPageParams,
 ): AppPageParams {
-  const branchParamNames = new Set(
-    routeSegments.map(getAppPageSegmentParamName).filter((name): name is string => name !== null),
-  );
-  const scopedParams: AppPageParams = {};
-  for (const [name, value] of Object.entries(params)) {
-    if (!branchParamNames.has(name)) scopedParams[name] = value;
-  }
-  Object.assign(scopedParams, resolveAppPageSegmentParams(routeSegments, treePosition, params));
-  return scopedParams;
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
 }
 
 export type AppPageModule = Record<string, unknown> & {

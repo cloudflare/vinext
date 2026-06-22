@@ -12,7 +12,7 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
-import { getAppPageSegmentParamName, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
 /**
@@ -199,15 +199,7 @@ function resolveParallelLayoutParams(
   treePosition: number,
   params: AppPageParams,
 ): AppPageParams {
-  const branchParamNames = new Set(
-    routeSegments.map(getAppPageSegmentParamName).filter((name): name is string => name !== null),
-  );
-  const scopedParams: AppPageParams = {};
-  for (const [name, value] of Object.entries(params)) {
-    if (!branchParamNames.has(name)) scopedParams[name] = value;
-  }
-  Object.assign(scopedParams, resolveAppPageSegmentParams(routeSegments, treePosition, params));
-  return scopedParams;
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
 }
 
 function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): boolean {
