@@ -1073,7 +1073,12 @@ function discoverSlotSubRoutes(
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
-        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+        return {
+          ...slot,
+          pagePath: subPage,
+          configLayoutPaths: findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher),
+          routeSegments: rawSegments,
+        };
       }
       return slot;
     });
@@ -1229,6 +1234,7 @@ function discoverSlotSubRoutes(
         return {
           ...slot,
           pagePath: subPage || null,
+          configLayoutPaths: findSlotConfigLayoutPaths(slot.ownerDir, subPage ?? null, matcher),
           routeSegments: subPage ? rawSegments : null,
         };
       });

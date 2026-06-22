@@ -476,6 +476,7 @@ describe("App Router route graph builder", () => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "@slot/foo/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/[...catchAll]/page.tsx", EMPTY_PAGE);
@@ -498,6 +499,7 @@ describe("App Router route graph builder", () => {
         // slot's catch-all.
         const slot = baz.parallelSlots.find((s) => s.name === "slot");
         expect(slot?.pagePath).toBe(path.join(appDir, "@slot/baz/page.tsx"));
+        expect(slot?.configLayoutPaths).toEqual([path.join(appDir, "@slot/baz/layout.tsx")]);
 
         // The top-level catch-all is still present for fully-unmatched paths.
         expect(patterns).toContain("/:catchAll+");
@@ -1058,6 +1060,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "about/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "@breadcrumbs/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@breadcrumbs/about/layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "@breadcrumbs/about/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
@@ -1067,6 +1070,7 @@ describe("App Router route graph builder", () => {
         name: "breadcrumbs",
         pagePath: path.join(appDir, "@breadcrumbs/about/page.tsx"),
         defaultPath: path.join(appDir, "@breadcrumbs/default.tsx"),
+        configLayoutPaths: [path.join(appDir, "@breadcrumbs/about/layout.tsx")],
         routeSegments: ["about"],
       });
     });
