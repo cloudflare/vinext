@@ -446,6 +446,10 @@ function __resolveRouteFetchCacheMode(route) {
   return __resolveAppPageFetchCacheMode({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      slot.page ?? slot.default,
+    ]),
   });
 }
 
@@ -453,6 +457,10 @@ function __resolveRouteDynamicConfig(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      slot.page ?? slot.default,
+    ]),
   }).dynamicConfig ?? null;
 }
 
@@ -460,6 +468,10 @@ function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      slot.page ?? slot.default,
+    ]),
   }).runtime ?? null;
 }
 
@@ -717,7 +729,11 @@ export default createAppRscHandler({
     const __segmentConfig = __resolveAppPageSegmentConfig({
       layouts: route.layouts,
       page: route.page,
-      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page),
+      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+      parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+        slot.layout,
+        slot.page ?? slot.default,
+      ]),
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
@@ -996,7 +1012,7 @@ export default createAppRscHandler({
     const __actionMatch = matchRoute(cleanPathname);
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
-      ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
+      ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
       : false;
     return __handleServerActionRscRequest({
       actionId,
@@ -1144,7 +1160,7 @@ export default createAppRscHandler({
   }
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
-    const __isEdge = route ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: route.layouts, page: route.page }).runtime) : false;
+    const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route)) : false;
     return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdge });
   },
   ${

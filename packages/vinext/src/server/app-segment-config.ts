@@ -25,6 +25,7 @@ type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   page?: AppRouteSegmentConfigModule | null;
   parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
+  parallelSegments?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
 };
 
 const DYNAMIC_VALUES = new Set<unknown>(["auto", "error", "force-dynamic", "force-static"]);
@@ -115,12 +116,16 @@ export function resolveAppPageSegmentConfig(
   let hasOnlyCache = false;
   let hasOnlyNoStore = false;
   let hasParentDefaultNoStore = false;
+  let hasForceDynamic = false;
 
   for (const segment of segments) {
     if (!segment) continue;
 
     if (isRouteSegmentDynamic(segment.dynamic)) {
-      config.dynamicConfig = segment.dynamic;
+      if (segment.dynamic === "force-dynamic") {
+        hasForceDynamic = true;
+      }
+      config.dynamicConfig = hasForceDynamic ? "force-dynamic" : segment.dynamic;
     }
 
     if (isRouteSegmentRuntime(segment.runtime)) {
@@ -166,6 +171,45 @@ export function resolveAppPageSegmentConfig(
       } else {
         config.fetchCache = fetchCache;
       }
+    }
+
+    config.revalidateSeconds = resolveRevalidateSeconds(
+      config.revalidateSeconds,
+      segment.revalidate,
+    );
+  }
+
+  for (const segment of options.parallelSegments ?? []) {
+    if (!segment) continue;
+
+    // Next.js traverses every parallel branch. Propagate only route-wide
+    // semantics that do not depend on branch ordering in vinext's flattened
+    // graph: force-dynamic is sticky, fetchCache force/only constraints are
+    // route-wide, and the shortest revalidate interval always wins.
+    if (segment.dynamic === "force-dynamic") {
+      hasForceDynamic = true;
+      config.dynamicConfig = "force-dynamic";
+    }
+
+    if (isRouteSegmentFetchCache(segment.fetchCache)) {
+      const fetchCache = segment.fetchCache;
+      if (
+        hasParentDefaultNoStore &&
+        (fetchCache === "force-cache" || fetchCache === "only-cache")
+      ) {
+        throw new Error(describeFetchCacheConflict(fetchCache));
+      }
+      if (fetchCache === "force-cache") hasForceCache = true;
+      if (fetchCache === "force-no-store") hasForceNoStore = true;
+      if (fetchCache === "only-cache") hasOnlyCache = true;
+      if (fetchCache === "only-no-store") hasOnlyNoStore = true;
+      if ((hasForceCache || hasOnlyCache) && (hasForceNoStore || hasOnlyNoStore)) {
+        throw new Error(describeFetchCacheConflict(fetchCache));
+      }
+      if (hasForceCache) config.fetchCache = "force-cache";
+      else if (hasForceNoStore) config.fetchCache = "force-no-store";
+      else if (hasOnlyCache) config.fetchCache = "only-cache";
+      else if (hasOnlyNoStore) config.fetchCache = "only-no-store";
     }
 
     config.revalidateSeconds = resolveRevalidateSeconds(
