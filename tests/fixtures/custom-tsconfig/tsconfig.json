@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "baseUrl": "./default-src",
+    "paths": {
+      "foo": ["../wrong.ts"]
+    },
+    "jsx": "react-jsx"
+  }
+}

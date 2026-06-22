@@ -217,6 +217,12 @@ export type NextConfig = {
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
+  /** TypeScript configuration options. */
+  typescript?: {
+    /** Project-relative path to the tsconfig used for module resolution. */
+    tsconfigPath?: string;
+    [key: string]: unknown;
+  };
   /** Turbopack-compatible module resolution options. */
   turbopack?: {
     resolveAlias?: Record<string, unknown>;
@@ -346,6 +352,7 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
+  tsconfigPath: string | undefined;
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
@@ -1139,6 +1146,26 @@ function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function resolveTsconfigPath(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") {
+    const issue =
+      value === null
+        ? "Expected string, received null"
+        : "String must contain at least 1 character(s)";
+    console.warn(
+      `[vinext] Invalid next.config.js options detected:\n  ${issue} at "typescript.tsconfigPath"`,
+    );
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error(
+      'Invalid next.config option "typescript.tsconfigPath": expected a non-empty string',
+    );
+  }
+  return value;
+}
+
 function readOptionalBodySizeLimit(value: unknown): string | number | undefined {
   return typeof value === "string" || typeof value === "number" ? value : undefined;
 }
@@ -1278,6 +1305,7 @@ export async function resolveNextConfig(
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
+      tsconfigPath: undefined,
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
@@ -1591,6 +1619,7 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
+    tsconfigPath: resolveTsconfigPath(config.typescript?.tsconfigPath),
     resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
     serverResolveExtensions: resolveExtensions ?? webpackProbe.serverResolveExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)

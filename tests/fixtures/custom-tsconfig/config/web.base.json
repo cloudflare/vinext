@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "baseUrl": "./custom-src",
+    "paths": {
+      "foo": ["../bar.ts"]
+    }
+  }
+}
