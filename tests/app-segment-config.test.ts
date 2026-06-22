@@ -337,9 +337,24 @@ describe("resolveAppPageSegmentConfig", () => {
     expect(() =>
       resolveAppPageSegmentConfig({
         page: { fetchCache: "only-cache" },
-        parallelSegments: [{ fetchCache: "force-no-store" }],
+        parallelSegments: [{ fetchCache: "only-no-store" }],
       }),
     ).toThrow(/incompatible fetchCache/);
+  });
+
+  it("lets force fetchCache modes override opposing only modes", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ fetchCache: "only-cache" }],
+        page: { fetchCache: "force-no-store" },
+      }).fetchCache,
+    ).toBe("force-no-store");
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "only-no-store" },
+        parallelSegments: [{ fetchCache: "force-cache" }],
+      }).fetchCache,
+    ).toBe("force-cache");
   });
 
   it("resolves just the fetchCache mode for route-specific render scopes", () => {

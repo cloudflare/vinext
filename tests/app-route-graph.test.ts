@@ -605,6 +605,25 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("records nested active slot layouts for segment config reduction", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@slot/dashboard/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "@slot/dashboard/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/dashboard");
+      const slot = route.parallelSlots.find((candidate) => candidate.name === "slot");
+
+      expect(slot).toMatchObject({
+        pagePath: path.join(appDir, "@slot/dashboard/page.tsx"),
+        configLayoutPaths: [path.join(appDir, "@slot/dashboard/layout.tsx")],
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

@@ -954,6 +954,7 @@ describe("App Router entry templates", () => {
       "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
     );
     expect(code).toContain("slot.page ?? slot.default");
+    expect(code).toContain("...(slot.configLayouts ?? [])");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
     expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
     expect(code).toContain(

@@ -150,9 +150,10 @@ export function resolveAppPageSegmentConfig(
       if (fetchCache === "only-cache") hasOnlyCache = true;
       if (fetchCache === "only-no-store") hasOnlyNoStore = true;
 
-      const hasCacheEnforcer = hasForceCache || hasOnlyCache;
-      const hasNoStoreEnforcer = hasForceNoStore || hasOnlyNoStore;
-      if (hasCacheEnforcer && hasNoStoreEnforcer) {
+      const hasConflictingForces = hasForceCache && hasForceNoStore;
+      const hasConflictingOnlyModes =
+        !hasForceCache && !hasForceNoStore && hasOnlyCache && hasOnlyNoStore;
+      if (hasConflictingForces || hasConflictingOnlyModes) {
         throw new Error(describeFetchCacheConflict(fetchCache));
       }
 
@@ -213,7 +214,10 @@ export function resolveAppPageSegmentConfig(
       if (fetchCache === "force-no-store") hasForceNoStore = true;
       if (fetchCache === "only-cache") hasOnlyCache = true;
       if (fetchCache === "only-no-store") hasOnlyNoStore = true;
-      if ((hasForceCache || hasOnlyCache) && (hasForceNoStore || hasOnlyNoStore)) {
+      const hasConflictingForces = hasForceCache && hasForceNoStore;
+      const hasConflictingOnlyModes =
+        !hasForceCache && !hasForceNoStore && hasOnlyCache && hasOnlyNoStore;
+      if (hasConflictingForces || hasConflictingOnlyModes) {
         throw new Error(describeFetchCacheConflict(fetchCache));
       }
       if (fetchCache === "default-no-store") {

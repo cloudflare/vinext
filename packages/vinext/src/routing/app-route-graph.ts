@@ -68,6 +68,8 @@ type ParallelSlot = {
   defaultPath: string | null;
   /** Absolute path to the slot's layout component (wraps slot content) */
   layoutPath: string | null;
+  /** Nested active-branch layouts whose exports contribute route config. */
+  configLayoutPaths?: string[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
@@ -1330,6 +1332,23 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   return results;
 }
 
+function findSlotConfigLayoutPaths(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): string[] {
+  if (!pagePath) return [];
+
+  const layouts: string[] = [];
+  let dir = path.dirname(pagePath);
+  while (dir !== slotDir && dir.startsWith(`${slotDir}${path.sep}`)) {
+    const layoutPath = findFile(dir, "layout", matcher);
+    if (layoutPath) layouts.unshift(layoutPath);
+    dir = path.dirname(dir);
+  }
+  return layouts;
+}
+
 /**
  * Find a sibling catch-all page directly under `dir`, i.e. a `[...slug]` or
  * `[[...slug]]` directory that contains a `page` file. Returns the absolute
@@ -1837,6 +1856,11 @@ function discoverInheritedParallelSlots(
         const inheritedSlot: AppRouteGraphParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
+          configLayoutPaths: findSlotConfigLayoutPaths(
+            slot.ownerDir,
+            mirror?.pagePath ?? null,
+            matcher,
+          ),
           layoutIndex: slotLayoutIdx,
           routeSegments: mirror?.segments ?? null,
           slotPatternParts,
@@ -2088,6 +2112,7 @@ function discoverParallelSlots(
       pagePath,
       defaultPath,
       layoutPath: findFile(slotDir, "layout", matcher),
+      configLayoutPaths: findSlotConfigLayoutPaths(slotDir, pagePath, matcher),
       loadingPath: findFile(slotDir, "loading", matcher),
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,

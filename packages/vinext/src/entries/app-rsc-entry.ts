@@ -448,6 +448,7 @@ function __resolveRouteFetchCacheMode(route) {
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
       slot.layout,
+      ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
   });
@@ -459,6 +460,7 @@ function __resolveRouteDynamicConfig(route) {
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
       slot.layout,
+      ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
   }).dynamicConfig ?? null;
@@ -470,6 +472,7 @@ function __resolveRouteRuntime(route) {
     page: route.page,
     parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
       slot.layout,
+      ...(slot.configLayouts ?? []),
       slot.page ?? slot.default,
     ]),
   }).runtime ?? null;
@@ -732,6 +735,7 @@ export default createAppRscHandler({
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
       parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
         slot.layout,
+        ...(slot.configLayouts ?? []),
         slot.page ?? slot.default,
       ]),
     });
