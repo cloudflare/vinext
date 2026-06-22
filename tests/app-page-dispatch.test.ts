@@ -45,6 +45,7 @@ import {
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  draftMode,
   getHeadersContext,
   markDynamicUsage,
   markRenderRequestApiUsage,
@@ -1195,18 +1196,27 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached force static</html>");
   });
 
-  it.each([false, true])(
-    "passes empty searchParams to force-static page and head execution (RSC: %s)",
-    async (isRscRequest) => {
+  it.each([
+    { isDraftMode: false, isRscRequest: false },
+    { isDraftMode: false, isRscRequest: true },
+    { isDraftMode: true, isRscRequest: false },
+    { isDraftMode: true, isRscRequest: true },
+  ])(
+    "passes empty request APIs to force-static page and head execution (RSC: $isRscRequest, draft: $isDraftMode)",
+    async ({ isDraftMode, isRscRequest }) => {
       // Matches Next.js's force-static searchParams behavior:
       // packages/next/src/server/request/search-params.ts
       const metadataQueries: string[] = [];
       const viewportQueries: string[] = [];
+      const pageHeaders: Array<string | null> = [];
+      const pageDraftModes: boolean[] = [];
       async function readUser(searchParams: PromiseLike<Record<string, unknown>>): Promise<string> {
         const query = await searchParams;
         return typeof query.user === "string" ? query.user : "empty";
       }
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+        pageHeaders.push(getHeadersContext()?.headers.get("x-request-value") ?? null);
+        pageDraftModes.push((await draftMode()).isEnabled);
         const searchParams = props.searchParams;
         if (!isPromiseLike(searchParams)) {
           throw new Error("Expected page searchParams to be thenable");
@@ -1263,6 +1273,13 @@ describe("app page dispatch", () => {
           routePath: "/force-static-query",
         }).then(toDispatchElementRecord);
       const probeQueries: string[] = [];
+      const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
+      const request = new Request("https://example.test/force-static-query?user=alice", {
+        headers: {
+          ...(isDraftMode ? { cookie: "__prerender_bypass=draft-secret" } : {}),
+          "x-request-value": "present",
+        },
+      });
       const { options } = createDispatchOptions({
         buildPageElement,
         cleanPathname: "/force-static-query",
@@ -1278,9 +1295,11 @@ describe("app page dispatch", () => {
           probeQueries.push(searchParams?.get("user") ?? "empty");
           return null;
         },
+        request,
         renderToReadableStream: renderPagePayloadToStream,
         route,
         searchParams: new URLSearchParams("user=alice"),
+        setNavigationContext,
       });
 
       const response = await dispatchAppPage(options);
@@ -1289,8 +1308,79 @@ describe("app page dispatch", () => {
       expect(metadataQueries).toEqual(["empty"]);
       expect(viewportQueries).toEqual(["empty"]);
       expect(probeQueries).toEqual(isRscRequest ? ["empty"] : []);
+      expect(pageHeaders).toEqual([null]);
+      expect(pageDraftModes).toEqual([isDraftMode]);
+      const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
+      expect(navigationContext?.searchParams.toString()).toBe("");
     },
   );
+
+  it("preserves dynamic-error searchParams values but throws when they are accessed", async () => {
+    // Ported from Next.js: test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    const receivedQueries: string[] = [];
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const searchParams = props.searchParams;
+      if (!isPromiseLike(searchParams)) {
+        throw new Error("Expected page searchParams to be thenable");
+      }
+      const query = await searchParams;
+      if (!isQueryRecord(query)) {
+        throw new Error("Expected searchParams to resolve to a query record");
+      }
+      receivedQueries.push(typeof query.user === "string" ? query.user : "empty");
+      return React.createElement("h1", null, "unexpected");
+    }
+    const route = createRoute({ pattern: "/dynamic-error", routeSegments: ["dynamic-error"] });
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request("https://example.test/dynamic-error?user=alice"),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: { default: Page },
+          pattern: "/dynamic-error",
+          routeSegments: ["dynamic-error"],
+        },
+        routePath: "/dynamic-error",
+      }).then(toDispatchElementRecord);
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/dynamic-error",
+      dynamicConfig: "error",
+      isRscRequest: true,
+      renderToReadableStream: renderPagePayloadToStream,
+      route,
+      searchParams: new URLSearchParams("user=alice"),
+    });
+
+    try {
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).rejects.toThrow('Page with `dynamic = "error"`');
+      expect(receivedQueries).toEqual([]);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
 
   it("does not write query-invariant cache entries when loading-boundary render awaits searchParams", async () => {
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
@@ -2121,6 +2211,65 @@ describe("app page dispatch", () => {
     expect(navigationContext?.searchParams.toString()).toBe("");
     expect(resolveRouteDynamicConfig).toHaveBeenCalledTimes(1);
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
+  it("observes searchParams access for a dynamic-error intercept source route", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const buildOptions: Array<{
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+    }> = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      async (_route, _params, _opts, searchParams, _layoutParamAccess, options) => {
+        buildOptions.push(options ?? {});
+        return searchParams.get("tab") ?? "empty";
+      },
+    );
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === sourceRoute && route.layouts.length > 0 ? "error" : undefined,
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/photos/123",
+      ensureRouteLoaded(route) {
+        if (route === sourceRoute) {
+          sourceRoute.layouts = [{ default: () => null, dynamic: "error" }];
+        }
+      },
+      interceptionContext: "/feed",
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteDynamicConfig,
+      route: currentRoute,
+      searchParams: new URLSearchParams("tab=popular"),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    await expect(response.text()).resolves.toBe("popular");
+    expect(buildOptions).toEqual([
+      { observeMetadataSearchParamsAccess: true, observePageSearchParamsAccess: true },
+    ]);
   });
 
   it("preserves request headers for an ordinary intercept source route", async () => {

@@ -473,6 +473,7 @@ async function runAppPageRevalidationContext<
 ): Promise<TResult> {
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "page",
@@ -567,10 +568,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return methodResponse;
   }
 
-  if ((isForceStatic || isDynamicError) && !isDraftMode) {
+  if (isForceStatic || isDynamicError) {
     const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftMode,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig,
         routeKind: "page",
@@ -786,13 +788,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const sourceDynamicConfig = interceptDynamicConfigResolved
         ? interceptDynamicConfig
         : options.resolveRouteDynamicConfig?.(interceptRoute);
-      if (
-        !isDraftMode &&
-        (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error")
-      ) {
+      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
           createStaticGenerationHeadersContext({
+            draftModeEnabled: isDraftMode,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: sourceDynamicConfig,
             routeKind: "page",
@@ -810,6 +810,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         interceptOpts,
         interceptSearchParams,
         interceptLayoutParamAccess,
+        {
+          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+        },
       );
     },
     cleanPathname: options.cleanPathname,
@@ -935,7 +939,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   );
   options.setNavigationContext({
     pathname: options.displayPathname ?? options.cleanPathname,
-    searchParams: options.searchParams,
+    searchParams: pageSearchParams,
     params: navigationParams,
   });
 

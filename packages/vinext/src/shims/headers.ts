@@ -33,6 +33,7 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
   readonlyCookies?: RequestCookies;
@@ -204,6 +205,13 @@ export function markDynamicUsage(): void {
 
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   _getState().renderRequestApiUsage.add(kind);
+}
+
+export function throwIfStaticGenerationAccessError(): void {
+  const accessError = _getState().headersContext?.accessError;
+  if (accessError) {
+    throw accessError;
+  }
 }
 
 export async function runWithConnectionProbe<T>(
@@ -1045,7 +1053,7 @@ export async function draftMode(): Promise<DraftModeResult> {
 
   return {
     get isEnabled(): boolean {
-      return context.cookies.get(DRAFT_MODE_COOKIE) === secret;
+      return context.draftModeEnabled ?? context.cookies.get(DRAFT_MODE_COOKIE) === secret;
     },
     enable(): void {
       // Mutating draft mode inside a cache scope would freeze a Set-Cookie
@@ -1053,6 +1061,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().enable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().enable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = true;
       activeContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
@@ -1060,6 +1069,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().disable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().disable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = false;
       activeContext.cookies.delete(DRAFT_MODE_COOKIE);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; ${draftModeCookieAttributes()}; Expires=${DRAFT_MODE_EXPIRED_DATE}`;
     },

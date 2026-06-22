@@ -1,5 +1,9 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
+import {
+  isDraftModeRequest,
+  setHeadersContext,
+  type HeadersAccessPhase,
+} from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
@@ -112,6 +116,9 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled:
+          options.draftModeSecret !== undefined &&
+          isDraftModeRequest(options.request, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "route",

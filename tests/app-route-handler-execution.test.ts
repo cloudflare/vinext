@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   consumeDynamicUsage,
   cookies,
+  draftMode,
   headers,
   markDynamicUsage,
   setHeadersContext,
@@ -77,8 +78,13 @@ describe("app route handler execution helpers", () => {
         async handlerFn(request) {
           const headerStore = await headers();
           const cookieStore = await cookies();
+          const draft = await draftMode();
+          const draftModeInitiallyEnabled = draft.isEnabled;
+          draft.disable();
           return Response.json({
             cookie: cookieStore.get("session")?.value ?? null,
+            draftMode: draftModeInitiallyEnabled,
+            draftModeAfterDisable: draft.isEnabled,
             geo: request.geo ?? null,
             header: headerStore.get("x-test"),
             ip: request.ip ?? null,
@@ -95,11 +101,12 @@ describe("app route handler execution helpers", () => {
           headers: {
             "cf-connecting-ip": "203.0.113.10",
             "cf-ipcountry": "AU",
-            cookie: "session=abc",
+            cookie: "session=abc; __prerender_bypass=draft-secret",
             "x-test": "pong",
           },
         }),
         routePattern: "/api/static",
+        draftModeSecret: "draft-secret",
         setHeadersAccessPhase() {
           return "render";
         },
@@ -108,6 +115,8 @@ describe("app route handler execution helpers", () => {
       expect(dynamicUsedInHandler).toBe(false);
       await expect(response.json()).resolves.toEqual({
         cookie: null,
+        draftMode: true,
+        draftModeAfterDisable: false,
         geo: null,
         header: null,
         ip: null,

@@ -2,6 +2,7 @@ import {
   markDynamicUsage,
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
+  throwIfStaticGenerationAccessError,
 } from "vinext/shims/headers";
 import {
   makeThenableParams,
@@ -16,6 +17,7 @@ type AppPageSearchParamsObservationOptions = {
 };
 
 function markAppPageSearchParamsAccess(markDynamic: boolean): void {
+  throwIfStaticGenerationAccessError();
   throwIfInsideCacheScope("searchParams");
   if (markDynamic) {
     markDynamicUsage();

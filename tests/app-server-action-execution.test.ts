@@ -1288,7 +1288,69 @@ describe("app server action execution helpers", () => {
     },
   );
 
-  it("preserves action request APIs for force-static targets in draft mode", async () => {
+  it.each(["rerender", "redirect"] as const)(
+    "observes searchParams access for dynamic-error action %s targets",
+    async (kind) => {
+      const buildInputs: Array<{
+        metadata: boolean | undefined;
+        page: boolean | undefined;
+        query: string;
+      }> = [];
+      const targetRoute: TestRoute = {
+        id: kind === "redirect" ? "redirect-target" : "dashboard",
+        page: {},
+        params: [],
+        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
+      };
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({
+            observeMetadataSearchParamsAccess,
+            observePageSearchParamsAccess,
+            searchParams,
+          }) {
+            buildInputs.push({
+              metadata: observeMetadataSearchParamsAccess,
+              page: observePageSearchParamsAccess,
+              query: searchParams.toString(),
+            });
+            return "dynamic-error-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(
+              kind === "redirect"
+                ? () => redirect("/redirect-target?user=alice")
+                : async () => {
+                    await revalidatePath("/dashboard");
+                    return "revalidated";
+                  },
+            );
+          },
+          matchRoute(pathname) {
+            if (kind === "redirect" && pathname === "/redirect-target") {
+              return { params: {}, route: targetRoute };
+            }
+            return {
+              params: {},
+              route:
+                kind === "rerender"
+                  ? targetRoute
+                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+            };
+          },
+          resolveRouteDynamicConfig(route) {
+            return route === targetRoute ? "error" : undefined;
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
+      expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
+    },
+  );
+
+  it("uses empty action request APIs for force-static targets in draft mode", async () => {
     const buildInputs: Array<{ query: string; header: string | null }> = [];
     const route: TestRoute = {
       id: "dashboard",
@@ -1329,7 +1391,7 @@ describe("app server action execution helpers", () => {
       );
 
       expect(response?.status).toBe(200);
-      expect(buildInputs).toEqual([{ query: "user=alice", header: "present" }]);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
     } finally {
       setHeadersContext(null);
     }

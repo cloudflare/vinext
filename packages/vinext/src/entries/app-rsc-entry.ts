@@ -1014,6 +1014,8 @@ export default createAppRscHandler({
         request: actionRequest,
         mountedSlotsHeader: actionMountedSlotsHeader,
         renderMode: actionRenderMode,
+        observeMetadataSearchParamsAccess,
+        observePageSearchParamsAccess,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
           opts: interceptOpts,
@@ -1022,6 +1024,8 @@ export default createAppRscHandler({
           request: actionRequest,
           mountedSlotsHeader: actionMountedSlotsHeader,
           renderMode: actionRenderMode,
+          observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: observePageSearchParamsAccess === true,
         });
       },
       cleanPathname,

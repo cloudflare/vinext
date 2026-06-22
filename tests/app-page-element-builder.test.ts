@@ -37,6 +37,7 @@ vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
+  throwIfStaticGenerationAccessError: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------

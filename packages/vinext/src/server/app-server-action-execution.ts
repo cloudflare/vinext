@@ -169,6 +169,8 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   route: TRoute;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  observeMetadataSearchParamsAccess?: boolean;
+  observePageSearchParamsAccess?: boolean;
 };
 
 type AppServerActionRscModel<TElement> = {
@@ -299,13 +301,10 @@ function prepareActionPageRerenderContext(options: {
   routePattern: string;
   searchParams: URLSearchParams;
 }): URLSearchParams {
-  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
-  if (
-    !isDraftMode &&
-    (options.dynamicConfig === "force-static" || options.dynamicConfig === "error")
-  ) {
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "page",
@@ -313,9 +312,7 @@ function prepareActionPageRerenderContext(options: {
       }),
     );
   }
-  return !isDraftMode && options.dynamicConfig === "force-static"
-    ? new URLSearchParams()
-    : options.searchParams;
+  return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
 }
 
 /**
@@ -1283,6 +1280,8 @@ export async function handleServerActionRscRequest<
         route: targetMatch.route,
         searchParams: redirectSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
       });
       const onRenderError = options.createRscOnErrorHandler(
         redirectRenderRequest,
@@ -1422,6 +1421,8 @@ export async function handleServerActionRscRequest<
         route: actionRerenderTarget.route,
         searchParams: actionRerenderSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
       });
       errorPattern = actionRerenderTarget.route.pattern;
     } else {

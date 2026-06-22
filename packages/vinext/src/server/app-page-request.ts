@@ -120,6 +120,10 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    buildOptions?: {
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+    },
   ) => Promise<TElement>;
   cleanPathname: string;
   currentRoute: TRoute;
