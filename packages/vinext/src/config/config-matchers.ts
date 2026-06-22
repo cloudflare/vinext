@@ -770,19 +770,17 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *
  * The root path `"/"` is preserved as-is.
  */
-function stripTrailingSlashForConfigMatch(pathname: string): string {
-  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+function stripTrailingSlashForConfigMatch(value: string): string {
+  return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  // See `stripTrailingSlashForConfigMatch` — the source pattern itself is left
-  // unchanged because catch-all patterns (`:param*` / `:param+`) and the root
-  // `/` already consume any trailing slash; stripping the pattern would change
-  // those semantics.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
+  if (pathnameHadTrailingSlash) pattern = stripTrailingSlashForConfigMatch(pattern);
 
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is

@@ -10319,6 +10319,10 @@ describe("matchConfigPattern", () => {
     });
     // Regex-group pattern with a trailing slash.
     expect(matchConfigPattern("/123/", "/:id(\\d+)")).toEqual({ id: "123" });
+    // Next.js appends an optional trailing-slash matcher even when the source
+    // itself ends in `/`, so both canonical forms match the same rule.
+    expect(matchConfigPattern("/en/", "/:lang(en|es)/")).toEqual({ lang: "en" });
+    expect(matchConfigPattern("/en", "/:lang(en|es)/")).toBeNull();
   });
 
   it("preserves the root path and catch-all semantics under trailing slash", async () => {
