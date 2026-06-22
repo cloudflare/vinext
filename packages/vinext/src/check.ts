@@ -308,6 +308,11 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
 
 /**
  * Recursively find all source files in a directory.
+ *
+ * `dir` must be forward-slash, and the returned paths are forward-slash too:
+ * each entry is joined with `path.posix.join`, which only stays canonical when
+ * the base already is. This keeps downstream substring checks (e.g.
+ * `f.includes("/api/")`) and reported paths consistent across platforms.
  */
 function findSourceFiles(
   dir: string,
@@ -318,10 +323,7 @@ function findSourceFiles(
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
-    // Forward slashes so downstream substring checks (e.g. `f.includes("/api/")`)
-    // and reported paths are consistent across platforms — path.join yields
-    // backslashes on Windows, which would break those checks.
-    const fullPath = normalizePathSeparators(path.join(dir, entry.name));
+    const fullPath = path.posix.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (
         entry.name === "node_modules" ||
