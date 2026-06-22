@@ -446,7 +446,7 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const root = process.cwd();
-  const isApp = hasAppDir(process.cwd());
+  const isApp = hasAppDir(normalizePathSeparators(root));
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,

@@ -291,7 +291,9 @@ export function findDir(root: string, ...candidates: string[]): string | null {
 
 /**
  * Check if the project uses App Router (has an app/ directory).
+ *
+ * `root` must be forward-slash — it is passed straight to `findDir`.
  */
 export function hasAppDir(root: string): boolean {
-  return findDir(root, "app", path.join("src", "app")) !== null;
+  return findDir(root, "app", "src/app") !== null;
 }
