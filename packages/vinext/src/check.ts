@@ -1111,6 +1111,10 @@ export function checkConventions(root: string): CheckItem[] {
 
 /**
  * Run the full compatibility check.
+ *
+ * `root` must be forward-slash — callers normalize it at the CLI entry, and it
+ * is forwarded to `scanImports` / `checkConventions` / `findDir`, which build
+ * paths with `path.posix.*`.
  */
 export function runCheck(root: string): CheckResult {
   const imports = scanImports(root);
