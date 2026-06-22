@@ -306,7 +306,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
-  probePage: () => unknown;
+  probePage: (searchParams?: URLSearchParams) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
@@ -535,6 +535,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
+  const pageSearchParams = isForceStatic ? new URLSearchParams() : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
     options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
@@ -849,7 +850,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           route,
           options.params,
           interceptResult.interceptOpts,
-          options.searchParams,
+          pageSearchParams,
           layoutParamAccess,
           {
             observeMetadataSearchParamsAccess: !isForceStatic,
@@ -865,7 +866,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           return null;
         }
         const pageError = await probeAppPageThrownError({
-          probePage: options.probePage,
+          probePage: () => options.probePage(pageSearchParams),
           runWithSuppressedHookWarning(probe) {
             return options.runWithSuppressedHookWarning(probe);
           },
@@ -993,7 +994,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
     probePage() {
-      return options.probePage();
+      return options.probePage(pageSearchParams);
     },
     probePageBeforeRender: options.isRscRequest,
     classification: {

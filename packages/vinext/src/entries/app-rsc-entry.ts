@@ -811,7 +811,7 @@ export default createAppRscHandler({
           route,
         });
       },
-      async probePage() {
+      async probePage(probeSearchParams = searchParams) {
         const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
@@ -826,7 +826,7 @@ export default createAppRscHandler({
           route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
-          searchParams,
+          searchParams: probeSearchParams,
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,

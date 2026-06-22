@@ -1191,6 +1191,103 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached force static</html>");
   });
 
+  it.each([false, true])(
+    "passes empty searchParams to force-static page and head execution (RSC: %s)",
+    async (isRscRequest) => {
+      // Matches Next.js's force-static searchParams behavior:
+      // packages/next/src/server/request/search-params.ts
+      const metadataQueries: string[] = [];
+      const viewportQueries: string[] = [];
+      async function readUser(searchParams: PromiseLike<Record<string, unknown>>): Promise<string> {
+        const query = await searchParams;
+        return typeof query.user === "string" ? query.user : "empty";
+      }
+      async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+        const searchParams = props.searchParams;
+        if (!isPromiseLike(searchParams)) {
+          throw new Error("Expected page searchParams to be thenable");
+        }
+        return React.createElement(
+          "h1",
+          null,
+          await readUser(searchParams as PromiseLike<Record<string, unknown>>),
+        );
+      }
+      const pageModule = {
+        default: Page,
+        async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
+          metadataQueries.push(await readUser(props.searchParams));
+          return null;
+        },
+        async generateViewport(props: { searchParams: Promise<Record<string, unknown>> }) {
+          viewportQueries.push(await readUser(props.searchParams));
+          return null;
+        },
+      };
+      const route = createRoute({
+        pattern: "/force-static-query",
+        routeSegments: ["force-static-query"],
+      });
+      const buildPageElement: DispatchOptions["buildPageElement"] = (
+        _route,
+        params,
+        _opts,
+        searchParams,
+        layoutParamAccess,
+        buildOptions,
+      ) =>
+        buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest,
+            mountedSlotsHeader: null,
+            observeMetadataSearchParamsAccess:
+              buildOptions?.observeMetadataSearchParamsAccess === true,
+            observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+            opts: undefined,
+            request: new Request("https://example.test/force-static-query?user=alice"),
+            searchParams,
+          },
+          route: {
+            layouts: [],
+            page: pageModule,
+            pattern: "/force-static-query",
+            routeSegments: ["force-static-query"],
+          },
+          routePath: "/force-static-query",
+        }).then(toDispatchElementRecord);
+      const probeQueries: string[] = [];
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/force-static-query",
+        dynamicConfig: "force-static",
+        isRscRequest,
+        loadSsrHandler: async () => ({
+          async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+          },
+        }),
+        probePage(searchParams) {
+          probeQueries.push(searchParams?.get("user") ?? "empty");
+          return null;
+        },
+        renderToReadableStream: renderPagePayloadToStream,
+        route,
+        searchParams: new URLSearchParams("user=alice"),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe(isRscRequest ? "empty" : "<html>empty</html>");
+      expect(metadataQueries).toEqual(["empty"]);
+      expect(viewportQueries).toEqual(["empty"]);
+      expect(probeQueries).toEqual(isRscRequest ? ["empty"] : []);
+    },
+  );
+
   it("does not write query-invariant cache entries when loading-boundary render awaits searchParams", async () => {
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
       const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
