@@ -63,6 +63,7 @@ type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPageHeadMod
 };
 
 type AppPageHeadSlot<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  configLayouts?: readonly (TModule | null | undefined)[] | null;
   layout?: TModule | null;
   page?: TModule | null;
 };
@@ -135,7 +136,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
     }
 
     return {
-      layoutModules: slot.layout ? [slot.layout] : [],
+      layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
       pageModule: slot.page,
       params: options.params,
       routeSegments: options.routeSegments,

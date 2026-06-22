@@ -87,6 +87,7 @@ type AppPageRouteWiringSlot<
   /** Slot prop name passed to the owning layout (e.g. "modal" from @modal). */
   name: string;
   default?: TModule | null;
+  configLayouts?: readonly (TModule | null | undefined)[] | null;
   error?: TErrorModule | null;
   layout?: TModule | null;
   layoutIndex: number;
@@ -807,6 +808,21 @@ export function buildAppPageElements<
           {slotElement}
         </InterceptLayoutComponent>
       );
+    }
+
+    if (!slotOverride) {
+      for (
+        let layoutIndex = (slot.configLayouts?.length ?? 0) - 1;
+        layoutIndex >= 0;
+        layoutIndex--
+      ) {
+        const nestedLayoutComponent = getDefaultExport(slot.configLayouts?.[layoutIndex]);
+        if (!nestedLayoutComponent) continue;
+        const NestedLayoutComponent = nestedLayoutComponent;
+        slotElement = (
+          <NestedLayoutComponent params={slotThenableParams}>{slotElement}</NestedLayoutComponent>
+        );
+      }
     }
 
     const slotLayoutComponent = getDefaultExport(slot.layout);

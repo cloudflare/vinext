@@ -396,6 +396,32 @@ describe("app page head resolution", () => {
     });
   });
 
+  it("includes nested active parallel route layout metadata", async () => {
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [
+            { metadata: { description: "slot root" } },
+            { metadata: { title: "nested slot layout" } },
+          ],
+          pageModule: { metadata: { openGraph: { title: "slot page" } } },
+          routeSegments: ["dashboard"],
+        },
+      ],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+    });
+
+    expect(result.metadata).toMatchObject({
+      description: "slot root",
+      title: "nested slot layout",
+      openGraph: { title: "slot page" },
+    });
+  });
+
   // Regression: a `generateMetadata` that does not declare the `parent`
   // argument must NOT receive it. Matches Next.js, which omits the parent
   // argument for cached `generateMetadata` functions that don't use it
