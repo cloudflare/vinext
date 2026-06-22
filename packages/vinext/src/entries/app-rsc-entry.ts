@@ -739,6 +739,7 @@ export default createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
+          observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
         }, layoutParamAccess, displayPathname);
       },

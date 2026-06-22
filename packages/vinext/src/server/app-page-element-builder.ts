@@ -76,6 +76,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
   observePageSearchParamsAccess?: boolean;
+  /** Observe page metadata `searchParams` access for cache-safety classification. */
+  observeMetadataSearchParamsAccess?: boolean;
 };
 
 export type BuildPageElementsOptions<
@@ -170,6 +172,7 @@ export async function buildPageElements<
     isRscRequest,
     mountedSlotsHeader,
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
+    observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
   } = pageRequest;
 
@@ -264,7 +267,7 @@ export async function buildPageElements<
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
-    searchParamsObserver: observePageSearchParamsAccess
+    searchParamsObserver: observeMetadataSearchParamsAccess
       ? createAppPageSearchParamsObserver()
       : undefined,
   });

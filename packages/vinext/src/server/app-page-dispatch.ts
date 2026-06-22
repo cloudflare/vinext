@@ -230,7 +230,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
-    options?: { observePageSearchParamsAccess?: boolean },
+    options?: {
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+    },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
@@ -842,7 +845,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.searchParams,
           layoutParamAccess,
           {
-            observePageSearchParamsAccess: !isForceStatic,
+            observeMetadataSearchParamsAccess: !isForceStatic,
+            observePageSearchParamsAccess: !options.isRscRequest && !isForceStatic,
           },
         );
       },

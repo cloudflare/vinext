@@ -721,6 +721,8 @@ describe("app page dispatch", () => {
         pageRequest: {
           isRscRequest: false,
           mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           opts: undefined,
           request: new Request(`https://example.test/query-proof?${searchParams}`),
@@ -817,6 +819,8 @@ describe("app page dispatch", () => {
         pageRequest: {
           isRscRequest: false,
           mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           opts: undefined,
           request: new Request(`https://example.test/metadata-proof?${searchParams}`),
@@ -939,6 +943,8 @@ describe("app page dispatch", () => {
           pageRequest: {
             isRscRequest: true,
             mountedSlotsHeader: null,
+            observeMetadataSearchParamsAccess:
+              buildOptions?.observeMetadataSearchParamsAccess === true,
             observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
             opts: undefined,
             request: new Request(`https://example.test/rsc-metadata-proof?${searchParams}`),
