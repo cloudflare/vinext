@@ -932,11 +932,9 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
 
   // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = findDir(root, "pages", path.join("src", "pages"));
-  const appDirPath = findDir(root, "app", path.join("src", "app"));
+  const pagesDir = findDir(root, "pages", "src/pages");
+  const appDirPath = findDir(root, "app", "src/app");
 
-  const hasPages = pagesDir !== null;
-  const hasApp = appDirPath !== null;
   const hasProxy =
     fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
   const hasMiddleware =
@@ -944,7 +942,7 @@ export function checkConventions(root: string): CheckItem[] {
     fs.existsSync(path.join(root, "middleware.js"));
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir.includes(path.join("src", "pages"));
+    const isSrc = pagesDir.includes("src/pages");
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
@@ -975,7 +973,7 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath.includes(path.join("src", "app"));
+    const isSrc = appDirPath.includes("src/app");
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
@@ -1009,7 +1007,7 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
   }
 
-  if (!hasPages && !hasApp) {
+  if (pagesDir === null && appDirPath === null) {
     items.push({
       name: "No pages/ or app/ directory found",
       status: "unsupported",
