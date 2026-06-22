@@ -370,6 +370,29 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/feed/abc/photos/1", "/other")).toBeNull();
     });
 
+    it("does not leak descendant source params into the interception branch", () => {
+      const intercept = {
+        sourceMatchPattern: "/:locale/feed",
+        targetPattern: "/photos/:photoId",
+        interceptLayouts: ["layout"],
+        page: "modal-photo",
+        params: ["photoId"],
+      };
+      const matcher = createAppRscRouteMatcher([
+        route("/:locale/feed", [":locale", "feed"], {
+          modal: { intercepts: [intercept] },
+        }),
+        route("/:locale/feed/:tab", [":locale", "feed", ":tab"], {
+          modal: { intercepts: [intercept] },
+        }),
+      ]);
+
+      expect(matcher.findIntercept("/photos/42", "/en/feed/recent")).toMatchObject({
+        sourceRouteIndex: 1,
+        matchedParams: { locale: "en", photoId: "42" },
+      });
+    });
+
     it("treats a sourceMatchPattern of `/` as matching any source", () => {
       // Slot at root (`/@modal/(.)groups/[id]/new`) yields intercepting route `/`,
       // which Next.js implements as `^/.*$` — i.e. any source.
@@ -407,7 +430,9 @@ describe("App RSC route matching", () => {
               sourceMatchPattern: "/foo/bar",
               sourcePageSegments: ["foo", "bar", "(..)(..)hoge"],
               slotId: "slot:__vinext_sibling_intercept:/foo/bar",
-              interceptLayouts: [],
+              interceptLayouts: [{ default: () => null }],
+              interceptLayoutSegments: [["[photo]"]],
+              interceptBranchSegments: ["[photo]", "[comment]"],
               page: { default: () => null },
               params: [],
             },
@@ -422,6 +447,8 @@ describe("App RSC route matching", () => {
       expect(hit).not.toBeNull();
       expect(hit?.slotKey).toBe(SIBLING_PAGE_INTERCEPT_SLOT_KEY);
       expect(hit?.sourcePageSegments).toEqual(["foo", "bar", "(..)(..)hoge"]);
+      expect(hit?.interceptLayoutSegments).toEqual([["[photo]"]]);
+      expect(hit?.interceptBranchSegments).toEqual(["[photo]", "[comment]"]);
 
       // Hard-nav (no source): must return null
       expect(matcher.findIntercept("/hoge", null)).toBeNull();
@@ -477,6 +504,8 @@ type TestSiblingIntercept = {
   sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   page: unknown;
   params: string[];
 };
@@ -498,6 +527,8 @@ type TestIntercept = {
    */
   sourceMatchPattern?: string;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[];
   page: unknown;
   __pageLoader?: () => Promise<unknown>;

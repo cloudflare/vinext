@@ -39,6 +39,7 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
+  resolveAppPageBranchParams,
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
 } from "./app-page-params.js";
@@ -70,6 +71,14 @@ type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
 
+function resolveSlotLayoutParams(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
+}
+
 export type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
 };
@@ -87,6 +96,8 @@ type AppPageRouteWiringSlot<
   /** Slot prop name passed to the owning layout (e.g. "modal" from @modal). */
   name: string;
   default?: TModule | null;
+  configLayouts?: readonly (TModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   error?: TErrorModule | null;
   layout?: TModule | null;
   layoutIndex: number;
@@ -145,6 +156,8 @@ export type AppPageRouteWiringRoute<
 };
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
+  branchSegments?: readonly string[] | null;
+  layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   /**
    * The page module to render for this slot. Optional — when omitted, the
@@ -188,6 +201,10 @@ type BuildAppPageRouteElementOptions<
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
   route: AppPageRouteWiringRoute<TModule, TErrorModule>;
+  createPageElement?: (
+    component: AppPageComponent,
+    props: Readonly<Record<string, unknown>>,
+  ) => ReactNode;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -748,6 +765,11 @@ export function buildAppPageElements<
     const slotOverride = resolveSlotOverride(slotKey, slotName);
     const slotParams = getEffectiveSlotParams(slotKey, slotName);
     const slotRouteSegments = slot.routeSegments ?? [];
+    const slotOwnerParams = resolveAppPageSegmentParams(
+      options.route.routeSegments,
+      layoutEntries[targetIndex]?.treePosition ?? 0,
+      options.matchedParams,
+    );
     const slotResetKey = resolveAppPageRouteStateKey(slotRouteSegments, slotParams);
     const overrideOrPageComponent =
       getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
@@ -784,8 +806,14 @@ export function buildAppPageElements<
       Object.assign(slotProps, slotOverride.props);
     }
 
-    const SlotComponent = slotComponent;
-    let slotElement: ReactNode = <SlotComponent {...slotProps} />;
+    let slotElement: ReactNode = options.createPageElement
+      ? options.createPageElement(slotComponent, slotProps)
+      : (() => {
+          const SlotComponent = slotComponent;
+          return <SlotComponent {...slotProps} />;
+        })();
+    const hasSlotTreeOverride =
+      slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
     const interceptLayouts = slotOverride?.layoutModules ?? [];
 
     for (let layoutIndex = interceptLayouts.length - 1; layoutIndex >= 0; layoutIndex--) {
@@ -794,18 +822,49 @@ export function buildAppPageElements<
         continue;
       }
       const InterceptLayoutComponent = interceptLayoutComponent;
+      const interceptLayoutParams = resolveSlotLayoutParams(
+        slotOverride?.branchSegments ?? slotRouteSegments,
+        slotOverride?.layoutSegments?.[layoutIndex]?.length ?? slotRouteSegments.length,
+        slotParams,
+      );
       slotElement = (
-        <InterceptLayoutComponent params={slotThenableParams}>
+        <InterceptLayoutComponent params={options.makeThenableParams(interceptLayoutParams)}>
           {slotElement}
         </InterceptLayoutComponent>
       );
+    }
+
+    if (!hasSlotTreeOverride) {
+      for (
+        let layoutIndex = (slot.configLayouts?.length ?? 0) - 1;
+        layoutIndex >= 0;
+        layoutIndex--
+      ) {
+        const nestedLayoutComponent = getDefaultExport(slot.configLayouts?.[layoutIndex]);
+        if (!nestedLayoutComponent) continue;
+        const NestedLayoutComponent = nestedLayoutComponent;
+        const nestedLayoutParams = resolveSlotLayoutParams(
+          slotRouteSegments,
+          slot.configLayoutTreePositions?.[layoutIndex] ?? 0,
+          slotParams,
+        );
+        slotElement = (
+          <NestedLayoutComponent
+            params={options.makeThenableParams({ ...slotOwnerParams, ...nestedLayoutParams })}
+          >
+            {slotElement}
+          </NestedLayoutComponent>
+        );
+      }
     }
 
     const slotLayoutComponent = getDefaultExport(slot.layout);
     if (slotLayoutComponent) {
       const SlotLayoutComponent = slotLayoutComponent;
       slotElement = (
-        <SlotLayoutComponent params={slotThenableParams}>{slotElement}</SlotLayoutComponent>
+        <SlotLayoutComponent params={options.makeThenableParams(slotOwnerParams)}>
+          {slotElement}
+        </SlotLayoutComponent>
       );
     }
 

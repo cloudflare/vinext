@@ -943,14 +943,25 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("handleServerActionRequest({");
   });
 
-  it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
+  it("generateRscEntry passes parallel route segment config into App page dispatch", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain(
-      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page)",
+      "parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [",
     );
+    expect(code).toContain(
+      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
+    );
+    expect(code).toContain("slot.page ?? slot.default");
+    expect(code).toContain("...(slot.configLayouts ?? [])");
+    expect(code).toContain("interceptLayoutSegments:");
+    expect(code).toContain("interceptBranchSegments:");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+    expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
+    expect(code).toContain(
+      "const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route))",
+    );
   });
 
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {

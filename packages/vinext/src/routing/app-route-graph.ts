@@ -40,6 +40,10 @@ type InterceptingRoute = {
   sourcePageSegments?: string[];
   /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
   layoutPaths: string[];
+  /** Normalized branch segments accumulated at each intercept layout. */
+  layoutSegments?: string[][];
+  /** Full normalized interception branch segments through the page. */
+  branchSegments?: string[];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -68,6 +72,10 @@ type ParallelSlot = {
   defaultPath: string | null;
   /** Absolute path to the slot's layout component (wraps slot content) */
   layoutPath: string | null;
+  /** Nested active-branch layouts whose exports contribute route config. */
+  configLayoutPaths?: string[];
+  /** Tree positions of configLayoutPaths relative to the slot root. */
+  configLayoutTreePositions?: number[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
@@ -1071,7 +1079,17 @@ function discoverSlotSubRoutes(
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
-        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+        const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
+        return {
+          ...slot,
+          pagePath: subPage,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
+          routeSegments: rawSegments,
+        };
       }
       return slot;
     });
@@ -1224,9 +1242,19 @@ function discoverSlotSubRoutes(
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
         const subPage = slotPages.get(slot.key);
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          subPage ?? null,
+          matcher,
+        );
         return {
           ...slot,
           pagePath: subPage || null,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           routeSegments: subPage ? rawSegments : null,
         };
       });
@@ -1328,6 +1356,33 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   scan(slotDir);
   perMatcher.set(slotDir, results);
   return results;
+}
+
+function findSlotConfigLayoutPaths(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): string[] {
+  if (!pagePath) return [];
+
+  const layouts: string[] = [];
+  let dir = path.dirname(pagePath);
+  while (dir !== slotDir && dir.startsWith(`${slotDir}${path.sep}`)) {
+    const layoutPath = findFile(dir, "layout", matcher);
+    if (layoutPath) layouts.unshift(layoutPath);
+    dir = path.dirname(dir);
+  }
+  return layouts;
+}
+
+function findSlotConfigLayoutTreePositions(
+  slotDir: string,
+  layoutPaths: readonly string[],
+): number[] {
+  return layoutPaths.map((layoutPath) => {
+    const relativeDir = path.relative(slotDir, path.dirname(layoutPath));
+    return relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0;
+  });
 }
 
 /**
@@ -1834,9 +1889,19 @@ function discoverInheritedParallelSlots(
           slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
           slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
         }
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          mirror?.pagePath ?? null,
+          matcher,
+        );
         const inheritedSlot: AppRouteGraphParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           layoutIndex: slotLayoutIdx,
           routeSegments: mirror?.segments ?? null,
           slotPatternParts,
@@ -2078,6 +2143,7 @@ function discoverParallelSlots(
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
+    const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
@@ -2088,6 +2154,8 @@ function discoverParallelSlots(
       pagePath,
       defaultPath,
       layoutPath: findFile(slotDir, "layout", matcher),
+      configLayoutPaths,
+      configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
       loadingPath: findFile(slotDir, "loading", matcher),
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,
@@ -2402,8 +2470,18 @@ function collectInterceptingPages(
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
       results.push({
+        branchSegments: [
+          interceptSegment,
+          ...normalizePathSeparators(path.relative(interceptRoot, path.dirname(page)))
+            .split("/")
+            .filter(Boolean),
+        ],
         convention,
         layoutPaths: [...layoutPaths],
+        layoutSegments: layoutPaths.map((layoutPath) => {
+          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+          return [interceptSegment, ...relativeDir.split(path.sep).filter(Boolean)];
+        }),
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

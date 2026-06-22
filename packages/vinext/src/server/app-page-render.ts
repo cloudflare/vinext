@@ -118,6 +118,7 @@ type RenderAppPageLifecycleOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
+  peekDynamicUsage?: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   /** Read and clear any invalid dynamic usage error recorded during render (dev-only). */
   consumeInvalidDynamicUsageError?: () => unknown;
@@ -585,7 +586,10 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
-  const probePageBeforeRender = options.probePageBeforeRender ?? options.isRscRequest;
+  const configuredProbePageBeforeRender = options.probePageBeforeRender ?? options.isRscRequest;
+  const probePageBeforeRender =
+    options.isRscRequest ||
+    (configuredProbePageBeforeRender && !(options.peekDynamicUsage?.() ?? false));
   const preRenderResult = await probeAppPageBeforeRender({
     hasLoadingBoundary: options.hasLoadingBoundary,
     probePageBeforeRender,

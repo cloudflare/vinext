@@ -4,6 +4,7 @@ import {
 } from "vinext/shims/cache-request-state";
 import {
   headersContextFromRequest,
+  isDraftModeRequest,
   setHeadersContext,
   type HeadersAccessPhase,
 } from "vinext/shims/headers";
@@ -53,6 +54,7 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -151,6 +153,7 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
 
 type AppServerActionIntercept<TPage = unknown> = {
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   slotId?: string | null;
   slotKey: string;
@@ -167,6 +170,8 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   route: TRoute;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  observeMetadataSearchParamsAccess?: boolean;
+  observePageSearchParamsAccess?: boolean;
 };
 
 type AppServerActionRscModel<TElement> = {
@@ -246,6 +251,7 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  draftModeSecret: string;
   /**
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
@@ -288,6 +294,27 @@ export type HandleServerActionRscRequestOptions<
   }) => void;
   toInterceptOpts: (intercept: AppServerActionIntercept<TPage>) => TInterceptOpts;
 };
+
+function prepareActionPageRerenderContext(options: {
+  draftModeSecret: string;
+  dynamicConfig: string | null | undefined;
+  request: Request;
+  routePattern: string;
+  searchParams: URLSearchParams;
+}): URLSearchParams {
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    setHeadersContext(
+      createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: options.dynamicConfig,
+        routeKind: "page",
+        routePattern: options.routePattern,
+      }),
+    );
+  }
+  return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
 
 /**
  * Matches Next.js' server action argument cap to prevent stack overflow in
@@ -1222,6 +1249,14 @@ export async function handleServerActionRscRequest<
         url: redirectTarget,
       });
       setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
+      const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: redirectDynamicConfig,
+        request: redirectRenderRequest,
+        routePattern: targetMatch.route.pattern,
+        searchParams: redirectTarget.searchParams,
+      });
       const redirectNavigationParams = resolveAppPageNavigationParams(
         targetMatch.route,
         targetMatch.params,
@@ -1230,13 +1265,11 @@ export async function handleServerActionRscRequest<
       );
       options.setNavigationContext({
         pathname: targetPathname,
-        searchParams: redirectTarget.searchParams,
+        searchParams: redirectSearchParams,
         params: redirectNavigationParams,
       });
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(targetMatch.route) === "force-dynamic",
-      );
+      setCurrentForceDynamicFetchDefault(redirectDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
       const element = options.buildPageElement({
         cleanPathname: targetPathname,
@@ -1246,8 +1279,10 @@ export async function handleServerActionRscRequest<
         params: targetMatch.params,
         request: redirectRenderRequest,
         route: targetMatch.route,
-        searchParams: redirectTarget.searchParams,
+        searchParams: redirectSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
       });
       const onRenderError = options.createRscOnErrorHandler(
         redirectRenderRequest,
@@ -1353,19 +1388,27 @@ export async function handleServerActionRscRequest<
         options.cleanPathname,
         actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
       );
-      options.setNavigationContext({
-        pathname: options.cleanPathname,
-        searchParams: options.searchParams,
-        params: resolvedActionNavigationParams,
-      });
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
+        actionRerenderTarget.route,
+      );
+      const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: actionRerenderDynamicConfig,
+        request: options.request,
+        routePattern: actionRerenderTarget.route.pattern,
+        searchParams: options.searchParams,
+      });
+      options.setNavigationContext({
+        pathname: options.cleanPathname,
+        searchParams: actionRerenderSearchParams,
+        params: resolvedActionNavigationParams,
+      });
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(actionRerenderTarget.route) === "force-dynamic",
-      );
+      setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
         buildServerActionPageTags(actionRerenderTarget.route, options.cleanPathname),
       );
@@ -1377,8 +1420,10 @@ export async function handleServerActionRscRequest<
         params: actionRerenderTarget.params,
         request: options.request,
         route: actionRerenderTarget.route,
-        searchParams: options.searchParams,
+        searchParams: actionRerenderSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
       });
       errorPattern = actionRerenderTarget.route.pattern;
     } else {

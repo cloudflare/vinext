@@ -114,6 +114,7 @@ async function runInRouteHandlerRevalidationContext(
   renderFn: () => Promise<void>,
 ): Promise<void> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "route",

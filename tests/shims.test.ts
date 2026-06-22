@@ -4053,7 +4053,7 @@ describe("next/headers shim", () => {
     expect(getDraftModeCookieHeader()).toBeNull();
   });
 
-  it('draftMode() throws the dynamic = "error" access error before exposing draft controls', async () => {
+  it('draftMode() stays readable with dynamic = "error" but mutations throw', async () => {
     const { setHeadersContext, draftMode, getDraftModeCookieHeader, consumeDynamicUsage } =
       await import("../packages/vinext/src/shims/headers.js");
     const accessError = new Error(
@@ -4066,7 +4066,10 @@ describe("next/headers shim", () => {
       accessError,
     });
 
-    await expect(draftMode()).rejects.toThrow(accessError);
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(false);
+    expect(() => dm.enable()).toThrow(accessError);
+    expect(() => dm.disable()).toThrow(accessError);
     expect(consumeDynamicUsage()).toBe(false);
     expect(getDraftModeCookieHeader()).toBeNull();
 
