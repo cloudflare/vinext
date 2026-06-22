@@ -192,6 +192,7 @@ type RenderAppPageLifecycleOptions = {
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
+  renderObservationCompleteness?: "complete" | "partial";
   waitUntil?: (promise: Promise<void>) => void;
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
   // skip transport planner to reject layouts that are unsafe for static reuse.
@@ -831,7 +832,7 @@ export async function renderAppPageLifecycle(
           cacheability: "public",
           cacheTags: input.cacheTags,
           cleanPathname: options.cleanPathname,
-          completeness: "complete",
+          completeness: options.renderObservationCompleteness ?? "complete",
           output: rscOutputScope,
           params: options.navigationParams,
           state: input.state,
@@ -1043,7 +1044,7 @@ export async function renderAppPageLifecycle(
           cacheability: "public",
           cacheTags: input.cacheTags,
           cleanPathname: options.cleanPathname,
-          completeness: "complete",
+          completeness: options.renderObservationCompleteness ?? "complete",
           output: htmlOutputScope,
           params: options.navigationParams,
           state: input.state,
@@ -1055,7 +1056,7 @@ export async function renderAppPageLifecycle(
           cacheability: "public",
           cacheTags: input.cacheTags,
           cleanPathname: options.cleanPathname,
-          completeness: "complete",
+          completeness: options.renderObservationCompleteness ?? "complete",
           output: rscOutputScope,
           params: options.navigationParams,
           state: input.state,

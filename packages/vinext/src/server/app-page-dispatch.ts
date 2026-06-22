@@ -662,6 +662,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         // Hydrate the (possibly different) source route before reading its
         // page module for fetch-cache-mode resolution.
         await options.ensureRouteLoaded?.(revalidationTarget.route);
+        const revalidationDynamicConfig =
+          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+          (revalidationTarget.route === route ? dynamicConfig : undefined);
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
@@ -670,9 +673,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig:
-              options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? dynamicConfig : undefined),
+            dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
@@ -705,6 +706,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
+              observationCompleteness: "partial",
               onError: revalidatedOnError,
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               renderToReadableStream: options.renderToReadableStream,
@@ -1000,6 +1002,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probePage();
     },
     probePageBeforeRender: options.isRscRequest || shouldProbeQuerylessHtmlForCacheProof,
+    renderObservationCompleteness:
+      hasActiveLoadingBoundary && !hasRequestSearchParams && !isForceStatic
+        ? "partial"
+        : "complete",
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

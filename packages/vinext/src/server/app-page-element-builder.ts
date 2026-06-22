@@ -20,11 +20,7 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import {
-  APP_RSC_RENDER_MODE_NAVIGATION,
-  shouldSuppressLoadingBoundaries,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
@@ -275,10 +271,7 @@ export async function buildPageElements<
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   let pageSearchParamsThenable: unknown;
   if (searchParams) {
-    const shouldObservePageSearchParamsAccess =
-      observePageSearchParamsAccess ||
-      (!shouldSuppressLoadingBoundaries(renderMode) && Boolean(route.loading?.default));
-    pageSearchParamsThenable = shouldObservePageSearchParamsAccess
+    pageSearchParamsThenable = observePageSearchParamsAccess
       ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
       : makeThenableParams(pageSearchParams);
     pageProps.searchParams = pageSearchParamsThenable;

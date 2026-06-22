@@ -1119,6 +1119,7 @@ describe("app page dispatch", () => {
       _opts,
       searchParams,
       layoutParamAccess?: AppLayoutParamAccessTracker,
+      buildOptions?: Parameters<DispatchOptions["buildPageElement"]>[5],
     ) => {
       const buildRoute: AppPageBuildRoute = {
         layouts: [],
@@ -1137,6 +1138,8 @@ describe("app page dispatch", () => {
           opts: undefined,
           request: new Request(`https://example.test/loading-search?${searchParams}`),
           searchParams,
+          observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
         },
         route: buildRoute,
         routePath: "/loading-search",
@@ -1194,6 +1197,96 @@ describe("app page dispatch", () => {
     if (secondCachedValue) {
       expectCachedAppPageSearchParamsObservation(secondCachedValue, "<html>second</html>");
     }
+  });
+
+  it("caches queryless loading-boundary HTML with a conservative searchParams proof", async () => {
+    const route = createRoute({
+      loading: { default: () => null },
+      pattern: "/loading-static",
+      routeSegments: ["loading-static"],
+    });
+    const cache = new Map<string, ISRCacheEntry>();
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: false,
+          mountedSlotsHeader: null,
+          opts: undefined,
+          request: new Request(`https://example.test/loading-static?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          loading: { default: () => null },
+          page: { default: () => React.createElement("h1", null, "static") },
+          pattern: "/loading-static",
+          routeSegments: ["loading-static"],
+        },
+        routePath: "/loading-static",
+      }).then(toDispatchElementRecord);
+
+    async function request(searchParams: URLSearchParams): Promise<Response> {
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/loading-static",
+        isProduction: true,
+        isrGet: async (key) => cache.get(key) ?? null,
+        isrSet: async (key, value) => {
+          cache.set(key, {
+            isStale: false,
+            value: { lastModified: Date.now(), value },
+          });
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+          },
+        }),
+        probePage() {
+          throw new Error("loading.tsx should skip the eager page probe");
+        },
+        params: {},
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        searchParams,
+      });
+      const response = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(options),
+      );
+      await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      return response;
+    }
+
+    const queryless = await request(new URLSearchParams());
+    expect(queryless.headers.get("cache-control")).toContain("no-store");
+    const cached = cache.get("html:/loading-static")?.value.value;
+    expect(isCachedAppPageValue(cached)).toBe(true);
+    if (!isCachedAppPageValue(cached)) throw new Error("expected cached loading page");
+    expect(cached.renderObservation?.completeness).toBe("partial");
+    expect(
+      cached.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
+    ).toBe("unknown");
+
+    const queried = await request(new URLSearchParams({ q: "hello" }));
+    expect(queried.headers.get("x-vinext-cache")).not.toBe("HIT");
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
@@ -1818,6 +1911,113 @@ describe("app page dispatch", () => {
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
   });
+
+  it.each(["page", "metadata"] as const)(
+    "writes conservative searchParams proofs when stale regeneration reads them in %s",
+    async (reader) => {
+      async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+        if (reader !== "page") return React.createElement("main", null, "static body");
+        const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+        return React.createElement(
+          "main",
+          null,
+          isQueryRecord(query) ? (query.q ?? "empty") : "invalid",
+        );
+      }
+      const pageModule = {
+        default: Page,
+        ...(reader === "metadata"
+          ? {
+              async generateMetadata(props: {
+                searchParams: Promise<Record<string, string | string[]>>;
+              }) {
+                const query = await props.searchParams;
+                return { title: typeof query.q === "string" ? query.q : "empty" };
+              },
+            }
+          : {}),
+      };
+      const route = createRoute({ pattern: "/regen-proof", routeSegments: ["regen-proof"] });
+      let scheduledRender: unknown = null;
+      const written: CachedAppPageValue[] = [];
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+        (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
+          buildPageElements({
+            layoutParamAccess,
+            metadataRoutes: [],
+            params,
+            pageRequest: {
+              isRscRequest: false,
+              mountedSlotsHeader: null,
+              opts: undefined,
+              request: new Request("https://example.test/regen-proof"),
+              searchParams,
+              observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess,
+              observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
+            },
+            route: {
+              layouts: [],
+              page: pageModule,
+              pattern: "/regen-proof",
+              routeSegments: ["regen-proof"],
+            },
+            routePath: "/regen-proof",
+          }).then(toDispatchElementRecord),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/regen-proof",
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              "<html>stale</html>",
+              undefined,
+              undefined,
+              buildQueryInvariantRenderObservation(),
+            ),
+            true,
+          ),
+        ),
+        isrSet: vi.fn(async (_key, value) => {
+          written.push(value);
+        }),
+        loadSsrHandler: async () => ({
+          async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+          },
+        }),
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(typeof scheduledRender).toBe("function");
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale response to schedule regeneration");
+      }
+
+      await scheduledRender();
+
+      expect(
+        written.map(
+          (value) =>
+            value.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
+        ),
+      ).toEqual(["unknown", "unknown"]);
+    },
+  );
 
   it("preserves stale HTML when SSR shell rendering fails during regeneration", async () => {
     const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });

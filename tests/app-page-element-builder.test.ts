@@ -783,13 +783,13 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it("observes loading-boundary render-tree searchParams await as dynamic access", async () => {
+  it("keeps loading-boundary render-tree searchParams await inert without explicit observation", async () => {
     const { searchParams } = await buildSearchPageSearchParams({ loadingBoundary: true });
 
     await searchParams;
 
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
   it("keeps a cached primary page query-inert through the React render path", async () => {
