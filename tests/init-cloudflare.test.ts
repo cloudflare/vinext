@@ -104,6 +104,33 @@ export default {
     expect(output).toContain("cloudflare()");
   });
 
+  it("handles long comment-like plugin array suffixes without regex backtracking", () => {
+    const suffix = "*//*".repeat(10_000);
+    const output = updateViteConfigForCloudflare(
+      "vite.config.ts",
+      `import custom from "./custom.js";\nexport default { plugins: [custom(), /*${suffix}*/] };\n`,
+      { isAppRouter: false, nativeModulesToStub: [] },
+    );
+    expectValidConfig(output);
+    expect(output).toContain("vinext()");
+    expect(output).toContain("cloudflare()");
+  });
+
+  it.each(['custom("/*")', "custom(`//`)"])(
+    "ignores comment markers inside the final plugin expression: %s",
+    (expression) => {
+      const output = updateViteConfigForCloudflare(
+        "vite.config.ts",
+        `import custom from "./custom.js";\nexport default { plugins: [${expression},] };\n`,
+        { isAppRouter: false, nativeModulesToStub: [] },
+      );
+      expectValidConfig(output);
+      expect(output).not.toContain(`${expression},,`);
+      expect(output).toContain("vinext()");
+      expect(output).toContain("cloudflare()");
+    },
+  );
+
   it("allocates collision-free bindings for inserted imports", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",

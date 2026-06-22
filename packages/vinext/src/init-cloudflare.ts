@@ -1118,6 +1118,35 @@ function insertObjectProperty(
   output.appendLeft(offset, `${hasProperties && !hasTrailingComma ? "," : ""}\n${source}\n`);
 }
 
+function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
+  let index = 0;
+  let lastToken = "";
+  while (index < code.length) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (/\s/.test(char)) {
+      index++;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      index += 2;
+      while (index < code.length && code[index] !== "\n") index++;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      index += 2;
+      while (index < code.length && !(code[index] === "*" && code[index + 1] === "/")) {
+        index++;
+      }
+      index += 2;
+      continue;
+    }
+    lastToken = char;
+    index++;
+  }
+  return lastToken === ",";
+}
+
 function cloudflarePluginExpression(isAppRouter: boolean, binding: string): string {
   return isAppRouter
     ? `${binding}({\n  viteEnvironment: {\n    name: "rsc",\n    childEnvironments: ["ssr"],\n  },\n})`
@@ -1282,9 +1311,13 @@ function ensurePlugins(
   if (missingExpressions.length === 0) return;
 
   const closingOffset = array.end - 1;
-  const arrayContent = code.slice(array.start + 1, closingOffset);
   const hasExistingElements = array.elements.some(Boolean);
-  const hasTrailingComma = /,\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*$/.test(arrayContent);
+  const finalElement = array.elements.findLast((element) => element !== null);
+  const arraySuffix = code.slice(
+    (finalElement as AstNode | undefined)?.end ?? array.start + 1,
+    closingOffset,
+  );
+  const hasTrailingComma = endsWithCommaIgnoringWhitespaceAndComments(arraySuffix);
   const prefix = hasExistingElements && !hasTrailingComma ? "," : "";
   output.appendLeft(
     closingOffset,
