@@ -122,6 +122,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   // transport-level `interceptLayouts` on the route-matching/request types so an
   // intercept match flows through `toInterceptOptions` in both directions.
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
   matchedParams: AppPageParams;
   page: TPage;
   slotId?: string | null;
@@ -133,6 +134,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -506,6 +508,7 @@ function toInterceptOptions(
   return {
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
+    interceptLayoutSegments: intercept.interceptLayoutSegments,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,

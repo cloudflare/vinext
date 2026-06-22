@@ -40,6 +40,8 @@ type InterceptingRoute = {
   sourcePageSegments?: string[];
   /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
   layoutPaths: string[];
+  /** Normalized branch segments accumulated at each intercept layout. */
+  layoutSegments?: string[][];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -2468,6 +2470,10 @@ function collectInterceptingPages(
       results.push({
         convention,
         layoutPaths: [...layoutPaths],
+        layoutSegments: layoutPaths.map((layoutPath) => {
+          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+          return [interceptSegment, ...relativeDir.split(path.sep).filter(Boolean)];
+        }),
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

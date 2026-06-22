@@ -28,6 +28,7 @@ import {
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
+import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
@@ -65,6 +66,7 @@ export type AppPageBuildRoute<
 export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModule> = {
   interceptionContext?: string | null;
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
@@ -266,18 +268,34 @@ export async function buildPageElements<
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
-    pageModule: effectivePageModule ?? null,
-    parallelRoutes: resolveActiveParallelRouteHeadInputs({
-      interceptLayouts: opts?.interceptLayouts ?? null,
-      interceptPage: opts?.interceptPage ?? null,
-      interceptParams: opts?.interceptParams ?? null,
-      interceptSlotKey: opts?.interceptSlotKey ?? null,
-      layoutTreePositions: route.layoutTreePositions,
-      params,
-      routeSegments: route.routeSegments ?? [],
-      slotParams: slotParamOverrides,
-      slots: route.slots ?? null,
-    }),
+    pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
+    parallelRoutes: [
+      ...resolveActiveParallelRouteHeadInputs({
+        interceptLayouts: opts?.interceptLayouts ?? null,
+        interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
+        interceptPage: opts?.interceptPage ?? null,
+        interceptParams: opts?.interceptParams ?? null,
+        interceptSlotKey: opts?.interceptSlotKey ?? null,
+        layoutTreePositions: route.layoutTreePositions,
+        params,
+        routeSegments: route.routeSegments ?? [],
+        slotParams: slotParamOverrides,
+        slots: route.slots ?? null,
+      }),
+      ...(isSiblingIntercept
+        ? [
+            {
+              layoutModules: opts?.interceptLayouts ?? [],
+              layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
+                resolveAppPageSegmentParams(segments, segments.length, effectiveParams),
+              ),
+              pageModule: effectivePageModule ?? null,
+              params: effectiveParams,
+              routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
+            },
+          ]
+        : []),
+    ],
     params: effectiveParams,
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
@@ -344,18 +362,23 @@ export async function buildPageElements<
       ? createPageElement(EffectivePageComponent, pageProps)
       : null;
   if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
-    const siblingThenableParams = makeThenableParams(effectiveParams);
     for (let i = opts.interceptLayouts.length - 1; i >= 0; i--) {
       const layoutMod = opts.interceptLayouts[i] as AppPageModule | null | undefined;
       const LayoutComponent = layoutMod?.default;
       if (LayoutComponent) {
+        const interceptLayoutSegments = opts.interceptLayoutSegments?.[i] ?? [];
+        const interceptLayoutParams = resolveAppPageSegmentParams(
+          interceptLayoutSegments,
+          interceptLayoutSegments.length,
+          effectiveParams,
+        );
         // Layout component types vary; cast to any to avoid overload-resolution
         // issues in createElement while preserving runtime safety.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const LC = LayoutComponent as (props: any) => any;
         siblingInterceptElement = createElement(
           LC,
-          { params: siblingThenableParams },
+          { params: makeThenableParams(interceptLayoutParams) },
           siblingInterceptElement,
         );
       }
@@ -428,6 +451,7 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   ) {
     overrides[opts.interceptSlotKey] = {
       layoutModules: opts.interceptLayouts || null,
+      layoutSegments: opts.interceptLayoutSegments ?? null,
       pageModule: opts.interceptPage,
       params: opts.interceptParams || routeParams,
     };

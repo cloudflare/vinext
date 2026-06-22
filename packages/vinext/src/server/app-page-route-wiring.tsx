@@ -164,6 +164,7 @@ export type AppPageRouteWiringRoute<
 };
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
+  layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   /**
    * The page module to render for this slot. Optional — when omitted, the
@@ -828,8 +829,13 @@ export function buildAppPageElements<
         continue;
       }
       const InterceptLayoutComponent = interceptLayoutComponent;
+      const interceptLayoutParams = resolveSlotLayoutParams(
+        slotOverride?.layoutSegments?.[layoutIndex] ?? slotRouteSegments,
+        slotOverride?.layoutSegments?.[layoutIndex]?.length ?? slotRouteSegments.length,
+        slotParams,
+      );
       slotElement = (
-        <InterceptLayoutComponent params={slotThenableParams}>
+        <InterceptLayoutComponent params={options.makeThenableParams(interceptLayoutParams)}>
           {slotElement}
         </InterceptLayoutComponent>
       );

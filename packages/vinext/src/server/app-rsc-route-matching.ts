@@ -38,6 +38,7 @@ type AppRscInterceptForMatching = {
   sourceMatchPattern?: string;
   sourcePageSegments?: readonly string[];
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -55,6 +56,7 @@ type AppRscSiblingInterceptForMatching = {
   sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
@@ -91,6 +93,7 @@ type AppRscInterceptLookupEntry = {
   sourceMatchPatternParts: string[] | null;
   sourcePageSegments: readonly string[] | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -242,6 +245,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             sourceMatchPatternParts,
             sourcePageSegments: intercept.sourcePageSegments ?? null,
             interceptLayouts: intercept.interceptLayouts,
+            interceptLayoutSegments: intercept.interceptLayoutSegments,
             __loadInterceptLayouts: intercept.__loadInterceptLayouts,
             page: intercept.page,
             __pageLoader: intercept.__pageLoader,
@@ -271,6 +275,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceMatchPatternParts,
           sourcePageSegments: intercept.sourcePageSegments ?? null,
           interceptLayouts: intercept.interceptLayouts,
+          interceptLayoutSegments: intercept.interceptLayoutSegments,
           __loadInterceptLayouts: intercept.__loadInterceptLayouts,
           page: intercept.page,
           __pageLoader: intercept.__pageLoader,
