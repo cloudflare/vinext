@@ -281,6 +281,25 @@ class StaticLoader {
     ).toBeNull();
   });
 
+  it("contains var bindings within class static blocks", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `class StaticLoader {
+  static {
+    if (condition) {
+      var require = load;
+    }
+    require(request);
+  }
+}
+require(request);
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed).toContain("require(request);");
+  });
+
   it("rewrites fully dynamic requests in dependency modules", () => {
     const transformed = _transformVeryDynamicRequests(
       `export function load(request) { require(request); return import(request); }`,

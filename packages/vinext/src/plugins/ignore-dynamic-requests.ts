@@ -375,7 +375,7 @@ function collectSwitchBindings(node: AstRecord, scope: Scope): void {
 }
 
 function collectVarBindings(node: AstRecord, scope: Scope, root = true): void {
-  if (!root && isFunction(node)) return;
+  if (!root && (isFunction(node) || node.type === "StaticBlock")) return;
   if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
     for (const declarator of nodeArray(node.declarations)) {
       collectBindingNames(astNode(declarator)?.id, scope.bindings);
@@ -439,6 +439,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
     } else if ((node.type === "BlockStatement" && node !== root) || node.type === "StaticBlock") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
+      if (node.type === "StaticBlock") collectVarBindings(node, scope);
     } else if (node.type === "CatchClause") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);
