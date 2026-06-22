@@ -876,6 +876,7 @@ describe("app page dispatch", () => {
         return createStream([`<html>${renderedText}</html>`]);
       },
     });
+    const probePage = vi.fn(() => null);
 
     async function request(searchParams: URLSearchParams): Promise<Response> {
       const { options } = createDispatchOptions({
@@ -885,6 +886,7 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
+        probePage,
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -901,6 +903,7 @@ describe("app page dispatch", () => {
     const queryless = await request(new URLSearchParams());
     expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(cache.has("html:/metadata-proof")).toBe(false);
+    expect(probePage).not.toHaveBeenCalled();
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");

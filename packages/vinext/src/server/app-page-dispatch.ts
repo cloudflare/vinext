@@ -16,6 +16,7 @@ import {
   getDraftModeCookieHeader,
   isDraftModeRequest,
   markDynamicUsage,
+  peekDynamicUsage,
   peekRenderRequestApiUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -931,6 +932,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,
+    peekDynamicUsage,
     consumeInvalidDynamicUsageError,
     consumeRenderObservationState: consumeAppPageRenderObservationState,
     createRscOnErrorHandler(pathname, routePath) {
