@@ -176,7 +176,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         if (matchedSourceParams === null && entry.sourceMatchPatternParts === null) {
           continue;
         }
-        const sourceParams = matchedSourceParams ?? createRouteParams();
+        const sourceParams =
+          matchedSourceParams && entry.sourceMatchPatternParts !== null
+            ? pickPatternParams(matchedSourceParams, entry.sourceMatchPatternParts)
+            : (matchedSourceParams ?? createRouteParams());
         return {
           ...entry,
           page: entry.__loadState.page,
@@ -309,4 +312,21 @@ function mergeMatchedParams(
   targetParams: AppRscRouteParams,
 ): AppRscRouteParams {
   return Object.assign(createRouteParams(), sourceParams, targetParams);
+}
+
+function pickPatternParams(
+  params: AppRscRouteParams,
+  patternParts: readonly string[],
+): AppRscRouteParams {
+  const picked = createRouteParams();
+  for (const patternPart of patternParts) {
+    if (!patternPart.startsWith(":")) continue;
+    const paramName =
+      patternPart.endsWith("+") || patternPart.endsWith("*")
+        ? patternPart.slice(1, -1)
+        : patternPart.slice(1);
+    const value = params[paramName];
+    if (value !== undefined) picked[paramName] = value;
+  }
+  return picked;
 }
