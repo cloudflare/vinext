@@ -786,7 +786,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const sourceDynamicConfig = interceptDynamicConfigResolved
         ? interceptDynamicConfig
         : options.resolveRouteDynamicConfig?.(interceptRoute);
-      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+      if (
+        !isDraftMode &&
+        (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error")
+      ) {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
           createStaticGenerationHeadersContext({

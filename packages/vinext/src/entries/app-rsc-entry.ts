@@ -1047,6 +1047,7 @@ export default createAppRscHandler({
       },
       createTemporaryReferenceSet,
       decodeReply,
+      draftModeSecret: __draftModeSecret,
       findIntercept(pathnameToMatch) {
         return findIntercept(pathnameToMatch, interceptionContext);
       },
