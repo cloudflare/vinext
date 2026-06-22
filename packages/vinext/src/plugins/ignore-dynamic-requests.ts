@@ -436,7 +436,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
         collectDirectBindings(body, scope);
         collectVarBindings(body, scope);
       }
-    } else if (node.type === "BlockStatement" && node !== root) {
+    } else if ((node.type === "BlockStatement" && node !== root) || node.type === "StaticBlock") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
     } else if (node.type === "CatchClause") {

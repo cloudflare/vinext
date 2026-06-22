@@ -258,7 +258,7 @@ for (let require; condition; ) require(request);
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
   });
 
-  it("preserves require calls shadowed by switch and named class bindings", () => {
+  it("preserves require calls shadowed by switch, class, and static block bindings", () => {
     expect(
       _transformVeryDynamicRequests(
         `switch (value) {
@@ -269,6 +269,12 @@ for (let require; condition; ) require(request);
 const Loader = class require {
   load() { require(request); }
 };
+class StaticLoader {
+  static {
+    const require = load;
+    require(request);
+  }
+}
 `,
         "/app/page.tsx",
       ),
