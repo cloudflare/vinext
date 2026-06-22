@@ -669,8 +669,14 @@ describe("assetPrefix end-to-end build", () => {
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
 
-      // Invalid `_next/static/*` paths return plain-text 404 (Next.js
-      // parity — see packages/next/src/server/lib/router-server.ts).
+      // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+      const rewrittenMissingAsset = await fetch(`${baseUrl}/_next/static/middleware-rewrite.js`);
+      expect(rewrittenMissingAsset.status).toBe(200);
+      expect(await rewrittenMissingAsset.text()).toBe("rewritten missing asset");
+
+      // Unhandled `_next/static/*` paths still return the canonical plain-text
+      // 404 after middleware and routing have had a chance to handle them.
       const invalidRes = await fetch(`${baseUrl}/_next/static/does-not-exist.js`);
       expect(invalidRes.status).toBe(404);
       expect(invalidRes.headers.get("content-type")).toBe("text/plain; charset=utf-8");

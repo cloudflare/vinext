@@ -558,6 +558,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isI
 import type { ImageConfig } from "vinext/server/image-optimization";
 import { cloneRequestWithHeaders, cloneRequestWithUrl, filterInternalHeaders, isOpenRedirectShaped } from "vinext/server/request-pipeline";
 import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
+import { finalizeMissingStaticAssetResponse } from "vinext/server/worker-utils";
 import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
 import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
 
@@ -616,15 +617,11 @@ export default {
         return new Response("This page could not be found", { status: 404 });
       }
 
-      // Invalid \`_next/static/*\` paths short-circuit with a plain-text 404
-      // instead of falling through to renderPage (which would render the full
-      // HTML 404 page with bootstrap scripts + CSS). Valid assets are served
-      // by Cloudflare's ASSETS binding BEFORE the worker runs; only misses
-      // reach this code. Matches Next.js (#1337):
-      //   packages/next/src/server/lib/router-server.ts
-      if (isNextStaticPath(pathname, basePath, assetPathPrefix)) {
-        return notFoundStaticAssetResponse();
-      }
+      // Valid assets are served by Cloudflare's ASSETS binding before the
+      // worker runs. Missing asset-shaped requests still need to reach
+      // middleware so it can rewrite or respond; a final 404 is converted
+      // back to Next.js's canonical plain-text static-file response below.
+      const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
@@ -716,10 +713,12 @@ export default {
 
       const result = await runPagesRequest(request, deps);
       if (result.type === "response") {
-        return result.response;
+        return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
       }
       // Should not reach here for prod/worker (all callbacks supplied).
-      return new Response("This page could not be found", { status: 404 });
+      return missingBuildAsset
+        ? notFoundStaticAssetResponse()
+        : new Response("This page could not be found", { status: 404 });
 
     } catch (error) {
       console.error("[vinext] Worker error:", error);
