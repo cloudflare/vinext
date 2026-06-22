@@ -568,6 +568,10 @@ export function hasFreeCjsGlobal(content: string): boolean {
 
 /**
  * Scan source files for `import ... from 'next/...'` statements.
+ *
+ * `root` must be forward-slash: it is passed to `findSourceFiles` (which
+ * requires it) and used as the base of `path.posix.relative`, which only yields
+ * a canonical relative path when both operands are forward-slash.
  */
 export function scanImports(root: string): CheckItem[] {
   const files = findSourceFiles(root);
@@ -596,7 +600,7 @@ export function scanImports(root: string): CheckItem[] {
         // Normalize: next/font/google -> next/font/google
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
-        const relFile = normalizePathSeparators(path.relative(root, file));
+        const relFile = path.posix.relative(root, file);
         const usedInFiles = importUsage.get(normalized) ?? [];
         if (!usedInFiles.includes(relFile)) {
           usedInFiles.push(relFile);
