@@ -39,6 +39,7 @@ import {
   buildPregeneratedConcretePathTable,
 } from "./server/prerender-manifest.js";
 import { escapeRegExp } from "./utils/regex.js";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -183,24 +184,31 @@ export function formatMissingCloudflarePluginError(options: {
   );
 }
 
+/**
+ * Detect the project structure (router, config, worker entry, package name).
+ *
+ * `root` must be forward-slash — it is joined with `path.posix.*`, passed to
+ * `findDir` / `hasAppDir`, and used as the base of `path.posix.basename`.
+ * Callers normalize it at the deploy entry.
+ */
 export function detectProject(root: string): ProjectInfo {
   const hasApp = hasAppDir(root);
-  const hasPages = findDir(root, "pages", path.join("src", "pages")) !== null;
+  const hasPages = findDir(root, "pages", "src/pages") !== null;
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
   const isPagesRouter = !hasApp && hasPages;
 
   const hasViteConfig =
-    fs.existsSync(path.join(root, "vite.config.ts")) ||
-    fs.existsSync(path.join(root, "vite.config.js")) ||
-    fs.existsSync(path.join(root, "vite.config.mjs"));
+    fs.existsSync(path.posix.join(root, "vite.config.ts")) ||
+    fs.existsSync(path.posix.join(root, "vite.config.js")) ||
+    fs.existsSync(path.posix.join(root, "vite.config.mjs"));
 
   const wranglerConfigExists = hasWranglerConfig(root);
 
   const hasWorkerEntry =
-    fs.existsSync(path.join(root, "worker", "index.ts")) ||
-    fs.existsSync(path.join(root, "worker", "index.js"));
+    fs.existsSync(path.posix.join(root, "worker", "index.ts")) ||
+    fs.existsSync(path.posix.join(root, "worker", "index.js"));
 
   // Check node_modules for installed packages.
   // Walk up ancestor directories so that monorepo-hoisted packages are found
@@ -210,7 +218,7 @@ export function detectProject(root: string): ProjectInfo {
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
   // Parse package.json once for all fields that need it
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   let pkg: Record<string, unknown> | null = null;
   if (fs.existsSync(pkgPath)) {
     try {
@@ -221,7 +229,7 @@ export function detectProject(root: string): ProjectInfo {
   }
 
   // Derive project name from package.json or directory name
-  let projectName = path.basename(root);
+  let projectName = path.posix.basename(root);
   if (pkg?.name && typeof pkg.name === "string") {
     // Sanitize: Workers names must be lowercase alphanumeric + hyphens
     projectName = pkg.name
@@ -1331,7 +1339,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   console.log("\n  vinext deploy\n");
 
   // Step 1: Detect project structure
-  const info = detectProject(root);
+  const info = detectProject(normalizePathSeparators(root));
 
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
@@ -1372,7 +1380,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     // Re-detect so all fields reflect the freshly installed packages.
     // Preserve any CLI name override applied above.
     const nameOverride = options.name ? info.projectName : undefined;
-    Object.assign(info, detectProject(root));
+    Object.assign(info, detectProject(normalizePathSeparators(root)));
     if (nameOverride) info.projectName = nameOverride;
   }
 
