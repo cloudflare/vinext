@@ -226,6 +226,15 @@ function resolvePagesLinkNavigationHref(href: string, locale: string | false | u
   );
 }
 
+function applyPagesNavigationFallback(href: string, replace: boolean): void {
+  if (replace) {
+    window.history.replaceState({}, "", href);
+  } else {
+    window.history.pushState({}, "", href);
+  }
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 /**
  * Collapse repeated forward-slashes (and convert backslashes to forward-slashes)
  * in the path portion of a URL, preserving any query string.
@@ -1055,7 +1064,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         ? pagesNavigateHref
         : undefined;
     const pagesHrefForLink = pagesAsForLink === undefined ? pagesNavigateHref : routeHrefRaw;
-    // Resolve relative hrefs (#hash, ?query) for onNavigate and the hard-navigation fallback.
+    // Resolve relative hrefs (#hash, ?query) for onNavigate and the navigation fallback.
     // Pages query-only links must use the rewrite-aware target resolved above,
     // so callbacks and router-error fallback agree with the actual navigation.
     const absoluteFullHref = toBrowserNavigationHref(
@@ -1151,14 +1160,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           locale,
           interpolateDynamicRoute: resolvedHref.startsWith("?"),
         },
-        fallback: () => {
-          if (replace) {
-            window.history.replaceState({}, "", absoluteFullHref);
-          } else {
-            window.history.pushState({}, "", absoluteFullHref);
-          }
-          window.dispatchEvent(new PopStateEvent("popstate"));
-        },
+        fallback: () => applyPagesNavigationFallback(absoluteFullHref, replace),
       });
     } else if (replace) {
       window.location.replace(absoluteFullHref);
