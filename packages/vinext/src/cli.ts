@@ -31,6 +31,7 @@ import {
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
+import { resolveInitPlatform } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -808,12 +809,14 @@ async function initCommand() {
   const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const platform = await resolveInitPlatform(rawArgs);
 
   await runInit({
     root: process.cwd(),
     port,
     skipCheck,
     force,
+    platform,
   });
 }
 
@@ -955,10 +958,13 @@ function printHelp(cmd?: string) {
     -p, --port <port>    Dev server port for the vinext script (default: 3001)
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
+    --platform <target>  Deployment target: cloudflare or node
     -h, --help           Show this help
 
   Examples:
-    vinext init                   Migrate with defaults
+    vinext init                   Prompt for a deployment platform
+    vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
     vinext init --skip-check      Skip the compatibility report

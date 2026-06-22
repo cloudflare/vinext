@@ -1854,6 +1854,52 @@ export default { plugins: [cloudflare()] };
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
+  it("returns true for a CommonJS vite.config.cjs", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.cjs",
+      `const { cloudflare } = require("@cloudflare/vite-plugin");
+module.exports = { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
+  });
+
+  it("returns false when cloudflare() only appears in a comment", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [] }; // cloudflare()
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+  });
+
+  it("returns false when an unrelated local cloudflare() function is called", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { cloudflare as cloudflarePlugin } from "@cloudflare/vite-plugin";
+const cloudflare = () => null;
+export default { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+  });
+
+  it("uses Vite config precedence when multiple configs exist", () => {
+    writeFile(tmpDir, "vite.config.ts", `// cloudflare()\n`);
+    writeFile(
+      tmpDir,
+      "vite.config.js",
+      `import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
+  });
+
   it("returns false when no vite config file exists", () => {
     // tmpDir has no vite config
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);

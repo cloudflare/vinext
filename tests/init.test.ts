@@ -298,6 +298,18 @@ describe("getInitDeps", () => {
     expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
   });
+
+  it("adds Cloudflare deployment dependencies for the Cloudflare platform", () => {
+    const deps = getInitDeps(true, "cloudflare");
+    expect(deps).toContain("@cloudflare/vite-plugin");
+    expect(deps).toContain("wrangler");
+  });
+
+  it("does not add Cloudflare dependencies for the Node platform", () => {
+    const deps = getInitDeps(true, "node");
+    expect(deps).not.toContain("@cloudflare/vite-plugin");
+    expect(deps).not.toContain("wrangler");
+  });
 });
 
 /** Helper: create a fake resolvable react package in node_modules */
@@ -417,6 +429,44 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("vinext()");
     expect(config).not.toContain("plugin-rsc");
+  });
+
+  it("generates Cloudflare deployment scaffolding by default", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.platform).toBe("cloudflare");
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc", "worker/index.ts"]);
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
+    expect(readFile(tmpDir, "worker/index.ts")).toContain("vinext/server/app-router-entry");
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      main: "./worker/index.ts",
+    });
+  });
+
+  it("keeps Node init free of Cloudflare scaffolding", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { result } = await runInit(tmpDir, { platform: "node" });
+
+    expect(result.platform).toBe("node");
+    expect(result.generatedPlatformFiles).toEqual([]);
+    expect(readFile(tmpDir, "vite.config.ts")).not.toContain("@cloudflare/vite-plugin");
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+  });
+
+  it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "worker/index.js", "export default {};");
+
+    await runInit(tmpDir);
+
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      main: "./worker/index.js",
+    });
+    expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
   });
 
   it("adds 'type': 'module' to package.json", async () => {
@@ -705,7 +755,7 @@ describe("init — guard rails", () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
 
-    const { result } = await runInit(tmpDir);
+    const { result } = await runInit(tmpDir, { platform: "node" });
 
     expect(result.generatedViteConfig).toBe(false);
     expect(result.skippedViteConfig).toBe(true);
@@ -718,7 +768,7 @@ describe("init — guard rails", () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
 
-    const { result } = await runInit(tmpDir);
+    const { result } = await runInit(tmpDir, { platform: "node" });
 
     // Dependencies should still be installed
     expect(result.installedDeps).toContain("vite");
@@ -733,6 +783,27 @@ describe("init — guard rails", () => {
     expect(result.skippedViteConfig).toBe(true);
   });
 
+  it("rejects a Cloudflare init when the existing Vite config lacks cloudflare()", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.ts", "export default {}");
+
+    await expect(runInit(tmpDir)).rejects.toThrow(
+      "Add the cloudflare() plugin, re-run with --force to replace the config, or choose --platform=node.",
+    );
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+  });
+
+  it("rejects an unused Cloudflare plugin import", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      'import { cloudflare } from "@cloudflare/vite-plugin";\nexport default {};',
+    );
+
+    await expect(runInit(tmpDir)).rejects.toThrow("existing Vite config");
+  });
+
   it("overwrites vite.config.ts with --force", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
@@ -743,6 +814,39 @@ describe("init — guard rails", () => {
     expect(result.skippedViteConfig).toBe(false);
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("vinext()");
+  });
+
+  for (const extension of ["js", "mjs"] as const) {
+    it(`overwrites vite.config.${extension} in place with --force`, async () => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(tmpDir, `vite.config.${extension}`, "export default {}");
+
+      await runInit(tmpDir, { force: true });
+
+      expect(readFile(tmpDir, `vite.config.${extension}`)).toContain("cloudflare(");
+      expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+    });
+  }
+
+  it("overwrites the active Vite config when multiple config files exist", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.ts", "export default { ignored: true }");
+    writeFile(tmpDir, "vite.config.js", "export default { active: true }");
+
+    await runInit(tmpDir, { force: true });
+
+    expect(readFile(tmpDir, "vite.config.js")).toContain("cloudflare(");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("ignored: true");
+  });
+
+  it("rejects --force for a CommonJS Vite config", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.cjs", "module.exports = {}");
+
+    await expect(runInit(tmpDir, { force: true })).rejects.toThrow(
+      "Rename or remove it, then re-run with --force.",
+    );
+    expect(readFile(tmpDir, "vite.config.cjs")).toBe("module.exports = {}");
   });
 
   it("exits when no package.json exists", async () => {

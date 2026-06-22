@@ -72,7 +72,10 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 `vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
-`vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
+`vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
+user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
+
+Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
 If your `next.config.*` sets `output: "standalone"`, `vinext build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
 
@@ -105,7 +108,9 @@ This will:
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`
-6. Generate a minimal `vite.config.ts`
+6. Prompt for a deployment platform (Cloudflare by default, or Node)
+7. Generate the matching `vite.config.ts`
+8. For Cloudflare, generate `wrangler.jsonc` and `worker/index.ts`
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
@@ -118,7 +123,8 @@ npm run start:vinext  # Start vinext production server
 npm run dev           # Still runs Next.js as before
 ```
 
-Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to skip the compatibility report.
+Use `--platform=cloudflare` or `--platform=node` to skip the platform prompt. Use `--force` to
+overwrite an existing ESM Vite config, or `--skip-check` to skip the compatibility report.
 
 ## Why
 
