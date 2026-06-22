@@ -1116,6 +1116,7 @@ export default createAppRscHandler({
           interceptionContext,
           interceptLayouts: intercept.interceptLayouts,
           interceptLayoutSegments: intercept.interceptLayoutSegments,
+          interceptBranchSegments: intercept.interceptBranchSegments,
           interceptSlotId: intercept.slotId,
           interceptSlotKey: intercept.slotKey,
           interceptSourceMatchedUrl: interceptionContext,

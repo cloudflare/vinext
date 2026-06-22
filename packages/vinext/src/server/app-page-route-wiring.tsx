@@ -164,6 +164,7 @@ export type AppPageRouteWiringRoute<
 };
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
+  branchSegments?: readonly string[] | null;
   layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   /**
@@ -830,7 +831,7 @@ export function buildAppPageElements<
       }
       const InterceptLayoutComponent = interceptLayoutComponent;
       const interceptLayoutParams = resolveSlotLayoutParams(
-        slotOverride?.layoutSegments?.[layoutIndex] ?? slotRouteSegments,
+        slotOverride?.branchSegments ?? slotRouteSegments,
         slotOverride?.layoutSegments?.[layoutIndex]?.length ?? slotRouteSegments.length,
         slotParams,
       );

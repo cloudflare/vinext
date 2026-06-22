@@ -42,6 +42,8 @@ type InterceptingRoute = {
   layoutPaths: string[];
   /** Normalized branch segments accumulated at each intercept layout. */
   layoutSegments?: string[][];
+  /** Full normalized interception branch segments through the page. */
+  branchSegments?: string[];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -2468,6 +2470,12 @@ function collectInterceptingPages(
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
       results.push({
+        branchSegments: [
+          interceptSegment,
+          ...normalizePathSeparators(path.relative(interceptRoot, path.dirname(page)))
+            .split("/")
+            .filter(Boolean),
+        ],
         convention,
         layoutPaths: [...layoutPaths],
         layoutSegments: layoutPaths.map((layoutPath) => {

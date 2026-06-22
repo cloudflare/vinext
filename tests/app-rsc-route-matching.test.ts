@@ -407,7 +407,9 @@ describe("App RSC route matching", () => {
               sourceMatchPattern: "/foo/bar",
               sourcePageSegments: ["foo", "bar", "(..)(..)hoge"],
               slotId: "slot:__vinext_sibling_intercept:/foo/bar",
-              interceptLayouts: [],
+              interceptLayouts: [{ default: () => null }],
+              interceptLayoutSegments: [["[photo]"]],
+              interceptBranchSegments: ["[photo]", "[comment]"],
               page: { default: () => null },
               params: [],
             },
@@ -422,6 +424,8 @@ describe("App RSC route matching", () => {
       expect(hit).not.toBeNull();
       expect(hit?.slotKey).toBe(SIBLING_PAGE_INTERCEPT_SLOT_KEY);
       expect(hit?.sourcePageSegments).toEqual(["foo", "bar", "(..)(..)hoge"]);
+      expect(hit?.interceptLayoutSegments).toEqual([["[photo]"]]);
+      expect(hit?.interceptBranchSegments).toEqual(["[photo]", "[comment]"]);
 
       // Hard-nav (no source): must return null
       expect(matcher.findIntercept("/hoge", null)).toBeNull();
@@ -477,6 +481,8 @@ type TestSiblingIntercept = {
   sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   page: unknown;
   params: string[];
 };
@@ -498,6 +504,8 @@ type TestIntercept = {
    */
   sourceMatchPattern?: string;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[];
   page: unknown;
   __pageLoader?: () => Promise<unknown>;

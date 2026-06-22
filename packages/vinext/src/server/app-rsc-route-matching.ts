@@ -39,6 +39,7 @@ type AppRscInterceptForMatching = {
   sourcePageSegments?: readonly string[];
   interceptLayouts: readonly unknown[];
   interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -57,6 +58,7 @@ type AppRscSiblingInterceptForMatching = {
   slotId: string | null;
   interceptLayouts: readonly unknown[];
   interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
@@ -94,6 +96,7 @@ type AppRscInterceptLookupEntry = {
   sourcePageSegments: readonly string[] | null;
   interceptLayouts: readonly unknown[];
   interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -246,6 +249,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             sourcePageSegments: intercept.sourcePageSegments ?? null,
             interceptLayouts: intercept.interceptLayouts,
             interceptLayoutSegments: intercept.interceptLayoutSegments,
+            interceptBranchSegments: intercept.interceptBranchSegments,
             __loadInterceptLayouts: intercept.__loadInterceptLayouts,
             page: intercept.page,
             __pageLoader: intercept.__pageLoader,
@@ -276,6 +280,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourcePageSegments: intercept.sourcePageSegments ?? null,
           interceptLayouts: intercept.interceptLayouts,
           interceptLayoutSegments: intercept.interceptLayoutSegments,
+          interceptBranchSegments: intercept.interceptBranchSegments,
           __loadInterceptLayouts: intercept.__loadInterceptLayouts,
           page: intercept.page,
           __pageLoader: intercept.__pageLoader,

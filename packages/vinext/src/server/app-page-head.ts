@@ -77,6 +77,7 @@ type ResolveActiveParallelRouteHeadInputsOptions<
   TModule extends AppPageHeadModule = AppPageHeadModule,
 > = {
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
@@ -148,11 +149,14 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
           ...(slot.layout ? [ownerParams] : []),
           ...interceptLayouts.filter(isPresent).map((_, index) => {
             const segments = options.interceptLayoutSegments?.[index] ?? [];
-            return resolveAppPageSegmentParams(
-              segments,
-              segments.length,
-              options.interceptParams ?? options.params,
-            );
+            return {
+              ...ownerParams,
+              ...resolveParallelLayoutParams(
+                options.interceptBranchSegments ?? segments,
+                segments.length,
+                options.interceptParams ?? options.params,
+              ),
+            };
           }),
         ],
         layoutTreePositions: [

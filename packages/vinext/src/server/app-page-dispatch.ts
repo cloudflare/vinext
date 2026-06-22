@@ -123,6 +123,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   // intercept match flows through `toInterceptOptions` in both directions.
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   matchedParams: AppPageParams;
   page: TPage;
   slotId?: string | null;
@@ -135,6 +136,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -509,6 +511,7 @@ function toInterceptOptions(
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
     interceptLayoutSegments: intercept.interceptLayoutSegments,
+    interceptBranchSegments: intercept.interceptBranchSegments,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,

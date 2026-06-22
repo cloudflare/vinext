@@ -451,20 +451,24 @@ describe("app page head resolution", () => {
     expect(
       resolveActiveParallelRouteHeadInputs({
         interceptLayouts: [interceptLayout],
+        interceptBranchSegments: ["[photo]", "[comment]"],
+        interceptLayoutSegments: [["[photo]"]],
         interceptPage,
+        interceptParams: { locale: "en", photo: "42", comment: "7" },
         interceptSlotKey: "modal",
-        params: {},
-        routeSegments: ["photos"],
-        slots: { modal: { layout: slotLayout } },
+        layoutTreePositions: [1],
+        params: { locale: "en" },
+        routeSegments: ["[locale]", "photos"],
+        slots: { modal: { layout: slotLayout, layoutIndex: 0 } },
       }),
     ).toEqual([
       {
         layoutModules: [slotLayout, interceptLayout],
-        layoutParams: [{}, {}],
-        layoutTreePositions: [0, 1],
+        layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+        layoutTreePositions: [0, 2],
         pageModule: interceptPage,
-        params: {},
-        routeSegments: ["photos"],
+        params: { locale: "en", photo: "42", comment: "7" },
+        routeSegments: ["[locale]", "photos"],
       },
     ]);
   });

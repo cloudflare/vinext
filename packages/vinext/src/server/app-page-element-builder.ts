@@ -30,6 +30,32 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
+function resolveInterceptLayoutParams(
+  branchSegments: readonly string[],
+  layoutSegments: readonly string[],
+  params: AppPageParams,
+): AppPageParams {
+  const localParamNames = new Set(
+    branchSegments
+      .map((segment) => {
+        if (segment.startsWith("[[...") && segment.endsWith("]]")) return segment.slice(5, -2);
+        if (segment.startsWith("[...") && segment.endsWith("]")) return segment.slice(4, -1);
+        if (segment.startsWith("[") && segment.endsWith("]")) return segment.slice(1, -1);
+        return null;
+      })
+      .filter((name): name is string => name !== null),
+  );
+  const scopedParams: AppPageParams = {};
+  for (const [name, value] of Object.entries(params)) {
+    if (!localParamNames.has(name)) scopedParams[name] = value;
+  }
+  Object.assign(
+    scopedParams,
+    resolveAppPageSegmentParams(layoutSegments, layoutSegments.length, params),
+  );
+  return scopedParams;
+}
+
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
 type AppPageComponent = NonNullable<AppPageModule["default"]>;
@@ -67,6 +93,7 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptionContext?: string | null;
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
@@ -271,6 +298,7 @@ export async function buildPageElements<
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
     parallelRoutes: [
       ...resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: opts?.interceptBranchSegments ?? null,
         interceptLayouts: opts?.interceptLayouts ?? null,
         interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
         interceptPage: opts?.interceptPage ?? null,
@@ -287,7 +315,11 @@ export async function buildPageElements<
             {
               layoutModules: opts?.interceptLayouts ?? [],
               layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
-                resolveAppPageSegmentParams(segments, segments.length, effectiveParams),
+                resolveInterceptLayoutParams(
+                  opts?.interceptBranchSegments ?? segments,
+                  segments,
+                  effectiveParams,
+                ),
               ),
               pageModule: effectivePageModule ?? null,
               params: effectiveParams,
@@ -367,9 +399,9 @@ export async function buildPageElements<
       const LayoutComponent = layoutMod?.default;
       if (LayoutComponent) {
         const interceptLayoutSegments = opts.interceptLayoutSegments?.[i] ?? [];
-        const interceptLayoutParams = resolveAppPageSegmentParams(
+        const interceptLayoutParams = resolveInterceptLayoutParams(
+          opts.interceptBranchSegments ?? interceptLayoutSegments,
           interceptLayoutSegments,
-          interceptLayoutSegments.length,
           effectiveParams,
         );
         // Layout component types vary; cast to any to avoid overload-resolution
@@ -450,6 +482,7 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
     opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY
   ) {
     overrides[opts.interceptSlotKey] = {
+      branchSegments: opts.interceptBranchSegments ?? null,
       layoutModules: opts.interceptLayouts || null,
       layoutSegments: opts.interceptLayoutSegments ?? null,
       pageModule: opts.interceptPage,

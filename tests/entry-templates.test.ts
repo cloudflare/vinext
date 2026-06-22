@@ -956,6 +956,7 @@ describe("App Router entry templates", () => {
     expect(code).toContain("slot.page ?? slot.default");
     expect(code).toContain("...(slot.configLayouts ?? [])");
     expect(code).toContain("interceptLayoutSegments:");
+    expect(code).toContain("interceptBranchSegments:");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
     expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
     expect(code).toContain(

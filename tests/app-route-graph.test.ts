@@ -1279,6 +1279,8 @@ describe("App Router route graph builder", () => {
         targetPattern: string;
         sourceMatchPattern: string;
         sourcePageSegments?: string[];
+        layoutSegments?: string[][];
+        branchSegments?: string[];
         convention: string;
         params: string[];
       }> = [];
@@ -1291,6 +1293,8 @@ describe("App Router route graph builder", () => {
               targetPattern: ir.targetPattern,
               sourceMatchPattern: ir.sourceMatchPattern,
               sourcePageSegments: ir.sourcePageSegments,
+              layoutSegments: ir.layoutSegments,
+              branchSegments: ir.branchSegments,
               convention: ir.convention,
               params: ir.params,
             });
@@ -1306,6 +1310,8 @@ describe("App Router route graph builder", () => {
         targetPattern: string;
         sourceMatchPattern: string;
         sourcePageSegments?: string[];
+        layoutSegments?: string[][];
+        branchSegments?: string[];
         convention: string;
         params: string[];
       }> = [];
@@ -1316,6 +1322,8 @@ describe("App Router route graph builder", () => {
             targetPattern: ir.targetPattern,
             sourceMatchPattern: ir.sourceMatchPattern,
             sourcePageSegments: ir.sourcePageSegments,
+            layoutSegments: ir.layoutSegments,
+            branchSegments: ir.branchSegments,
             convention: ir.convention,
             params: ir.params,
           });
@@ -1388,6 +1396,7 @@ describe("App Router route graph builder", () => {
         await writeAppFile(appDir, "[locale]/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "[locale]/photos/[id]/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "[locale]/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/@modal/(.)photos/[id]/layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "[locale]/@modal/(.)photos/[id]/page.tsx", EMPTY_PAGE);
 
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
@@ -1397,6 +1406,8 @@ describe("App Router route graph builder", () => {
           expect.objectContaining({
             targetPattern: "/:locale/photos/:id",
             params: ["locale", "id"],
+            layoutSegments: [["photos", "[id]"]],
+            branchSegments: ["photos", "[id]"],
             convention: ".",
           }),
         );
