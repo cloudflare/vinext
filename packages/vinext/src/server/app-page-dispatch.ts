@@ -846,7 +846,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           layoutParamAccess,
           {
             observeMetadataSearchParamsAccess: !isForceStatic,
-            observePageSearchParamsAccess: !options.isRscRequest && !isForceStatic,
+            observePageSearchParamsAccess: !options.isRscRequest && hasRequestSearchParams,
           },
         );
       },
@@ -987,7 +987,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     probePage() {
       return options.probePage();
     },
-    probePageBeforeRender: options.isRscRequest,
+    probePageBeforeRender:
+      options.isRscRequest || (options.isProduction && !isForceStatic && !hasRequestSearchParams),
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

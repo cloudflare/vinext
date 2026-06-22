@@ -12,6 +12,7 @@ import {
   buildPageElements,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
+import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
@@ -743,6 +744,13 @@ describe("app page dispatch", () => {
         return createStream([`<html>${renderedText}</html>`]);
       },
     });
+    const probePage = vi.fn((searchParams: URLSearchParams) =>
+      probeAppPage({
+        asyncRouteParams: makeThenableParams({}),
+        pageComponent: Page,
+        searchParams,
+      }),
+    );
 
     async function request(searchParams: URLSearchParams): Promise<{
       response: Response;
@@ -755,9 +763,7 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage() {
-          throw new Error("HTML should skip the eager page probe");
-        },
+        probePage: () => probePage(searchParams),
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -775,10 +781,12 @@ describe("app page dispatch", () => {
     expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(queryless.text).toBe("<html>empty</html>");
     expect(cache.has("html:/query-proof")).toBe(false);
+    expect(probePage).toHaveBeenCalledTimes(1);
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(withQuery.text).toBe("<html>hello</html>");
+    expect(probePage).toHaveBeenCalledTimes(1);
   });
 
   it("does not reuse queryless HTML when generateMetadata reads searchParams", async () => {
