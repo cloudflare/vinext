@@ -1346,14 +1346,14 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 function registerServerActionCallback(): void {
   setServerCallback((id, args) => {
     const releaseCacheInvalidationGuard = historyController.beginCacheInvalidationGuard();
+    const actionInitiation = createActionInitiationSnapshot();
     return loadServerActionClient!()
       .then(({ invokeClientServerAction }) =>
-        invokeClientServerAction(id, args, {
+        invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
           clearClientNavigationCaches,
           clientRscCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
           commitSameUrlNavigatePayload,
-          createActionInitiationSnapshot,
           navigationPlanner,
           performHardNavigation: (url, historyMode) =>
             browserNavigationController.performHardNavigation(url, historyMode),

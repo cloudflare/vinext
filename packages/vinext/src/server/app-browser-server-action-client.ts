@@ -53,7 +53,6 @@ export type ClientServerActionDeps = {
     returnValue: ServerActionResult["returnValue"] | undefined,
     revalidation: ServerActionRevalidationKind,
   ): Promise<unknown>;
-  createActionInitiationSnapshot(): ClientServerActionInitiation;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
   renderRedirectPayload(
@@ -123,11 +122,11 @@ class ServerActionRedirectError extends Error {
 export async function invokeClientServerAction(
   id: string,
   args: unknown[],
+  actionInitiation: ClientServerActionInitiation,
   deps: ClientServerActionDeps,
 ): Promise<unknown> {
   deps.syncServerActionHttpFallbackHead(null);
   const temporaryReferences = createTemporaryReferenceSet();
-  const actionInitiation = deps.createActionInitiationSnapshot();
   deps.syncCurrentHistoryState(
     actionInitiation.routerState.previousNextUrl,
     actionInitiation.routerState.bfcacheIds,
