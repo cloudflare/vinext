@@ -9,6 +9,7 @@ import {
   type Viewport,
 } from "vinext/shims/metadata";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
@@ -97,6 +98,7 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
   routePath: string;
   routeSegments?: readonly string[] | null;
   searchParams?: URLSearchParams | null;
+  searchParamsObserver?: ThenableParamsObserver;
 };
 
 type ResolveAppPageHeadResult = {
@@ -276,6 +278,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   fallbackRouteSegments: readonly string[],
   pageSearchParams: AppPageSearchParams,
   parent: Promise<Metadata>,
+  searchParamsObserver?: ThenableParamsObserver,
 ): Promise<ResolvedParallelRouteHead> {
   const params = parallelRoute.params ?? fallbackParams;
   const routeSegments = parallelRoute.routeSegments ?? fallbackRouteSegments;
@@ -325,6 +328,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
       params,
       pageSearchParams,
       accumulatedMetadata,
+      searchParamsObserver,
     );
     metadataResults.push(pageMetadata);
     // Keep the page source scoped to the same active slot branch as its layouts.
@@ -371,7 +375,13 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   );
   void pageParentPromise.catch(() => null);
   const pageMetadataPromise = options.pageModule
-    ? resolveModuleMetadata(options.pageModule, options.params, pageSearchParams, pageParentPromise)
+    ? resolveModuleMetadata(
+        options.pageModule,
+        options.params,
+        pageSearchParams,
+        pageParentPromise,
+        options.searchParamsObserver,
+      )
     : Promise.resolve(null);
   const pageViewportPromise = options.pageModule
     ? resolveModuleViewport(options.pageModule, options.params)
@@ -384,6 +394,7 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
         routeSegments,
         pageSearchParams,
         pageParentPromise,
+        options.searchParamsObserver,
       ),
     ),
   );

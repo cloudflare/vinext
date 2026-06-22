@@ -3,7 +3,11 @@ import {
   markRenderRequestApiUsage,
   throwIfInsideCacheScope,
 } from "vinext/shims/headers";
-import { makeThenableParams, type ThenableParams } from "vinext/shims/thenable-params";
+import {
+  makeThenableParams,
+  type ThenableParams,
+  type ThenableParamsObserver,
+} from "vinext/shims/thenable-params";
 import type { AppPageSearchParams } from "./app-page-head.js";
 
 type AppPageSearchParamsObservationOptions = {
@@ -16,15 +20,19 @@ function markAppPageSearchParamsAccess(): void {
   markRenderRequestApiUsage("searchParams");
 }
 
-export function makeObservedAppPageSearchParamsThenable(
-  pageSearchParams: AppPageSearchParams,
-  options: AppPageSearchParamsObservationOptions = {},
-): ThenableParams<AppPageSearchParams> {
-  const observer = {
+export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
+  return {
     observeParamAccess() {
       markAppPageSearchParamsAccess();
     },
   };
+}
+
+export function makeObservedAppPageSearchParamsThenable(
+  pageSearchParams: AppPageSearchParams,
+  options: AppPageSearchParamsObservationOptions = {},
+): ThenableParams<AppPageSearchParams> {
+  const observer = createAppPageSearchParamsObserver();
   if (options.observeReactPromiseStatus === true) {
     return makeThenableParams(pageSearchParams, {
       ...observer,

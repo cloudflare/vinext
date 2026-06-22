@@ -27,7 +27,10 @@ import {
 } from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
-import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
+import {
+  createAppPageSearchParamsObserver,
+  makeObservedAppPageSearchParamsThenable,
+} from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
@@ -261,6 +264,9 @@ export async function buildPageElements<
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
+    searchParamsObserver: observePageSearchParamsAccess
+      ? createAppPageSearchParamsObserver()
+      : undefined,
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };

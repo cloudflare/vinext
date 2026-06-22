@@ -682,6 +682,191 @@ describe("app page dispatch", () => {
     expect(expireSeconds).toBeUndefined();
   });
 
+  it("does not reuse queryless HTML when the page reads searchParams", async () => {
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+      if (!isQueryRecord(query)) {
+        throw new Error("Expected searchParams to resolve to a query record");
+      }
+      return React.createElement("h1", null, query.q ?? "empty");
+    }
+
+    const route = createRoute({ pattern: "/query-proof", routeSegments: ["query-proof"] });
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn(async (key: string) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, {
+        isStale: false,
+        value: { lastModified: Date.now(), value: data },
+      });
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: false,
+          mountedSlotsHeader: null,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/query-proof?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: { default: Page },
+          pattern: "/query-proof",
+          routeSegments: ["query-proof"],
+        },
+        routePath: "/query-proof",
+      }).then(toDispatchElementRecord);
+    const loadSsrHandler: DispatchOptions["loadSsrHandler"] = async () => ({
+      async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+        void captureOptions?.sideStream?.cancel().catch(() => {});
+        const renderedText = await new Response(rscStream).text();
+        return createStream([`<html>${renderedText}</html>`]);
+      },
+    });
+
+    async function request(searchParams: URLSearchParams): Promise<{
+      response: Response;
+      text: string;
+    }> {
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/query-proof",
+        isProduction: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler,
+        probePage() {
+          throw new Error("HTML should skip the eager page probe");
+        },
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        searchParams,
+      });
+      const response = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(options),
+      );
+      const text = await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      return { response, text };
+    }
+
+    const queryless = await request(new URLSearchParams());
+    expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(queryless.text).toBe("<html>empty</html>");
+    expect(cache.has("html:/query-proof")).toBe(false);
+
+    const withQuery = await request(new URLSearchParams({ q: "hello" }));
+    expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(withQuery.text).toBe("<html>hello</html>");
+  });
+
+  it("does not reuse queryless HTML when generateMetadata reads searchParams", async () => {
+    const pageModule = {
+      default: () => React.createElement("h1", null, "static body"),
+      async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
+        const query = await props.searchParams;
+        return { title: typeof query.q === "string" ? query.q : "empty" };
+      },
+    };
+    const route = createRoute({ pattern: "/metadata-proof", routeSegments: ["metadata-proof"] });
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn(async (key: string) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, {
+        isStale: false,
+        value: { lastModified: Date.now(), value: data },
+      });
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: false,
+          mountedSlotsHeader: null,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/metadata-proof?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: pageModule,
+          pattern: "/metadata-proof",
+          routeSegments: ["metadata-proof"],
+        },
+        routePath: "/metadata-proof",
+      }).then(toDispatchElementRecord);
+    const loadSsrHandler: DispatchOptions["loadSsrHandler"] = async () => ({
+      async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+        void captureOptions?.sideStream?.cancel().catch(() => {});
+        const renderedText = await new Response(rscStream).text();
+        return createStream([`<html>${renderedText}</html>`]);
+      },
+    });
+
+    async function request(searchParams: URLSearchParams): Promise<Response> {
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/metadata-proof",
+        isProduction: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler,
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        searchParams,
+      });
+      const response = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(options),
+      );
+      await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      return response;
+    }
+
+    const queryless = await request(new URLSearchParams());
+    expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(cache.has("html:/metadata-proof")).toBe(false);
+
+    const withQuery = await request(new URLSearchParams({ q: "hello" }));
+    expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
+  });
+
   it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(
