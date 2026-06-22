@@ -1372,6 +1372,47 @@ describe("resolveNextConfig serverExternalPackages", () => {
   });
 });
 
+describe("resolveNextConfig transpilePackages", () => {
+  it("defaults to an empty array", async () => {
+    expect((await resolveNextConfig(null)).transpilePackages).toEqual([]);
+  });
+
+  it("preserves string package names", async () => {
+    expect(
+      (await resolveNextConfig({ transpilePackages: ["esm-package", 42] as string[] }))
+        .transpilePackages,
+    ).toEqual(["esm-package"]);
+  });
+
+  it("rejects packages that are also server-external", async () => {
+    await expect(
+      resolveNextConfig({
+        transpilePackages: ["esm-package"],
+        serverExternalPackages: ["esm-package"],
+      }),
+    ).rejects.toThrow(
+      "The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': esm-package",
+    );
+  });
+});
+
+describe("resolveNextConfig Pages dependency bundling", () => {
+  it("defaults to ESM externalization without dependency bundling", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.esmExternals).toBe(true);
+    expect(resolved.bundlePagesRouterDependencies).toBe(false);
+  });
+
+  it("preserves explicit Pages dependency bundling flags", async () => {
+    const resolved = await resolveNextConfig({
+      bundlePagesRouterDependencies: true,
+      experimental: { esmExternals: false },
+    });
+    expect(resolved.esmExternals).toBe(false);
+    expect(resolved.bundlePagesRouterDependencies).toBe(true);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -1862,6 +1903,9 @@ describe("detectNextIntlConfig", () => {
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
+      esmExternals: true,
+      bundlePagesRouterDependencies: false,
+      transpilePackages: [],
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,

@@ -256,6 +256,8 @@ export type NextConfig = {
   enablePrerenderSourceMaps?: boolean;
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
+  /** Bundle Pages Router dependencies instead of externalizing them. */
+  bundlePagesRouterDependencies?: boolean;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Corresponds to Next.js `serverExternalPackages` (or the legacy
@@ -396,6 +398,12 @@ export type ResolvedNextConfig = {
   reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
+  /** Whether Pages Router dependencies may use native ESM externalization. */
+  esmExternals: boolean | "loose";
+  /** Bundle all Pages Router dependencies unless explicitly server-external. */
+  bundlePagesRouterDependencies: boolean;
+  /** Packages that must stay bundled and pass through Vite transforms. */
+  transpilePackages: string[];
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
@@ -1300,6 +1308,9 @@ export async function resolveNextConfig(
       expireTime: DEFAULT_EXPIRE_TIME,
       reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
+      esmExternals: true,
+      bundlePagesRouterDependencies: false,
+      transpilePackages: [],
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -1467,6 +1478,21 @@ export async function resolveNextConfig(
     experimental?.serverComponentsExternalPackages,
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
+  const rawEsmExternals = experimental?.esmExternals;
+  const esmExternals =
+    rawEsmExternals === false || rawEsmExternals === "loose" ? rawEsmExternals : true;
+  const bundlePagesRouterDependencies = config.bundlePagesRouterDependencies === true;
+  const transpilePackages = readStringArray(config.transpilePackages);
+  const externalPackageConflicts = transpilePackages.filter((packageName) =>
+    serverExternalPackages.includes(packageName),
+  );
+  if (externalPackageConflicts.length > 0) {
+    throw new Error(
+      `The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': ${externalPackageConflicts.join(
+        ", ",
+      )}`,
+    );
+  }
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1621,6 +1647,9 @@ export async function resolveNextConfig(
         ? config.reactMaxHeadersLength
         : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
+    esmExternals,
+    bundlePagesRouterDependencies,
+    transpilePackages,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,
