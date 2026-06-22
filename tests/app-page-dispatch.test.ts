@@ -577,6 +577,33 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
+  it.each([
+    ["force-dynamic", { dynamicConfig: "force-dynamic" as const }],
+    [
+      "draft mode",
+      {
+        request: new Request("https://example.test/posts/hello", {
+          headers: { Cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+    ],
+    ["progressive actions", { isProgressiveActionRender: true }],
+    ["revalidate zero", { revalidateSeconds: 0 }],
+  ])("does not probe queryless production HTML for %s", async (_name, overrides) => {
+    const probePage = vi.fn(() => null);
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      probePage,
+      revalidateSeconds: 60,
+      ...overrides,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(probePage).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
