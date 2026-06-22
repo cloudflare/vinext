@@ -219,7 +219,7 @@ function compareInterceptTargetPatterns(
     const precedence = interceptSegmentPrecedence(aSegment) - interceptSegmentPrecedence(bSegment);
     if (precedence !== 0) return precedence;
 
-    if (aSegment !== bSegment && !aSegment.startsWith(":") && !bSegment.startsWith(":")) {
+    if (aSegment !== bSegment) {
       return aSegment.localeCompare(bSegment);
     }
   }
@@ -311,6 +311,8 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
       }
     }
   }
+  // Array.prototype.sort is stable, so entries with identical target patterns
+  // retain declaration order across slots and sources.
   return interceptLookup.sort(compareInterceptTargetPatterns);
 }
 
