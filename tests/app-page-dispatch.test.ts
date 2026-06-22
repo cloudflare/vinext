@@ -36,6 +36,7 @@ import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
+import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-runtime.js";
 import {
   runWithExecutionContext,
   type ExecutionContextLike,
@@ -285,6 +286,7 @@ type CreateDispatchOptionsOverrides = {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   pprFallbackCacheShells?: DispatchOptions["pprFallbackCacheShells"];
+  pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
@@ -374,6 +376,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     pprFallbackCacheShells: overrides.pprFallbackCacheShells,
+    pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
@@ -437,6 +440,7 @@ function createPprBlogDispatchOptions(overrides: CreateDispatchOptionsOverrides 
     isProduction: true,
     params: { locale: "en", slug: "new-post" },
     pprFallbackCacheShells: pprBlogFallbackShells,
+    pprRuntime: appPagePprRuntime,
     revalidateSeconds: 60,
     route: createPprBlogRoute(),
     ...overrides,

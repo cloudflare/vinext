@@ -8,6 +8,7 @@ import {
 } from "vinext/shims/cache-request-state";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
+import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
@@ -21,12 +22,6 @@ import {
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import {
-  beginPprFallbackShellFinalRender,
-  createPprFallbackShellState,
-  getPprFallbackShellState,
-  runWithPprFallbackShellState,
-} from "vinext/shims/ppr-fallback-shell";
-import {
   ensureFetchPatch,
   type FetchCacheMode,
   getCollectedFetchTags,
@@ -38,6 +33,7 @@ import {
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
+import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
   resolveAppPageParentHttpAccessBoundary,
   resolveAppPageParentHttpAccessBoundaryModule,
@@ -92,8 +88,8 @@ import {
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
-type AppPageRenderableElement = ReactNode | AppOutgoingElements;
-type AppPageBoundaryOnError = (
+export type AppPageRenderableElement = ReactNode | AppOutgoingElements;
+export type AppPageBoundaryOnError = (
   error: unknown,
   requestInfo: unknown,
   errorContext: unknown,
@@ -166,7 +162,7 @@ type EffectiveLayoutClassifications = Readonly<{
   buildTimeReasons: ReadonlyMap<number, ClassificationReason> | null | undefined;
 }>;
 
-type AppPageDispatchRoute = {
+export type AppPageDispatchRoute = {
   __buildTimeClassifications?: LayoutClassificationOptions["buildTimeClassifications"];
   __buildTimeReasons?: LayoutClassificationOptions["buildTimeReasons"];
   error?: AppPageModule | null;
@@ -197,7 +193,23 @@ function resolveAppPageRouteBoundaryModule(
   return null;
 }
 
-type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
+export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
+  beginFinalRender(state: AppPagePprState): void;
+  getState(): AppPagePprState | null;
+  run<T>(shell: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackShell"]>, fn: () => T): T;
+  tryServe(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+    isDraftMode: boolean,
+    isForceStatic: boolean,
+    isForceDynamic: boolean,
+  ): Promise<Response | null>;
+  warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
+};
+
+export type AppPagePprState = PprFallbackShellState;
+
+export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
   /**
@@ -276,6 +288,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     fallbackParamNames: readonly string[];
     routePattern: string;
   };
+  pprRuntime?: AppPagePprRuntime<TRoute>;
   /**
    * Set of concrete URL paths that were pre-rendered at build time for this
    * route. When the exact cache entry for a known pregenerated path is absent
@@ -410,7 +423,7 @@ function getEffectiveLayoutClassifications(
   return createEffectiveLayoutClassifications(route, debugClassification !== undefined);
 }
 
-function shouldReadAppPageCache(options: {
+export function shouldReadAppPageCache(options: {
   isProgressiveActionRender: boolean;
   isDraftMode: boolean;
   isForceDynamic: boolean;
@@ -429,7 +442,7 @@ function shouldReadAppPageCache(options: {
   );
 }
 
-function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
+export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
   return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
 }
 
@@ -479,18 +492,6 @@ async function runAppPageRevalidationContext<
   });
 }
 
-type PprFallbackShellEligibility =
-  | { kind: "probe-fallback-shells"; fallbackShells: readonly AppPagePprFallbackCacheShell[] }
-  | {
-      kind:
-        | "skip-known-pregenerated-route"
-        | "skip-no-fallback-shells"
-        | "skip-rsc-request"
-        | "skip-non-get"
-        | "skip-search-params"
-        | "skip-cache-disabled";
-    };
-
 function toInterceptOptions(
   interceptionContext: string | null,
   intercept: AppPageDispatchIntercept,
@@ -507,138 +508,15 @@ function toInterceptOptions(
   };
 }
 
-/**
- * Request-phase fallback-shell gate. Callers must run the exact cache read and
- * static-param validation before this classification step.
- */
-function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  currentRevalidateSeconds: number | null,
-  isDraftMode: boolean,
-  isForceStatic: boolean,
-  isForceDynamic: boolean,
-): PprFallbackShellEligibility {
-  // Serving a reusable fallback shell is only safe for an unknown dynamic
-  // child path. If this concrete URL was pregenerated, a missing exact cache
-  // entry is a cache availability problem, not a routing signal. Fall through
-  // to fresh render instead.
-  const isKnownPregeneratedRoute =
-    options.renderedConcreteUrlPaths?.has(options.cleanPathname) === true;
-  if (isKnownPregeneratedRoute) {
-    return { kind: "skip-known-pregenerated-route" };
-  }
-
-  const fallbackShells = options.pprFallbackCacheShells;
-  if (!fallbackShells || fallbackShells.length === 0) {
-    return { kind: "skip-no-fallback-shells" };
-  }
-  if (options.isRscRequest) {
-    return { kind: "skip-rsc-request" };
-  }
-  if (options.request.method !== "GET") {
-    return { kind: "skip-non-get" };
-  }
-  if (!isForceStatic && hasSearchParams(options.searchParams)) {
-    return { kind: "skip-search-params" };
-  }
-  if (
-    !shouldReadAppPageCache({
-      isDraftMode,
-      isForceDynamic,
-      isProgressiveActionRender: options.isProgressiveActionRender === true,
-      isProduction: options.isProduction,
-      isRscRequest: false,
-      revalidateSeconds: currentRevalidateSeconds,
-      scriptNonce: options.scriptNonce,
-    })
-  ) {
-    return { kind: "skip-cache-disabled" };
-  }
-
-  return { kind: "probe-fallback-shells", fallbackShells };
-}
-
-async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  route: TRoute,
-  fallbackShells: readonly AppPagePprFallbackCacheShell[],
-  currentRevalidateSeconds: number | null,
-): Promise<Response | null> {
-  const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
-  const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
-  for (const fallbackShell of fallbackShells) {
-    const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
-      clearRequestContext: options.clearRequestContext,
-      expireSeconds: options.expireSeconds,
-      fallbackPathname: fallbackShell.pathname,
-      isEdgeRuntime: options.isEdgeRuntime,
-      isrDebug: options.isrDebug,
-      isrGet: options.isrGet,
-      isrHtmlKey: options.isrHtmlKey,
-      middlewareHeaders: options.middlewareContext.headers,
-      middlewareStatus: options.middlewareContext.status,
-      revalidateSeconds: currentRevalidateSeconds ?? 0,
-      rewriteHtml(html) {
-        return rewriteAppPprFallbackShellHtmlNavigation({
-          html,
-          params: options.params,
-          pathname: options.cleanPathname,
-          searchParams: options.searchParams,
-        });
-      },
-    });
-    if (fallbackShellResponse) {
-      return fallbackShellResponse;
-    }
-  }
-
-  return null;
-}
-
-async function tryServePprFallbackShell<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  route: TRoute,
-  currentRevalidateSeconds: number | null,
-  isDraftMode: boolean,
-  isForceStatic: boolean,
-  isForceDynamic: boolean,
-): Promise<Response | null> {
-  const decision = classifyPprFallbackShellEligibility(
-    options,
-    currentRevalidateSeconds,
-    isDraftMode,
-    isForceStatic,
-    isForceDynamic,
-  );
-
-  switch (decision.kind) {
-    case "skip-known-pregenerated-route":
-    case "skip-no-fallback-shells":
-    case "skip-rsc-request":
-    case "skip-non-get":
-    case "skip-search-params":
-    case "skip-cache-disabled":
-      return null;
-    case "probe-fallback-shells":
-      return await probePprFallbackShellCache(
-        options,
-        route,
-        decision.fallbackShells,
-        currentRevalidateSeconds,
-      );
-  }
-}
-
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
-  if (!options.pprFallbackShell) {
+  if (!options.pprFallbackShell || !options.pprRuntime) {
     return await dispatch();
   }
 
-  const fallbackShellState = createPprFallbackShellState(options.pprFallbackShell);
-  return await runWithPprFallbackShellState(fallbackShellState, dispatch);
+  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -851,14 +729,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = await tryServePprFallbackShell(
-    options,
-    route,
-    currentRevalidateSeconds,
-    isDraftMode,
-    isForceStatic,
-    isForceDynamic,
-  );
+  const fallbackShellResponse = options.pprRuntime
+    ? await options.pprRuntime.tryServe(
+        options,
+        currentRevalidateSeconds,
+        isDraftMode,
+        isForceStatic,
+        isForceDynamic,
+      )
+    : null;
   if (fallbackShellResponse) {
     return fallbackShellResponse;
   }
@@ -981,14 +860,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       resolveSpecialError: resolveAppPageSpecialError,
     });
 
-  const fallbackShellState = getPprFallbackShellState();
+  const fallbackShellState = options.pprRuntime?.getState() ?? null;
   if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
-    await warmPprFallbackShellCaches({
+    await options.pprRuntime!.warm({
       element: warmupBuildResult.element,
       onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
       renderToReadableStream: options.renderToReadableStream,
@@ -1017,7 +895,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     route,
     options.debugClassification,
   );
-  const activeFallbackShellState = getPprFallbackShellState();
+  const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
 
@@ -1080,7 +958,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     pprFallbackShellReactSignal,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {
-          beginPprFallbackShellFinalRender(activeFallbackShellState);
+          options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
     layoutParamAccess,
