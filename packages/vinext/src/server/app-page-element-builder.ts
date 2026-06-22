@@ -1,6 +1,10 @@
 import { createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
-import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
+import {
+  resolveActiveParallelRouteHeadInputs,
+  resolveAppPageHead,
+  type ApplyAppPageFileBasedMetadata,
+} from "./app-page-head.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   buildAppPageElements,
@@ -73,6 +77,7 @@ export type BuildPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   route: AppPageBuildRoute<TModule, TErrorModule>;
   params: AppPageParams;
   routePath: string;
@@ -234,6 +239,7 @@ export async function buildPageElements<
     pageSearchParams,
     viewport: resolvedViewport,
   } = await resolveAppPageHead({
+    applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,

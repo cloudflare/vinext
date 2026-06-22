@@ -13,6 +13,7 @@ import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
+import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -40,6 +41,7 @@ type AppFallbackRendererFontProviders = {
 };
 
 type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (
     request: Request,
@@ -141,6 +143,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   options: AppFallbackRendererOptions<TModule>,
 ): AppFallbackRenderer<TModule> {
   const {
+    applyFileBasedMetadata,
     basePath = "",
     clearRequestContext,
     createRscOnErrorHandler: buildRscOnErrorHandler,
@@ -220,6 +223,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         const globalNotFoundComponent = globalNotFoundModule?.default ?? null;
         if (globalNotFoundComponent) {
           return renderAppPageHttpAccessFallback({
+            applyFileBasedMetadata,
             boundaryComponent: globalNotFoundComponent,
             boundaryModule: globalNotFoundModule ?? null,
             buildFontLinkHeader: fontProviders.buildFontLinkHeader,
@@ -256,6 +260,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       }
 
       return renderAppPageHttpAccessFallback({
+        applyFileBasedMetadata,
         basePath,
         trailingSlash,
         boundaryComponent: opts?.boundaryComponent ?? null,
@@ -324,6 +329,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       callContext,
     ) {
       return renderAppPageErrorBoundary({
+        applyFileBasedMetadata,
         basePath,
         trailingSlash,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,

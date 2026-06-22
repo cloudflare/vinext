@@ -8,6 +8,7 @@ import {
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
