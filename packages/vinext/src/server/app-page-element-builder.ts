@@ -178,6 +178,7 @@ export async function buildPageElements<
     rootUnauthorizedModule,
     metadataRoutes,
   } = options;
+  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
   const {
     opts,
     searchParams,
@@ -273,6 +274,7 @@ export async function buildPageElements<
       interceptSlotKey: opts?.interceptSlotKey ?? null,
       params,
       routeSegments: route.routeSegments ?? [],
+      slotParams: slotParamOverrides,
       slots: route.slots ?? null,
     }),
     params: effectiveParams,

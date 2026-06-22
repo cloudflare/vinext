@@ -795,6 +795,8 @@ export function buildAppPageElements<
           const SlotComponent = slotComponent;
           return <SlotComponent {...slotProps} />;
         })();
+    const hasSlotTreeOverride =
+      slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
     const interceptLayouts = slotOverride?.layoutModules ?? [];
 
     for (let layoutIndex = interceptLayouts.length - 1; layoutIndex >= 0; layoutIndex--) {
@@ -810,7 +812,7 @@ export function buildAppPageElements<
       );
     }
 
-    if (!slotOverride) {
+    if (!hasSlotTreeOverride) {
       for (
         let layoutIndex = (slot.configLayouts?.length ?? 0) - 1;
         layoutIndex >= 0;

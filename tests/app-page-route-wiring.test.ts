@@ -504,6 +504,7 @@ describe("app page route wiring helpers", () => {
       },
       routePath: "/dynamic/books/hello-world",
       rootNotFoundModule: null,
+      slotOverrides: { sidebar: { params: { member: "alice" } } },
     });
 
     expect(paramCalls).toEqual([

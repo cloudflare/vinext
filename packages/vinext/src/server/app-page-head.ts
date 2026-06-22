@@ -77,6 +77,7 @@ type ResolveActiveParallelRouteHeadInputsOptions<
   interceptSlotKey?: string | null;
   params: AppPageParams;
   routeSegments: readonly string[];
+  slotParams?: Readonly<Record<string, AppPageParams>> | null;
   slots?: Record<string, AppPageHeadSlot<TModule>> | null;
 };
 
@@ -138,7 +139,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
     return {
       layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
       pageModule: slot.page,
-      params: options.params,
+      params: options.slotParams?.[slotKey] ?? options.params,
       routeSegments: options.routeSegments,
     };
   });

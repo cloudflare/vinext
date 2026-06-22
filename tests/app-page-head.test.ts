@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   collectAppPageSearchParams,
+  resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -420,6 +421,25 @@ describe("app page head resolution", () => {
       title: "nested slot layout",
       openGraph: { title: "slot page" },
     });
+  });
+
+  it("uses mirrored slot params for parallel route metadata", () => {
+    const slotPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        params: { primary: "value" },
+        routeSegments: ["dashboard"],
+        slotParams: { sidebar: { member: "alice" } },
+        slots: { sidebar: { page: slotPage } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [],
+        pageModule: slotPage,
+        params: { member: "alice" },
+        routeSegments: ["dashboard"],
+      },
+    ]);
   });
 
   // Regression: a `generateMetadata` that does not declare the `parent`
