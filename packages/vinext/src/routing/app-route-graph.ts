@@ -939,8 +939,8 @@ export async function buildAppRouteGraph(
     scanMatcher.extensions,
     excludeDir,
   )) {
-    const dir = path.dirname(file);
-    const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+    const dir = path.posix.dirname(file);
+    const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
     if (discoverParallelSlots(routeDir, appDir, scanMatcher).length === 0) continue;
 
