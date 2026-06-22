@@ -2056,6 +2056,65 @@ describe("app page dispatch", () => {
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
   });
 
+  it("passes empty searchParams to a force-static intercept source route", async () => {
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      layouts: [{ default: () => null, dynamic: "force-static" }],
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      async (_route, _params, _opts, searchParams) => searchParams.get("tab") ?? "empty",
+    );
+    const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === sourceRoute ? "force-static" : undefined,
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/photos/123",
+      interceptionContext: "/feed",
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteDynamicConfig,
+      route: currentRoute,
+      searchParams: new URLSearchParams("tab=popular"),
+      setNavigationContext,
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    await expect(response.text()).resolves.toBe("empty");
+    expect(buildPageElement.mock.calls[0]?.[3].toString()).toBe("");
+    expect(setNavigationContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ searchParams: expect.any(URLSearchParams) }),
+    );
+    const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
+    expect(navigationContext?.searchParams.toString()).toBe("");
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledTimes(1);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
   it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
     // Stale-while-revalidate regeneration must await React's `allReady` before
     // transforming/buffering the HTML stream — same guarantee as the prerender

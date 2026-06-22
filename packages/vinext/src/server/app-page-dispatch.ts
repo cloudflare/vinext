@@ -760,6 +760,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return fallbackShellResponse;
   }
 
+  let interceptDynamicConfig: string | null | undefined;
+  let interceptDynamicConfigResolved = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -781,10 +783,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(interceptRoute) === "force-dynamic",
+      const sourceDynamicConfig = interceptDynamicConfigResolved
+        ? interceptDynamicConfig
+        : options.resolveRouteDynamicConfig?.(interceptRoute);
+      const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
+      setHeadersContext(
+        createStaticGenerationHeadersContext({
+          draftModeSecret: options.draftModeSecret,
+          dynamicConfig: sourceDynamicConfig ?? undefined,
+          routeKind: "page",
+          routePattern: interceptRoute.pattern,
+        }),
       );
+      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
+      setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
@@ -829,6 +841,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         status: options.middlewareContext.status ?? 200,
         headers: interceptHeaders,
       });
+    },
+    resolveSearchParams(sourceRoute, searchParams) {
+      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
+      interceptDynamicConfigResolved = true;
+      return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
     },
     searchParams: options.searchParams,
     setNavigationContext: options.setNavigationContext,
