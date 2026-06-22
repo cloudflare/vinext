@@ -535,16 +535,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
-  const shouldProbeQuerylessHtmlForCacheProof =
-    options.isProduction &&
-    !options.isRscRequest &&
-    !hasRequestSearchParams &&
-    !isForceStatic &&
-    !isForceDynamic &&
-    !isDraftMode &&
-    options.isProgressiveActionRender !== true &&
-    !options.scriptNonce &&
-    (currentRevalidateSeconds === null || currentRevalidateSeconds > 0);
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
     options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
@@ -1005,7 +995,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     probePage() {
       return options.probePage();
     },
-    probePageBeforeRender: options.isRscRequest || shouldProbeQuerylessHtmlForCacheProof,
+    probePageBeforeRender: options.isRscRequest,
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;

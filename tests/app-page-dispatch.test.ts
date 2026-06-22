@@ -711,7 +711,9 @@ describe("app page dispatch", () => {
   });
 
   it("does not reuse queryless HTML when the page reads searchParams", async () => {
+    let pageExecutions = 0;
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      pageExecutions += 1;
       const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
       if (!isQueryRecord(query)) {
         throw new Error("Expected searchParams to resolve to a query record");
@@ -808,12 +810,14 @@ describe("app page dispatch", () => {
     expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(queryless.text).toBe("<html>empty</html>");
     expect(cache.has("html:/query-proof")).toBe(false);
-    expect(probePage).toHaveBeenCalledTimes(1);
+    expect(probePage).not.toHaveBeenCalled();
+    expect(pageExecutions).toBe(1);
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(withQuery.text).toBe("<html>hello</html>");
-    expect(probePage).toHaveBeenCalledTimes(1);
+    expect(probePage).not.toHaveBeenCalled();
+    expect(pageExecutions).toBe(2);
   });
 
   it("does not reuse queryless HTML when generateMetadata reads searchParams", async () => {
