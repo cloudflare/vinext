@@ -1396,6 +1396,12 @@ function fileToAppRoute(
   );
 }
 
+/**
+ * `dir` and `appDir` must both be forward-slash. `dir` is split on
+ * `path.posix.sep` and joined onto `appDir` with `path.posix.join`, and `appDir`
+ * is threaded to the layout/slot/boundary discovery below, which build paths the
+ * same way.
+ */
 function directoryToAppRoute(
   dir: string,
   appDir: string,
@@ -1403,7 +1409,7 @@ function directoryToAppRoute(
   pagePath: string | null,
   routePath: string | null,
 ): AppRouteGraphRoute | null {
-  const segments = dir === "." ? [] : dir.split(path.sep);
+  const segments = dir === "." ? [] : dir.split(path.posix.sep);
 
   const params: string[] = [];
   let isDynamic = false;
@@ -1434,8 +1440,8 @@ function directoryToAppRoute(
   const errorPaths = errorEntries.map((entry) => entry.path);
   const errorTreePositions = errorEntries.map((entry) => entry.treePosition);
 
-  // Discover loading, error in the route's directory
-  const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+  // Discover loading, error in the route's directory.
+  const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
   const loadingPath = findFile(routeDir, "loading", matcher);
   const errorPath = findFile(routeDir, "error", matcher);
 
