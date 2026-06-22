@@ -72,6 +72,8 @@ function dynamic() {
   const request = Math.random() + "";
   require/* comment-separated call */(request);
   import/* comment-separated call */(request);
+  require(/* webpackIgnore: false */ request);
+  import(/* turbopackIgnore: false */ request);
 }
 `,
   );
@@ -108,6 +110,8 @@ function dynamic() {
   const request = Math.random() + "";
   require/* comment-separated call */(request);
   import/* comment-separated call */(request);
+  require(/* turbopackIgnore: false */ request);
+  import(/* webpackIgnore: false */ request);
 }
 `,
   );
@@ -256,6 +260,44 @@ for (let require; condition; ) require(request);
     )?.code;
 
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("preserves explicit dynamic request ignore comments", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const request = getRequest();
+require(/* webpackIgnore: true */ request);
+import(/* turbopackIgnore: true */ request);
+require(/* webpackIgnore: false */ request);
+import(/* turbopackIgnore: false */ request);
+require(/* unrelated: true */ request);
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed).toContain("require(/* webpackIgnore: true */ request)");
+    expect(transformed).toContain("import(/* turbopackIgnore: true */ request)");
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+  });
+
+  it("honors the last explicit dynamic request ignore value at runtime", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const request = getRequest();
+const loaded = [];
+loaded.push(require(/* webpackIgnore: false */ /* turbopackIgnore: true */ request));
+try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); } catch (error) {
+  loaded.push(error.message);
+}
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed).toBeTruthy();
+    expect(
+      vm.runInNewContext(`${transformed}; loaded`, {
+        getRequest: () => "ignored-module",
+        require: (request: string) => request,
+      }),
+    ).toEqual(["ignored-module", "Cannot find module as expression is too dynamic"]);
   });
 
   it("preserves require calls shadowed by switch, class, and static block bindings", () => {

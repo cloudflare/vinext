@@ -67,6 +67,32 @@ function hasSignificantPathPart(value: string): boolean {
   return normalized !== "" && normalized !== "/";
 }
 
+function hasDynamicRequestIgnoreDirective(
+  code: string,
+  requestNode: AstRecord,
+  argumentNode: AstRecord,
+): boolean {
+  if (!hasRange(requestNode) || !hasRange(argumentNode)) return false;
+  const prefix = code.slice(requestNode.start, argumentNode.start);
+  const leadingArgumentTrivia = prefix.match(
+    /\((?<trivia>(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*)$/,
+  )?.groups?.trivia;
+  if (leadingArgumentTrivia === undefined) return false;
+
+  let ignore: boolean | undefined;
+  for (const comment of leadingArgumentTrivia.matchAll(/\/\*([\s\S]*?)\*\/|\/\/([^\r\n]*)/g)) {
+    const text = (comment[1] ?? comment[2] ?? "").trim();
+    const separator = text.indexOf(":");
+    if (separator === -1) continue;
+    const directive = text.slice(0, separator).trim();
+    if (directive !== "webpackIgnore" && directive !== "turbopackIgnore") continue;
+    const value = text.slice(separator + 1).trim();
+    if (value === "true") ignore = true;
+    else if (value === "false") ignore = false;
+  }
+  return ignore === true;
+}
+
 function templateHasStaticPart(
   node: AstRecord,
   scope: Scope,
@@ -490,6 +516,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
         !hasBinding(scope, "require") &&
         argumentsList.length === 1 &&
         astNode(argumentsList[0])?.type !== "SpreadElement" &&
+        !hasDynamicRequestIgnoreDirective(code, node, argumentsList[0] as AstRecord) &&
         !requestHasStaticPart(argumentsList[0], scope)
       ) {
         output.overwrite(node.start, node.end, dynamicRequireReplacement());
@@ -501,6 +528,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
     if (
       node.type === "ImportExpression" &&
       hasRange(node) &&
+      !hasDynamicRequestIgnoreDirective(code, node, node.source as AstRecord) &&
       !requestHasStaticPart(node.source, scope)
     ) {
       output.overwrite(node.start, node.end, dynamicImportReplacement());
