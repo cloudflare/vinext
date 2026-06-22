@@ -1771,6 +1771,10 @@ function discoverBoundaryFilePerLayout(
  * Walk from appDir through each segment to the route's directory. At each level
  * that has @slot dirs, collect them. Slots at the route's own directory level
  * use page.tsx; slots at ancestor levels use default.tsx only.
+ *
+ * `appDir` and `routeDir` must be forward-slash — `currentDir` descends from
+ * `appDir` via `path.posix.join`, and the `dir === routeDir` active-level test
+ * below only matches when both share the canonical separator.
  */
 function discoverInheritedParallelSlots(
   segments: string[],
@@ -1792,7 +1796,7 @@ function discoverInheritedParallelSlots(
   dirsToCheck.push({ dir: appDir, layoutIdx, segmentIndex: 0 });
 
   for (let i = 0; i < segments.length; i++) {
-    currentDir = path.join(currentDir, segments[i]);
+    currentDir = path.posix.join(currentDir, segments[i]);
     if (findFile(currentDir, "layout", matcher)) {
       layoutIdx++;
     }
@@ -2060,7 +2064,7 @@ function discoverParallelSlots(
     if (entry.name === "@children") continue;
 
     const slotName = entry.name.slice(1); // "@team" -> "team"
-    const slotDir = path.join(dir, entry.name);
+    const slotDir = path.posix.join(dir, entry.name);
 
     // A slot page may live inside a route-group subdirectory of the slot
     // (e.g. @slot/(group)/page.tsx). Route groups are transparent in the URL,
