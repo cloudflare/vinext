@@ -3,6 +3,10 @@ import { PassThrough } from "node:stream";
 import {
   isAgentEnvironment,
   parsePlatformArg,
+  parseDataCacheArg,
+  parseCdnCacheArg,
+  parseImageOptimizationArg,
+  resolveCloudflareInitOptions,
   resolveInitPlatform,
 } from "../packages/vinext/src/init-platform.js";
 
@@ -15,6 +19,41 @@ describe("parsePlatformArg", () => {
   it("rejects missing and unsupported values", () => {
     expect(() => parsePlatformArg(["--platform"])).toThrow("requires a value");
     expect(() => parsePlatformArg(["--platform=vercel"])).toThrow('Unsupported platform "vercel"');
+  });
+});
+
+describe("Cloudflare init choices", () => {
+  it("parses cache and image flags", () => {
+    expect(parseDataCacheArg(["--data-cache=none"])).toBe("none");
+    expect(parseCdnCacheArg(["--cdn-cache", "kv"])).toBe("kv");
+    expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
+  });
+
+  it("defaults to KV data, Workers Cache, and Cloudflare Images", async () => {
+    await expect(
+      resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
+    ).resolves.toEqual({
+      dataCache: "kv",
+      cdnCache: "workers",
+      imageOptimization: "cloudflare-images",
+    });
+  });
+
+  it("tells agents to ask and rerun with all Cloudflare flags", async () => {
+    await expect(resolveCloudflareInitOptions([], { env: { CODEX_CI: "1" } })).rejects.toThrow(
+      "--data-cache=..., --cdn-cache=..., and --image-optimization=...",
+    );
+  });
+
+  it("prompts for each missing Cloudflare choice", async () => {
+    const answers = ["2", "2", "2"];
+    await expect(
+      resolveCloudflareInitOptions([], {
+        env: {},
+        isInteractive: true,
+        question: async () => answers.shift() ?? "",
+      }),
+    ).resolves.toEqual({ dataCache: "none", cdnCache: "kv", imageOptimization: "none" });
   });
 });
 

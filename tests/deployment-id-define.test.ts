@@ -38,9 +38,12 @@ async function setupTmpProject(nextConfigBody: string): Promise<string> {
   return tmpDir;
 }
 
-async function runConfig(tmpDir: string): Promise<Record<string, string>> {
+async function runConfig(
+  tmpDir: string,
+  options: Parameters<typeof import("../packages/vinext/src/index.js").default>[0] = {},
+): Promise<Record<string, string>> {
   const vinext = (await import("../packages/vinext/src/index.js")).default;
-  const plugins = vinext() as VinextPlugin[];
+  const plugins = vinext(options) as VinextPlugin[];
   const mainPlugin = plugins.find(
     (p) => p.name === "vinext:config" && typeof p.config === "function",
   );
@@ -90,6 +93,18 @@ describe("process.env.NEXT_DEPLOYMENT_ID is inlined via Vite define", () => {
       expect(define["process.env.NEXT_DEPLOYMENT_ID"]).toBe("false");
     } finally {
       if (previous !== undefined) process.env.NEXT_DEPLOYMENT_ID = previous;
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+});
+
+describe("image optimization define", () => {
+  it("inlines global unoptimized mode when disabled in vinext options", async () => {
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      const define = await runConfig(tmpDir, { imageOptimization: false });
+      expect(define["process.env.__VINEXT_IMAGE_UNOPTIMIZED"]).toBe('"true"');
+    } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);

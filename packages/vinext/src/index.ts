@@ -748,6 +748,12 @@ function getClientOutputConfigForVite(
 
 export type VinextOptions = {
   /**
+   * Whether the next/image shim should emit optimization endpoint URLs.
+   * Set to false when the deployment target has no image optimization service.
+   * @default true
+   */
+  imageOptimization?: boolean;
+  /**
    * Base directory containing the app/ and pages/ directories.
    * Can be an absolute path or a path relative to the Vite root.
    *
@@ -1538,6 +1544,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // When false (default), remote image URLs with literal private-IP hostnames are blocked.
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
+        );
+        defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
+          String(options.imageOptimization === false || nextConfig.images?.unoptimized === true),
         );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.

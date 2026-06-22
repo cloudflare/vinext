@@ -36,11 +36,14 @@ import {
   generatePagesRouterViteConfig,
   generatePagesRouterWorkerEntry,
   generateWranglerConfig,
+  getWranglerImagesBinding,
+  updateWranglerConfigForCloudflare,
+  updateWranglerTomlForCloudflare,
   updateViteConfigForCloudflare,
   usesCommonJsViteConfig,
 } from "./init-cloudflare.js";
 import { detectProject } from "./cloudflare/project.js";
-import type { InitPlatform } from "./init-platform.js";
+import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -58,6 +61,8 @@ export type InitOptions = {
   force?: boolean;
   /** Deployment target selected by the user */
   platform?: InitPlatform;
+  /** Cloudflare cache and image choices. */
+  cloudflare?: CloudflareInitOptions;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
   /** @internal — stable compatibility date for snapshot tests */
@@ -252,6 +257,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const root = normalizePathSeparators(path.resolve(options.root));
   const port = options.port ?? 3001;
   const platform = options.platform ?? "cloudflare";
+  const cloudflare = options.cloudflare ?? {
+    dataCache: "kv",
+    cdnCache: "workers",
+    imageOptimization: "cloudflare-images",
+  };
   const exec =
     options._exec ??
     ((cmd: string, opts: { cwd: string; stdio: string }) => {
@@ -350,6 +360,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     const updatedConfig = updateViteConfigForCloudflare(existingViteConfigPath, currentConfig, {
       isAppRouter: isApp,
       nativeModulesToStub: projectInfo!.nativeModulesToStub,
+      cache: cloudflare,
     });
     if (updatedConfig !== currentConfig) {
       fs.writeFileSync(existingViteConfigPath, updatedConfig, "utf-8");
@@ -363,8 +374,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     const configContent =
       platform === "cloudflare"
         ? isApp
-          ? generateAppRouterViteConfig(projectInfo)
-          : generatePagesRouterViteConfig(projectInfo)
+          ? generateAppRouterViteConfig(projectInfo, cloudflare)
+          : generatePagesRouterViteConfig(projectInfo, cloudflare)
         : generateViteConfig(isApp);
     fs.writeFileSync(
       existingViteConfigPath ?? path.join(root, "vite.config.ts"),
@@ -377,19 +388,38 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const generatedPlatformFiles: string[] = [];
   if (platform === "cloudflare") {
     const info = projectInfo!;
+    let imagesBinding = "IMAGES";
     if (!info.hasWranglerConfig) {
       fs.writeFileSync(
         path.join(root, "wrangler.jsonc"),
-        generateWranglerConfig(info, options._today),
+        generateWranglerConfig(info, cloudflare, options._today),
         "utf-8",
       );
       generatedPlatformFiles.push("wrangler.jsonc");
+    } else {
+      const wranglerPath = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
+        .map((fileName) => path.join(root, fileName))
+        .find((candidate) => fs.existsSync(candidate));
+      if (wranglerPath) {
+        const currentConfig = fs.readFileSync(wranglerPath, "utf-8");
+        const isToml = wranglerPath.endsWith(".toml");
+        const updatedConfig = isToml
+          ? updateWranglerTomlForCloudflare(currentConfig, cloudflare)
+          : updateWranglerConfigForCloudflare(currentConfig, cloudflare);
+        imagesBinding = getWranglerImagesBinding(updatedConfig, isToml ? "toml" : "json");
+        if (updatedConfig !== currentConfig) {
+          fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
+          generatedPlatformFiles.push(path.basename(wranglerPath));
+        }
+      }
     }
     if (!info.hasWorkerEntry) {
       fs.mkdirSync(path.join(root, "worker"), { recursive: true });
       fs.writeFileSync(
         path.join(root, "worker", "index.ts"),
-        isApp ? generateAppRouterWorkerEntry() : generatePagesRouterWorkerEntry(),
+        isApp
+          ? generateAppRouterWorkerEntry(cloudflare.imageOptimization, imagesBinding)
+          : generatePagesRouterWorkerEntry(cloudflare.imageOptimization, imagesBinding),
         "utf-8",
       );
       generatedPlatformFiles.push("worker/index.ts");

@@ -3,6 +3,7 @@ import path from "node:path";
 import MagicString from "magic-string";
 import { parseSync } from "vite";
 import type { ESTree } from "vite";
+import type { CloudflareInitOptions, InitImageOptimization } from "./init-platform.js";
 
 export type CloudflareProjectInfo = {
   root: string;
@@ -12,9 +13,16 @@ export type CloudflareProjectInfo = {
   nativeModulesToStub: string[];
 };
 
+const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
+  dataCache: "kv",
+  cdnCache: "workers",
+  imageOptimization: "cloudflare-images",
+};
+
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
   info: CloudflareProjectInfo,
+  options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   today = new Date().toISOString().split("T")[0],
 ): string {
   const workerEntry =
@@ -38,15 +46,13 @@ export function generateWranglerConfig(
       // optimization handler can fetch source images programmatically.
       binding: "ASSETS",
     },
-    // Cloudflare Images binding for next/image optimization.
-    // Enables resize, format negotiation (AVIF/WebP), and quality transforms
-    // at the edge. No user setup needed — wrangler creates the binding automatically.
-    images: {
-      binding: "IMAGES",
-    },
   };
 
-  if (info.hasISR) {
+  if (options.imageOptimization === "cloudflare-images") {
+    config.images = { binding: "IMAGES" };
+  }
+
+  if (options.dataCache === "kv" || options.cdnCache === "kv") {
     config.kv_namespaces = [
       {
         binding: "VINEXT_KV_CACHE",
@@ -58,8 +64,303 @@ export function generateWranglerConfig(
   return JSON.stringify(config, null, 2) + "\n";
 }
 
+function stripJsonComments(code: string): string {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < code.length; index++) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (inString) {
+      output += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      output += char;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      while (index < code.length && code[index] !== "\n") index++;
+      output += "\n";
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      index += 2;
+      while (index < code.length && !(code[index] === "*" && code[index + 1] === "/")) {
+        output += code[index] === "\n" ? "\n" : " ";
+        index++;
+      }
+      index++;
+      continue;
+    }
+    output += char;
+  }
+  return output.replace(/,\s*([}\]])/g, "$1");
+}
+
+function findTopLevelJsonProperty(
+  code: string,
+  name: string,
+): { valueStart: number; valueEnd: number } | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = 0; index < code.length; index++) {
+    const char = code[index];
+    const next = code[index + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index++;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      index++;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index++;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      let value = "";
+      index++;
+      for (; index < code.length; index++) {
+        const stringChar = code[index];
+        if (stringChar === "\\") {
+          value += stringChar + (code[++index] ?? "");
+        } else if (stringChar === '"') {
+          inString = false;
+          break;
+        } else value += stringChar;
+      }
+      if (depth !== 1 || value !== name) continue;
+      let cursor = index + 1;
+      while (/\s/.test(code[cursor] ?? "")) cursor++;
+      if (code[cursor] !== ":") continue;
+      cursor++;
+      while (/\s/.test(code[cursor] ?? "")) cursor++;
+      const valueStart = cursor;
+      let valueDepth = 0;
+      let valueString = false;
+      let valueEscaped = false;
+      let valueLineComment = false;
+      let valueBlockComment = false;
+      for (; cursor < code.length; cursor++) {
+        const valueChar = code[cursor];
+        const valueNext = code[cursor + 1];
+        if (valueLineComment) {
+          if (valueChar === "\n") valueLineComment = false;
+          continue;
+        }
+        if (valueBlockComment) {
+          if (valueChar === "*" && valueNext === "/") {
+            valueBlockComment = false;
+            cursor++;
+          }
+          continue;
+        }
+        if (valueString) {
+          if (valueEscaped) valueEscaped = false;
+          else if (valueChar === "\\") valueEscaped = true;
+          else if (valueChar === '"') valueString = false;
+          continue;
+        }
+        if (valueChar === "/" && valueNext === "/") {
+          valueLineComment = true;
+          cursor++;
+        } else if (valueChar === "/" && valueNext === "*") {
+          valueBlockComment = true;
+          cursor++;
+        } else if (valueChar === '"') valueString = true;
+        else if (valueChar === "{" || valueChar === "[") valueDepth++;
+        else if (valueChar === "}" || valueChar === "]") {
+          if (valueDepth === 0) return { valueStart, valueEnd: cursor };
+          valueDepth--;
+          if (valueDepth === 0) return { valueStart, valueEnd: cursor + 1 };
+        } else if (valueChar === "," && valueDepth === 0) {
+          return { valueStart, valueEnd: cursor };
+        }
+      }
+      return { valueStart, valueEnd: cursor };
+    }
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+  }
+  return null;
+}
+
+function appendTopLevelJsonProperty(code: string, property: string): string {
+  const closing = code.lastIndexOf("}");
+  if (closing < 0) throw new Error("Could not find the root object in Wrangler config.");
+  const before = code.slice(0, closing);
+  const needsComma = !/,\s*$/.test(before) && !/{\s*$/.test(before);
+  return `${before}${needsComma ? "," : ""}\n${property}\n${code.slice(closing)}`;
+}
+
+export function updateWranglerConfigForCloudflare(
+  code: string,
+  options: CloudflareInitOptions,
+): string {
+  try {
+    JSON.parse(stripJsonComments(code));
+  } catch (cause) {
+    throw new Error("Could not parse the existing Wrangler JSON/JSONC config.", { cause });
+  }
+  let output = code;
+  if (options.imageOptimization === "cloudflare-images") {
+    const imagesProperty = findTopLevelJsonProperty(output, "images");
+    if (!imagesProperty) {
+      output = appendTopLevelJsonProperty(output, '  "images": { "binding": "IMAGES" },');
+    } else {
+      const images = JSON.parse(
+        stripJsonComments(output.slice(imagesProperty.valueStart, imagesProperty.valueEnd)),
+      ) as { binding?: unknown } | null;
+      if (!images || typeof images.binding !== "string" || images.binding.length === 0) {
+        output = `${output.slice(0, imagesProperty.valueStart)}{ "binding": "IMAGES" }${output.slice(imagesProperty.valueEnd)}`;
+      }
+    }
+  }
+  if (options.dataCache === "kv" || options.cdnCache === "kv") {
+    const kvProperty = findTopLevelJsonProperty(output, "kv_namespaces");
+    if (!kvProperty) {
+      output = appendTopLevelJsonProperty(
+        output,
+        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }],',
+      );
+    } else {
+      const rawValue = output.slice(kvProperty.valueStart, kvProperty.valueEnd);
+      const namespaces = JSON.parse(stripJsonComments(rawValue)) as Array<{ binding?: string }>;
+      if (!namespaces.some((namespace) => namespace.binding === "VINEXT_KV_CACHE")) {
+        const closing = kvProperty.valueEnd - 1;
+        const content = output.slice(kvProperty.valueStart + 1, closing);
+        const separator = content.trim() ? `${/,\s*$/.test(content) ? "" : ","}\n    ` : "";
+        output = `${output.slice(0, closing)}${separator}{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }${output.slice(closing)}`;
+      }
+    }
+  }
+  return output;
+}
+
+export function updateWranglerTomlForCloudflare(
+  code: string,
+  options: CloudflareInitOptions,
+): string {
+  let output = code;
+  const tableStart = output.search(/^\s*\[/m);
+  const topLevel = tableStart < 0 ? output : output.slice(0, tableStart);
+  if (
+    options.imageOptimization === "cloudflare-images" &&
+    !/^\s*images\s*=\s*\{[^\n]*\bbinding\s*=\s*["'][^"']+["']/m.test(topLevel) &&
+    !getWranglerTomlImagesBinding(output)
+  ) {
+    const insertion = tableStart < 0 ? output.length : tableStart;
+    const before = output.slice(0, insertion);
+    const after = output.slice(insertion);
+    const prefix = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+    const suffix = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
+    output = `${before}${prefix}images = { binding = "IMAGES" }\n${suffix}${after}`;
+  }
+  if (
+    (options.dataCache === "kv" || options.cdnCache === "kv") &&
+    !hasWranglerTomlKvBinding(output, "VINEXT_KV_CACHE")
+  ) {
+    if (output.length > 0 && !output.endsWith("\n")) output += "\n";
+    if (output.length > 0 && !output.endsWith("\n\n")) output += "\n";
+    output += '[[kv_namespaces]]\nbinding = "VINEXT_KV_CACHE"\nid = "<your-kv-namespace-id>"\n';
+  }
+  return output;
+}
+
+function hasWranglerTomlKvBinding(code: string, binding: string): boolean {
+  const tableStart = code.search(/^\s*\[/m);
+  const topLevel = tableStart < 0 ? code : code.slice(0, tableStart);
+  const inlineNamespaces = topLevel.match(/^\s*kv_namespaces\s*=\s*\[([\s\S]*?)\]\s*$/m)?.[1];
+  if (
+    inlineNamespaces &&
+    new RegExp(`\\bbinding\\s*=\\s*["']${binding}["']`).test(inlineNamespaces)
+  ) {
+    return true;
+  }
+  const lines = code.split("\n");
+  let inKvNamespace = false;
+  for (const line of lines) {
+    const table = line.match(/^\s*(\[\[?[^\]]+\]\]?)/)?.[1];
+    if (table) inKvNamespace = /^\[\[\s*kv_namespaces\s*\]\]$/.test(table);
+    if (
+      inKvNamespace &&
+      new RegExp(`^\\s*binding\\s*=\\s*["']${binding}["']\\s*(?:#.*)?$`).test(line)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getWranglerTomlTableBinding(code: string, tableName: string): string | undefined {
+  const lines = code.split("\n");
+  let inTable = false;
+  for (const line of lines) {
+    const table = line.match(/^\s*\[\s*([^\]]+)\s*\]\s*(?:#.*)?$/)?.[1];
+    if (table) inTable = table.trim() === tableName;
+    if (!inTable) continue;
+    const binding = line.match(/^\s*binding\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/)?.[1];
+    if (binding) return binding;
+  }
+  return undefined;
+}
+
+function getWranglerTomlImagesBinding(code: string): string | undefined {
+  const dotted = code.match(/^\s*images\.binding\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/m)?.[1];
+  return dotted ?? getWranglerTomlTableBinding(code, "images");
+}
+
+export function getWranglerImagesBinding(code: string, format: "json" | "toml"): string {
+  if (format === "toml") {
+    const structuredBinding = getWranglerTomlImagesBinding(code);
+    if (structuredBinding) return structuredBinding;
+    return (
+      code.match(/^\s*images\s*=\s*\{[^\n]*\bbinding\s*=\s*["']([^"']+)["']/m)?.[1] ?? "IMAGES"
+    );
+  }
+  const property = findTopLevelJsonProperty(code, "images");
+  if (!property) return "IMAGES";
+  const images = JSON.parse(
+    stripJsonComments(code.slice(property.valueStart, property.valueEnd)),
+  ) as { binding?: unknown } | null;
+  return images && typeof images.binding === "string" && images.binding.length > 0
+    ? images.binding
+    : "IMAGES";
+}
+
 /** Generate worker/index.ts for App Router */
-export function generateAppRouterWorkerEntry(): string {
+export function generateAppRouterWorkerEntry(
+  imageOptimization: InitImageOptimization = "cloudflare-images",
+  imagesBinding = "IMAGES",
+): string {
+  if (imageOptimization === "none") {
+    return `import handler from "vinext/server/app-router-entry";\n\nexport default handler;\n`;
+  }
   return `/**
  * Cloudflare Worker entry point — auto-generated by vinext.
  * Edit freely or delete to regenerate with vinext init.
@@ -87,7 +388,7 @@ const imageConfig: ImageConfig = {
 
 interface Env {
   ASSETS: Fetcher;
-  IMAGES: {
+  ${imagesBinding}: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
         output(options: { format: string; quality: number }): Promise<{ response(): Response }>;
@@ -122,7 +423,7 @@ export default {
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
-          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+          const result = await env.${imagesBinding}.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
       }, allowedWidths, imageConfig);
@@ -138,8 +439,11 @@ export default {
 }
 
 /** Generate worker/index.ts for Pages Router */
-export function generatePagesRouterWorkerEntry(): string {
-  return `/**
+export function generatePagesRouterWorkerEntry(
+  imageOptimization: InitImageOptimization = "cloudflare-images",
+  imagesBinding = "IMAGES",
+): string {
+  const source = `/**
  * Cloudflare Worker entry point -- auto-generated by vinext.
  * Edit freely or delete to regenerate with vinext init.
  */
@@ -160,7 +464,7 @@ import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 
 interface Env {
   ASSETS: Fetcher;
-  IMAGES: {
+  ${imagesBinding}: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
         output(options: { format: string; quality: number }): Promise<{ response(): Response }>;
@@ -255,7 +559,7 @@ export default {
         return handleImageOptimization(request, {
           fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
           transformImage: async (body, { width, format, quality }) => {
-            const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+            const result = await env.${imagesBinding}.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
             return result.response();
           },
         }, allowedWidths, imageConfig);
@@ -319,14 +623,63 @@ export default {
 };
 
 `;
+  if (imageOptimization === "cloudflare-images") return source;
+  return source
+    .replace(
+      'import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isImageOptimizationPath } from "vinext/server/image-optimization";\nimport type { ImageConfig } from "vinext/server/image-optimization";\n',
+      "",
+    )
+    .replace(/\n  IMAGES: \{[\s\S]*?\n  \};\n/, "\n")
+    .replace(/\nconst imageConfig:[\s\S]*?\n} : undefined;\n/, "\n")
+    .replace(
+      /\n      \/\/ ── Image optimization via Cloudflare Images binding ──────────[\s\S]*?(?=\n      \/\/ Delegate)/,
+      "\n",
+    );
+}
+
+function cacheImports(options: CloudflareInitOptions): string[] {
+  const imports: string[] = [];
+  if (options.dataCache === "kv") {
+    imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
+  }
+  if (options.cdnCache === "workers") {
+    imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
+  } else if (options.cdnCache === "kv") {
+    imports.push('import { kvCdnAdapter } from "@vinext/cloudflare/cache/kv-cdn-adapter";');
+  } else {
+    imports.push('import { noCdnCacheAdapter } from "@vinext/cloudflare/cache/no-cdn-adapter";');
+  }
+  return imports;
+}
+
+function vinextExpression(options: CloudflareInitOptions, binding = "vinext"): string {
+  const entries: string[] = [];
+  if (options.dataCache === "kv") entries.push("      data: kvDataAdapter(),");
+  if (options.cdnCache === "workers") entries.push("      cdn: cdnAdapter(),");
+  else if (options.cdnCache === "kv") entries.push("      cdn: kvCdnAdapter(),");
+  else entries.push("      cdn: noCdnCacheAdapter(),");
+  const optionLines: string[] = [];
+  if (entries.length > 0) {
+    optionLines.push(`    cache: {\n${entries.join("\n")}\n    },`);
+  }
+  if (options.imageOptimization === "none") {
+    optionLines.push("    imageOptimization: false,");
+  }
+  return optionLines.length === 0
+    ? `${binding}()`
+    : `${binding}({\n${optionLines.join("\n")}\n  })`;
 }
 
 /** Generate vite.config.ts for App Router */
-export function generateAppRouterViteConfig(info?: CloudflareProjectInfo): string {
+export function generateAppRouterViteConfig(
+  info?: CloudflareProjectInfo,
+  options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
+): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...cacheImports(options),
   ];
 
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
@@ -338,7 +691,7 @@ export function generateAppRouterViteConfig(info?: CloudflareProjectInfo): strin
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
-  plugins.push(`    vinext(),`);
+  plugins.push(`    ${vinextExpression(options).replace(/\n/g, "\n    ")},`);
 
   plugins.push(`    cloudflare({
       viteEnvironment: {
@@ -373,11 +726,15 @@ ${plugins.join("\n")}
 }
 
 /** Generate vite.config.ts for Pages Router */
-export function generatePagesRouterViteConfig(info?: CloudflareProjectInfo): string {
+export function generatePagesRouterViteConfig(
+  info?: CloudflareProjectInfo,
+  options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
+): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...cacheImports(options),
   ];
 
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
@@ -403,7 +760,7 @@ export function generatePagesRouterViteConfig(info?: CloudflareProjectInfo): str
 
 export default defineConfig({
   plugins: [
-    vinext(),
+    ${vinextExpression(options).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });
@@ -767,6 +1124,119 @@ function cloudflarePluginExpression(isAppRouter: boolean, binding: string): stri
     : `${binding}()`;
 }
 
+function findPluginCall(
+  config: AstObject,
+  binding: string,
+): (ESTree.CallExpression & AstNode) | undefined {
+  const plugins = findProperty(config, "plugins");
+  if (!plugins || plugins.value.type !== "ArrayExpression") return undefined;
+  return plugins.value.elements.find(
+    (element): element is ESTree.CallExpression & AstNode =>
+      element?.type === "CallExpression" &&
+      element.callee.type === "Identifier" &&
+      element.callee.name === binding,
+  );
+}
+
+function hasVinextCacheSlot(
+  call: (ESTree.CallExpression & AstNode) | undefined,
+  name: "data" | "cdn",
+): boolean {
+  const firstArgument = call?.arguments[0];
+  if (
+    !firstArgument ||
+    firstArgument.type === "SpreadElement" ||
+    firstArgument.type !== "ObjectExpression"
+  ) {
+    return false;
+  }
+  const cache = findProperty(firstArgument as AstObject, "cache");
+  return (
+    cache?.value.type === "ObjectExpression" &&
+    Boolean(findProperty(cache.value as AstObject, name))
+  );
+}
+
+function ensureVinextCache(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  additions: Array<{ name: "data" | "cdn"; expression: string }>,
+  code: string,
+): void {
+  if (additions.length === 0) return;
+  const call = findPluginCall(config, vinextBinding);
+  if (!call) return;
+  if (call.arguments.length === 0) {
+    output.appendLeft(
+      call.end - 1,
+      `{ cache: { ${additions.map(({ name, expression }) => `${name}: ${expression}`).join(", ")} } }`,
+    );
+    return;
+  }
+  const firstArgument = call.arguments[0];
+  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to add cache handlers.",
+    );
+  }
+  const optionsObject = firstArgument as AstObject;
+  const cache = findProperty(optionsObject, "cache");
+  if (!cache) {
+    insertObjectProperty(
+      output,
+      optionsObject,
+      `    cache: {\n${additions.map(({ name, expression }) => `      ${name}: ${expression},`).join("\n")}\n    },`,
+      code,
+    );
+    return;
+  }
+  if (cache.value.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() cache option must be a static object for vinext init to add cache handlers.",
+    );
+  }
+  const cacheObject = cache.value as AstObject;
+  const missing = additions.filter(({ name }) => !findProperty(cacheObject, name));
+  if (missing.length > 0) {
+    insertObjectProperty(
+      output,
+      cacheObject,
+      missing.map(({ name, expression }) => `      ${name}: ${expression},`).join("\n"),
+      code,
+    );
+  }
+}
+
+function ensureVinextImageOptimization(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  imageOptimization: InitImageOptimization,
+  code: string,
+): void {
+  if (imageOptimization !== "none") return;
+  const call = findPluginCall(config, vinextBinding);
+  if (!call) return;
+  if (call.arguments.length === 0) {
+    output.appendLeft(call.end - 1, "{ imageOptimization: false }");
+    return;
+  }
+  const firstArgument = call.arguments[0];
+  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to configure image optimization.",
+    );
+  }
+  const optionsObject = firstArgument as AstObject;
+  const property = findProperty(optionsObject, "imageOptimization");
+  if (!property) {
+    insertObjectProperty(output, optionsObject, "    imageOptimization: false,", code);
+  } else {
+    output.overwrite((property.value as AstNode).start, (property.value as AstNode).end, "false");
+  }
+}
+
 function indentBlock(source: string, indent: string): string {
   return source
     .split("\n")
@@ -813,18 +1283,6 @@ function ensurePlugins(
 
   const closingOffset = array.end - 1;
   const arrayContent = code.slice(array.start + 1, closingOffset);
-  if (!/\/\*|\/\//.test(arrayContent)) {
-    const elements = array.elements.flatMap((element) =>
-      element ? [code.slice((element as AstNode).start, (element as AstNode).end)] : [],
-    );
-    elements.push(...missingExpressions);
-    output.overwrite(
-      array.start,
-      array.end,
-      `[\n${elements.map((element) => indentBlock(element, elementIndent)).join(",\n")},\n${propertyIndent}]`,
-    );
-    return;
-  }
   const hasExistingElements = array.elements.some(Boolean);
   const hasTrailingComma = /,\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*$/.test(arrayContent);
   const prefix = hasExistingElements && !hasTrailingComma ? "," : "";
@@ -894,9 +1352,18 @@ function ensureNativeAliases(
 export function updateViteConfigForCloudflare(
   filePath: string,
   code: string,
-  options: { isAppRouter: boolean; nativeModulesToStub: string[] },
+  options: {
+    isAppRouter: boolean;
+    nativeModulesToStub: string[];
+    cache?: CloudflareInitOptions;
+  },
 ): string {
   const program = parseViteConfig(filePath, code);
+  const cacheOptions = options.cache ?? {
+    dataCache: "none",
+    cdnCache: "none",
+    imageOptimization: "cloudflare-images",
+  };
   const config = findConfigObject(program);
   if (!config) {
     throw new Error(
@@ -923,6 +1390,53 @@ export function updateViteConfigForCloudflare(
   const vinextBinding = commonJs
     ? ensureDefaultRequire(program, output, "vinext", vinextLocal)
     : ensureDefaultImport(program, output, "vinext", vinextLocal);
+  const existingVinextCall = findPluginCall(config, vinextBinding);
+  const configureCaches = options.cache !== undefined;
+  const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
+  if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
+    const existing = commonJs
+      ? findRequiredBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter")
+      : findImportedBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter");
+    const local = existing ?? allocateBinding(bindings, "kvDataAdapter");
+    const binding = commonJs
+      ? ensureNamedRequire(
+          program,
+          output,
+          "@vinext/cloudflare/cache/kv-data-adapter",
+          "kvDataAdapter",
+          local,
+        )
+      : ensureNamedImport(
+          program,
+          output,
+          "@vinext/cloudflare/cache/kv-data-adapter",
+          "kvDataAdapter",
+          local,
+        );
+    cacheAdditions.push({ name: "data", expression: `${binding}()` });
+  }
+  if (configureCaches && !hasVinextCacheSlot(existingVinextCall, "cdn")) {
+    const imported =
+      cacheOptions.cdnCache === "workers"
+        ? "cdnAdapter"
+        : cacheOptions.cdnCache === "kv"
+          ? "kvCdnAdapter"
+          : "noCdnCacheAdapter";
+    const source =
+      cacheOptions.cdnCache === "workers"
+        ? "@vinext/cloudflare/cache/cdn-adapter"
+        : cacheOptions.cdnCache === "kv"
+          ? "@vinext/cloudflare/cache/kv-cdn-adapter"
+          : "@vinext/cloudflare/cache/no-cdn-adapter";
+    const existing = commonJs
+      ? findRequiredBinding(program, source, imported)
+      : findImportedBinding(program, source, imported);
+    const local = existing ?? allocateBinding(bindings, imported);
+    const binding = commonJs
+      ? ensureNamedRequire(program, output, source, imported, local)
+      : ensureNamedImport(program, output, source, imported, local);
+    cacheAdditions.push({ name: "cdn", expression: `${binding}()` });
+  }
   const existingCloudflareBinding = commonJs
     ? findRequiredBinding(program, "@cloudflare/vite-plugin", "cloudflare")
     : findImportedBinding(program, "@cloudflare/vite-plugin", "cloudflare");
@@ -934,7 +1448,14 @@ export function updateViteConfigForCloudflare(
     output,
     config,
     [
-      { expression: `${vinextBinding}()`, binding: vinextBinding },
+      {
+        expression: existingVinextCall
+          ? `${vinextBinding}()`
+          : options.cache
+            ? vinextExpression(cacheOptions, vinextBinding).replace(/\n/g, "\n  ")
+            : `${vinextBinding}()`,
+        binding: vinextBinding,
+      },
       {
         expression: cloudflarePluginExpression(options.isAppRouter, cloudflareBinding),
         binding: cloudflareBinding,
@@ -942,6 +1463,16 @@ export function updateViteConfigForCloudflare(
     ],
     code,
   );
+  if (existingVinextCall) {
+    ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
+    ensureVinextImageOptimization(
+      output,
+      config,
+      vinextBinding,
+      cacheOptions.imageOptimization,
+      code,
+    );
+  }
 
   if (options.nativeModulesToStub.length > 0) {
     const existingPathBinding = commonJs

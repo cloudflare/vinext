@@ -630,7 +630,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.compatibility_date).toBe(today);
   });
 
-  it("includes KV namespace when ISR detected", () => {
+  it("includes the default KV namespace", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -645,11 +645,15 @@ describe("generateWranglerConfig", () => {
     expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
-  it("omits KV namespace when no ISR", () => {
+  it("omits KV namespace when KV caches are disabled", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/page.tsx", "export default function() { return <div/> }");
     const info = detectProject(tmpDir);
-    const config = generateWranglerConfig(info);
+    const config = generateWranglerConfig(info, {
+      dataCache: "none",
+      cdnCache: "workers",
+      imageOptimization: "cloudflare-images",
+    });
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeUndefined();
@@ -1506,7 +1510,7 @@ describe("generateAppRouterViteConfig", () => {
     const content = generateAppRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain("vinext()");
+    expect(content).toContain("vinext({");
     expect(content).toContain("cloudflare(");
   });
 
@@ -1522,7 +1526,7 @@ describe("generatePagesRouterViteConfig", () => {
     const content = generatePagesRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain("vinext()");
+    expect(content).toContain("vinext({");
     expect(content).toContain("cloudflare()");
     // Should NOT include RSC plugin
     expect(content).not.toContain("plugin-rsc");
@@ -2168,7 +2172,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     const config = generateAppRouterViteConfig(info);
     // MDX is now handled by the vinext plugin's auto-injection at runtime,
     // not by a separate mdx() call in the generated config.
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("auto-injects @mdx-js/rollup");
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
   });
@@ -2182,7 +2186,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
     expect(config).not.toContain("remarkCodeHike");
     expect(config).not.toContain("recmaCodeHike");
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
   });
 
   it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
@@ -2214,7 +2218,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generateAppRouterViteConfig();
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare(");
     // Generated config no longer includes a separate mdx() import/call
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
@@ -2239,7 +2243,7 @@ describe("generatePagesRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generatePagesRouterViteConfig();
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare()");
     expect(config).not.toContain("resolve:");
   });

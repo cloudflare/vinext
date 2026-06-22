@@ -445,7 +445,9 @@ describe("init — basic functionality", () => {
 
     expect(result.generatedViteConfig).toBe(true);
     const config = readFile(tmpDir, "vite.config.ts");
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
+    expect(config).toContain("data: kvDataAdapter()");
+    expect(config).toContain("cdn: cdnAdapter()");
     expect(config).not.toContain("plugin-rsc");
   });
 
@@ -457,6 +459,8 @@ describe("init — basic functionality", () => {
     expect(result.platform).toBe("cloudflare");
     expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc", "worker/index.ts"]);
     expect(readFile(tmpDir, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: cdnAdapter()");
     expect(readFile(tmpDir, "worker/index.ts")).toContain("vinext/server/app-router-entry");
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       main: "./worker/index.ts",
@@ -473,6 +477,91 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).not.toContain("@cloudflare/vite-plugin");
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+  });
+
+  it("supports KV CDN cache with no data cache or image optimization", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      platform: "cloudflare",
+      cloudflare: { dataCache: "none", cdnCache: "kv", imageOptimization: "none" },
+    });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain("cdn: kvCdnAdapter()");
+    expect(config).toContain("imageOptimization: false");
+    expect(config).not.toContain("kvDataAdapter");
+    const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
+    expect(wrangler.kv_namespaces).toEqual([
+      { binding: "VINEXT_KV_CACHE", id: "<your-kv-namespace-id>" },
+    ]);
+    expect(wrangler.images).toBeUndefined();
+    expect(readFile(tmpDir, "worker/index.ts")).not.toContain("IMAGES");
+  });
+
+  it("additively fills missing Cloudflare config on rerun", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import vinext from "vinext";
+import { customData } from "./custom-cache.js";
+export default { plugins: [vinext({ cache: { data: customData() } })] };
+`,
+    );
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  // preserve me
+  "name": "custom-name",
+  "kv_namespaces": [{ "binding": "OTHER", "id": "other" }]
+}
+`,
+    );
+    writeFile(tmpDir, "worker/index.ts", "export default { fetch() {} };\n");
+
+    await runInit(tmpDir, {
+      platform: "cloudflare",
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers",
+        imageOptimization: "cloudflare-images",
+      },
+    });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain("data: customData()");
+    expect(config).toContain("cdn: cdnAdapter()");
+    expect(config).not.toContain("kvDataAdapter");
+    const wrangler = readFile(tmpDir, "wrangler.jsonc");
+    expect(wrangler).toContain("// preserve me");
+    expect(wrangler).toContain('"name": "custom-name"');
+    expect(wrangler).toContain('"binding": "OTHER"');
+    expect(wrangler).toContain('"binding": "VINEXT_KV_CACHE"');
+    expect(wrangler).toContain('"images": { "binding": "IMAGES" }');
+    expect(readFile(tmpDir, "worker/index.ts")).toBe("export default { fetch() {} };\n");
+  });
+
+  it("additively updates Wrangler TOML and uses its Images binding", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      'name = "existing"\nimages = { binding = "CUSTOM_IMAGES" }\n',
+    );
+
+    await runInit(tmpDir, {
+      platform: "cloudflare",
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers",
+        imageOptimization: "cloudflare-images",
+      },
+    });
+
+    expect(readFile(tmpDir, "wrangler.toml")).toContain('binding = "VINEXT_KV_CACHE"');
+    expect(readFile(tmpDir, "worker/index.ts")).toContain("env.CUSTOM_IMAGES.input(body)");
   });
 
   it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {
@@ -848,7 +937,7 @@ describe("init — guard rails", () => {
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain('import vinext from "vinext"');
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare(");
   });
 
@@ -876,7 +965,7 @@ describe("init — guard rails", () => {
     expect(result.generatedViteConfig).toBe(true);
     expect(result.skippedViteConfig).toBe(false);
     const config = readFile(tmpDir, "vite.config.ts");
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
   });
 
   for (const extension of ["js", "mjs"] as const) {

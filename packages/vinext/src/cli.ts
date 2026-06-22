@@ -31,7 +31,7 @@ import {
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
-import { resolveInitPlatform } from "./init-platform.js";
+import { resolveCloudflareInitOptions, resolveInitPlatform } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -810,6 +810,8 @@ async function initCommand() {
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
   const platform = await resolveInitPlatform(rawArgs);
+  const cloudflare =
+    platform === "cloudflare" ? await resolveCloudflareInitOptions(rawArgs) : undefined;
 
   await runInit({
     root: process.cwd(),
@@ -817,6 +819,7 @@ async function initCommand() {
     skipCheck,
     force,
     platform,
+    cloudflare,
   });
 }
 
@@ -959,11 +962,19 @@ function printHelp(cmd?: string) {
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
+    --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
+    --cdn-cache <type>   Cloudflare CDN/page cache: workers, kv, or none (default: workers)
+    --image-optimization <type>
+                         Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
 
   Examples:
     vinext init                   Prompt for a deployment platform
     vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=cloudflare --data-cache=kv --cdn-cache=workers
+                                Configure the default Cloudflare cache handlers
+    vinext init --platform=cloudflare --image-optimization=none
+                                Do not configure Cloudflare Images
     vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
