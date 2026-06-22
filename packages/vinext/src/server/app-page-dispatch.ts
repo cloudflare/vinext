@@ -14,6 +14,7 @@ import {
   consumeInvalidDynamicUsageError,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
+  getHeadersContext,
   isDraftModeRequest,
   markDynamicUsage,
   peekDynamicUsage,
@@ -534,6 +535,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  const requestHeadersContext = getHeadersContext();
   const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
   const pageSearchParams = isForceStatic ? new URLSearchParams() : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
@@ -775,8 +777,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       interceptSearchParams,
       interceptLayoutParamAccess,
     ) {
-      // Hydrate the intercept source route before reading its page module.
-      await options.ensureRouteLoaded?.(interceptRoute);
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
@@ -786,15 +786,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const sourceDynamicConfig = interceptDynamicConfigResolved
         ? interceptDynamicConfig
         : options.resolveRouteDynamicConfig?.(interceptRoute);
-      const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
-      setHeadersContext(
-        createStaticGenerationHeadersContext({
-          draftModeSecret: options.draftModeSecret,
-          dynamicConfig: sourceDynamicConfig ?? undefined,
-          routeKind: "page",
-          routePattern: interceptRoute.pattern,
-        }),
-      );
+      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+        const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
+        setHeadersContext(
+          createStaticGenerationHeadersContext({
+            draftModeSecret: options.draftModeSecret,
+            dynamicConfig: sourceDynamicConfig,
+            routeKind: "page",
+            routePattern: interceptRoute.pattern,
+          }),
+        );
+      } else {
+        setHeadersContext(requestHeadersContext);
+      }
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
@@ -842,7 +846,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         headers: interceptHeaders,
       });
     },
-    resolveSearchParams(sourceRoute, searchParams) {
+    async resolveSearchParams(sourceRoute, searchParams) {
+      await options.ensureRouteLoaded?.(sourceRoute);
       interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
       interceptDynamicConfigResolved = true;
       return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;

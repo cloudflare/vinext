@@ -45,8 +45,10 @@ import {
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  getHeadersContext,
   markDynamicUsage,
   markRenderRequestApiUsage,
+  setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
@@ -267,6 +269,7 @@ type CreateDispatchOptionsOverrides = {
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
   findIntercept?: DispatchOptions["findIntercept"];
+  ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
   hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
   formState?: DispatchOptions["formState"];
@@ -328,6 +331,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     },
     draftModeSecret: "draft-secret",
     dynamicConfig: overrides.dynamicConfig,
+    ensureRouteLoaded: overrides.ensureRouteLoaded,
     findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
     getFontLinks() {
@@ -2061,7 +2065,6 @@ describe("app page dispatch", () => {
       params: [],
       pattern: "/feed",
       routeSegments: ["feed"],
-      layouts: [{ default: () => null, dynamic: "force-static" }],
     });
     const currentRoute = createRoute({
       params: ["id"],
@@ -2073,11 +2076,16 @@ describe("app page dispatch", () => {
     );
     const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
     const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
-      route === sourceRoute ? "force-static" : undefined,
+      route === sourceRoute && route.layouts.length > 0 ? "force-static" : undefined,
     );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
+      ensureRouteLoaded(route) {
+        if (route === sourceRoute) {
+          sourceRoute.layouts = [{ default: () => null, dynamic: "force-static" }];
+        }
+      },
       interceptionContext: "/feed",
       isRscRequest: true,
       renderToReadableStream(element) {
@@ -2113,6 +2121,54 @@ describe("app page dispatch", () => {
     expect(navigationContext?.searchParams.toString()).toBe("");
     expect(resolveRouteDynamicConfig).toHaveBeenCalledTimes(1);
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
+  it("preserves request headers for an ordinary intercept source route", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const requestHeadersContext = {
+      headers: new Headers({ "x-request-value": "preserved" }),
+      cookies: new Map(),
+    };
+    setHeadersContext(requestHeadersContext);
+    try {
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          return getHeadersContext()?.headers.get("x-request-value") ?? "missing";
+        },
+        cleanPathname: "/photos/123",
+        interceptionContext: "/feed",
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: currentRoute,
+        searchParams: new URLSearchParams("tab=popular"),
+      });
+
+      const response = await dispatchAppPage({
+        ...options,
+        findIntercept() {
+          return {
+            matchedParams: { id: "123" },
+            page: { default: "modal-page" },
+            slotKey: "modal@app/feed/@modal",
+            sourceRouteIndex: 1,
+          };
+        },
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? sourceRoute : undefined;
+        },
+      });
+
+      await expect(response.text()).resolves.toBe("preserved");
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
