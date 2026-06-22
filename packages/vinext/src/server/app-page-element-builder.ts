@@ -285,6 +285,7 @@ export async function buildPageElements<
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
+  const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
@@ -293,7 +294,9 @@ export async function buildPageElements<
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+              markDynamic: hasRequestSearchParams,
+            })
           : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, invocationProps);

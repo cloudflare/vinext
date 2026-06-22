@@ -11,19 +11,24 @@ import {
 import type { AppPageSearchParams } from "./app-page-head.js";
 
 type AppPageSearchParamsObservationOptions = {
+  markDynamic?: boolean;
   observeReactPromiseStatus?: boolean;
 };
 
-function markAppPageSearchParamsAccess(): void {
+function markAppPageSearchParamsAccess(markDynamic: boolean): void {
   throwIfInsideCacheScope("searchParams");
-  markDynamicUsage();
+  if (markDynamic) {
+    markDynamicUsage();
+  }
   markRenderRequestApiUsage("searchParams");
 }
 
-export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
+export function createAppPageSearchParamsObserver(
+  options: AppPageSearchParamsObservationOptions = {},
+): ThenableParamsObserver {
   return {
     observeParamAccess() {
-      markAppPageSearchParamsAccess();
+      markAppPageSearchParamsAccess(options.markDynamic !== false);
     },
   };
 }
@@ -32,7 +37,7 @@ export function makeObservedAppPageSearchParamsThenable(
   pageSearchParams: AppPageSearchParams,
   options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParams<AppPageSearchParams> {
-  const observer = createAppPageSearchParamsObserver();
+  const observer = createAppPageSearchParamsObserver(options);
   if (options.observeReactPromiseStatus === true) {
     return makeThenableParams(pageSearchParams, {
       ...observer,

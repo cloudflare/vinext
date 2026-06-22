@@ -540,6 +540,41 @@ describe("buildPageElements", () => {
     ).resolves.toContain("memo slot");
   });
 
+  it("records serialized queryless searchParams without marking client pages dynamic", async () => {
+    const ClientPage = Object.assign(() => null, {
+      $$typeof: Symbol.for("react.client.reference"),
+    });
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(ClientPage),
+      layouts: [],
+      routeSegments: ["client-isr"],
+      pattern: "/client-isr",
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        routePath: "/client-isr",
+        searchParams: new URLSearchParams(),
+      }),
+      pageRequest: {
+        ...createBaseOptions().pageRequest,
+        isRscRequest: true,
+        observePageSearchParamsAccess: true,
+        searchParams: new URLSearchParams(),
+      },
+    });
+    const pageElement = (result as Record<string, React.ReactNode>)["page:/client-isr"];
+    if (!React.isValidElement<{ searchParams: Promise<Record<string, unknown>> }>(pageElement)) {
+      throw new Error("Expected client page element");
+    }
+
+    await pageElement.props.searchParams;
+
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Hello");
