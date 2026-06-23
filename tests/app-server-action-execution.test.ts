@@ -323,6 +323,37 @@ describe("app server action execution helpers", () => {
     errorSpy.mockRestore();
   });
 
+  it("allows deferred root params reads after failed progressive actions", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            return () => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            };
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
   it("reads streamed action text bodies and enforces the byte limit", async () => {
     const validRequest = new Request("https://example.com/action", {
       method: "POST",
@@ -1244,6 +1275,56 @@ describe("app server action execution helpers", () => {
     });
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
     errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after failed fetch actions", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw new Error("action failed");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
+    errorSpy.mockRestore();
+  });
+
+  it("allows deferred root params reads after external action redirects", async () => {
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              redirect("https://other.example/target");
+            });
+          },
+        }),
+      ),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).resolves.toBe("en");
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
@@ -2432,7 +2513,10 @@ describe("app server action execution helpers", () => {
 
       expect(response?.status).toBe(statusCode);
       expect(await response?.text()).toBe("fallback-flight");
-      expect(renderedModel).toEqual({ returnValue: { ok: false, data: fallbackError } });
+      expect(renderedModel).toEqual({
+        root: "dashboard:{}:none",
+        returnValue: { ok: false, data: fallbackError },
+      });
     }
   });
 

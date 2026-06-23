@@ -852,6 +852,7 @@ export async function handleProgressiveServerActionRequest(
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionError: unknown = undefined;
     let actionFailed = false;
+    let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
@@ -862,6 +863,7 @@ export async function handleProgressiveServerActionRequest(
         rootParamsUsage,
       );
     } catch (error) {
+      actionThrew = true;
       actionRedirect = getActionRedirect(error);
       if (!actionRedirect) {
         actionError = error;
@@ -883,10 +885,11 @@ export async function handleProgressiveServerActionRequest(
       }
     } finally {
       options.setHeadersAccessPhase(previousHeadersPhase);
+      if (actionThrew) rootParamsUsage.transitionToRender();
     }
 
     if (!actionRedirect) {
-      rootParamsUsage.transitionToRender();
+      if (!actionThrew) rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
       // apply them to the rendered page response. Mirrors Next.js'
       // `res.setHeader('set-cookie', ...)` path in app-render.tsx, which
@@ -1162,6 +1165,7 @@ export async function handleServerActionRscRequest<
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;
+    let actionThrew = false;
     const actionWasForwarded = Boolean(options.request.headers.get(ACTION_FORWARDED_HEADER));
     const rootParamsUsage = createRootParamsUsageController();
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
@@ -1175,6 +1179,7 @@ export async function handleServerActionRscRequest<
         );
         returnValue = { ok: true, data };
       } catch (error) {
+        actionThrew = true;
         actionRedirect = getActionRedirect(error);
         if (actionRedirect) {
           returnValue = { ok: true, data: undefined };
@@ -1192,6 +1197,7 @@ export async function handleServerActionRscRequest<
       }
     } finally {
       options.setHeadersAccessPhase(previousHeadersPhase);
+      if (actionThrew && !actionWasForwarded) rootParamsUsage.transitionToRender();
     }
 
     if (actionRedirect) {
@@ -1331,13 +1337,13 @@ export async function handleServerActionRscRequest<
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
     );
 
-    // Response status and page rerendering are independent. Next.js skips the
-    // page tree whenever the action did not revalidate (including failed and
-    // HTTP fallback actions), while still returning the action's non-200
-    // status. Forwarded actions also skip because this worker does not own the
-    // page's layout tree.
+    // HTTP access fallbacks always rerender so the page's fallback boundary and
+    // metadata are included. Generic errors only rerender after revalidation.
+    // Forwarded actions never render because this worker does not own the page.
+    const isHttpFallback = actionStatus === 401 || actionStatus === 403 || actionStatus === 404;
     const shouldSkipPageRendering =
-      actionWasForwarded || actionRevalidationKind === ACTION_DID_NOT_REVALIDATE;
+      actionWasForwarded ||
+      (!isHttpFallback && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
     if (shouldSkipPageRendering) {
       const onRenderError = options.createRscOnErrorHandler(
         options.request,
@@ -1372,7 +1378,7 @@ export async function handleServerActionRscRequest<
       );
     }
 
-    rootParamsUsage.transitionToRender();
+    if (!actionThrew) rootParamsUsage.transitionToRender();
 
     const match = options.matchRoute(options.cleanPathname);
     let element: TElement;
