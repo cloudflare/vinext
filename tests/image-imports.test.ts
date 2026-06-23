@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
+import vm from "node:vm";
 import vinext from "../packages/vinext/src/index.js";
 import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import type { Plugin } from "vite-plus";
@@ -42,10 +43,25 @@ describe("vinext:image-imports — resolveId", () => {
 
 // ── load ──────────────────────────────────────────────────────
 describe("vinext:image-imports — load", () => {
+  function createLoadContext(plugin: Plugin) {
+    const watched: string[] = [];
+    return {
+      context: Object.assign(Object.create(plugin), {
+        addWatchFile(filePath: string) {
+          watched.push(filePath);
+        },
+        environment: { config: { command: "build" } },
+      }),
+      watched,
+    };
+  }
+
   it("returns dimensions for a PNG file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
+    expect(watched).toEqual([PNG_PATH]);
     expect(result).toContain("export default");
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
@@ -56,7 +72,9 @@ describe("vinext:image-imports — load", () => {
   it("returns dimensions for a JPEG file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, `\0vinext-image-meta:${JPG_PATH}`);
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, `\0vinext-image-meta:${JPG_PATH}`);
+    expect(watched).toEqual([JPG_PATH]);
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
     expect(dims.width).toBe(8);
@@ -66,7 +84,9 @@ describe("vinext:image-imports — load", () => {
   it("returns 0x0 for non-existent file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, "\0vinext-image-meta:/no/such/file.png");
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, "\0vinext-image-meta:/no/such/file.png");
+    expect(watched).toEqual(["/no/such/file.png"]);
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
     expect(dims.width).toBe(0);
@@ -84,10 +104,11 @@ describe("vinext:image-imports — load", () => {
     const plugin = getImagePlugin();
     plugin._dimCache.clear();
     const load = plugin.load as Function;
-    await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const { context } = createLoadContext(plugin);
+    await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
     expect(plugin._dimCache.has(PNG_PATH)).toBe(true);
     // Second call uses cache (no way to verify directly, but should not throw)
-    const result = await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const result = await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
     expect(result).toContain('"width":4');
   });
 });
@@ -99,13 +120,17 @@ describe("vinext:image-imports — transform", () => {
 
   /**
    * The transform's contract is that an `import X from './pic.png'` becomes a
-   * `const X = { src, width, height, ... }` StaticImageData object, with
-   * dimensions resolved through a sibling `?vinext-meta` import. We verify the
-   * shape, not the synthesized intermediate variable names.
+   * hoisted `var X = { src, width, height, ... }` StaticImageData object, with
+   * dimensions resolved through a sibling `?vinext-meta` import. The binding is
+   * `var` (not `const`) to preserve the hoisting semantics of the import it
+   * replaces — see the "#1975" test below. We verify the shape, not the
+   * synthesized intermediate variable names.
    */
   function expectImageBinding(code: string, name: string, fileBasename: string) {
     expect(code).not.toMatch(new RegExp(`import\\s+${name}\\s+from`));
-    expect(code).toMatch(new RegExp(`const\\s+${name}\\s*=\\s*\\{[^}]*src\\s*:`));
+    expect(code).toMatch(new RegExp(`var\\s+${name}\\s*=\\s*\\{[^}]*src\\s*:`));
+    const urlSpecifier = normalizePathSeparators(path.join(IMAGES_DIR, fileBasename));
+    expect(code).toContain(urlSpecifier + "?vinext-image-url");
     // The meta import specifier uses forward slashes — the transform normalizes
     // the resolved path so generated output is consistent across platforms.
     const metaSpecifier = normalizePathSeparators(path.join(IMAGES_DIR, fileBasename));
@@ -231,7 +256,7 @@ describe("vinext:image-imports — transform", () => {
     // The commented-out import must not produce any synthesized variables.
     expect(result.code).not.toContain("__vinext_img_url_ghost");
     expect(result.code).not.toContain("__vinext_img_meta_ghost");
-    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+    expect(result.code).not.toMatch(/var\s+ghost\s*=/);
     // The comment is preserved verbatim.
     expect(result.code).toContain(`// import ghost from './test-8x6.jpg';`);
   });
@@ -248,7 +273,7 @@ describe("vinext:image-imports — transform", () => {
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
     expect(result.code).not.toContain("__vinext_img_url_ghost");
-    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+    expect(result.code).not.toMatch(/var\s+ghost\s*=/);
   });
 
   it("ignores image-import text inside a string literal", async () => {
@@ -263,7 +288,7 @@ describe("vinext:image-imports — transform", () => {
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
     expect(result.code).not.toContain("__vinext_img_url_ghost");
-    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+    expect(result.code).not.toMatch(/var\s+ghost\s*=/);
   });
 
   it("does not transform named or namespace image imports", async () => {
@@ -347,5 +372,45 @@ describe("vinext:image-imports — transform", () => {
     const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "arrow.ts"));
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
+
+  // Regression (#1975): the synthesized binding must be a hoisted `var`, not a
+  // block-scoped `const`. `import X from './a.png'` is a module-scoped binding
+  // initialized before module-body execution; replacing it with `const X` puts X
+  // in a temporal dead zone until its textual line, so any reference that runs
+  // earlier — a hoisted function called above the import, or circular-import
+  // re-entry — throws `Cannot access 'X' before initialization`. `var` hoists and
+  // has no TDZ, so the forward reference reads `undefined` instead of throwing,
+  // matching the hoisting semantics of the import it replaces.
+  it("emits a hoisted `var` binding so forward references don't hit the TDZ (#1975)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `getHero();`, // top-level call BEFORE the import's textual position
+      `function getHero() {`,
+      `  return hero;`, // hoisted fn closing over the image binding
+      `}`,
+      `import hero from './test-4x3.png';`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+
+    // Output level: the binding is hoisted (`var`), never `const`/`let`.
+    expect(result.code).toMatch(/var\s+hero\s*=/);
+    expect(result.code).not.toMatch(/(?:const|let)\s+hero\s*=/);
+
+    // Behavioral level: execute the rewritten module with the synthesized image
+    // imports stubbed (matched by their ?vinext-* source suffix, not by internal
+    // variable names) and confirm the forward reference no longer throws. Under
+    // the old `const` output this throws "Cannot access 'hero' before
+    // initialization"; under `var`, getHero() returns undefined and nothing throws.
+    const exec = result.code.replace(
+      /import\s+(\w+)\s+from\s+['"][^'"]*\?vinext-(image-url|meta)['"]\s*;/g,
+      (_m: string, name: string, kind: string) =>
+        kind === "meta"
+          ? `const ${name} = { width: 4, height: 3 };`
+          : `const ${name} = "stub-url";`,
+    );
+    expect(() => vm.runInNewContext(exec)).not.toThrow();
   });
 });

@@ -1,23 +1,25 @@
-import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
+import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr } from "./isr-decision.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { readStreamAsText } from "../utils/text-stream.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import {
-  createEmptyAppPageRenderObservationState,
-  type AppPageRenderObservationState,
-} from "./app-page-render-observation.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
+import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+export {
+  finalizeAppPageHtmlCacheResponse,
+  finalizeAppPageRscCacheResponse,
+  scheduleAppPageRscCacheWrite,
+} from "./app-page-cache-finalizer.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -35,10 +37,6 @@ type AppPageRscCacheKeyBuilder = (
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
 ) => string;
-type AppPageRequestCacheLife = {
-  revalidate?: number;
-  expire?: number;
-};
 export type AppPageCacheOutcomeMetric = Readonly<{
   artifact: "html" | "rsc";
   /**
@@ -57,11 +55,6 @@ export type AppPageCacheOutcomeMetric = Readonly<{
     | "stale-empty-entry";
 }>;
 type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
-
-type BuildAppPageCacheRenderObservation = (input: {
-  cacheTags: readonly string[];
-  state: AppPageRenderObservationState;
-}) => RenderObservation;
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
@@ -107,63 +100,19 @@ type ReadAppPageCacheResponseOptions = {
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 };
 
-type FinalizeAppPageHtmlCacheResponseOptions = {
-  capturedDynamicUsageBeforeContextCleanup?: () => boolean;
-  capturedRscDataPromise: Promise<ArrayBuffer> | null;
-  cleanPathname: string;
-  consumeDynamicUsage: () => boolean;
-  consumeRenderObservationState?: () => AppPageRenderObservationState;
-  createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
-  createRscRenderObservation?: BuildAppPageCacheRenderObservation;
-  getPageTags: () => string[];
-  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
+type ReadAppPageFallbackShellCacheResponseOptions = {
+  clearRequestContext: () => void;
+  expireSeconds?: number;
+  fallbackPathname: string;
+  isEdgeRuntime?: boolean;
   isrDebug?: AppPageDebugLogger;
+  isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: AppPageRscCacheKeyBuilder;
-  isrSet: AppPageCacheSetter;
-  interceptionContext?: string | null;
-  preserveClientResponseHeaders?: boolean;
-  expireSeconds?: number;
-  revalidateSeconds: number | null;
-  waitUntil?: (promise: Promise<void>) => void;
+  middlewareHeaders?: Headers | null;
+  middlewareStatus?: number | null;
+  revalidateSeconds: number;
+  rewriteHtml: (html: string) => string;
 };
-
-type ScheduleAppPageRscCacheWriteOptions = {
-  capturedRscDataPromise: Promise<ArrayBuffer> | null;
-  cleanPathname: string;
-  consumeDynamicUsage: () => boolean;
-  consumeRenderObservationState?: () => AppPageRenderObservationState;
-  createRscRenderObservation?: BuildAppPageCacheRenderObservation;
-  dynamicUsedDuringBuild: boolean;
-  getPageTags: () => string[];
-  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
-  isrDebug?: AppPageDebugLogger;
-  isrRscKey: AppPageRscCacheKeyBuilder;
-  isrSet: AppPageCacheSetter;
-  interceptionContext?: string | null;
-  mountedSlotsHeader?: string | null;
-  renderMode?: AppRscRenderMode;
-  preserveClientResponseHeaders?: boolean;
-  expireSeconds?: number;
-  revalidateSeconds: number | null;
-  waitUntil?: (promise: Promise<void>) => void;
-};
-
-/**
- * Apply the CDN cache adapter's headers to a freshly-streamed response whose
- * dynamic-ness is not yet proven.
- *
- * The cacheable `Cache-Control` value computed by the response policy is already
- * present on `headers`; the default adapter replaces it with `no-store` (so the
- * page is served from the origin store on later requests), while an edge adapter
- * may instead emit `CDN-Cache-Control`/`Cache-Tag` so the CDN performs SWR and
- * can be purged by tag. `tags` are the page's render tags (canonicalised).
- */
-function applyPendingDynamicCdnHeaders(headers: Headers, tags?: readonly string[]): void {
-  const cacheable = headers.get("Cache-Control") ?? "";
-  applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
-  setCacheStateHeaders(headers, "MISS");
-}
 
 function recordAppPageCacheOutcome(
   recordCacheOutcome: AppPageCacheOutcomeRecorder | undefined,
@@ -198,14 +147,6 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
   // pathnames match what `revalidatePath`/`revalidateTag` produce after
   // their own encoding pass.
   return tags.map(encodeCacheTag);
-}
-
-function buildAppPageCacheControl(
-  cacheState: BuildAppPageCachedResponseOptions["cacheState"],
-  revalidateSeconds: number,
-  expireSeconds?: number,
-): string {
-  return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);
 }
 
 function buildAppPageCachedHeaders(options: {
@@ -245,32 +186,6 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
   );
 }
 
-function resolveAppPageCacheWritePolicy(options: {
-  expireSeconds?: number;
-  requestCacheLife?: AppPageRequestCacheLife | null;
-  revalidateSeconds: number | null;
-}): { expireSeconds?: number; revalidateSeconds: number } | null {
-  let revalidateSeconds = options.revalidateSeconds;
-  let expireSeconds = options.expireSeconds;
-  const requestCacheLife = options.requestCacheLife;
-
-  if (requestCacheLife?.revalidate !== undefined) {
-    revalidateSeconds =
-      revalidateSeconds === null
-        ? requestCacheLife.revalidate
-        : Math.min(revalidateSeconds, requestCacheLife.revalidate);
-  }
-  if (requestCacheLife?.expire !== undefined) {
-    expireSeconds = requestCacheLife.expire;
-  }
-
-  if (revalidateSeconds === null || Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0) {
-    return null;
-  }
-
-  return { expireSeconds, revalidateSeconds };
-}
-
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
@@ -278,16 +193,13 @@ export function buildAppPageCachedResponse(
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const status = options.middlewareStatus ?? (cachedValue.status || 200);
-  const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds =
-    options.cacheControl === undefined
-      ? undefined
-      : (options.cacheControl.expire ?? options.expireSeconds);
-  const cacheControl = buildAppPageCacheControl(
-    options.cacheState,
-    revalidateSeconds,
-    expireSeconds,
-  );
+  const { cacheControl } = decideIsr({
+    cacheState: options.cacheState,
+    kind: "app-page",
+    revalidateSeconds: options.revalidateSeconds,
+    expireSeconds: options.expireSeconds,
+    cacheControlMeta: options.cacheControl,
+  });
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;
@@ -325,6 +237,58 @@ export function buildAppPageCachedResponse(
     status,
     headers: htmlHeaders,
   });
+}
+
+type ServeAppPageCachedHtmlOptions = {
+  cached: ISRCacheEntry | null;
+  cachedValue: CachedAppPageValue;
+  clearRequestContext: () => void;
+  emptyDebugMessage: string;
+  expireSeconds?: number;
+  isEdgeRuntime?: boolean;
+  isrDebug?: AppPageDebugLogger;
+  middlewareHeaders?: Headers | null;
+  middlewareStatus?: number | null;
+  pathname: string;
+  revalidateSeconds: number;
+  scheduleRegeneration: () => void;
+  stateDebugLabel: string;
+};
+
+async function serveAppPageCachedHtml(
+  options: ServeAppPageCachedHtmlOptions,
+  transformValue?: (value: CachedAppPageValue) => CachedAppPageValue,
+): Promise<Response | null> {
+  if (typeof options.cachedValue.html !== "string" || options.cachedValue.html.length === 0) {
+    if (options.cached?.isStale) {
+      options.scheduleRegeneration();
+    }
+    options.isrDebug?.(options.emptyDebugMessage, options.pathname);
+    return null;
+  }
+
+  const cacheState = options.cached?.isStale ? "STALE" : "HIT";
+  if (options.cached?.isStale) {
+    options.scheduleRegeneration();
+  }
+
+  const responseValue = transformValue ? transformValue(options.cachedValue) : options.cachedValue;
+  const response = buildAppPageCachedResponse(responseValue, {
+    cacheState,
+    cacheControl: options.cached?.value.cacheControl,
+    expireSeconds: options.expireSeconds,
+    isEdgeRuntime: options.isEdgeRuntime,
+    isRscRequest: false,
+    middlewareHeaders: options.middlewareHeaders,
+    middlewareStatus: options.middlewareStatus,
+    revalidateSeconds: options.revalidateSeconds,
+  });
+
+  if (!response) return null;
+
+  options.isrDebug?.(`${cacheState} (${options.stateDebugLabel})`, options.pathname);
+  options.clearRequestContext();
+  return response;
 }
 
 export async function readAppPageCacheResponse(
@@ -408,31 +372,31 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
-      const regenerationKey = options.isRscRequest
-        ? options.isrRscKey(
-            options.cleanPathname,
-            options.mountedSlotsHeader,
-            options.renderMode,
-            options.interceptionContext,
-          )
-        : options.isrHtmlKey(options.cleanPathname);
-
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
-      options.scheduleBackgroundRegeneration(regenerationKey, async () => {
+      //
+      // The regeneration key is derived from exactly the same inputs as `isrKey`
+      // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
+      // reuse it instead of recomputing the hash.
+      options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
         const revalidateSeconds =
           revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
         const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
         const writes = [
           options.isrSet(
-            options.isrRscKey(
-              options.cleanPathname,
-              options.mountedSlotsHeader,
-              options.renderMode,
-              options.interceptionContext,
-            ),
+            // For an RSC request `isrKey` is already the RSC variant key, so
+            // reuse it; an HTML-triggered regen still needs the RSC key here,
+            // computed lazily so a deduped (skipped) regen pays nothing.
+            options.isRscRequest
+              ? isrKey
+              : options.isrRscKey(
+                  options.cleanPathname,
+                  options.mountedSlotsHeader,
+                  options.renderMode,
+                  options.interceptionContext,
+                ),
             buildAppPageCacheValue(
               "",
               revalidatedPage.rscData,
@@ -452,7 +416,7 @@ export async function readAppPageCacheResponse(
           // be regenerated independently by the next full-page HTML request.
           writes.push(
             options.isrSet(
-              options.isrHtmlKey(options.cleanPathname),
+              isrKey,
               buildAppPageCacheValue(
                 revalidatedPage.html,
                 undefined,
@@ -528,198 +492,44 @@ export async function readAppPageCacheResponse(
   return null;
 }
 
-export function finalizeAppPageHtmlCacheResponse(
-  response: Response,
-  options: FinalizeAppPageHtmlCacheResponseOptions,
-): Response {
-  if (!response.body) {
-    return response;
-  }
+export async function readAppPageFallbackShellCacheResponse(
+  options: ReadAppPageFallbackShellCacheResponseOptions,
+): Promise<Response | null> {
+  const isrKey = options.isrHtmlKey(options.fallbackPathname);
 
-  const [streamForClient, streamForCache] = response.body.tee();
-  const htmlKey = options.isrHtmlKey(options.cleanPathname);
-  const rscKey = options.isrRscKey(
-    options.cleanPathname,
-    null,
-    undefined,
-    options.interceptionContext,
-  );
-  const clientHeaders = new Headers(response.headers);
-  if (options.preserveClientResponseHeaders !== true) {
-    // HTML Server Components can access request APIs while the stream is being
-    // consumed. Until that late dynamic check finishes, downstream shared caches
-    // must not cache a response whose ISR policy was known before streaming.
-    // The CDN adapter decides exactly which headers to emit (default: no-store;
-    // edge adapters: no-store for the browser + CDN-Cache-Control/Cache-Tag for the edge).
-    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
-  }
-
-  const cachePromise = (async () => {
-    try {
-      const cachedHtml = await readStreamAsText(streamForCache);
-
-      if (
-        options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
-        options.consumeDynamicUsage()
-      ) {
-        options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
-        return;
-      }
-
-      const cachePolicy = resolveAppPageCacheWritePolicy({
-        expireSeconds: options.expireSeconds,
-        requestCacheLife: options.getRequestCacheLife?.(),
-        revalidateSeconds: options.revalidateSeconds,
-      });
-      if (!cachePolicy) {
-        options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
-        return;
-      }
-
-      const pageTags = options.getPageTags();
-      // This continuation is scheduled while the request ALS scope is active.
-      // It intentionally consumes observation state only after the HTML stream
-      // drains, so late Server Component request API usage is included.
-      // Consume once: HTML and captured RSC artifacts come from the same render
-      // pass, so both cache artifacts share the same observation snapshot.
-      const observationState =
-        options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      const htmlRenderObservation = options.createHtmlRenderObservation?.({
-        cacheTags: pageTags,
-        state: observationState,
-      });
-      const rscRenderObservation = options.createRscRenderObservation?.({
-        cacheTags: pageTags,
-        state: observationState,
-      });
-      const writes = [
-        options.isrSet(
-          htmlKey,
-          buildAppPageCacheValue(cachedHtml, undefined, 200, htmlRenderObservation),
-          cachePolicy.revalidateSeconds,
-          pageTags,
-          cachePolicy.expireSeconds,
-        ),
-      ];
-
-      if (options.capturedRscDataPromise) {
-        writes.push(
-          options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(
-              rscKey,
-              buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
-              cachePolicy.revalidateSeconds,
-              pageTags,
-              cachePolicy.expireSeconds,
-            ),
-          ),
-        );
-      }
-
-      await Promise.all(writes);
-      options.isrDebug?.("HTML cache written", htmlKey);
-    } catch (cacheError) {
-      console.error("[vinext] ISR cache write error:", cacheError);
+  try {
+    const cached = await options.isrGet(isrKey);
+    const cachedValue = getCachedAppPageValue(cached);
+    if (!cachedValue) {
+      options.isrDebug?.("MISS (fallback shell)", options.fallbackPathname);
+      return null;
     }
-  })();
-
-  options.waitUntil?.(cachePromise);
-
-  return new Response(streamForClient, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: clientHeaders,
-  });
-}
-
-export function finalizeAppPageRscCacheResponse(
-  response: Response,
-  options: ScheduleAppPageRscCacheWriteOptions,
-): Response {
-  const didSchedule = scheduleAppPageRscCacheWrite(options);
-  if (!didSchedule) {
-    return response;
-  }
-
-  if (options.preserveClientResponseHeaders === true) {
-    return response;
-  }
-
-  const clientHeaders = new Headers(response.headers);
-  // RSC payloads are also streamed lazily. Until the captured stream proves no
-  // late request API was used, the client-facing MISS response must not enter a
-  // shared cache when the ISR policy was known before streaming. The CDN adapter
-  // decides the exact headers (default: no-store; edge: no-store + CDN-Cache-Control/Cache-Tag).
-  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: clientHeaders,
-  });
-}
-
-export function scheduleAppPageRscCacheWrite(
-  options: ScheduleAppPageRscCacheWriteOptions,
-): boolean {
-  const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild) {
-    return false;
-  }
-
-  const rscKey = options.isrRscKey(
-    options.cleanPathname,
-    options.mountedSlotsHeader,
-    options.renderMode,
-    options.interceptionContext,
-  );
-  const cachePromise = (async () => {
-    try {
-      const rscData = await capturedRscDataPromise;
-
-      // Two-phase dynamic detection:
-      // 1. dynamicUsedDuringBuild catches searchParams-driven opt-in before the
-      //    RSC response is sent.
-      // 2. consumeDynamicUsage() here catches APIs that fire while the RSC
-      //    stream is consumed (headers(), cookies(), noStore()).
-      if (options.consumeDynamicUsage()) {
-        options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
-        return;
-      }
-
-      const cachePolicy = resolveAppPageCacheWritePolicy({
-        expireSeconds: options.expireSeconds,
-        requestCacheLife: options.getRequestCacheLife?.(),
-        revalidateSeconds: options.revalidateSeconds,
-      });
-      if (!cachePolicy) {
-        options.isrDebug?.("RSC cache write skipped (no cache policy)", rscKey);
-        return;
-      }
-
-      const pageTags = options.getPageTags();
-      // This continuation is scheduled while the request ALS scope is active.
-      // It intentionally consumes observation state only after the captured RSC
-      // stream resolves, so late Server Component request API usage is included.
-      const observationState =
-        options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      const rscRenderObservation = options.createRscRenderObservation?.({
-        cacheTags: pageTags,
-        state: observationState,
-      });
-      await options.isrSet(
-        rscKey,
-        buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
-        cachePolicy.revalidateSeconds,
-        pageTags,
-        cachePolicy.expireSeconds,
-      );
-      options.isrDebug?.("RSC cache written", rscKey);
-    } catch (cacheError) {
-      console.error("[vinext] ISR RSC cache write error:", cacheError);
+    if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
+      options.isrDebug?.("MISS (dynamic fallback shell requires resume)", options.fallbackPathname);
+      return null;
     }
-  })();
 
-  options.waitUntil?.(cachePromise);
-  return true;
+    return await serveAppPageCachedHtml(
+      {
+        cached,
+        cachedValue,
+        clearRequestContext: options.clearRequestContext,
+        emptyDebugMessage: "MISS (empty fallback shell)",
+        expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
+        isrDebug: options.isrDebug,
+        middlewareHeaders: options.middlewareHeaders,
+        middlewareStatus: options.middlewareStatus,
+        pathname: options.fallbackPathname,
+        revalidateSeconds: options.revalidateSeconds,
+        scheduleRegeneration() {},
+        stateDebugLabel: "fallback shell",
+      },
+      (value) => ({ ...value, html: options.rewriteHtml(value.html) }),
+    );
+  } catch (isrReadError) {
+    options.isrDebug?.("MISS (fallback shell read error)", options.fallbackPathname);
+    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return null;
+  }
 }

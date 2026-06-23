@@ -3,6 +3,7 @@ import { getOrCreateAls } from "./internal/als-registry.js";
 
 export type PprFallbackShellState = {
   abortController: AbortController;
+  reactAbortController: AbortController;
   // Incremented on every warmup->final transition so that cache tasks tracked
   // in an earlier phase no longer touch the (reset) `pendingCacheTasks` counter
   // when they settle late.
@@ -10,6 +11,7 @@ export type PprFallbackShellState = {
   cacheReadyResolvers: Array<() => void>;
   fallbackParamNames: ReadonlySet<string>;
   hasDynamicBoundary: boolean;
+  isFinalRenderStarted: boolean;
   isAbortScheduled: boolean;
   pendingAbortCleanup: (() => void) | null;
   pendingCacheReadyCleanup: (() => void) | null;
@@ -92,6 +94,7 @@ function scheduleCacheReadyIfSettled(state: PprFallbackShellState): void {
 function scheduleAbortIfReady(state: PprFallbackShellState): void {
   if (
     state.phase !== "final" ||
+    !state.isFinalRenderStarted ||
     !state.hasDynamicBoundary ||
     state.pendingCacheTasks > 0 ||
     state.pendingCacheReadyCleanup !== null ||
@@ -109,8 +112,9 @@ function scheduleAbortIfReady(state: PprFallbackShellState): void {
       state.hasDynamicBoundary &&
       state.pendingCacheTasks === 0 &&
       state.pendingCacheReadyCleanup === null &&
-      !state.abortController.signal.aborted
+      !state.reactAbortController.signal.aborted
     ) {
+      state.reactAbortController.abort();
       state.abortController.abort();
     }
   });
@@ -137,12 +141,15 @@ function ignoreCacheTask(state: PprFallbackShellState, task: PprFallbackShellCac
 export function createPprFallbackShellState(
   options: CreatePprFallbackShellStateOptions,
 ): PprFallbackShellState {
+  const abortController = new AbortController();
   return {
-    abortController: new AbortController(),
+    abortController,
+    reactAbortController: abortController,
     cacheEpoch: 0,
     cacheReadyResolvers: [],
     fallbackParamNames: new Set(options.fallbackParamNames),
     hasDynamicBoundary: false,
+    isFinalRenderStarted: false,
     isAbortScheduled: false,
     pendingAbortCleanup: null,
     pendingCacheReadyCleanup: null,
@@ -196,6 +203,20 @@ export function createPprFallbackShellSuspensePromiseForState<T>(
   state: PprFallbackShellState,
   expression: string,
 ): Promise<T> {
+  markPprFallbackShellDynamicBoundaryForState(state);
+  if (state.phase === "final") {
+    scheduleAbortIfReady(state);
+  }
+  const promise = makeHangingPromise<T>(
+    state.abortController.signal,
+    state.routePattern,
+    expression,
+  );
+  promise.catch(noop);
+  return promise;
+}
+
+function markPprFallbackShellDynamicBoundaryForState(state: PprFallbackShellState): void {
   state.hasDynamicBoundary = true;
   for (const task of pprFallbackShellCacheTaskStackAls.getStore() ?? []) {
     ignoreCacheTask(state, task);
@@ -208,16 +229,12 @@ export function createPprFallbackShellSuspensePromiseForState<T>(
   // `waitForPprFallbackShellCacheReady` settle. The call is a no-op while
   // `pendingCacheTasks > 0`, so in-scope work still holds the shell open.
   scheduleCacheReadyIfSettled(state);
-  if (state.phase === "final") {
-    scheduleAbortIfReady(state);
-  }
-  const promise = makeHangingPromise<T>(
-    state.abortController.signal,
-    state.routePattern,
-    expression,
-  );
-  promise.catch(noop);
-  return promise;
+}
+
+export function markPprFallbackShellDynamicBoundary(): void {
+  const state = getPprFallbackShellState();
+  if (state === null || state.fallbackParamNames.size === 0) return;
+  markPprFallbackShellDynamicBoundaryForState(state);
 }
 
 export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
@@ -244,14 +261,22 @@ export function preparePprFallbackShellFinalRender(state: PprFallbackShellState)
     state.pendingAbortCleanup = null;
   }
   state.abortController = new AbortController();
+  state.reactAbortController = new AbortController();
   // Bump the epoch so any warmup cache task still in flight no longer
   // decrements the reset counter when it settles.
   state.cacheEpoch++;
   state.cacheReadyResolvers.length = 0;
   state.hasDynamicBoundary = false;
+  state.isFinalRenderStarted = false;
   state.isAbortScheduled = false;
   state.pendingCacheTasks = 0;
   state.phase = "final";
+}
+
+export function beginPprFallbackShellFinalRender(state: PprFallbackShellState): void {
+  if (state.phase !== "final") return;
+  state.isFinalRenderStarted = true;
+  scheduleAbortIfReady(state);
 }
 
 export function isPprFallbackShellAbortError(error: unknown): boolean {

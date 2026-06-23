@@ -26,6 +26,7 @@ export type ApplyAppMiddlewareOptions = {
    * INTERNAL_HEADERS and is stripped before this function runs.
    */
   isDataRequest?: boolean;
+  filePath?: string;
   isProxy: boolean;
   module: MiddlewareModule;
   request: Request;
@@ -236,6 +237,13 @@ export async function applyAppMiddleware(
   if (!forwarded.applied) {
     const result = await executeMiddleware({
       basePath: options.basePath,
+      // The App Router only reaches middleware when the request was under
+      // basePath (already stripped by normalizeRscRequest) or basePath is
+      // empty — see the basePathState comment in app-rsc-handler.ts. The
+      // request URL here is basePath-stripped, so hadBasePath cannot be
+      // derived from it and must be asserted explicitly.
+      hadBasePath: true,
+      filePath: options.filePath,
       i18nConfig: options.i18nConfig,
       isDataRequest: options.isDataRequest,
       isProxy: options.isProxy,

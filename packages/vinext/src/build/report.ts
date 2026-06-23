@@ -20,11 +20,11 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
+import { findDir } from "../utils/project.js";
 import type { LayoutBuildClassification } from "./layout-classification-types.js";
 import type { PrerenderResult } from "./prerender.js";
 
@@ -747,27 +747,14 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   return lines.join("\n");
 }
 
-// ─── Directory detection ──────────────────────────────────────────────────────
-
-export function findDir(root: string, ...candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    const full = path.join(root, candidate);
-    try {
-      if (fs.statSync(full).isDirectory()) return full;
-    } catch {
-      // not found or not a directory — try next candidate
-    }
-  }
-  return null;
-}
-
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
  * Scans the project at `root`, classifies all routes, and prints the
  * Next.js-style build report to stdout.
  *
- * Called at the end of `vinext build` in cli.ts.
+ * `root` must be forward-slash — it is passed to `findDir`. The caller (the
+ * `vinext build` entry in cli.ts) normalizes it.
  */
 export async function printBuildReport(options: {
   root: string;

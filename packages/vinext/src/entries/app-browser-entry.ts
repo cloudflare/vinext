@@ -1,7 +1,11 @@
 import { resolveClientRuntimeModule, resolveRuntimeEntryModule } from "./runtime-entry-module.js";
-import type { VinextLinkPrefetchRoute } from "../client/vinext-next-data.js";
+import type {
+  VinextLinkPrefetchRoute,
+  VinextPagesLinkPrefetchRoute,
+} from "../client/vinext-next-data.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { NextRewrite } from "../config/next-config.js";
 
 /**
  * Generate the virtual browser entry module.
@@ -13,16 +17,28 @@ import type { RouteManifest } from "../routing/app-route-graph.js";
 export function generateBrowserEntry(
   routes: readonly AppRoute[] = [],
   routeManifest: RouteManifest | null = null,
+  pagesPrefetchRoutes: readonly VinextPagesLinkPrefetchRoute[] = [],
+  rewrites: { afterFiles: NextRewrite[]; beforeFiles: NextRewrite[]; fallback: NextRewrite[] } = {
+    afterFiles: [],
+    beforeFiles: [],
+    fallback: [],
+  },
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
-  const prefetchRoutes: VinextLinkPrefetchRoute[] = routes
-    .filter(isLinkPrefetchRoute)
-    .map(toLinkPrefetchRoute);
+  const prefetchRoutes: VinextLinkPrefetchRoute[] = routes.map((route) =>
+    isLinkPrefetchRoute(route) ? toLinkPrefetchRoute(route) : toDocumentOnlyAppRoute(route),
+  );
 
   return `import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
+// Pages route manifest for hybrid ownership decisions. In a hybrid
+// app+pages build the user can land on an App page, so the App browser
+// entry must also expose the Pages manifest (the Pages client entry does
+// the same — whichever entry runs first emits both globals).
+window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
+window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(rewrites)};
 registerNavigationRuntimeBootstrap({
     routeManifest: ${buildRouteManifestExpression(routeManifest)}
 });
@@ -38,6 +54,15 @@ import ${JSON.stringify(entryPath)};`;
 export function isLinkPrefetchRoute(route: AppRoute): boolean {
   if (route.pagePath !== null) return true;
   return route.routePath === null && route.layouts.length > 0;
+}
+
+export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
+  return {
+    canPrefetchLoadingShell: false,
+    documentOnly: true,
+    patternParts: [...route.patternParts],
+    isDynamic: route.isDynamic,
+  };
 }
 
 /** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */

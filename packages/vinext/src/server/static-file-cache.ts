@@ -23,6 +23,7 @@ export const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css",
   ".html": "text/html",
   ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -264,13 +265,32 @@ export class StaticFileCache {
 export function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
   const lastDash = basename.lastIndexOf("-");
-  if (lastDash === -1 || lastDash === basename.length - 1) return null;
-  const suffix = basename.slice(lastDash + 1);
-  // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers.
-  // If Rolldown changes its hash length, update this range.
-  return suffix.length >= 6 && suffix.length <= 12 && /^[A-Za-z0-9_-]+$/.test(suffix)
-    ? `W/"${suffix}"`
-    : null;
+  if (lastDash !== -1 && lastDash !== basename.length - 1) {
+    const suffix = basename.slice(lastDash + 1);
+    // Vite emits 8-char base64url hashes; allow 6-12 for other bundlers.
+    // If Rolldown changes its hash length, update this range.
+    if (suffix.length >= 6 && suffix.length <= 12 && /^[A-Za-z0-9_-]+$/.test(suffix)) {
+      return `W/"${suffix}"`;
+    }
+  }
+
+  // vinext-managed static image imports use Next-shaped dot-delimited names:
+  // `_next/static/media/name.<sha256-8>.<ext>`. Restrict this alternate form
+  // to that managed directory so arbitrary static files such as
+  // `_next/static/config.deadbeef.json` cannot receive a stale hash ETag.
+  const normalizedPath = normalizePathSeparators(relativePath);
+  const managedMediaSegment = `${ASSET_PREFIX_URL_DIR}/media/`;
+  const isManagedMedia =
+    normalizedPath.startsWith(managedMediaSegment) ||
+    normalizedPath.includes(`/${managedMediaSegment}`);
+  if (isManagedMedia) {
+    const lastDot = basename.lastIndexOf(".");
+    if (lastDot !== -1) {
+      const suffix = basename.slice(lastDot + 1);
+      if (/^[0-9a-f]{8}$/.test(suffix)) return `W/"${suffix}"`;
+    }
+  }
+  return null;
 }
 
 function buildVariant(

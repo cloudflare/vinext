@@ -29,15 +29,15 @@ import {
   getDataCacheHandler,
   type CacheHandlerValue,
   type IncrementalCacheValue,
-} from "./cache.js";
+} from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 // The edge adapter lives with the Cloudflare integration; the resolver below
 // imports it to use as the built-in default when a request-context host cache
 // is present.
 import { CloudflareCdnCacheAdapter } from "@vinext/cloudflare/cache/cdn-adapter.runtime";
 
-/** A map of response header name -> value the adapter wants applied. */
-export type CdnResponseHeaders = Record<string, string>;
+/** A map of response header name -> value the adapter wants applied or removed. */
+export type CdnResponseHeaders = Record<string, string | null>;
 
 export type CdnCacheableHeaderInput = {
   /**
@@ -97,9 +97,9 @@ export type CdnCacheAdapter = {
   ): Promise<void>;
 
   /**
-   * Build the response cache headers for a given cacheable policy. Returns a map
-   * so an adapter can emit more than one header (e.g. `Cache-Control` +
-   * `CDN-Cache-Control`).
+   * Build the response cache headers for a given policy. Returns a map so an
+   * adapter can emit more than one header (e.g. `Cache-Control` +
+   * `CDN-Cache-Control`) and remove stale adapter-owned headers with `null`.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 

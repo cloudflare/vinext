@@ -45,6 +45,14 @@ function appendDerivedTags(tags: string[], routePath: string): void {
   }
 }
 
+export function buildAppPageTags(
+  cleanPathname: string,
+  extraTags: string[],
+  routeSegments: readonly string[],
+): string[] {
+  return buildPageCacheTags(cleanPathname, extraTags, [...routeSegments], "page");
+}
+
 export function buildPageCacheTags(
   pathname: string,
   extraTags: string[],

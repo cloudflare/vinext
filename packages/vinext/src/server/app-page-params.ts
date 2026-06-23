@@ -73,3 +73,23 @@ export function resolveAppPageSegmentParams(
 
   return segmentParams;
 }
+
+export function resolveAppPageBranchParams(
+  branchSegments: readonly string[],
+  treePosition: number,
+  matchedParams: AppPageParams,
+  scopedSegments: readonly string[] = branchSegments,
+): AppPageParams {
+  const branchParamNames = new Set(
+    branchSegments.map(getAppPageSegmentParamName).filter((name): name is string => name !== null),
+  );
+  const scopedParams: AppPageParams = {};
+  for (const [name, value] of Object.entries(matchedParams)) {
+    if (!branchParamNames.has(name)) scopedParams[name] = value;
+  }
+  Object.assign(
+    scopedParams,
+    resolveAppPageSegmentParams(scopedSegments, treePosition, matchedParams),
+  );
+  return scopedParams;
+}

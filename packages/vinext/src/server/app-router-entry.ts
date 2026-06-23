@@ -35,12 +35,17 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
-import { resolveStaticAssetSignal } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
+import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
+import {
+  readTrustedPrerenderRouteParams,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -79,19 +84,10 @@ async function handleRequest(
 ): Promise<Response> {
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
-  // Register the config-driven image optimizer (images.optimizer in vite.config)
-  // so /_next/image can transform via the configured backend (e.g. Cloudflare
-  // Images). A no-op when nothing is configured.
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
   const url = new URL(request.url);
 
-  // Image optimization. When an optimizer is configured AND the ASSETS binding is
-  // available to read source images, handle /_next/image here using the
-  // configured transform backend — no custom worker entry needed. Without a
-  // configured optimizer, fall through to the RSC handler, which 302-redirects to
-  // the original asset (unoptimized passthrough). The allowed widths and security
-  // headers come from next.config `images`, inlined into the RSC entry.
   if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
     const assetFetcher = env.ASSETS;
     return handleConfiguredImageOptimization(
@@ -121,20 +117,28 @@ async function handleRequest(
     return badRequestResponse();
   }
 
-  // Invalid `_next/static/*` paths short-circuit with a plain-text 404
-  // instead of falling through to the RSC handler (which would render the
-  // full HTML 404 page). Valid assets are served by Cloudflare's ASSETS
-  // binding BEFORE the worker is invoked; only misses reach this code.
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  if (isNextStaticPath(url.pathname, __workerBasePath, __workerAssetPathPrefix)) {
-    return notFoundStaticAssetResponse();
-  }
+  // Valid assets are served by Cloudflare's ASSETS binding before the worker
+  // is invoked. Missing asset-shaped requests still need to reach middleware
+  // so it can rewrite or respond; a final 404 is converted back to Next.js's
+  // canonical plain-text static-file response below.
+  const missingBuildAsset = isNextStaticPath(
+    url.pathname,
+    __workerBasePath,
+    __workerAssetPathPrefix,
+  );
 
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before the RSC handler runs.
   // Builds a new Headers — Request.headers is immutable in Workers.
   {
+    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
     const filteredHeaders = filterInternalHeaders(request.headers);
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+      prerenderRouteParamsPayload,
+    );
+    if (prerenderRouteParamsHeader !== null) {
+      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+    }
     request = cloneRequestWithHeaders(request, filteredHeaders);
   }
 
@@ -151,19 +155,20 @@ async function handleRequest(
   const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
   if (result instanceof Response) {
+    let response = result;
     if (env?.ASSETS) {
       const assetFetcher = env.ASSETS;
-      const assetResponse = await resolveStaticAssetSignal(result, {
+      const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path) =>
           Promise.resolve(assetFetcher.fetch(new Request(new URL(path, request.url)))),
       });
-      if (assetResponse) return assetResponse;
+      if (assetResponse) response = assetResponse;
     }
-    return result;
+    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
   }
 
   if (result === null || result === undefined) {
-    return notFoundResponse();
+    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
   }
 
   return new Response(String(result), { status: 200 });

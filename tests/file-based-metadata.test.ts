@@ -847,3 +847,81 @@ describe("applyFileBasedMetadata", () => {
     expect(html).not.toContain("https://mydomain.com/dynamic/big");
   });
 });
+
+// Regression for cloudflare/vinext#1968 — twitter:app:* tags must only be
+// emitted when the resolved card type is exactly "app", and individual id/url
+// tags must use truthy (not !== undefined) checks so falsy ids/urls (0, "")
+// are skipped.
+// Ported from Next.js: packages/next/src/lib/metadata/metadata.tsx
+describe("twitter app card gating (#1968)", () => {
+  it("does not emit twitter:app:* tags when card type is not 'app'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        // No `card` set -> not an app card, so no app:* tags.
+        app: {
+          name: "My App",
+          id: { iphone: "id123", ipad: "id123", googleplay: "com.example.app" },
+          url: {
+            iphone: "https://example.com/iphone",
+            ipad: "https://example.com/ipad",
+            googleplay: "https://example.com/android",
+          },
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).not.toContain("twitter:app:name");
+    expect(html).not.toContain("twitter:app:id");
+    expect(html).not.toContain("twitter:app:url");
+  });
+
+  it("skips falsy app ids but emits truthy ones when card is 'app'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        card: "app",
+        app: {
+          name: "My App",
+          id: { iphone: 0, ipad: "", googleplay: "999" },
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card" content="app"');
+    expect(html).not.toContain("twitter:app:id:iphone");
+    expect(html).not.toContain("twitter:app:id:ipad");
+    expect(html).toContain('name="twitter:app:id:googleplay" content="999"');
+  });
+
+  it("does not emit twitter:player:* tags when card type is not 'player'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        // No `card` set -> not a player card, so no player:* tags.
+        players: {
+          playerUrl: "https://example.com/player",
+          streamUrl: "https://example.com/stream",
+          width: 640,
+          height: 480,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).not.toContain("twitter:player");
+  });
+
+  it("emits twitter:player:* tags when card is 'player'", () => {
+    const metadata: Metadata = {
+      twitter: {
+        card: "player",
+        players: {
+          playerUrl: "https://example.com/player",
+          streamUrl: "https://example.com/stream",
+          width: 640,
+          height: 480,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(createElement(MetadataHead, { metadata }));
+    expect(html).toContain('name="twitter:card" content="player"');
+    expect(html).toContain("twitter:player:stream");
+  });
+});

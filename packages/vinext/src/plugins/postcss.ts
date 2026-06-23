@@ -1,7 +1,11 @@
 import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { importExportWithCommonJsFallback } from "../utils/commonjs-loader.js";
+
+async function loadPluginExport(resolvedPath: string): Promise<unknown> {
+  return importExportWithCommonJsFallback(resolvedPath);
+}
 
 /**
  * PostCSS config file names to search for, in priority order.
@@ -91,8 +95,7 @@ async function resolvePostcssStringPluginsUncached(
         return undefined;
       }
     }
-    const mod = await import(pathToFileURL(configPath).href);
-    config = mod.default ?? mod;
+    config = await importExportWithCommonJsFallback(configPath);
   } catch {
     // If we can't load the config, let Vite/postcss-load-config handle it
     return undefined;
@@ -117,8 +120,7 @@ async function resolvePostcssStringPluginsUncached(
       config.plugins.filter(Boolean).map(async (plugin: unknown) => {
         if (typeof plugin === "string") {
           const resolved = req.resolve(plugin);
-          const mod = await import(pathToFileURL(resolved).href);
-          const fn = mod.default ?? mod;
+          const fn = await loadPluginExport(resolved);
           // If the export is a function, call it to get the plugin instance
           return typeof fn === "function" ? fn() : fn;
         }
@@ -126,8 +128,7 @@ async function resolvePostcssStringPluginsUncached(
         if (Array.isArray(plugin) && typeof plugin[0] === "string") {
           const [name, options] = plugin;
           const resolved = req.resolve(name);
-          const mod = await import(pathToFileURL(resolved).href);
-          const fn = mod.default ?? mod;
+          const fn = await loadPluginExport(resolved);
           return typeof fn === "function" ? fn(options) : fn;
         }
         // Already a function or plugin object — pass through

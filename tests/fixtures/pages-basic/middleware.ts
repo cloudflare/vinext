@@ -62,6 +62,22 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(target);
   }
 
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware.js
+  if (url.pathname === "/api/edge-search-params") {
+    const target = request.nextUrl.clone();
+    target.searchParams.set("foo", "bar");
+    return NextResponse.rewrite(target);
+  }
+
+  if (url.pathname.startsWith("/edge-api-rewrite/")) {
+    const id = url.pathname.slice("/edge-api-rewrite/".length);
+    const target = request.nextUrl.clone();
+    target.pathname = `/api/edge-users/${id}`;
+    target.searchParams.set("foo", "bar");
+    return NextResponse.rewrite(target);
+  }
+
   // Issue #1342 / Next.js parity (test/e2e/middleware-rewrites
   //   "should clear query parameters"):
   // when middleware modifies `request.nextUrl.searchParams` (delete keys) and
@@ -253,6 +269,8 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    "/api/edge-search-params",
+    "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {
       source: "/mw-object-gated",

@@ -8,19 +8,18 @@ import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
   ServerInsertedHTMLContext,
-  appRouterInstance,
   clearServerInsertedHTML,
   getBfcacheIdMapContext,
+  registerServerInsertedHTMLCallback,
   renderServerInsertedHTML,
   setNavigationContext,
-  useServerInsertedHTML,
-} from "vinext/shims/navigation";
+} from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
@@ -33,21 +32,27 @@ import {
   escapeHtmlAttr,
   safeJsonStringify,
 } from "./html.js";
+import { renderBeforeInteractiveInlineScripts } from "./before-interactive-head.js";
 import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
 } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed, type AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import DefaultGlobalError from "vinext/shims/default-global-error";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -76,6 +81,116 @@ export type FontData = {
   styles?: string[];
   preloads?: FontPreload[];
 };
+
+type StaticPrerender = typeof import("react-dom/static.edge").prerender;
+
+function isReactDevelopmentRuntime(): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+  if (process.env.NODE_ENV === "development") {
+    return true;
+  }
+  return Function.prototype.toString.call(createReactElement).includes("getOwner");
+}
+
+function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPrerender } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "prerender" in value &&
+    typeof value.prerender === "function"
+  );
+}
+
+async function loadStaticPrerender(): Promise<StaticPrerender> {
+  // Prefer the stable ESM entry in all environments. Future React dev builds
+  // may export prerender() here, so this is the first path we attempt.
+  const staticRenderer: unknown = await import("react-dom/static.edge");
+  if (isStaticPrerenderModule(staticRenderer)) {
+    return staticRenderer.prerender;
+  }
+
+  // Fallback: React development builds historically did not export prerender()
+  // from the ESM entry, so reach into the CJS artifact. The path is fragile
+  // because it depends on React's internal file layout, but it is only used
+  // when the stable ESM entry does not provide prerender().
+  if (isReactDevelopmentRuntime()) {
+    try {
+      const [{ createRequire }, path] = await Promise.all([
+        import("node:module"),
+        import("node:path"),
+      ]);
+      const require = createRequire(import.meta.url);
+      const reactDomPackageJson = require.resolve("react-dom/package.json");
+      const reactDomDir = path.dirname(reactDomPackageJson);
+      const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
+      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
+      if (isStaticPrerenderModule(devRenderer)) {
+        return devRenderer.prerender;
+      }
+      // Node.js ESM import of a CJS module wraps the exports in `default`.
+      const devRendererDefault =
+        typeof devRenderer === "object" &&
+        devRenderer !== null &&
+        "default" in devRenderer &&
+        devRenderer.default;
+      if (isStaticPrerenderModule(devRendererDefault)) {
+        return devRendererDefault.prerender;
+      }
+      throw new Error("react-dom development renderer did not expose prerender().");
+    } catch (error) {
+      throw new Error("[vinext] Failed to load React static development renderer.", {
+        cause: error,
+      });
+    }
+  }
+
+  throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
+}
+
+function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(html));
+      controller.close();
+    },
+  });
+}
+
+function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string): string {
+  if (!bootstrapModuleUrl) return "";
+  return (
+    `<script type="module"${createNonceAttribute(nonce)} src="` +
+    escapeHtmlAttr(bootstrapModuleUrl) +
+    '" id="_R_" async=""></script>'
+  );
+}
+
+function renderSsrErrorDocumentShell(
+  bootstrapModuleUrl?: string,
+  nonce?: string,
+): ReadableStream<Uint8Array> {
+  const html = renderToStaticMarkup(
+    createReactElement(DefaultGlobalError, {
+      error: null,
+    }),
+  ).replace("<style>", '<style data-vinext-error-shell-style="">');
+  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce);
+  if (!bootstrapScript) {
+    return createUtf8Stream(`<!DOCTYPE html>${html}`);
+  }
+
+  const documentClose = "</body></html>";
+  if (!html.endsWith(documentClose)) {
+    return createUtf8Stream(`<!DOCTYPE html>${html}${bootstrapScript}`);
+  }
+
+  return createUtf8Stream(
+    `<!DOCTYPE html>${html.slice(0, -documentClose.length)}${bootstrapScript}${documentClose}`,
+  );
+}
 
 const clientReferencePreloader = createClientReferencePreloader({
   getReferences() {
@@ -122,54 +237,6 @@ function renderInsertedHtml(insertedElements: readonly unknown[]): string {
   return insertedHTML;
 }
 
-/**
- * Render captured `<Script strategy="beforeInteractive">` inline scripts to
- * HTML, ready to splice immediately after `<head ...>` opens. Each entry has
- * already had its inline content escaped via `escapeInlineContent(..., "script")`
- * inside the Script shim, so this function only quotes the attributes that
- * actually go on the tag (id, nonce, plus the residual passthroughs).
- *
- * Keeping this function colocated with the rest of the head-injection
- * helpers makes it obvious where the boundary is: anything passed through
- * here is being concatenated directly into HTML; treat the inputs
- * accordingly.
- */
-// Conservative subset of the HTML attribute-name grammar. Must start with a
-// letter and contain only letters, digits, underscores, hyphens, or dots —
-// enough to round-trip data-* and standard attributes (`async`, `defer`,
-// `type`, `crossorigin`, etc.) without ever splicing a `"`/`>`/whitespace
-// into the unquoted *name* position where escaping wouldn't help.
-const VALID_ATTR_NAME = /^[a-zA-Z][\w.-]*$/;
-
-function renderBeforeInteractiveInlineScripts(
-  scripts: readonly BeforeInteractiveInlineScript[],
-): string {
-  if (scripts.length === 0) return "";
-  let html = "";
-  for (const script of scripts) {
-    let attrs = "";
-    if (script.id) {
-      attrs += ` id="${escapeHtmlAttr(script.id)}"`;
-    }
-    attrs += createNonceAttribute(script.nonce);
-    if (script.attributes) {
-      for (const [key, value] of Object.entries(script.attributes)) {
-        // Attribute *values* go through escapeHtmlAttr below. The *name*
-        // can't be escaped — a malformed key would break the tag — so we
-        // gate at the boundary instead of trying to neutralise it.
-        if (!VALID_ATTR_NAME.test(key)) continue;
-        if (value === true) {
-          attrs += ` ${key}`;
-        } else if (typeof value === "string") {
-          attrs += ` ${key}="${escapeHtmlAttr(value)}"`;
-        }
-      }
-    }
-    html += `<script${attrs}>${script.innerHTML}</script>`;
-  }
-  return html;
-}
-
 function renderFontHtml(
   fontData?: FontData,
   nonce?: string,
@@ -182,11 +249,11 @@ function renderFontHtml(
   const includeStyles = options.includeStyles ?? true;
 
   for (const url of fontData.links ?? []) {
-    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(url)}" />\n`;
+    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(url))}" />\n`;
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
@@ -285,6 +352,7 @@ export async function handleSsr(
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    pprFallbackShellSignal?: AbortSignal;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -306,6 +374,7 @@ export async function handleSsr(
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
+    fallbackToErrorDocumentOnShellError?: boolean;
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
@@ -352,6 +421,13 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
+          const bfcacheMaps = createInitialBfcacheMaps({
+            elements,
+            metadata,
+            // Normalized inside the function to match the client navigation
+            // snapshot pathname (SSR/client Activity key parity).
+            pathname: ssrNavigationContext.pathname,
+          });
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
@@ -359,14 +435,7 @@ export async function handleSsr(
           );
           const stateKeyTree = createReactElement(
             BfcacheStateKeyMapContext.Provider,
-            {
-              value: createBfcacheSegmentStateKeyMap({
-                elements,
-                // Normalized inside the function to match the client navigation
-                // snapshot pathname (SSR/client Activity key parity).
-                pathname: ssrNavigationContext.pathname,
-              }),
-            },
+            { value: bfcacheMaps.stateKeys },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -378,7 +447,7 @@ export async function handleSsr(
           return BfcacheIdMapContext
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
-                { value: createInitialBfcacheIdMap(elements) },
+                { value: bfcacheMaps.bfcacheIds },
                 stateKeyTree,
               )
             : stateKeyTree;
@@ -388,14 +457,14 @@ export async function handleSsr(
         const root = AppRouterContext
           ? createReactElement(
               AppRouterContext.Provider,
-              { value: appRouterInstance },
+              { value: ssrAppRouterInstance },
               flightRootElement,
             )
           : flightRootElement;
         const ssrTree = ServerInsertedHTMLContext
           ? createReactElement(
               ServerInsertedHTMLContext.Provider,
-              { value: useServerInsertedHTML },
+              { value: registerServerInsertedHTMLCallback },
               root,
             )
           : root;
@@ -440,11 +509,19 @@ export async function handleSsr(
         const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent(
           "index",
         );
+        // Keep the bootstrap URL exactly as emitted by plugin-rsc. Appending a
+        // deployment query here happens after Vite has generated the client
+        // module graph, so the bootstrap entry gets a different module identity
+        // from references to the same entry inside that graph. That splits the
+        // React/RSC client singleton state and breaks hydration and server-action
+        // FormData encoding. Normal built assets are versioned earlier through
+        // Vite's renderBuiltUrl hook.
         const bootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
         const errorMetaRenderer = createSsrErrorMetaRenderer({
           basePath: options?.basePath,
         });
 
+        const pprFallbackShellSignal = options?.pprFallbackShellSignal;
         // React emits a preload `Link` header (capped to `maxHeadersLength`)
         // via `onHeaders`. It fires before the shell resolves, so `linkHeader`
         // is populated by the time `renderToReadableStream` resolves below.
@@ -456,16 +533,7 @@ export async function handleSsr(
         const maxHeadersLength = options?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
         const captureHeaders = maxHeadersLength > 0;
 
-        const ssrRenderOptions: SsrRenderOptions = {
-          onHeaders: captureHeaders
-            ? (headers: Headers) => {
-                const link = headers.get("Link");
-                if (link) {
-                  reactLinkHeader = link;
-                }
-              }
-            : undefined,
-          maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
+        const renderOptions: SsrRenderOptions = {
           // `bootstrapScriptContent` was previously how vinext injected the
           // dynamic-import call. `bootstrapModules` performs the same work
           // natively (and exposes the URL in the DOM), so passing both would
@@ -484,7 +552,20 @@ export async function handleSsr(
           bootstrapModules: bootstrapModuleUrl ? [bootstrapModuleUrl] : undefined,
           formState: options?.formState ?? null,
           nonce: options?.scriptNonce,
-          onError(error) {
+          onHeaders: captureHeaders
+            ? (headers: Headers) => {
+                const link = headers.get("Link");
+                if (link) {
+                  reactLinkHeader = link;
+                }
+              }
+            : undefined,
+          maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
+          onError(error: unknown) {
+            if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
+              return undefined;
+            }
+
             errorMetaRenderer.capture(error);
 
             if (error && typeof error === "object" && "digest" in error) {
@@ -501,7 +582,42 @@ export async function handleSsr(
           },
         };
 
-        const htmlStream = await renderToReadableStream(ssrRoot, ssrRenderOptions);
+        let htmlStream: ReadableStream<Uint8Array>;
+        let shellErrorRecovered = false;
+        if (pprFallbackShellSignal) {
+          const prerender = await loadStaticPrerender();
+          const htmlAbortController = new AbortController();
+          const pendingHtml = prerender(ssrRoot, {
+            ...renderOptions,
+            signal: htmlAbortController.signal,
+          });
+          setTimeout(() => htmlAbortController.abort(), 0);
+          htmlStream = (await pendingHtml).prelude;
+        } else {
+          let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
+          try {
+            streamingHtmlStream = await renderToReadableStream(ssrRoot, {
+              ...renderOptions,
+            });
+
+            if (options?.waitForAllReady === true) {
+              await streamingHtmlStream.allReady;
+            }
+
+            htmlStream = streamingHtmlStream;
+          } catch (error) {
+            void streamingHtmlStream?.cancel().catch(() => {});
+            if (
+              options?.fallbackToErrorDocumentOnShellError !== true ||
+              options?.waitForAllReady === true ||
+              typeof (error as { digest?: unknown } | null)?.digest === "string"
+            ) {
+              throw error;
+            }
+            shellErrorRecovered = true;
+            htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
+          }
+        }
 
         // Populated before any SSR request runs: at prod-server startup
         // (prod-server.ts) or via build-time bundle injection (index.ts). Left
@@ -560,10 +676,6 @@ export async function handleSsr(
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 
-        if (options?.waitForAllReady === true) {
-          await htmlStream.allReady;
-        }
-
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
             createTickBufferedTransform(
@@ -591,6 +703,7 @@ export async function handleSsr(
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
+          shellErrorRecovered,
           linkHeader: reactLinkHeader,
         };
       } catch (error) {

@@ -6,6 +6,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
+  APP_SOURCE_PAGE_KEY,
   APP_SLOT_BINDINGS_KEY,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
@@ -15,8 +16,11 @@ import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 // Import the function under test AFTER mocking dependencies.
 // eslint-disable-next-line import/first
-import { buildPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
-import type { AppPageBuildRoute } from "../packages/vinext/src/server/app-page-element-builder.js";
+import {
+  buildPageElements,
+  resolveAppPageNavigationParams,
+  type AppPageBuildRoute,
+} from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
@@ -33,6 +37,7 @@ vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
+  throwIfStaticGenerationAccessError: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -90,7 +95,9 @@ function createBaseOptions(overrides?: {
 async function buildSearchPageSearchParams(options?: {
   loadingBoundary?: boolean;
 }): Promise<{ searchParams: Promise<Record<string, unknown>> }> {
-  function SearchPage(): React.ReactNode {
+  let capturedSearchParams: Promise<Record<string, unknown>> | undefined;
+  function SearchPage(props: { searchParams: Promise<Record<string, unknown>> }): React.ReactNode {
+    capturedSearchParams = props.searchParams;
     return React.createElement("div", null, "Search");
   }
 
@@ -111,14 +118,15 @@ async function buildSearchPageSearchParams(options?: {
   );
   const record = result as Record<string, unknown>;
   const pageElement = record["page:/search"];
-  if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
+  if (!React.isValidElement(pageElement)) {
     throw new Error("Expected page element");
   }
-  if (!pageElement.props.searchParams) {
+  await renderNode(pageElement);
+  if (!capturedSearchParams) {
     throw new Error("Expected searchParams prop");
   }
 
-  return { searchParams: pageElement.props.searchParams };
+  return { searchParams: capturedSearchParams };
 }
 
 async function resetUseCacheRuntime(): Promise<void> {
@@ -210,6 +218,146 @@ describe("buildPageElements", () => {
     expect(record["route:/test"]).toBeDefined();
   });
 
+  it("includes active parallel slot params in navigation params", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    //
+    // Next.js derives useParams() from the active FlightRouterState, walking all
+    // parallel route branches via getSelectedParams(). A slot catch-all branch
+    // must therefore contribute params even when the primary children route is
+    // static below the parent dynamic segment.
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...catchAll]"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          slotParamNames: ["teamID", "catchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { teamID: "vercel" }, "/vercel/sub/folder", null),
+    ).toEqual({
+      teamID: "vercel",
+      catchAll: ["sub", "folder"],
+    });
+  });
+
+  it("resolves navigation params with duplicate/colliding slot and route param keys", () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["id"],
+      pattern: "/:id",
+      routeSegments: ["[id]"],
+      slots: {
+        "slot@app/[id]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[id]"],
+          slotPatternParts: [":id", ":catchAll+"],
+          slotParamNames: ["id", "catchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { id: "primary" }, "/slot-override/sub/folder", null),
+    ).toEqual({
+      id: "slot-override",
+      catchAll: ["sub", "folder"],
+    });
+  });
+
+  it("merges non-intercepted active slot params alongside intercepted slot params", () => {
+    // Both slots have catch-all patterns that match the same URL; only @slot
+    // is intercepted, so @other should still contribute its catch-all.
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...catchAll]"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          slotParamNames: ["teamID", "catchAll"],
+        },
+        "slot@app/[teamID]/@other": {
+          name: "other",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...otherCatchAll]"],
+          slotPatternParts: [":teamID", ":otherCatchAll+"],
+          slotParamNames: ["teamID", "otherCatchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { teamID: "vercel" }, "/vercel/sub/folder", {
+        interceptSlotKey: "slot@app/[teamID]/@slot",
+        interceptPage: { default: vi.fn() },
+        interceptParams: { teamID: "vercel", catchAll: ["intercepted-override"] },
+      }),
+    ).toEqual({
+      teamID: "vercel",
+      catchAll: ["intercepted-override"],
+      otherCatchAll: ["sub", "folder"],
+    });
+  });
+
+  it("uses interceptParams for an intercepted slot instead of slotParamOverrides", () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...catchAll]"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          slotParamNames: ["teamID", "catchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { teamID: "vercel" }, "/vercel/sub/folder", {
+        interceptSlotKey: "slot@app/[teamID]/@slot",
+        interceptPage: { default: vi.fn() },
+        interceptParams: { teamID: "vercel", catchAll: ["intercepted", "override"] },
+      }),
+    ).toEqual({
+      teamID: "vercel",
+      catchAll: ["intercepted", "override"],
+    });
+  });
+
   it("surfaces a no-default-export error for a sibling intercept page instead of rendering the source page", async () => {
     function SourcePage(): React.ReactNode {
       return React.createElement("div", null, "Source page content");
@@ -247,6 +395,36 @@ describe("buildPageElements", () => {
     // the source route's page component.
     expect(html).toContain("Page has no default export");
     expect(html).not.toContain("Source page content");
+  });
+
+  it("publishes the intercepting page path for sibling interception", async () => {
+    function InterceptPage(): React.ReactNode {
+      return React.createElement("div", null, "Intercepted");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => React.createElement("div", null, "Source")),
+      layouts: [],
+      routeSegments: ["foo", "bar"],
+      pattern: "/foo/bar",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/hoge",
+        opts: {
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          interceptPage: createSyntheticPageModule(InterceptPage),
+          interceptParams: {},
+          interceptSourcePageSegments: ["foo", "bar", "(..)(..)hoge"],
+        },
+      }),
+    );
+
+    expect((result as Record<string, unknown>)[APP_SOURCE_PAGE_KEY]).toBe(
+      "/foo/bar/(..)(..)hoge/page",
+    );
   });
 
   it("keeps interception context out of the error payload route ID", async () => {
@@ -305,6 +483,97 @@ describe("buildPageElements", () => {
     expect(record[APP_ROUTE_KEY]).toBe("route:/hello");
     expect(Object.prototype.hasOwnProperty.call(record, "page:/hello")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(record, "route:/hello")).toBe(true);
+  });
+
+  it.each([
+    ["memo", React.memo(() => React.createElement("div", null, "memo page"))],
+    [
+      "forwardRef",
+      React.forwardRef(function ForwardRefPage() {
+        return React.createElement("div", null, "forwardRef page");
+      }),
+    ],
+    [
+      "lazy",
+      React.lazy(async () => ({
+        default: () => React.createElement("div", null, "lazy page"),
+      })),
+    ],
+  ] as const)("renders a %s page export through React", async (_kind, PageComponent) => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(PageComponent),
+      layouts: [],
+      routeSegments: ["exotic"],
+      pattern: "/exotic",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/exotic", searchParams: new URLSearchParams("q=ok") }),
+    );
+
+    await expect(
+      renderNode((result as Record<string, React.ReactNode>)["page:/exotic"]),
+    ).resolves.toContain("page");
+  });
+
+  it("renders memo page exports in parallel slots", async () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [],
+      routeSegments: ["exotic-slot"],
+      pattern: "/exotic-slot",
+      slots: {
+        modal: {
+          layoutIndex: -1,
+          name: "modal",
+          page: createSyntheticPageModule(
+            React.memo(() => React.createElement("div", null, "memo slot")),
+          ),
+          routeSegments: [],
+        },
+      },
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/exotic-slot" }));
+
+    await expect(
+      renderNode((result as Record<string, React.ReactNode>)["slot:modal:/"]),
+    ).resolves.toContain("memo slot");
+  });
+
+  it("records serialized queryless searchParams without marking client pages dynamic", async () => {
+    const ClientPage = Object.assign(() => null, {
+      $$typeof: Symbol.for("react.client.reference"),
+    });
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(ClientPage),
+      layouts: [],
+      routeSegments: ["client-isr"],
+      pattern: "/client-isr",
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        routePath: "/client-isr",
+        searchParams: new URLSearchParams(),
+      }),
+      pageRequest: {
+        ...createBaseOptions().pageRequest,
+        isRscRequest: true,
+        observePageSearchParamsAccess: true,
+        searchParams: new URLSearchParams(),
+      },
+    });
+    const pageElement = (result as Record<string, React.ReactNode>)["page:/client-isr"];
+    if (!React.isValidElement<{ searchParams: Promise<Record<string, unknown>> }>(pageElement)) {
+      throw new Error("Expected client page element");
+    }
+
+    await pageElement.props.searchParams;
+
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {
@@ -609,13 +878,13 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it("observes loading-boundary render-tree searchParams await as dynamic access", async () => {
+  it("keeps loading-boundary render-tree searchParams await inert without explicit observation", async () => {
     const { searchParams } = await buildSearchPageSearchParams({ loadingBoundary: true });
 
     await searchParams;
 
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
   it("keeps a cached primary page query-inert through the React render path", async () => {
@@ -845,7 +1114,11 @@ describe("buildPageElements", () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function SlotPage(): React.ReactNode {
+    let capturedSearchParams: PromiseLike<Record<string, unknown>> | undefined;
+    function SlotPage(props: {
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }): React.ReactNode {
+      capturedSearchParams = props.searchParams;
       return React.createElement("span", null, "slot");
     }
 
@@ -873,18 +1146,21 @@ describe("buildPageElements", () => {
     );
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:modal:/"] as React.ReactElement<{
-      searchParams: PromiseLike<Record<string, unknown>>;
-    }>;
+    const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
+    await renderNode(slotElement);
+    await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
   it("passes page searchParams to intercepting slot pages", async () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function InterceptPage(): React.ReactNode {
+    let capturedSearchParams: PromiseLike<Record<string, unknown>> | undefined;
+    function InterceptPage(props: {
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }): React.ReactNode {
+      capturedSearchParams = props.searchParams;
       return React.createElement("span", null, "intercept");
     }
 
@@ -916,18 +1192,19 @@ describe("buildPageElements", () => {
     );
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:modal:/"] as React.ReactElement<{
-      searchParams: PromiseLike<Record<string, unknown>>;
-    }>;
+    const slotElement = record["slot:modal:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
+    await renderNode(slotElement);
+    await expect(capturedSearchParams).resolves.toEqual({ search: "hello" });
   });
 
   it("extracts slot params from routePath, not request.url, so basePath does not break the match", async () => {
     function MainPage(): React.ReactNode {
       return React.createElement("div", null, "main");
     }
-    function SlotPage(): React.ReactNode {
+    let capturedParams: PromiseLike<AppPageParams> | undefined;
+    function SlotPage(props: { params: PromiseLike<AppPageParams> }): React.ReactNode {
+      capturedParams = props.params;
       return React.createElement("span", null, "slot");
     }
 
@@ -971,11 +1248,10 @@ describe("buildPageElements", () => {
     });
 
     const record = result as Record<string, unknown>;
-    const slotElement = record["slot:bc:/"] as React.ReactElement<{
-      params: PromiseLike<AppPageParams>;
-    }>;
+    const slotElement = record["slot:bc:/"] as React.ReactNode;
     expect(slotElement).toBeDefined();
-    const slotParams = await slotElement.props.params;
+    await renderNode(slotElement);
+    const slotParams = await capturedParams;
     // Without the fix, urlParts would be ["base","distinct","alice"], the
     // pattern match would fail, and slotParams would silently fall back to
     // the route's matched params ({ id: "alice" }) — leaving the slot

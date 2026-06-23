@@ -2,28 +2,28 @@
   "version": 2,
   "suite": "integration",
   "shardTotal": 10,
-  "generatedAt": "2026-06-05T17:52:19.779Z",
+  "generatedAt": "2026-06-15T17:00:58.450Z",
   "generatedFrom": {
     "runs": [
       {
-        "id": "27028007653",
-        "url": "https://github.com/cloudflare/vinext/actions/runs/27028007653"
+        "id": "27538344211",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27538344211"
       },
       {
-        "id": "27026520579",
-        "url": "https://github.com/cloudflare/vinext/actions/runs/27026520579"
+        "id": "27537711845",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27537711845"
       },
       {
-        "id": "27025678394",
-        "url": "https://github.com/cloudflare/vinext/actions/runs/27025678394"
+        "id": "27515334055",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27515334055"
       },
       {
-        "id": "27024991233",
-        "url": "https://github.com/cloudflare/vinext/actions/runs/27024991233"
+        "id": "27514784406",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27514784406"
       },
       {
-        "id": "27024621441",
-        "url": "https://github.com/cloudflare/vinext/actions/runs/27024621441"
+        "id": "27514191266",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27514191266"
       }
     ]
   },
@@ -32,357 +32,393 @@
   },
   "files": {
     "tests/api-handler.test.ts": {
-      "estimateMs": 76,
-      "medianMs": 72,
-      "p75Ms": 76,
+      "estimateMs": 88,
+      "medianMs": 87,
+      "p75Ms": 88,
       "samples": 5
     },
     "tests/app-router-client-preloading.test.ts": {
-      "estimateMs": 15,
+      "estimateMs": 14,
       "medianMs": 14,
-      "p75Ms": 15,
+      "p75Ms": 14,
       "samples": 5
     },
     "tests/app-router-dev-server.test.ts": {
-      "estimateMs": 12546,
-      "medianMs": 11924,
-      "p75Ms": 12546,
+      "estimateMs": 14006,
+      "medianMs": 13818,
+      "p75Ms": 14006,
       "samples": 5
     },
     "tests/app-router-external-rewrite.test.ts": {
-      "estimateMs": 989,
-      "medianMs": 976,
-      "p75Ms": 989,
+      "estimateMs": 1159,
+      "medianMs": 1086,
+      "p75Ms": 1159,
       "samples": 5
     },
     "tests/app-router-font-google-prod.test.ts": {
-      "estimateMs": 2396,
-      "medianMs": 2294,
-      "p75Ms": 2396,
+      "estimateMs": 3188,
+      "medianMs": 3159,
+      "p75Ms": 3188,
       "samples": 5
     },
     "tests/app-router-isr-codegen.test.ts": {
-      "estimateMs": 15,
-      "medianMs": 14,
-      "p75Ms": 15,
+      "estimateMs": 32,
+      "medianMs": 31,
+      "p75Ms": 32,
       "samples": 5
     },
     "tests/app-router-malformed-url.test.ts": {
-      "estimateMs": 7157,
-      "medianMs": 7079,
-      "p75Ms": 7157,
+      "estimateMs": 6215,
+      "medianMs": 5855,
+      "p75Ms": 6215,
       "samples": 5
     },
     "tests/app-router-metadata-routes.test.ts": {
-      "estimateMs": 8054,
-      "medianMs": 7574,
-      "p75Ms": 8054,
+      "estimateMs": 8502,
+      "medianMs": 8274,
+      "p75Ms": 8502,
       "samples": 5
     },
     "tests/app-router-middleware-next-request.test.ts": {
-      "estimateMs": 7785,
-      "medianMs": 7717,
-      "p75Ms": 7785,
+      "estimateMs": 7292,
+      "medianMs": 7172,
+      "p75Ms": 7292,
       "samples": 5
     },
     "tests/app-router-next-config-codegen.test.ts": {
-      "estimateMs": 152,
-      "medianMs": 151,
-      "p75Ms": 152,
+      "estimateMs": 162,
+      "medianMs": 158,
+      "p75Ms": 162,
       "samples": 5
     },
     "tests/app-router-next-config-dev.test.ts": {
-      "estimateMs": 7647,
-      "medianMs": 7500,
-      "p75Ms": 7647,
+      "estimateMs": 7045,
+      "medianMs": 6761,
+      "p75Ms": 7045,
       "samples": 5
     },
     "tests/app-router-origin-check.test.ts": {
-      "estimateMs": 7549,
-      "medianMs": 7309,
-      "p75Ms": 7549,
+      "estimateMs": 6096,
+      "medianMs": 5886,
+      "p75Ms": 6096,
       "samples": 5
     },
     "tests/app-router-production-build.test.ts": {
-      "estimateMs": 9615,
-      "medianMs": 9423,
-      "p75Ms": 9615,
+      "estimateMs": 45042,
+      "medianMs": 44956,
+      "p75Ms": 45042,
       "samples": 5
     },
     "tests/app-router-production-server.test.ts": {
-      "estimateMs": 27331,
-      "medianMs": 26778,
-      "p75Ms": 27331,
+      "estimateMs": 73786,
+      "medianMs": 73610,
+      "p75Ms": 73786,
       "samples": 5
     },
     "tests/app-router-rsc-flight-hint.test.ts": {
-      "estimateMs": 5,
+      "estimateMs": 6,
       "medianMs": 5,
-      "p75Ms": 5,
+      "p75Ms": 6,
       "samples": 5
     },
     "tests/app-router-rsc-plugin.test.ts": {
-      "estimateMs": 13534,
-      "medianMs": 13043,
-      "p75Ms": 13534,
+      "estimateMs": 14605,
+      "medianMs": 14585,
+      "p75Ms": 14605,
       "samples": 5
     },
     "tests/app-router-static-export.test.ts": {
-      "estimateMs": 14970,
-      "medianMs": 14891,
-      "p75Ms": 14970,
+      "estimateMs": 17843,
+      "medianMs": 17812,
+      "p75Ms": 17843,
       "samples": 5
     },
     "tests/app-router-worker-entry.test.ts": {
-      "estimateMs": 136,
-      "medianMs": 132,
-      "p75Ms": 136,
+      "estimateMs": 308,
+      "medianMs": 307,
+      "p75Ms": 308,
       "samples": 5
     },
     "tests/cjs.test.ts": {
-      "estimateMs": 7461,
-      "medianMs": 7424,
-      "p75Ms": 7461,
+      "estimateMs": 6446,
+      "medianMs": 6398,
+      "p75Ms": 6446,
       "samples": 5
     },
     "tests/ecosystem.test.ts": {
-      "estimateMs": 35921,
-      "medianMs": 35661,
-      "p75Ms": 35921,
+      "estimateMs": 40289,
+      "medianMs": 39349,
+      "p75Ms": 40289,
       "samples": 5
     },
     "tests/entry-templates.test.ts": {
-      "estimateMs": 54,
-      "medianMs": 53,
-      "p75Ms": 54,
+      "estimateMs": 57,
+      "medianMs": 54,
+      "p75Ms": 57,
       "samples": 5
     },
     "tests/favicon-short-circuit.test.ts": {
-      "estimateMs": 36378,
-      "medianMs": 35779,
-      "p75Ms": 36378,
+      "estimateMs": 44411,
+      "medianMs": 43838,
+      "p75Ms": 44411,
       "samples": 5
     },
     "tests/features.test.ts": {
-      "estimateMs": 18480,
-      "medianMs": 18359,
-      "p75Ms": 18480,
+      "estimateMs": 24169,
+      "medianMs": 23310,
+      "p75Ms": 24169,
       "samples": 5
     },
     "tests/image-optimization-parity.test.ts": {
-      "estimateMs": 8936,
-      "medianMs": 8855,
-      "p75Ms": 8936,
+      "estimateMs": 8236,
+      "medianMs": 8203,
+      "p75Ms": 8236,
       "samples": 5
     },
     "tests/kv-cache-handler.test.ts": {
-      "estimateMs": 2446,
-      "medianMs": 2443,
-      "p75Ms": 2446,
+      "estimateMs": 2546,
+      "medianMs": 2459,
+      "p75Ms": 2546,
       "samples": 5
     },
     "tests/nextjs-compat/action-headers.test.ts": {
-      "estimateMs": 7403,
-      "medianMs": 7380,
-      "p75Ms": 7403,
+      "estimateMs": 6649,
+      "medianMs": 6600,
+      "p75Ms": 6649,
+      "samples": 5
+    },
+    "tests/nextjs-compat/action-node-middleware.test.ts": {
+      "estimateMs": 6061,
+      "medianMs": 6046,
+      "p75Ms": 6061,
       "samples": 5
     },
     "tests/nextjs-compat/als-isolation.test.ts": {
-      "estimateMs": 94,
-      "medianMs": 92,
-      "p75Ms": 94,
+      "estimateMs": 228,
+      "medianMs": 221,
+      "p75Ms": 228,
       "samples": 5
     },
     "tests/nextjs-compat/app-css.test.ts": {
-      "estimateMs": 7496,
-      "medianMs": 7381,
-      "p75Ms": 7496,
+      "estimateMs": 6157,
+      "medianMs": 6100,
+      "p75Ms": 6157,
       "samples": 5
     },
     "tests/nextjs-compat/app-rendering.test.ts": {
-      "estimateMs": 9586,
-      "medianMs": 9296,
-      "p75Ms": 9586,
+      "estimateMs": 8422,
+      "medianMs": 8407,
+      "p75Ms": 8422,
       "samples": 5
     },
     "tests/nextjs-compat/app-routes.test.ts": {
-      "estimateMs": 8014,
-      "medianMs": 7951,
-      "p75Ms": 8014,
+      "estimateMs": 6144,
+      "medianMs": 6032,
+      "p75Ms": 6144,
       "samples": 5
     },
     "tests/nextjs-compat/basepath.test.ts": {
-      "estimateMs": 110,
-      "medianMs": 85,
-      "p75Ms": 110,
+      "estimateMs": 834,
+      "medianMs": 792,
+      "p75Ms": 834,
       "samples": 5
     },
     "tests/nextjs-compat/draft-mode.test.ts": {
-      "estimateMs": 7630,
-      "medianMs": 7406,
-      "p75Ms": 7630,
+      "estimateMs": 6315,
+      "medianMs": 6281,
+      "p75Ms": 6315,
       "samples": 5
     },
     "tests/nextjs-compat/dynamic.test.ts": {
-      "estimateMs": 8086,
-      "medianMs": 7815,
-      "p75Ms": 8086,
+      "estimateMs": 7344,
+      "medianMs": 7271,
+      "p75Ms": 7344,
       "samples": 5
     },
     "tests/nextjs-compat/global-error.test.ts": {
-      "estimateMs": 15167,
-      "medianMs": 14845,
-      "p75Ms": 15167,
+      "estimateMs": 16265,
+      "medianMs": 16226,
+      "p75Ms": 16265,
       "samples": 5
     },
     "tests/nextjs-compat/global-not-found.test.ts": {
-      "estimateMs": 2551,
-      "medianMs": 2507,
-      "p75Ms": 2551,
+      "estimateMs": 3790,
+      "medianMs": 3762,
+      "p75Ms": 3790,
       "samples": 5
     },
     "tests/nextjs-compat/hooks.test.ts": {
-      "estimateMs": 8188,
-      "medianMs": 8079,
-      "p75Ms": 8188,
+      "estimateMs": 6306,
+      "medianMs": 6217,
+      "p75Ms": 6306,
+      "samples": 5
+    },
+    "tests/nextjs-compat/hybrid-pages-api.test.ts": {
+      "estimateMs": 4860,
+      "medianMs": 4787,
+      "p75Ms": 4860,
       "samples": 5
     },
     "tests/nextjs-compat/layout-segments.test.ts": {
-      "estimateMs": 7443,
-      "medianMs": 7366,
-      "p75Ms": 7443,
+      "estimateMs": 6449,
+      "medianMs": 6232,
+      "p75Ms": 6449,
       "samples": 5
     },
     "tests/nextjs-compat/metadata-suspense.test.ts": {
-      "estimateMs": 7201,
-      "medianMs": 7126,
-      "p75Ms": 7201,
+      "estimateMs": 6410,
+      "medianMs": 6322,
+      "p75Ms": 6410,
       "samples": 5
     },
     "tests/nextjs-compat/metadata.test.ts": {
-      "estimateMs": 8721,
-      "medianMs": 8497,
-      "p75Ms": 8721,
+      "estimateMs": 7696,
+      "medianMs": 7584,
+      "p75Ms": 7696,
       "samples": 5
     },
     "tests/nextjs-compat/navigation.test.ts": {
-      "estimateMs": 7579,
-      "medianMs": 7384,
-      "p75Ms": 7579,
+      "estimateMs": 6476,
+      "medianMs": 6356,
+      "p75Ms": 6476,
       "samples": 5
     },
     "tests/nextjs-compat/not-found.test.ts": {
-      "estimateMs": 8405,
-      "medianMs": 8223,
-      "p75Ms": 8405,
+      "estimateMs": 7447,
+      "medianMs": 7150,
+      "p75Ms": 7447,
       "samples": 5
     },
     "tests/nextjs-compat/prefetch.test.ts": {
-      "estimateMs": 7345,
-      "medianMs": 7243,
-      "p75Ms": 7345,
+      "estimateMs": 6448,
+      "medianMs": 6357,
+      "p75Ms": 6448,
+      "samples": 5
+    },
+    "tests/nextjs-compat/react-max-headers-length.test.ts": {
+      "estimateMs": 26065,
+      "medianMs": 25778,
+      "p75Ms": 26065,
+      "samples": 5
+    },
+    "tests/nextjs-compat/repeated-forward-slashes-error.test.ts": {
+      "estimateMs": 7689,
+      "medianMs": 7656,
+      "p75Ms": 7689,
       "samples": 5
     },
     "tests/nextjs-compat/request-apis.test.ts": {
-      "estimateMs": 7630,
-      "medianMs": 7265,
-      "p75Ms": 7630,
+      "estimateMs": 6194,
+      "medianMs": 6092,
+      "p75Ms": 6194,
+      "samples": 5
+    },
+    "tests/nextjs-compat/require-context.test.ts": {
+      "estimateMs": 6269,
+      "medianMs": 6226,
+      "p75Ms": 6269,
+      "samples": 5
+    },
+    "tests/nextjs-compat/revalidate-reason.test.ts": {
+      "estimateMs": 1183,
+      "medianMs": 1150,
+      "p75Ms": 1183,
       "samples": 5
     },
     "tests/nextjs-compat/revalidate.test.ts": {
-      "estimateMs": 7431,
-      "medianMs": 7413,
-      "p75Ms": 7431,
+      "estimateMs": 6471,
+      "medianMs": 6198,
+      "p75Ms": 6471,
       "samples": 5
     },
     "tests/nextjs-compat/rsc-basic.test.ts": {
-      "estimateMs": 7405,
-      "medianMs": 7395,
-      "p75Ms": 7405,
+      "estimateMs": 7002,
+      "medianMs": 6984,
+      "p75Ms": 7002,
       "samples": 5
     },
     "tests/nextjs-compat/rsc-context-lazy-stream.test.ts": {
-      "estimateMs": 7507,
-      "medianMs": 7465,
-      "p75Ms": 7507,
+      "estimateMs": 7042,
+      "medianMs": 7017,
+      "p75Ms": 7042,
       "samples": 5
     },
     "tests/nextjs-compat/script-nonce.test.ts": {
-      "estimateMs": 7237,
-      "medianMs": 7233,
-      "p75Ms": 7237,
+      "estimateMs": 6858,
+      "medianMs": 6693,
+      "p75Ms": 6858,
       "samples": 5
     },
     "tests/nextjs-compat/script-preload.test.ts": {
-      "estimateMs": 7701,
-      "medianMs": 7363,
-      "p75Ms": 7701,
+      "estimateMs": 6265,
+      "medianMs": 6120,
+      "p75Ms": 6265,
       "samples": 5
     },
     "tests/nextjs-compat/set-cookies.test.ts": {
-      "estimateMs": 7237,
-      "medianMs": 7157,
-      "p75Ms": 7237,
+      "estimateMs": 6079,
+      "medianMs": 5974,
+      "p75Ms": 6079,
       "samples": 5
     },
     "tests/nextjs-compat/streaming.test.ts": {
-      "estimateMs": 10320,
-      "medianMs": 10302,
-      "p75Ms": 10320,
+      "estimateMs": 11086,
+      "medianMs": 10752,
+      "p75Ms": 11086,
       "samples": 5
     },
     "tests/nextjs-compat/use-client-page-pathname.test.ts": {
-      "estimateMs": 7485,
-      "medianMs": 7355,
-      "p75Ms": 7485,
+      "estimateMs": 7315,
+      "medianMs": 6963,
+      "p75Ms": 7315,
       "samples": 5
     },
     "tests/node-modules-css.test.ts": {
-      "estimateMs": 7742,
-      "medianMs": 7538,
-      "p75Ms": 7742,
+      "estimateMs": 6956,
+      "medianMs": 6922,
+      "p75Ms": 6956,
       "samples": 5
     },
     "tests/pages-i18n-prod.test.ts": {
-      "estimateMs": 1388,
-      "medianMs": 1364,
-      "p75Ms": 1388,
+      "estimateMs": 2434,
+      "medianMs": 2395,
+      "p75Ms": 2434,
       "samples": 5
     },
     "tests/pages-router-concurrency.test.ts": {
-      "estimateMs": 2858,
-      "medianMs": 2705,
-      "p75Ms": 2858,
+      "estimateMs": 4043,
+      "medianMs": 3935,
+      "p75Ms": 4043,
       "samples": 5
     },
     "tests/pages-router.test.ts": {
-      "estimateMs": 27384,
-      "medianMs": 26734,
-      "p75Ms": 27384,
+      "estimateMs": 42026,
+      "medianMs": 41308,
+      "p75Ms": 42026,
       "samples": 5
     },
     "tests/postcss-resolve.test.ts": {
-      "estimateMs": 445,
-      "medianMs": 435,
-      "p75Ms": 445,
+      "estimateMs": 16377,
+      "medianMs": 15863,
+      "p75Ms": 16377,
       "samples": 5
     },
     "tests/prerender.test.ts": {
-      "estimateMs": 27967,
-      "medianMs": 26676,
-      "p75Ms": 27967,
+      "estimateMs": 30992,
+      "medianMs": 30864,
+      "p75Ms": 30992,
       "samples": 5
     },
     "tests/static-export.test.ts": {
-      "estimateMs": 16984,
-      "medianMs": 16896,
-      "p75Ms": 16984,
+      "estimateMs": 20648,
+      "medianMs": 19773,
+      "p75Ms": 20648,
       "samples": 5
     },
     "tests/vite-hmr-websocket.test.ts": {
-      "estimateMs": 1242,
-      "medianMs": 611,
-      "p75Ms": 1242,
+      "estimateMs": 761,
+      "medianMs": 758,
+      "p75Ms": 761,
       "samples": 5
     }
   }

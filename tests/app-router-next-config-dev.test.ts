@@ -42,6 +42,15 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain("About");
   });
 
+  it("appends unused rewrite source params to App Router searchParams", async () => {
+    const res = await fetch(`${baseUrl}/rewrite-search-param/hello?lang=en&_rsc=test-token`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/Results for:\s*(<!--\s*-->)?\s*from-rewrite/);
+    expect(html).toMatch(/Lang:\s*(<!--\s*-->)?\s*en/);
+    expect(html).toMatch(/Term:\s*(<!--\s*-->)?\s*hello/);
+  });
+
   it("applies rewrites with repeated dynamic params in the destination", async () => {
     const res = await fetch(`${baseUrl}/repeat-rewrite/hello`);
     expect(res.status).toBe(200);

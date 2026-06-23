@@ -29,10 +29,15 @@
  * Assertions mirror upstream: the 404 document must link ONLY
  * global-not-found's stylesheets, in import order (gnf-a before gnf-b), and
  * must NOT carry the root layout's stylesheet.
+ *
+ * The fixture also includes a lazy `react-dom/server.edge` import for issue
+ * #2073. Importing the production RSC entry must not eagerly evaluate React's
+ * throwing server-component stub.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createBuilder, preview } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
@@ -69,6 +74,7 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
   const clientDir = path.join(distDir, "client");
   let previewServer: Awaited<ReturnType<typeof preview>>;
   let baseUrl: string;
+  let startupImportValidated = false;
 
   beforeAll(async () => {
     const builder = await createBuilder({
@@ -78,7 +84,13 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
       logLevel: "silent",
     });
     await builder.buildApp();
+  }, 120_000);
 
+  async function startPreviewServer(): Promise<void> {
+    if (!startupImportValidated) {
+      throw new Error("The direct RSC entry import assertion must run before preview startup");
+    }
+    if (previewServer) return;
     previewServer = await preview({
       root: FIXTURE_DIR,
       configFile: false,
@@ -89,14 +101,23 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     const addr = previewServer.httpServer.address();
     baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
     expect(baseUrl).not.toBe("");
-  }, 120_000);
+  }
 
   afterAll(() => {
     previewServer?.httpServer.close();
     fs.rmSync(distDir, { recursive: true, force: true });
   });
 
+  it("does not eagerly evaluate dynamically imported React server stubs", async () => {
+    const entryUrl = pathToFileURL(path.join(distDir, "server", "index.js"));
+    entryUrl.searchParams.set("test", String(Date.now()));
+
+    await expect(import(entryUrl.href)).resolves.toBeDefined();
+    startupImportValidated = true;
+  });
+
   it("matched routes serve the root layout's CSS (green wins)", async () => {
+    await startPreviewServer();
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -111,6 +132,7 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
   });
 
   it("route-miss 404 serves global-not-found's CSS with red winning, and no layout CSS leak", async () => {
+    await startPreviewServer();
     const res = await fetch(`${baseUrl}/does-not-exist`);
     expect(res.status).toBe(404);
     const html = await res.text();

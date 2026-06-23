@@ -149,60 +149,75 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
     // export generateStaticParams for prerendering, but vinext does not wire
     // that into the map yet — a separate gap, unaffected by lazy loading.)
     if (route.routePath) imports.getLazyLoaderVar(route.routePath);
-    for (const layout of route.layouts) imports.getImportVar(layout);
-    for (const tmpl of route.templates) imports.getImportVar(tmpl);
-    if (route.loadingPath) imports.getImportVar(route.loadingPath);
-    if (route.errorPath) imports.getImportVar(route.errorPath);
+    for (const layout of route.layouts) imports.getLazyLoaderVar(layout);
+    for (const tmpl of route.templates) imports.getLazyLoaderVar(tmpl);
+    if (route.loadingPath) imports.getLazyLoaderVar(route.loadingPath);
+    if (route.errorPath) imports.getLazyLoaderVar(route.errorPath);
     if (route.layoutErrorPaths) {
       for (const ep of route.layoutErrorPaths) {
-        if (ep) imports.getImportVar(ep);
+        if (ep) imports.getLazyLoaderVar(ep);
       }
     }
     if (route.errorPaths) {
       for (const ep of route.errorPaths) {
-        imports.getImportVar(ep);
+        imports.getLazyLoaderVar(ep);
       }
     }
-    if (route.notFoundPath) imports.getImportVar(route.notFoundPath);
+    if (route.notFoundPath) imports.getLazyLoaderVar(route.notFoundPath);
     if (route.notFoundPaths) {
       for (const nfp of route.notFoundPaths) {
-        if (nfp) imports.getImportVar(nfp);
+        if (nfp) imports.getLazyLoaderVar(nfp);
       }
     }
-    if (route.forbiddenPath) imports.getImportVar(route.forbiddenPath);
+    if (route.forbiddenPath) imports.getLazyLoaderVar(route.forbiddenPath);
     if (route.forbiddenPaths) {
       for (const fp of route.forbiddenPaths) {
-        if (fp) imports.getImportVar(fp);
+        if (fp) imports.getLazyLoaderVar(fp);
       }
     }
-    if (route.unauthorizedPath) imports.getImportVar(route.unauthorizedPath);
+    if (route.unauthorizedPath) imports.getLazyLoaderVar(route.unauthorizedPath);
     if (route.unauthorizedPaths) {
       for (const up of route.unauthorizedPaths) {
-        if (up) imports.getImportVar(up);
+        if (up) imports.getLazyLoaderVar(up);
       }
     }
     for (const slot of route.parallelSlots) {
-      if (slot.pagePath) imports.getImportVar(slot.pagePath);
-      if (slot.defaultPath) imports.getImportVar(slot.defaultPath);
-      if (slot.layoutPath) imports.getImportVar(slot.layoutPath);
-      if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
-      if (slot.errorPath) imports.getImportVar(slot.errorPath);
+      if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
+      if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
+      if (slot.layoutPath) imports.getLazyLoaderVar(slot.layoutPath);
+      for (const layoutPath of slot.configLayoutPaths ?? []) {
+        imports.getLazyLoaderVar(layoutPath);
+      }
+      if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath);
+      if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
         imports.getLazyLoaderVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
-          imports.getImportVar(layoutPath);
+          imports.getLazyLoaderVar(layoutPath);
         }
       }
     }
     for (const ir of route.siblingIntercepts ?? []) {
-      // Lazy-load the intercepting page (like slot intercepts) so its CSS chunk
-      // stays isolated in production (#1738). Layouts remain eager.
+      // Lazy-load sibling intercept modules like slot intercept modules so
+      // their CSS chunks stay isolated in production (#1738) without pulling
+      // their layout chains into the entry's top-level evaluation.
       imports.getLazyLoaderVar(ir.pagePath);
       for (const layoutPath of ir.layoutPaths) {
-        imports.getImportVar(layoutPath);
+        imports.getLazyLoaderVar(layoutPath);
       }
     }
   }
+}
+
+function moduleArray(length: number): string {
+  return `[${Array.from({ length }, () => "null").join(", ")}]`;
+}
+
+function lazyLoaderArray(
+  filePaths: readonly (string | null | undefined)[],
+  imports: ImportAllocator,
+): string {
+  return `[${filePaths.map((filePath) => (filePath ? imports.getLazyLoaderVar(filePath) : "null")).join(", ")}]`;
 }
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
@@ -213,24 +228,29 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     // sibling URL (issue cloudflare/vinext#1525). Emitted only when there are
     // siblings so static routes get an empty literal and stay lean.
     const staticSiblings = route.isDynamic ? computeAppRouteStaticSiblings(routes, route) : [];
-    const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
-    const templateVars = route.templates.map((t) => imports.getImportVar(t));
-    const notFoundVars = (route.notFoundPaths ?? []).map((nf) =>
-      nf ? imports.getImportVar(nf) : "null",
-    );
-    const forbiddenVars = (route.forbiddenPaths ?? []).map((fp) =>
-      fp ? imports.getImportVar(fp) : "null",
-    );
-    const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
-      up ? imports.getImportVar(up) : "null",
-    );
+    // Root layouts also have eager namespace imports for route-miss boundary
+    // rendering. Keep them in this positional loader array too so matched-route
+    // hydration has one uniform path; their dynamic import resolves from the
+    // module cache after the eager import rather than evaluating them twice.
+    const layoutLoaders = lazyLoaderArray(route.layouts, imports);
+    const templateLoaders = lazyLoaderArray(route.templates, imports);
+    const notFoundPaths = route.notFoundPaths ?? [];
+    const forbiddenPaths = route.forbiddenPaths ?? [];
+    const unauthorizedPaths = route.unauthorizedPaths ?? [];
+    const notFoundLoaders = lazyLoaderArray(notFoundPaths, imports);
+    const forbiddenLoaders = lazyLoaderArray(forbiddenPaths, imports);
+    const unauthorizedLoaders = lazyLoaderArray(unauthorizedPaths, imports);
     const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
       (ir) => `    {
       convention: ${JSON.stringify(ir.convention)},
       targetPattern: ${JSON.stringify(ir.targetPattern)},
       sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
+      sourcePageSegments: ${JSON.stringify(ir.sourcePageSegments)},
       slotId: ${JSON.stringify(ir.slotId ?? null)},
-      interceptLayouts: [${ir.layoutPaths.map((l) => imports.getImportVar(l)).join(", ")}],
+      interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
+      __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+      interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
+      interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
       page: null,
       __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
       params: ${JSON.stringify(ir.params)},
@@ -242,7 +262,11 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           convention: ${JSON.stringify(ir.convention)},
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
-          interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
+          sourcePageSegments: ${JSON.stringify(ir.sourcePageSegments)},
+          interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
+          __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+          interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
+          interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
           page: null,
           __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
@@ -251,11 +275,19 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       return `      ${JSON.stringify(slot.key)}: {
         id: ${JSON.stringify(slot.id ?? null)},
         name: ${JSON.stringify(slot.name)},
-        page: ${slot.pagePath ? imports.getImportVar(slot.pagePath) : "null"},
-        default: ${slot.defaultPath ? imports.getImportVar(slot.defaultPath) : "null"},
-        layout: ${slot.layoutPath ? imports.getImportVar(slot.layoutPath) : "null"},
-        loading: ${slot.loadingPath ? imports.getImportVar(slot.loadingPath) : "null"},
-        error: ${slot.errorPath ? imports.getImportVar(slot.errorPath) : "null"},
+        page: null,
+        __loadPage: ${slot.pagePath ? imports.getLazyLoaderVar(slot.pagePath) : "null"},
+        default: null,
+        __loadDefault: ${slot.defaultPath ? imports.getLazyLoaderVar(slot.defaultPath) : "null"},
+        layout: null,
+        __loadLayout: ${slot.layoutPath ? imports.getLazyLoaderVar(slot.layoutPath) : "null"},
+        configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
+        __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
+        configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
+        loading: null,
+        __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
+        error: null,
+        __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath) : "null"},
         layoutIndex: ${slot.layoutIndex},
         routeSegments: ${JSON.stringify(slot.routeSegments)},
         slotPatternParts: ${slot.slotPatternParts ? JSON.stringify(slot.slotPatternParts) : "null"},
@@ -265,10 +297,10 @@ ${interceptEntries.join(",\n")}
         ],
       }`;
     });
-    const layoutErrorVars = (route.layoutErrorPaths || []).map((ep) =>
-      ep ? imports.getImportVar(ep) : "null",
-    );
-    const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
+    const layoutErrorPaths = route.layoutErrorPaths ?? [];
+    const errorPaths = route.errorPaths ?? [];
+    const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports);
+    const errorLoaders = lazyLoaderArray(errorPaths, imports);
     // Page and route handler are always lazy-loaded; hydrated onto route.page /
     // route.routeHandler by ensureAppRouteModulesLoaded before any read.
     const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
@@ -289,13 +321,17 @@ ${interceptEntries.join(",\n")}
     __loadPage: ${loadPageField},
     routeHandler: null,
     __loadRouteHandler: ${loadRouteHandlerField},
-    layouts: [${layoutVars.join(", ")}],
+    layouts: ${moduleArray(route.layouts.length)},
+    __loadLayouts: ${layoutLoaders},
     routeSegments: ${JSON.stringify(route.routeSegments)},
     templateTreePositions: ${JSON.stringify(route.templateTreePositions)},
     layoutTreePositions: ${JSON.stringify(route.layoutTreePositions)},
-    templates: [${templateVars.join(", ")}],
-    errors: [${layoutErrorVars.join(", ")}],
-    errorPaths: [${errorVars.join(", ")}],
+    templates: ${moduleArray(route.templates.length)},
+    __loadTemplates: ${templateLoaders},
+    errors: ${moduleArray(layoutErrorPaths.length)},
+    __loadErrors: ${layoutErrorLoaders},
+    errorPaths: ${moduleArray(errorPaths.length)},
+    __loadErrorPaths: ${errorLoaders},
     errorTreePositions: ${JSON.stringify(route.errorTreePositions ?? null)},
     slots: {
 ${slotEntries.join(",\n")}
@@ -303,14 +339,22 @@ ${slotEntries.join(",\n")}
     siblingIntercepts: [
 ${siblingInterceptEntries.join(",\n")}
     ],
-    loading: ${route.loadingPath ? imports.getImportVar(route.loadingPath) : "null"},
-    error: ${route.errorPath ? imports.getImportVar(route.errorPath) : "null"},
-    notFound: ${route.notFoundPath ? imports.getImportVar(route.notFoundPath) : "null"},
-    notFounds: [${notFoundVars.join(", ")}],
-    forbidden: ${route.forbiddenPath ? imports.getImportVar(route.forbiddenPath) : "null"},
-    forbiddens: [${forbiddenVars.join(", ")}],
-    unauthorized: ${route.unauthorizedPath ? imports.getImportVar(route.unauthorizedPath) : "null"},
-    unauthorizeds: [${unauthorizedVars.join(", ")}],
+    loading: null,
+    __loadLoading: ${route.loadingPath ? imports.getLazyLoaderVar(route.loadingPath) : "null"},
+    error: null,
+    __loadError: ${route.errorPath ? imports.getLazyLoaderVar(route.errorPath) : "null"},
+    notFound: null,
+    __loadNotFound: ${route.notFoundPath ? imports.getLazyLoaderVar(route.notFoundPath) : "null"},
+    notFounds: ${moduleArray(notFoundPaths.length)},
+    __loadNotFounds: ${notFoundLoaders},
+    forbidden: null,
+    __loadForbidden: ${route.forbiddenPath ? imports.getLazyLoaderVar(route.forbiddenPath) : "null"},
+    forbiddens: ${moduleArray(forbiddenPaths.length)},
+    __loadForbiddens: ${forbiddenLoaders},
+    unauthorized: null,
+    __loadUnauthorized: ${route.unauthorizedPath ? imports.getLazyLoaderVar(route.unauthorizedPath) : "null"},
+    unauthorizeds: ${moduleArray(unauthorizedPaths.length)},
+    __loadUnauthorizeds: ${unauthorizedLoaders},
   }`;
   });
 }
@@ -395,7 +439,7 @@ function buildGenerateStaticParamsEntries(
         sourcesByPattern,
         createRoutePatternPrefix(route.routeSegments, route.layoutTreePositions[index] ?? 0)
           ?.pattern ?? null,
-        `${imports.getImportVar(layoutPath)}?.generateStaticParams`,
+        `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`,
       );
     }
 

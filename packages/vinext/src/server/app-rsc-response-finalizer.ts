@@ -53,7 +53,12 @@ export function finalizeAppRscResponse(
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
-    mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
+    const varyHeader = response.headers.get("Vary");
+    if (varyHeader === null) {
+      response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);
+    } else if (varyHeader !== VINEXT_RSC_VARY_HEADER) {
+      mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
+    }
   }
 
   // The CDN cache adapter owns the *default* Cache-Control. If no route path

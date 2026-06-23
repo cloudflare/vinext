@@ -93,6 +93,36 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("Cache-Tag")).toBe("a,b");
   });
 
+  it("applies adapter-owned header removals", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {
+          "Cache-Control": "no-store",
+          "CDN-Cache-Control": null,
+          "Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    const headers = new Headers({
+      "Cache-Control": "public, max-age=3600",
+      "CDN-Cache-Control": "public, max-age=3600",
+      "Cache-Tag": "stale",
+    });
+    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+
+    expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
+    expect(headers.get("Cache-Tag")).toBeNull();
+  });
+
   it("default adapter restores baseline after the edge adapter is cleared", () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     const headers = new Headers();

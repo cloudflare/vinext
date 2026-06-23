@@ -9,7 +9,7 @@
  *   4. Rename CJS config files to .cjs
  *   5. Add vinext scripts to package.json
  *   6. Generate vite.config.ts
- *   7. Update .gitignore to include /dist/
+ *   7. Update .gitignore to include /dist/ and .vinext/
  *   8. Print summary
  *
  * Non-destructive: does NOT modify next.config, tsconfig, or source files.
@@ -29,6 +29,7 @@ import {
   hasViteConfig,
   hasAppDir,
 } from "./utils/project.js";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ type InitResult = {
   generatedViteConfig: boolean;
   /** Whether vite.config.ts generation was skipped (already exists) */
   skippedViteConfig: boolean;
-  /** Whether .gitignore was updated to include /dist/ */
+  /** Whether .gitignore was updated to include vinext-generated output */
   updatedGitignore: boolean;
 };
 
@@ -226,34 +227,48 @@ function installDeps(
 // ─── .gitignore Update ───────────────────────────────────────────────────────
 
 /**
- * Ensure /dist/ is listed in .gitignore. Creates the file if it doesn't exist.
- * Returns true if the file was modified (or created), false if /dist/ was already present.
+ * Ensure vinext-generated output directories are listed in .gitignore.
+ * Creates the file if it doesn't exist. Returns true if the file was modified
+ * (or created), false if all entries were already present.
  */
 export function updateGitignore(root: string): boolean {
   const gitignorePath = path.join(root, ".gitignore");
-  const exactEntry = "/dist/";
+  const entries = [
+    {
+      entry: "/dist/",
+      coveredBy: new Set(["/dist/", "/dist", "dist/", "dist"]),
+    },
+    {
+      entry: ".vinext/",
+      coveredBy: new Set(["/.vinext/", "/.vinext", ".vinext/", ".vinext"]),
+    },
+  ];
 
   let content = "";
+  let lines: string[] = [];
   if (fs.existsSync(gitignorePath)) {
     content = fs.readFileSync(gitignorePath, "utf-8");
-
-    // Check if dist is already covered — match /dist/, dist/, or dist (all common variants)
-    const lines = content.split("\n").map((l) => l.trim());
-    if (lines.includes(exactEntry) || lines.includes("dist/") || lines.includes("dist")) {
-      return false;
-    }
+    lines = content.split("\n").map((l) => l.trim());
   }
 
-  // Append /dist/ with a trailing newline, ensuring we don't merge with an existing last line
+  const missingEntries = entries
+    .filter(({ coveredBy }) => !lines.some((line) => coveredBy.has(line)))
+    .map(({ entry }) => entry);
+
+  if (missingEntries.length === 0) {
+    return false;
+  }
+
+  // Append entries with a trailing newline, ensuring we don't merge with an existing last line
   const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
-  fs.writeFileSync(gitignorePath, content + separator + exactEntry + "\n", "utf-8");
+  fs.writeFileSync(gitignorePath, content + separator + missingEntries.join("\n") + "\n", "utf-8");
   return true;
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function init(options: InitOptions): Promise<InitResult> {
-  const root = path.resolve(options.root);
+  const root = normalizePathSeparators(path.resolve(options.root));
   const port = options.port ?? 3001;
   const exec =
     options._exec ??
@@ -359,7 +374,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     console.log(`    - Skipped vite.config.ts (already exists, use --force to overwrite)`);
   }
   if (updatedGitignore) {
-    console.log(`    \u2713 Added /dist/ to .gitignore`);
+    console.log(`    \u2713 Added vinext output directories to .gitignore`);
   }
 
   console.log(`

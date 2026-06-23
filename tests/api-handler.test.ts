@@ -492,6 +492,54 @@ describe("handleApiRoute", () => {
       expect(capturedCookies).toEqual({ token: "abc=def=ghi" });
     });
 
+    // Next.js delegates Pages API cookies to its compiled `cookie` parser,
+    // which preserves the first duplicate value.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+    it("preserves the first duplicate session cookie", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie: "session=trusted; session=attacker",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(capturedCookies.session).toBe("trusted");
+    });
+
+    it("matches Next.js prototype-key and empty-name cookie semantics", async () => {
+      let capturedCookies: Record<string, string> = {};
+      const handler = vi.fn((req: any) => {
+        capturedCookies = req.cookies;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/account", undefined, {
+        cookie:
+          '=empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
+
+      expect(Object.getPrototypeOf(capturedCookies)).toBe(Object.prototype);
+      expect(capturedCookies.hasOwnProperty("encoded")).toBe(true);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+      expect(Object.prototype.toString.call(capturedCookies)).toBe("[object Object]");
+      expect(capturedCookies).toEqual({
+        "": "empty-name",
+        encoded: "hello world",
+        malformed: "%E0%A4%A",
+        quoted: "quoted value",
+      });
+      expect(Object.hasOwn(capturedCookies, "__proto__")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "constructor")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+    });
+
     it("returns empty object when no Cookie header", async () => {
       let capturedCookies: Record<string, string> = {};
       const handler = vi.fn((req: any) => {
@@ -979,6 +1027,68 @@ describe("handleApiRoute", () => {
         hello: "world",
         query: { a: "b" },
       });
+    });
+
+    it("applies basePath and i18n config to edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (
+          request as Request & {
+            nextUrl?: { basePath: string; locale: string; pathname: string };
+          }
+        ).nextUrl;
+        return Response.json({
+          basePath: nextUrl?.basePath,
+          locale: nextUrl?.locale,
+          pathname: nextUrl?.pathname,
+        });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs/fr/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/fr/api/hello?a=b", [route("/fr/api/hello")], {
+        basePath: "/docs",
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+      });
+
+      expect(JSON.parse(res._body.toString())).toMatchObject({
+        basePath: "/docs",
+        locale: "fr",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
+          .nextUrl;
+        return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
+      });
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({
+        basePath: "/docs",
+        pathname: "/api/hello",
+      });
+    });
+
+    it("does not double-prefix an exact basePath edge API rewrite", async () => {
+      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+      const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
+        basePath: "/docs",
+      });
+
+      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
     });
 
     it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {

@@ -218,3 +218,122 @@ describe("encodePrerenderRouteParams", () => {
     });
   });
 });
+
+describe("matchPrerenderRouteParamsPayload", () => {
+  it("returns kind exact when payload has no fallbackParamNames", () => {
+    const payload: PrerenderRouteParamsPayload = {
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "hello%20world" },
+    };
+
+    expect(
+      matchPrerenderRouteParamsPayload(payload, "/:locale/blog/:slug", {
+        locale: "en",
+        slug: "hello world",
+      }),
+    ).toEqual({ kind: "exact", params: { locale: "en", slug: "hello%20world" } });
+  });
+
+  it("returns kind fallback-shell when payload has fallbackParamNames", () => {
+    const payload: PrerenderRouteParamsPayload = {
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "%5Bslug%5D" },
+      fallbackParamNames: ["slug"],
+    };
+
+    expect(
+      matchPrerenderRouteParamsPayload(payload, "/:locale/blog/:slug", {
+        locale: "en",
+        slug: "[slug]",
+      }),
+    ).toEqual({
+      fallbackParamNames: ["slug"],
+      kind: "fallback-shell",
+      params: { locale: "en", slug: "%5Bslug%5D" },
+    });
+  });
+
+  it("rejects fallback-shell payloads that name params outside the route pattern", () => {
+    const payload: PrerenderRouteParamsPayload = {
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "%5Bslug%5D" },
+      fallbackParamNames: ["missing"],
+    };
+
+    expect(
+      matchPrerenderRouteParamsPayload(payload, "/:locale/blog/:slug", {
+        locale: "en",
+        slug: "[slug]",
+      }),
+    ).toBeNull();
+  });
+
+  it("matches fallback-shell catch-all placeholders as route param arrays", () => {
+    const payload: PrerenderRouteParamsPayload = {
+      routePattern: "/:locale/docs/:slug+",
+      params: { locale: "fr", slug: ["%5B...slug%5D"] },
+      fallbackParamNames: ["slug"],
+    };
+
+    expect(
+      matchPrerenderRouteParamsPayload(payload, "/:locale/docs/:slug+", {
+        locale: "fr",
+        slug: ["[...slug]"],
+      }),
+    ).toEqual({
+      fallbackParamNames: ["slug"],
+      kind: "fallback-shell",
+      params: { locale: "fr", slug: ["%5B...slug%5D"] },
+    });
+  });
+});
+
+describe("encodePrerenderRouteParams", () => {
+  it("encodes exact params without fallbackParamNames", () => {
+    const result = encodePrerenderRouteParams("/product/:id", { id: "abc" });
+    expect(result).toEqual({
+      routePattern: "/product/:id",
+      params: { id: "abc" },
+    });
+  });
+
+  it("encodes fallback-shell params with fallbackParamNames", () => {
+    const result = encodePrerenderRouteParams(
+      "/:locale/blog/:slug",
+      { locale: "en", slug: "[slug]" },
+      ["slug"],
+    );
+    expect(result).toEqual({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "%5Bslug%5D" },
+    });
+  });
+
+  it("returns null for static patterns with no dynamic params", () => {
+    expect(encodePrerenderRouteParams("/about", {})).toBeNull();
+  });
+
+  it("percent-encodes param values", () => {
+    const result = encodePrerenderRouteParams("/:locale/blog/:slug", {
+      locale: "en",
+      slug: "hello world & more",
+    });
+    expect(result).toEqual({
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "hello%20world%20%26%20more" },
+    });
+  });
+
+  it("omits fallbackParamNames when empty array is passed", () => {
+    const result = encodePrerenderRouteParams(
+      "/:locale/blog/:slug",
+      { locale: "en", slug: "post" },
+      [],
+    );
+    expect(result).toEqual({
+      routePattern: "/:locale/blog/:slug",
+      params: { locale: "en", slug: "post" },
+    });
+  });
+});

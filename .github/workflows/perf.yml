@@ -1,0 +1,412 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      run_kind:
+        description: Run kind
+        type: choice
+        options: [main, pull_request]
+        default: main
+      commit_sha:
+        description: Commit SHA to measure (defaults to the selected ref)
+        type: string
+        required: false
+      base_sha:
+        description: Baseline commit SHA for pull request runs
+        type: string
+        required: false
+      pull_request:
+        description: Pull request number for pull request runs
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+
+jobs:
+  benchmarks:
+    name: Performance scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VINEXT_PERF_RUN_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || inputs.run_kind || 'main' }}
+      VINEXT_PERF_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit_sha || github.sha }}
+      VINEXT_PERF_TARGET_SHA: ${{ github.event_name == 'pull_request' && github.sha || inputs.commit_sha || github.sha }}
+      VINEXT_PERF_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pull_request }}
+      VINEXT_PERF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
+      VINEXT_PERF_EXECUTION_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+      CODSPEED_SKIP_UPLOAD: "true"
+      CODSPEED_WALLTIME_PROFILER: samply
+      VINEXT_PERF_TARGET_ROOT: ${{ github.workspace }}
+      VINEXT_PERF_TRUSTED_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
+      VINEXT_PERF_TRUSTED_HEAD: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      VINEXT_PERF_WORKFLOW_SHA: ${{ github.sha }}
+    steps:
+      - name: Validate run metadata
+        run: |
+          results_root="$RUNNER_TEMP/vinext-perf-results"
+          echo "VINEXT_PERF_RESULTS_ROOT=$results_root" >> "$GITHUB_ENV"
+          echo "VINEXT_PERF_SAMPLES=$results_root/perf-samples.jsonl" >> "$GITHUB_ENV"
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            if ! [[ "$VINEXT_PERF_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              echo "pull_request runs require a positive pull request number" >&2
+              exit 1
+            fi
+            if ! [[ "$VINEXT_PERF_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "pull_request runs require a full 40-character base SHA" >&2
+              exit 1
+            fi
+            echo "VINEXT_PERF_BASE_ROOT=$RUNNER_TEMP/vinext-perf-base/checkout" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout code under test
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.VINEXT_PERF_TARGET_SHA }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate performance workspace paths
+        run: |
+          validate_directory() {
+            local relative_path="$1"
+            local path="$GITHUB_WORKSPACE/$relative_path"
+            if [ ! -d "$path" ] || [ -L "$path" ]; then
+              echo "Performance workspace path must be a real directory: $relative_path" >&2
+              exit 1
+            fi
+            if [ "$(realpath "$path")" != "$path" ]; then
+              echo "Performance workspace path escapes the checkout: $relative_path" >&2
+              exit 1
+            fi
+          }
+          for path in \
+            packages/vinext \
+            packages/cloudflare \
+            benchmarks/vinext \
+            benchmarks/nextjs; do
+            validate_directory "$path"
+          done
+          for path in \
+            packages/vinext/dist \
+            packages/cloudflare/dist \
+            benchmarks/vinext/app \
+            benchmarks/vinext/dist \
+            benchmarks/vinext/.vite \
+            benchmarks/vinext/node_modules \
+            benchmarks/nextjs/app \
+            benchmarks/nextjs/.next \
+            benchmarks/nextjs/node_modules; do
+            if [ -L "$path" ]; then
+              echo "Performance mutable path may not be a symlink: $path" >&2
+              exit 1
+            fi
+          done
+          rm -rf .perf-base-staging .perf-manifests .perf-harness
+
+      - name: Validate main commit
+        if: env.VINEXT_PERF_RUN_KIND == 'main'
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$VINEXT_PERF_COMMIT_SHA" origin/main; then
+            echo "main runs must target a commit reachable from origin/main" >&2
+            exit 1
+          fi
+
+      - name: Validate dispatched workflow ref
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git fetch --no-tags origin main
+          if [ "$VINEXT_PERF_WORKFLOW_SHA" != "$(git rev-parse origin/main)" ]; then
+            echo "workflow_dispatch must use the current origin/main head" >&2
+            exit 1
+          fi
+
+      - name: Checkout pull request base
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.VINEXT_PERF_BASE_SHA }}
+          path: .perf-base-staging
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Protect pull request base checkout
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        run: |
+          rm -rf "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+          mkdir -p "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+          mv .perf-base-staging "$VINEXT_PERF_BASE_ROOT"
+          chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+
+      - name: Checkout trusted benchmark manifests
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}
+          path: .perf-manifests
+          persist-credentials: false
+          sparse-checkout: |
+            benchmarks/vinext
+            benchmarks/nextjs
+            benchmarks/perf
+
+      - name: Detect Next.js benchmark input changes
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        run: |
+          fingerprint_script=".perf-manifests/benchmarks/perf/nextjs-input-fingerprint.mts"
+          base_validator="$VINEXT_PERF_BASE_ROOT/benchmarks/perf/validate-results.mjs"
+          if [ ! -f "$fingerprint_script" ] || \
+            ! grep -q "skippedImplementations" "$base_validator"; then
+            echo "Base publisher does not support skipped implementations yet; keeping Next.js for rollout compatibility."
+            exit 0
+          fi
+          head_fingerprint=$(node "$fingerprint_script" .)
+          base_fingerprint=$(node "$fingerprint_script" "$VINEXT_PERF_BASE_ROOT")
+          if [ "$head_fingerprint" = "$base_fingerprint" ]; then
+            echo "Next.js benchmark inputs are unchanged; skipping Next.js PR benchmarks."
+            echo "VINEXT_PERF_SKIP_IMPLEMENTATIONS=nextjs" >> "$GITHUB_ENV"
+          else
+            if [ "$VINEXT_PERF_TRUSTED_HEAD" != "true" ]; then
+              echo "Fork pull requests may not change Next.js benchmark inputs." >&2
+              exit 1
+            fi
+            echo "Next.js benchmark inputs changed; pairing base and head Next.js benchmarks."
+          fi
+
+      - name: Prepare trusted benchmark manifests
+        run: |
+          projects=(vinext)
+          if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+            projects+=(nextjs)
+          fi
+          for project in "${projects[@]}"; do
+            find "benchmarks/$project" -mindepth 1 -maxdepth 1 \
+              ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+            cp -R ".perf-manifests/benchmarks/$project/." "benchmarks/$project/"
+          done
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies without lifecycle scripts
+        env:
+          npm_config_ignore_pnpmfile: "true"
+        run: vp install --frozen-lockfile --ignore-scripts
+
+      - name: Install base dependencies without lifecycle scripts
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        working-directory: ${{ env.VINEXT_PERF_BASE_ROOT }}
+        env:
+          npm_config_ignore_pnpmfile: "true"
+        run: vp install --frozen-lockfile --ignore-scripts
+
+      - name: Create isolated benchmark users
+        run: |
+          sudo useradd --create-home --shell /bin/bash vinext-perf-head
+          sudo useradd --create-home --shell /bin/bash vinext-perf-base
+          for user in vinext-perf-head vinext-perf-base; do
+            sudo setfacl -m u:"$user":x "$HOME" "$RUNNER_WORKSPACE" "$(dirname "$RUNNER_WORKSPACE")"
+          done
+          grant_write_paths() {
+            local root="$1"
+            local user="$2"
+            local project_roots=(
+              packages/vinext
+              packages/cloudflare
+              benchmarks/vinext
+              benchmarks/nextjs
+            )
+            for relative_path in "${project_roots[@]}"; do
+              local path="$root/$relative_path"
+              sudo chmod +t "$path"
+              sudo setfacl -m u:"$user":rwx "$path"
+              sudo setfacl -m d:u:"$user":rwx,d:u:"$USER":rwx "$path"
+            done
+            local paths=(
+              packages/vinext/dist
+              packages/cloudflare/dist
+              node_modules/.vite/task-cache
+              benchmarks/vinext/dist
+              benchmarks/vinext/.vite
+              benchmarks/vinext/node_modules/.vite
+              benchmarks/vinext/node_modules/.vite-temp
+              benchmarks/nextjs/.next
+              benchmarks/nextjs/node_modules
+            )
+            for relative_path in "${paths[@]}"; do
+              local path="$root/$relative_path"
+              if [ -L "$path" ]; then
+                echo "Performance output path may not be a symlink: $path" >&2
+                exit 1
+              fi
+              sudo mkdir -p "$path"
+              case "$(realpath "$path")" in
+                "$root"/*) ;;
+                *)
+                  echo "Performance output path escapes its checkout: $path" >&2
+                  exit 1
+                  ;;
+              esac
+              sudo chown -R "$user":"$user" "$path"
+              sudo chmod -R u+rwX "$path"
+              sudo setfacl -R -m u:"$user":rwX "$path"
+              sudo setfacl -R -m u:"$USER":rwX "$path"
+              sudo setfacl -R -d -m u:"$user":rwX,u:"$USER":rwX "$path"
+              sudo -u "$user" test -w "$path"
+            done
+          }
+          grant_write_paths "$GITHUB_WORKSPACE" vinext-perf-head
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            sudo chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+            sudo setfacl -m u:vinext-perf-base:x "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+            sudo setfacl -m u:vinext-perf-base:rx "$VINEXT_PERF_BASE_ROOT"
+            grant_write_paths "$VINEXT_PERF_BASE_ROOT" vinext-perf-base
+          fi
+          echo "VINEXT_PERF_HEAD_USER=vinext-perf-head" >> "$GITHUB_ENV"
+          echo "VINEXT_PERF_BASE_USER=vinext-perf-base" >> "$GITHUB_ENV"
+
+      - name: Checkout trusted performance harness
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}
+          path: .perf-harness
+          persist-credentials: false
+          sparse-checkout: benchmarks
+
+      - name: Install trusted performance harness
+        run: |
+          trusted_harness="$RUNNER_TEMP/vinext-perf-harness"
+          rm -rf "$trusted_harness"
+          mkdir -p "$trusted_harness/benchmarks"
+          cp -R .perf-harness/benchmarks/perf "$trusted_harness/benchmarks/perf"
+          cp -R .perf-harness/benchmarks/vinext "$trusted_harness/benchmarks/vinext"
+          cp -R .perf-harness/benchmarks/nextjs "$trusted_harness/benchmarks/nextjs"
+          cp .perf-harness/benchmarks/generate-app.mjs "$trusted_harness/benchmarks/generate-app.mjs"
+          chmod -R a-w "$trusted_harness"
+          rm -rf "$VINEXT_PERF_RESULTS_ROOT"
+          mkdir -p "$VINEXT_PERF_RESULTS_ROOT"
+          chmod 700 "$VINEXT_PERF_RESULTS_ROOT"
+          roots=(".")
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            roots+=("$VINEXT_PERF_BASE_ROOT")
+          fi
+          for root in "${roots[@]}"; do
+            projects=(vinext)
+            if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+              projects+=(nextjs)
+            fi
+            for project in "${projects[@]}"; do
+              find "$root/benchmarks/$project" -mindepth 1 -maxdepth 1 \
+                ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+              cp -R ".perf-harness/benchmarks/$project/." "$root/benchmarks/$project/"
+            done
+          done
+          rm -rf .perf-harness .perf-manifests
+          echo "VINEXT_PERF_HARNESS_ROOT=$trusted_harness" >> "$GITHUB_ENV"
+
+      - name: Prepare performance scenarios
+        run: |
+          args=(--setup-only)
+          if [ "$VINEXT_PERF_SKIP_IMPLEMENTATIONS" = "nextjs" ]; then
+            args+=(--implementation=vinext)
+          fi
+          node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" "${args[@]}"
+
+      - name: Prepare base performance scenarios
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        run: |
+          args=(--setup-only)
+          if [ "$VINEXT_PERF_SKIP_IMPLEMENTATIONS" = "nextjs" ]; then
+            args+=(--implementation=vinext)
+          fi
+          VINEXT_PERF_TARGET_ROOT="$VINEXT_PERF_BASE_ROOT" \
+            node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" "${args[@]}"
+
+      - name: Lock benchmark inputs after setup
+        run: |
+          roots=(".")
+          users=(vinext-perf-head)
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            roots+=("$VINEXT_PERF_BASE_ROOT")
+            users+=(vinext-perf-base)
+          fi
+          for index in "${!roots[@]}"; do
+            root="${roots[$index]}"
+            user="${users[$index]}"
+            projects=(vinext)
+            if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+              projects+=(nextjs)
+            fi
+            for project in "${projects[@]}"; do
+              find "$root/benchmarks/$project" -mindepth 1 -maxdepth 1 \
+                ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+              cp -R "$VINEXT_PERF_HARNESS_ROOT/benchmarks/$project/." "$root/benchmarks/$project/"
+            done
+            for path in \
+              "$root/packages/vinext/dist" \
+              "$root/packages/cloudflare/dist" \
+              "$root/node_modules/.vite/task-cache" \
+              "$root/benchmarks/nextjs/node_modules"; do
+              sudo chown -R "$USER":"$USER" "$path"
+              sudo setfacl -R -x u:"$user" "$path"
+              find "$path" -type d -exec sudo setfacl -x d:u:"$user" {} +
+            done
+          done
+
+      - name: Install pinned performance runner
+        run: |
+          sudo sysctl -w kernel.kptr_restrict=0
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          curl -fsSL https://github.com/CodSpeedHQ/codspeed/releases/download/v4.17.5/codspeed-runner-x86_64-unknown-linux-musl.tar.gz -o /tmp/perf-runner.tar.gz
+          echo "88be40970bbe409192dec6f6242489ee916a4b2d8c4138b42b796853111c9b15  /tmp/perf-runner.tar.gz" | sha256sum -c
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/perf-runner.tar.gz -C /tmp
+          install -m 0755 /tmp/codspeed-runner-x86_64-unknown-linux-musl/codspeed "$HOME/.local/bin/codspeed"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "VINEXT_PERF_PROFILER_BIN=$HOME/.local/bin/codspeed" >> "$GITHUB_ENV"
+
+      - name: Measure performance scenarios
+        run: node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs"
+
+      - name: Normalize samples and profiles
+        run: |
+          node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/normalize-results.mjs" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-samples.jsonl" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-profiles"
+          trace_validator="$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/validate-profile-traces.mjs"
+          if [ -f "$trace_validator" ]; then
+            node "$trace_validator" \
+              "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
+              "$VINEXT_PERF_RESULTS_ROOT"
+          else
+            echo "Trusted base predates trace validation; skipping during rollout."
+          fi
+          sudo chmod -R a+rX "$VINEXT_PERF_RESULTS_ROOT"
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-results
+          path: |
+            ${{ runner.temp }}/vinext-perf-results/perf-samples.jsonl
+            ${{ runner.temp }}/vinext-perf-results/perf-results.json
+            ${{ runner.temp }}/vinext-perf-results/perf-profiles/
+          retention-days: 90

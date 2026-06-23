@@ -38,12 +38,14 @@ export default {
         // Build-time entries referenced by path constant (Vite reads them
         // from disk via `fs`), so knip wouldn't otherwise trace them.
         "src/server/app-browser-entry.ts",
+        "src/server/app-browser-server-action-client.ts",
         "src/server/app-ssr-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
+        "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
@@ -104,12 +106,6 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // Optional peer dependency probed by tests/scss.test.ts.
-    "sass",
-
-    // Vite+ reporter name used outside CI in vite.config.ts.
-    "agent",
-
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",
 
@@ -128,6 +124,7 @@ export default {
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
+    "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target
     "packages/vinext/src/client/empty-module.ts",
   ],

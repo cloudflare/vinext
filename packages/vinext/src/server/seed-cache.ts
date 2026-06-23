@@ -31,29 +31,20 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { CachedAppPageValue } from "vinext/shims/cache";
+import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { normalizePath } from "./normalize-path.js";
-
-// ─── Manifest types ───────────────────────────────────────────────────────────
-
-type PrerenderManifest = {
-  buildId: string;
-  trailingSlash?: boolean;
-  routes: PrerenderManifestRoute[];
-};
-
-type PrerenderManifestRoute = {
-  route: string;
-  status: string;
-  revalidate?: number | false;
-  expire?: number;
-  path?: string;
-  router?: "app" | "pages";
-};
+import {
+  addPregeneratedConcretePath,
+  clearPregeneratedConcretePaths,
+  normalizePregeneratedPathname,
+} from "./pregenerated-concrete-paths.js";
+import {
+  readPrerenderManifest,
+  getRenderedAppRoutes,
+  isFallbackShellArtifactPath,
+} from "./prerender-manifest.js";
 
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
@@ -90,16 +81,15 @@ export async function seedMemoryCacheFromPrerender(
   serverDir: string,
   options?: PrerenderCacheSeedOptions,
 ): Promise<number> {
-  const manifestPath = path.join(serverDir, "vinext-prerender.json");
-  if (!fs.existsSync(manifestPath)) return 0;
+  // Clear any pre-existing concrete paths from a previous build BEFORE checking
+  // whether the manifest exists. This ensures that a missing or corrupt manifest
+  // in a new build still fails closed to an empty set — the stale paths from a
+  // previous build are never visible to the new server process.
+  clearPregeneratedConcretePaths();
 
-  let manifest: PrerenderManifest;
-  try {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-  } catch (err) {
-    console.warn("[vinext] Failed to parse vinext-prerender.json, skipping cache seeding:", err);
-    return 0;
-  }
+  const manifestPath = path.join(serverDir, "vinext-prerender.json");
+  const manifest = readPrerenderManifest(manifestPath);
+  if (!manifest) return 0;
 
   const { buildId, routes } = manifest;
   if (!buildId || !Array.isArray(routes)) return 0;
@@ -109,12 +99,16 @@ export async function seedMemoryCacheFromPrerender(
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   let seeded = 0;
 
-  for (const route of routes) {
-    if (route.status !== "rendered") continue;
-    if (route.router !== "app") continue;
+  const appRoutes = getRenderedAppRoutes(routes);
+
+  for (const route of appRoutes) {
+    const concretePathname = route.path ?? route.route;
+    if (!isFallbackShellArtifactPath(concretePathname, route)) {
+      addPregeneratedConcretePath(route.route, concretePathname);
+    }
 
     const artifactPathname = route.path ?? route.route;
-    const cachePathname = normalizePrerenderCachePathname(artifactPathname);
+    const cachePathname = normalizePregeneratedPathname(artifactPathname);
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
@@ -158,10 +152,6 @@ export async function seedMemoryCacheFromPrerender(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
-
-function normalizePrerenderCachePathname(pathname: string): string {
-  return normalizePath(normalizePathnameForRouteMatch(pathname));
-}
 
 function createDefaultAppPageEntryWriter(): NonNullable<
   PrerenderCacheSeedOptions["writeAppPageEntry"]

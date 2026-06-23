@@ -4,6 +4,7 @@ import {
   parseNextDataPathname,
   buildNextDataJsonResponse,
   buildNextDataNotFoundResponse,
+  normalizePagesDataRequest,
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 // Helper mirroring vinext/html safeJsonStringify behavior for tests.
@@ -89,6 +90,30 @@ describe("pages-data-route", () => {
     });
   });
 
+  describe("normalizePagesDataRequest", () => {
+    it("recognizes a data URL under basePath while preserving basePath for middleware", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/about");
+      expect(result.search).toBe("?x=1");
+      expect(result.request.url).toBe("http://localhost/root/about?x=1");
+      expect(result.notFoundResponse).toBeNull();
+    });
+
+    it("preserves an absolute data URL outside the configured basePath", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/_next/data/${buildId}/about.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/about");
+      expect(result.request.url).toBe("http://localhost/about?x=1");
+    });
+  });
+
   describe("buildNextDataNotFoundResponse", () => {
     it("returns a 404 JSON response with empty body", async () => {
       const res = buildNextDataNotFoundResponse();
@@ -97,6 +122,101 @@ describe("pages-data-route", () => {
       // Body is `{}` — clients blindly calling `.json()` won't throw before
       // checking the status code.
       expect(await res.json()).toEqual({});
+    });
+
+    it("sets x-nextjs-deployment-id when __VINEXT_DEPLOYMENT_ID is set", async () => {
+      const saved = process.env.__VINEXT_DEPLOYMENT_ID;
+      process.env.__VINEXT_DEPLOYMENT_ID = "deploy-abc123";
+      try {
+        const res = buildNextDataNotFoundResponse();
+        expect(res.headers.get("x-nextjs-deployment-id")).toBe("deploy-abc123");
+      } finally {
+        if (saved === undefined) {
+          delete process.env.__VINEXT_DEPLOYMENT_ID;
+        } else {
+          process.env.__VINEXT_DEPLOYMENT_ID = saved;
+        }
+      }
+    });
+
+    it("sets x-nextjs-deployment-id from NEXT_DEPLOYMENT_ID when __VINEXT_DEPLOYMENT_ID is absent", async () => {
+      const savedVinext = process.env.__VINEXT_DEPLOYMENT_ID;
+      const savedNext = process.env.NEXT_DEPLOYMENT_ID;
+      delete process.env.__VINEXT_DEPLOYMENT_ID;
+      process.env.NEXT_DEPLOYMENT_ID = "next-deploy-xyz";
+      try {
+        const res = buildNextDataNotFoundResponse();
+        expect(res.headers.get("x-nextjs-deployment-id")).toBe("next-deploy-xyz");
+      } finally {
+        if (savedVinext === undefined) {
+          delete process.env.__VINEXT_DEPLOYMENT_ID;
+        } else {
+          process.env.__VINEXT_DEPLOYMENT_ID = savedVinext;
+        }
+        if (savedNext === undefined) {
+          delete process.env.NEXT_DEPLOYMENT_ID;
+        } else {
+          process.env.NEXT_DEPLOYMENT_ID = savedNext;
+        }
+      }
+    });
+
+    it("omits x-nextjs-deployment-id when no deployment env var is set", async () => {
+      const savedVinext = process.env.__VINEXT_DEPLOYMENT_ID;
+      const savedNext = process.env.NEXT_DEPLOYMENT_ID;
+      delete process.env.__VINEXT_DEPLOYMENT_ID;
+      delete process.env.NEXT_DEPLOYMENT_ID;
+      try {
+        const res = buildNextDataNotFoundResponse();
+        expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
+      } finally {
+        if (savedVinext !== undefined) process.env.__VINEXT_DEPLOYMENT_ID = savedVinext;
+        if (savedNext !== undefined) process.env.NEXT_DEPLOYMENT_ID = savedNext;
+      }
+    });
+  });
+
+  describe("normalizePagesDataRequest — wrong buildId", () => {
+    const BUILD_ID = "correct-build-id";
+
+    it("returns a notFoundResponse with x-nextjs-deployment-id when buildId is wrong", async () => {
+      const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+      process.env.__VINEXT_DEPLOYMENT_ID = "deploy-skew-guard";
+      try {
+        const req = new Request("http://localhost/_next/data/stale-build-id/about.json");
+        const result = normalizePagesDataRequest(req, BUILD_ID);
+        expect(result.isDataReq).toBe(false);
+        expect(result.notFoundResponse).not.toBeNull();
+        expect(result.notFoundResponse!.status).toBe(404);
+        expect(result.notFoundResponse!.headers.get("x-nextjs-deployment-id")).toBe(
+          "deploy-skew-guard",
+        );
+      } finally {
+        if (savedId === undefined) {
+          delete process.env.__VINEXT_DEPLOYMENT_ID;
+        } else {
+          process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+        }
+      }
+    });
+
+    it("returns a notFoundResponse with x-nextjs-deployment-id when buildId is null (no build)", async () => {
+      const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+      process.env.__VINEXT_DEPLOYMENT_ID = "deploy-null-build";
+      try {
+        const req = new Request("http://localhost/_next/data/any-build-id/about.json");
+        const result = normalizePagesDataRequest(req, null);
+        expect(result.notFoundResponse).not.toBeNull();
+        expect(result.notFoundResponse!.headers.get("x-nextjs-deployment-id")).toBe(
+          "deploy-null-build",
+        );
+      } finally {
+        if (savedId === undefined) {
+          delete process.env.__VINEXT_DEPLOYMENT_ID;
+        } else {
+          process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+        }
+      }
     });
   });
 });

@@ -6,6 +6,7 @@ import {
   initPregeneratedPathsFromGlobals,
   normalizePregeneratedPathname,
 } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
+import { isFallbackShellArtifactPath } from "../packages/vinext/src/server/prerender-manifest.js";
 
 describe("pregenerated concrete paths", () => {
   afterEach(() => {
@@ -13,7 +14,7 @@ describe("pregenerated concrete paths", () => {
   });
 
   it("returns undefined for an unknown route pattern", () => {
-    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/[slug]")).toBeUndefined();
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")).toBeUndefined();
   });
 
   it("stores and retrieves pathnames for a route pattern", () => {
@@ -36,25 +37,25 @@ describe("pregenerated concrete paths", () => {
   });
 
   it("returns an empty state after clear", () => {
-    addPregeneratedConcretePath("/en/blog/[slug]", "/en/blog/persistent");
-    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/[slug]")).toBeDefined();
+    addPregeneratedConcretePath("/en/blog/:slug", "/en/blog/persistent");
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")).toBeDefined();
 
     clearPregeneratedConcretePaths();
 
-    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/[slug]")).toBeUndefined();
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")).toBeUndefined();
   });
 
   it("clears stale paths from a previous build on re-population (issue 3)", () => {
     // Build A
-    addPregeneratedConcretePath("/en/blog/[slug]", "/en/blog/old");
-    addPregeneratedConcretePath("/en/blog/[slug]", "/en/blog/also-old");
-    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/[slug]")!.size).toBe(2);
+    addPregeneratedConcretePath("/en/blog/:slug", "/en/blog/old");
+    addPregeneratedConcretePath("/en/blog/:slug", "/en/blog/also-old");
+    expect(getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")!.size).toBe(2);
 
     // Build B — clear and re-seed without the old paths
     clearPregeneratedConcretePaths();
-    addPregeneratedConcretePath("/en/blog/[slug]", "/en/blog/new");
+    addPregeneratedConcretePath("/en/blog/:slug", "/en/blog/new");
 
-    const paths = getRenderedConcreteUrlPathsForRoute("/en/blog/[slug]")!;
+    const paths = getRenderedConcreteUrlPathsForRoute("/en/blog/:slug")!;
     expect(paths.has("/en/blog/old")).toBe(false);
     expect(paths.has("/en/blog/also-old")).toBe(false);
     expect(paths.has("/en/blog/new")).toBe(true);
@@ -65,13 +66,11 @@ describe("pregenerated concrete paths", () => {
     expect(normalizePregeneratedPathname("/en/blog/hello%20world")).toBe("/en/blog/hello world");
   });
 
-  it("normalizes un-normalized pathnames recorded directly", () => {
+  it("normalizes pathnames when adding concrete paths", () => {
     addPregeneratedConcretePath("/:locale/blog/:slug", "/en/blog/hello%20world");
-    addPregeneratedConcretePath("/:locale/blog/:slug", "//en/./blog/world");
 
     expect([...getRenderedConcreteUrlPathsForRoute("/:locale/blog/:slug")!]).toEqual([
       "/en/blog/hello world",
-      "/en/blog/world",
     ]);
   });
 
@@ -85,5 +84,47 @@ describe("pregenerated concrete paths", () => {
     expect([...getRenderedConcreteUrlPathsForRoute("/:locale/blog/:slug")!]).toEqual([
       "/en/blog/hello world",
     ]);
+  });
+
+  describe("isFallbackShellArtifactPath", () => {
+    it("identifies fallback shells when fallback === true", () => {
+      expect(
+        isFallbackShellArtifactPath("/en/blog/[slug]", {
+          route: "/en/blog/:slug",
+          fallback: true,
+          status: "rendered",
+          router: "app",
+        }),
+      ).toBe(true);
+    });
+
+    it("identifies concrete paths even with brackets when fallback === false", () => {
+      expect(
+        isFallbackShellArtifactPath("/en/blog/[draft]-post", {
+          route: "/en/blog/:slug",
+          fallback: false,
+          status: "rendered",
+          router: "app",
+        }),
+      ).toBe(false);
+    });
+
+    it("falls back to bracket checks when fallback is undefined (legacy manifests)", () => {
+      expect(
+        isFallbackShellArtifactPath("/en/blog/[slug]", {
+          route: "/en/blog/:slug",
+          status: "rendered",
+          router: "app",
+        }),
+      ).toBe(true);
+
+      expect(
+        isFallbackShellArtifactPath("/en/blog/hello", {
+          route: "/en/blog/:slug",
+          status: "rendered",
+          router: "app",
+        }),
+      ).toBe(false);
+    });
   });
 });

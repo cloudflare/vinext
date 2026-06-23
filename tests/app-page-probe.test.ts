@@ -293,8 +293,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -335,8 +335,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -497,6 +497,37 @@ describe("app page probe helpers", () => {
 
     const result = await probeAppPageBeforeRender({
       hasLoadingBoundary: true,
+      layoutCount: 0,
+      probeLayoutAt() {
+        throw new Error("should not probe layouts");
+      },
+      probePage,
+      renderLayoutSpecialError() {
+        throw new Error("should not render a layout special error");
+      },
+      renderPageSpecialError,
+      resolveSpecialError() {
+        throw new Error("should not be reached when the page probe is skipped");
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(probePage).not.toHaveBeenCalled();
+    expect(renderPageSpecialError).not.toHaveBeenCalled();
+    expect(result.response).toBeNull();
+  });
+
+  it("skips the page probe when disabled for document rendering", async () => {
+    const probePage = vi.fn(() => {
+      throw new Error("page probe should not execute");
+    });
+    const renderPageSpecialError = vi.fn();
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      probePageBeforeRender: false,
       layoutCount: 0,
       probeLayoutAt() {
         throw new Error("should not probe layouts");

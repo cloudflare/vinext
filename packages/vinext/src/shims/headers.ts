@@ -8,7 +8,12 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
+import {
+  FLIGHT_HEADERS,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  NEXT_HTML_REQUEST_ID_HEADER,
+  NEXT_REQUEST_ID_HEADER,
+} from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -16,12 +21,13 @@ import {
   validateCookieAttributeValue,
   validateCookieName,
 } from "./internal/cookie-serialize.js";
-import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +38,7 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
   readonlyCookies?: RequestCookies;
@@ -49,12 +56,28 @@ export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
+  connectionProbe: ConnectionProbeState | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
   invalidDynamicUsageError: unknown;
   pendingSetCookies: string[];
   draftModeCookieHeader: string | null;
   phase: HeadersAccessPhase;
 };
+
+type ConnectionProbeState = {
+  interrupted: boolean;
+  interrupt: () => void;
+  pending: Promise<never>;
+};
+
+type ConnectionProbeResult<T> =
+  | {
+      completed: true;
+      result: T;
+    }
+  | {
+      completed: false;
+    };
 
 // NOTE:
 // - This shim can be loaded under multiple module specifiers in Vite's
@@ -71,6 +94,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
+  connectionProbe: null,
   invalidDynamicUsageError: null,
   pendingSetCookies: [],
   draftModeCookieHeader: null,
@@ -138,7 +162,7 @@ function rebuildCookiesFromHeader(ctx: HeadersContext, cookieHeader: string | nu
   ctx.cookies.clear();
   if (cookieHeader === null) return;
 
-  const nextCookies = parseCookieHeader(cookieHeader);
+  const nextCookies = parseEdgeRequestCookieHeader(cookieHeader);
   for (const [name, value] of nextCookies) {
     ctx.cookies.set(name, value);
   }
@@ -186,6 +210,55 @@ export function markDynamicUsage(): void {
 
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   _getState().renderRequestApiUsage.add(kind);
+}
+
+export function throwIfStaticGenerationAccessError(): void {
+  const accessError = _getState().headersContext?.accessError;
+  if (accessError) {
+    throw accessError;
+  }
+}
+
+export async function runWithConnectionProbe<T>(
+  fn: () => T | Promise<T>,
+): Promise<ConnectionProbeResult<T>> {
+  const state = _getState();
+  const previousProbe = state.connectionProbe;
+  let interruptProbe: () => void = () => {};
+  const interrupted = new Promise<ConnectionProbeResult<T>>((resolve) => {
+    interruptProbe = () => resolve({ completed: false });
+  });
+
+  const probe: ConnectionProbeState = {
+    interrupted: false,
+    interrupt() {
+      if (probe.interrupted) return;
+      probe.interrupted = true;
+      interruptProbe();
+    },
+    // `connection()` suspends forever inside speculative probes, matching
+    // Next.js's prerender/probe contract: code after `await connection()`
+    // must not run while classifying a route.
+    pending: new Promise<never>(() => {}),
+  };
+
+  state.connectionProbe = probe;
+  try {
+    const completed = Promise.resolve()
+      .then(fn)
+      .then<ConnectionProbeResult<T>>((result) => ({ completed: true, result }));
+    return await Promise.race([completed, interrupted]);
+  } finally {
+    state.connectionProbe = previousProbe;
+  }
+}
+
+export function suspendConnectionProbe(): Promise<never> | null {
+  const probe = _getState().connectionProbe;
+  if (!probe) return null;
+
+  probe.interrupt();
+  return probe.pending;
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -413,6 +486,7 @@ export function runWithHeadersContext<T>(
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
       uCtx.renderRequestApiUsage = new Set();
+      uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
       uCtx.draftModeCookieHeader = null;
       uCtx.phase = "render";
@@ -423,6 +497,7 @@ export function runWithHeadersContext<T>(
     headersContext: ctx,
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
+    connectionProbe: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
@@ -583,6 +658,30 @@ function _decorateRejectedRequestApiPromise<T extends object>(error: unknown): P
   return _decorateRequestApiPromise(promise, throwingTarget);
 }
 
+function _decorateSuspendingRequestApiPromise<T extends object>(
+  promise: Promise<T>,
+): Promise<T> & T {
+  return new Proxy(promise as Promise<T> & T, {
+    get(promiseTarget, prop) {
+      if (prop === "then" || prop === "catch" || prop === "finally") {
+        const value = Reflect.get(promiseTarget, prop, promiseTarget);
+        return typeof value === "function" ? value.bind(promiseTarget) : value;
+      }
+
+      throw promise;
+    },
+    getOwnPropertyDescriptor() {
+      throw promise;
+    },
+    has() {
+      throw promise;
+    },
+    ownKeys() {
+      throw promise;
+    },
+  });
+}
+
 function _sealHeaders(headers: Headers): Headers {
   return new Proxy(headers, {
     get(target, prop) {
@@ -651,7 +750,13 @@ function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
 
 function _getReadonlyHeaders(ctx: HeadersContext): Headers {
   if (!ctx.readonlyHeaders) {
-    ctx.readonlyHeaders = _sealHeaders(ctx.headers);
+    const cleaned = new Headers(ctx.headers);
+    for (const header of FLIGHT_HEADERS) {
+      cleaned.delete(header);
+    }
+    cleaned.delete(NEXT_REQUEST_ID_HEADER);
+    cleaned.delete(NEXT_HTML_REQUEST_ID_HEADER);
+    ctx.readonlyHeaders = _sealHeaders(cleaned);
   }
 
   return ctx.readonlyHeaders;
@@ -722,7 +827,7 @@ export function headersContextFromRequest(
     if (_cookies) return _cookies;
     // Read from the proxy so middleware-modified cookie headers are respected.
     const cookieHeader = headersProxy.get("cookie") || "";
-    _cookies = parseCookieHeader(cookieHeader);
+    _cookies = parseEdgeRequestCookieHeader(cookieHeader);
     return _cookies;
   }
 
@@ -770,6 +875,11 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
+  const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
+  if (fallbackShellPromise) {
+    return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
+  }
+
   const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
   return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
 }
@@ -800,6 +910,11 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
+  const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
+  if (fallbackShellPromise) {
+    return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
+  }
+
   const cookieStore = _areCookiesMutableInCurrentPhase()
     ? _getMutableCookies(state.headersContext)
     : _getReadonlyCookies(state.headersContext);
@@ -876,7 +991,7 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return false;
   return (
-    parseCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
+    parseEdgeRequestCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
     validateDraftModeSecret(draftModeSecret)
   );
 }
@@ -937,9 +1052,6 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
-  if (context.accessError) {
-    throw context.accessError;
-  }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and
@@ -949,7 +1061,7 @@ export async function draftMode(): Promise<DraftModeResult> {
 
   return {
     get isEnabled(): boolean {
-      return context.cookies.get(DRAFT_MODE_COOKIE) === secret;
+      return context.draftModeEnabled ?? context.cookies.get(DRAFT_MODE_COOKIE) === secret;
     },
     enable(): void {
       // Mutating draft mode inside a cache scope would freeze a Set-Cookie
@@ -957,6 +1069,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().enable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().enable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = true;
       activeContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
@@ -964,6 +1077,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().disable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().disable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = false;
       activeContext.cookies.delete(DRAFT_MODE_COOKIE);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; ${draftModeCookieAttributes()}; Expires=${DRAFT_MODE_EXPIRED_DATE}`;
     },

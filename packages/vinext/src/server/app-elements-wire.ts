@@ -29,6 +29,7 @@ export const APP_RENDER_OBSERVATION_KEY = "__renderObservation";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
+export const APP_SOURCE_PAGE_KEY = "__sourcePage";
 export const APP_SLOT_BINDINGS_KEY = "__slotBindings";
 /**
  * Static sibling segment names for the matched route, surfaced so the client
@@ -199,6 +200,7 @@ type AppElementsMetadata = {
   rootLayoutTreePath: string | null;
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
+  sourcePage: string | null;
 };
 
 type AppElementsWireElementKey =
@@ -215,6 +217,7 @@ type AppElementsWireMetadataInput = {
   routeId: string;
   rootLayoutTreePath: string | null;
   slotBindings?: readonly AppElementsSlotBinding[];
+  sourcePage?: string | null;
 };
 
 type AppElementsWireMetadataEntries = Readonly<{
@@ -223,6 +226,7 @@ type AppElementsWireMetadataEntries = Readonly<{
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
   [APP_ROOT_LAYOUT_KEY]: string | null;
+  [APP_SOURCE_PAGE_KEY]?: string;
   [APP_SLOT_BINDINGS_KEY]?: readonly AppElementsSlotBinding[];
 }>;
 
@@ -258,6 +262,7 @@ type AppElementsWireKeys = {
   readonly route: typeof APP_ROUTE_KEY;
   readonly skippedLayoutIds: typeof APP_SKIPPED_LAYOUT_IDS_KEY;
   readonly slotBindings: typeof APP_SLOT_BINDINGS_KEY;
+  readonly sourcePage: typeof APP_SOURCE_PAGE_KEY;
 };
 
 type AppElementsWireCodec = {
@@ -391,6 +396,9 @@ function createAppElementsWireMetadataEntries(
     [APP_INTERCEPTION_CONTEXT_KEY]: input.interceptionContext,
     [APP_LAYOUT_IDS_KEY]: layoutIds,
     [APP_ROOT_LAYOUT_KEY]: input.rootLayoutTreePath,
+    ...(input.sourcePage === null || input.sourcePage === undefined
+      ? {}
+      : { [APP_SOURCE_PAGE_KEY]: input.sourcePage }),
   };
   // Empty slot binding metadata is intentionally omitted. Missing
   // __slotBindings round-trips as [] and means "no route-state proof", so
@@ -698,6 +706,12 @@ function readArtifactCompatibilityMetadata(value: unknown): ArtifactCompatibilit
   return artifactCompatibility ?? createArtifactCompatibilityEnvelope();
 }
 
+function readSourcePageMetadata(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !value.startsWith("/")) return null;
+  return value;
+}
+
 function createMissingCacheEntryReuseProof(): CacheEntryReuseProof {
   return {
     kind: "runtime-cache-entry",
@@ -809,6 +823,7 @@ export function readAppElementsMetadata(
   const cacheEntryReuseProof = parseCacheEntryReuseProofMetadata(
     elements[APP_CACHE_ENTRY_REUSE_PROOF_KEY],
   );
+  const sourcePage = readSourcePageMetadata(elements[APP_SOURCE_PAGE_KEY]);
 
   return {
     artifactCompatibility,
@@ -821,6 +836,7 @@ export function readAppElementsMetadata(
     rootLayoutTreePath,
     skippedLayoutIds,
     slotBindings,
+    sourcePage,
   };
 }
 
@@ -839,6 +855,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     route: APP_ROUTE_KEY,
     skippedLayoutIds: APP_SKIPPED_LAYOUT_IDS_KEY,
     slotBindings: APP_SLOT_BINDINGS_KEY,
+    sourcePage: APP_SOURCE_PAGE_KEY,
   },
   unmatchedSlotValue: APP_UNMATCHED_SLOT_WIRE_VALUE,
   createMetadataEntries: createAppElementsWireMetadataEntries,

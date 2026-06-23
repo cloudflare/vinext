@@ -89,6 +89,68 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
   });
 
+  // Ported from Next.js: packages/next/src/build/next-config-ts/transpile-config.ts (array extends)
+  it("follows array-form 'extends' for inherited paths", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@/*": ["./lib/*"] } },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ extends: ["./tsconfig.base.json"] }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
+    expect(aliases["@"]).toBe(path.join(tmpDir, "lib"));
+  });
+
+  // Ported from Next.js: packages/next/src/build/next-config-ts/transpile-config.ts (array extends)
+  it("array-form 'extends': later entries override earlier ones", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.first.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@/*": ["./first/*"] } },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.second.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@/*": ["./second/*"] } },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ extends: ["./tsconfig.first.json", "./tsconfig.second.json"] }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
+    expect(aliases["@"]).toBe(path.join(tmpDir, "second"));
+  });
+
+  it("child paths override array-form extended paths", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({
+        compilerOptions: { paths: { "@/*": ["./lib/*"] } },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        extends: ["./tsconfig.base.json"],
+        compilerOptions: { paths: { "@/*": ["./src/*"] } },
+      }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
+    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+  });
+
   it("supports non-wildcard exact alias", () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(

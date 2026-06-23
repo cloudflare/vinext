@@ -2,7 +2,10 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import {
   getCollectedFetchTags,
   ensureFetchPatch,
+  setCurrentFetchCacheMode,
   setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
+  type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
 import {
   consumeDynamicUsage,
@@ -35,6 +38,7 @@ import {
   applyRouteHandlerMiddlewareContext,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
+import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
@@ -103,12 +107,14 @@ async function runInRouteHandlerRevalidationContext(
     cleanPathname: string;
     draftModeSecret: string;
     dynamicConfig?: string;
+    fetchCacheMode: FetchCacheMode | null;
     routePattern: string;
     routeSegments: string[];
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "route",
@@ -125,6 +131,10 @@ async function runInRouteHandlerRevalidationContext(
     setCurrentFetchSoftTags(
       buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
     );
+    // The revalidation render runs in a fresh request context, so the fetch
+    // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
+    setCurrentFetchCacheMode(options.fetchCacheMode);
+    setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     await renderFn();
   });
 }
@@ -174,6 +184,17 @@ export async function dispatchAppRouteHandler(
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
 
+  // Route handler fetches observe the handler's segment config the same way
+  // page fetches do: upstream's app-route module copies `userland.fetchCache`
+  // into the work store and sets `forceDynamic` for `dynamic = "force-dynamic"`,
+  // which patch-fetch turns into a no-store default for fetches without
+  // explicit cache config. Both setters are new wiring for the route-handler
+  // path (dispatch previously only set fetch soft tags), closing the gap
+  // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
+  const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
+  setCurrentFetchCacheMode(fetchCacheMode);
+  setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
+
   if (
     revalidateSeconds !== null &&
     shouldReadAppRouteHandlerCache({
@@ -219,6 +240,7 @@ export async function dispatchAppRouteHandler(
             cleanPathname: options.cleanPathname,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
+            fetchCacheMode,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
           },

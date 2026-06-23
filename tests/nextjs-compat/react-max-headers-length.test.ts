@@ -10,8 +10,8 @@
  * cloudflare/vinext#1552.
  *
  * The upstream fixture asserts against React `ReactDOM.preload()` hints. vinext
- * emits its preload `Link` header from the App Router font pipeline (the route
- * inherits the fixture's `next/font` preloads), so this test exercises the same
+ * emits its preload `Link` header from the App Router font pipeline, so this
+ * route owns a `next/font` layout fixture and exercises the same
  * cap/truncation contract against that header.
  */
 import { describe, it, expect, afterEach } from "vite-plus/test";

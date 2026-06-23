@@ -25,6 +25,8 @@ import {
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
   findInNodeModules as _findInNodeModules,
+  findDir,
+  hasAppDir,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
@@ -32,6 +34,12 @@ import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 import { parsePositiveIntegerArg } from "./cli-args.js";
+import {
+  readPrerenderManifest,
+  buildPregeneratedConcretePathTable,
+} from "./server/prerender-manifest.js";
+import { escapeRegExp } from "./utils/regex.js";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -176,26 +184,31 @@ export function formatMissingCloudflarePluginError(options: {
   );
 }
 
+/**
+ * Detect the project structure (router, config, worker entry, package name).
+ *
+ * `root` must be forward-slash — it is joined with `path.posix.*`, passed to
+ * `findDir` / `hasAppDir`, and used as the base of `path.posix.basename`.
+ * Callers normalize it at the deploy entry.
+ */
 export function detectProject(root: string): ProjectInfo {
-  const hasApp =
-    fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
-  const hasPages =
-    fs.existsSync(path.join(root, "pages")) || fs.existsSync(path.join(root, "src", "pages"));
+  const hasApp = hasAppDir(root);
+  const hasPages = findDir(root, "pages", "src/pages") !== null;
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
   const isPagesRouter = !hasApp && hasPages;
 
   const hasViteConfig =
-    fs.existsSync(path.join(root, "vite.config.ts")) ||
-    fs.existsSync(path.join(root, "vite.config.js")) ||
-    fs.existsSync(path.join(root, "vite.config.mjs"));
+    fs.existsSync(path.posix.join(root, "vite.config.ts")) ||
+    fs.existsSync(path.posix.join(root, "vite.config.js")) ||
+    fs.existsSync(path.posix.join(root, "vite.config.mjs"));
 
   const wranglerConfigExists = hasWranglerConfig(root);
 
   const hasWorkerEntry =
-    fs.existsSync(path.join(root, "worker", "index.ts")) ||
-    fs.existsSync(path.join(root, "worker", "index.js"));
+    fs.existsSync(path.posix.join(root, "worker", "index.ts")) ||
+    fs.existsSync(path.posix.join(root, "worker", "index.js"));
 
   // Check node_modules for installed packages.
   // Walk up ancestor directories so that monorepo-hoisted packages are found
@@ -205,7 +218,7 @@ export function detectProject(root: string): ProjectInfo {
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
   // Parse package.json once for all fields that need it
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   let pkg: Record<string, unknown> | null = null;
   if (fs.existsSync(pkgPath)) {
     try {
@@ -216,7 +229,7 @@ export function detectProject(root: string): ProjectInfo {
   }
 
   // Derive project name from package.json or directory name
-  let projectName = path.basename(root);
+  let projectName = path.posix.basename(root);
   if (pkg?.name && typeof pkg.name === "string") {
     // Sanitize: Workers names must be lowercase alphanumeric + hyphens
     projectName = pkg.name
@@ -227,14 +240,36 @@ export function detectProject(root: string): ProjectInfo {
       .replace(/^-|-$/g, "");
   }
 
-  // Detect ISR usage (rough heuristic: search for `revalidate` exports)
-  const hasISR = detectISR(root, isAppRouter);
-
   // Detect "type": "module" in package.json
   const hasTypeModule = pkg?.type === "module";
 
-  // Detect MDX usage
-  const hasMDX = detectMDX(root, isAppRouter, hasPages);
+  // Detect ISR (`export const revalidate`) and MDX usage. Both scan the same
+  // app/ tree, so they share a single recursive walk per directory instead of
+  // walking it twice. ISR is App-Router-only (Pages Router ISR isn't detected
+  // here — see note below); MDX may also be declared in next.config.
+  let hasISR = false;
+  let hasMDX = detectMDXFromConfig(root);
+
+  if (isAppRouter) {
+    // ISR detection is only implemented for App Router (scans for
+    // `export const revalidate`). Pages Router ISR (getStaticProps + revalidate)
+    // is not detected here — wrangler.jsonc will not include the KV namespace
+    // binding for Pages Router projects even if they use ISR. This is a known
+    // gap; KV must be configured manually for Pages Router ISR.
+    const appDir = resolveProjectDir(root, "app");
+    if (appDir) {
+      const found = scanTreeForDetection(appDir, { isr: true, mdx: !hasMDX });
+      hasISR = found.isr;
+      hasMDX = hasMDX || found.mdx;
+    }
+  }
+
+  if (hasPages && !hasMDX) {
+    const pagesDir = resolveProjectDir(root, "pages");
+    if (pagesDir) {
+      hasMDX = scanTreeForDetection(pagesDir, { isr: false, mdx: true }).mdx;
+    }
+  }
 
   // Detect CodeHike dependency
   const allDeps = {
@@ -243,8 +278,9 @@ export function detectProject(root: string): ProjectInfo {
   };
   const hasCodeHike = "codehike" in allDeps;
 
-  // Detect native Node modules that need stubbing for Workers
-  const nativeModulesToStub = detectNativeModules(root);
+  // Detect native Node modules that need stubbing for Workers. Reuses the
+  // already-merged dependency map instead of re-reading/re-parsing package.json.
+  const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
     root,
@@ -265,50 +301,85 @@ export function detectProject(root: string): ProjectInfo {
   };
 }
 
-function detectISR(root: string, isAppRouter: boolean): boolean {
-  // ISR detection is only implemented for App Router (scans for `export const revalidate`).
-  // Pages Router ISR (getStaticProps + revalidate) is not detected here — wrangler.jsonc
-  // will not include the KV namespace binding for Pages Router projects even if they use ISR.
-  // This is a known gap; KV must be configured manually for Pages Router ISR.
-  if (!isAppRouter) return false;
-  try {
-    // Check root-level app/ first, then fall back to src/app/
-    let appDir = path.join(root, "app");
-    if (!fs.existsSync(appDir)) {
-      appDir = path.join(root, "src", "app");
-    }
-    if (!fs.existsSync(appDir)) return false;
-    // Quick check: search .ts/.tsx files in app/ for `export const revalidate`
-    return scanDirForPattern(appDir, /export\s+const\s+revalidate\s*=/);
-  } catch {
-    return false;
-  }
-}
+/** Matches `export const revalidate = …` (ISR opt-in) in App Router source. */
+const ISR_REVALIDATE_PATTERN = /export\s+const\s+revalidate\s*=/;
 
-function scanDirForPattern(dir: string, pattern: RegExp): boolean {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
-      if (scanDirForPattern(fullPath, pattern)) return true;
-    } else if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name)) {
-      try {
-        const content = fs.readFileSync(fullPath, "utf-8");
-        if (pattern.test(content)) return true;
-      } catch {
-        // skip unreadable files
-      }
-    }
-  }
-  return false;
+/** Source extensions whose contents are scanned for the ISR pattern. */
+const ISR_SCANNABLE_EXTENSION = /\.(ts|tsx|js|jsx)$/;
+
+/**
+ * Resolve a project subdirectory (`app`/`pages`), preferring the root-level
+ * location and falling back to the `src/` variant. Returns null when neither
+ * exists.
+ */
+function resolveProjectDir(root: string, name: string): string | null {
+  const rootDir = path.join(root, name);
+  if (fs.existsSync(rootDir)) return rootDir;
+  const srcDir = path.join(root, "src", name);
+  if (fs.existsSync(srcDir)) return srcDir;
+  return null;
 }
 
 /**
- * Detect .mdx files in the project's app/ or pages/ directory,
- * or `pageExtensions` including "mdx" in next.config.
+ * Recursively walk `dir` once, evaluating the requested detection predicates
+ * per entry. Each flag short-circuits independently: an `.mdx` file sets `mdx`;
+ * a scannable source file containing `export const revalidate` sets `isr`. The
+ * walk stops as soon as every requested flag is satisfied, so callers that only
+ * want one signal don't pay for the other.
+ *
+ * Replaces the previous pair of single-purpose recursive walkers
+ * (`scanDirForPattern` + `scanDirForExtension`) that traversed the same tree
+ * twice. Detection semantics are unchanged: same dirs skipped (dotfiles,
+ * node_modules), same extension and content tests.
  */
-function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boolean {
-  // Check next.config for pageExtensions with mdx
+function scanTreeForDetection(
+  dir: string,
+  want: { isr: boolean; mdx: boolean },
+): { isr: boolean; mdx: boolean } {
+  const found = { isr: false, mdx: false };
+
+  const walk = (current: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      // Stop early once every requested flag is satisfied.
+      if ((!want.isr || found.isr) && (!want.mdx || found.mdx)) return;
+
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        if (want.mdx && !found.mdx && entry.name.endsWith(".mdx")) {
+          found.mdx = true;
+        }
+        if (want.isr && !found.isr && ISR_SCANNABLE_EXTENSION.test(entry.name)) {
+          try {
+            if (ISR_REVALIDATE_PATTERN.test(fs.readFileSync(fullPath, "utf-8"))) {
+              found.isr = true;
+            }
+          } catch {
+            // skip unreadable files
+          }
+        }
+      }
+    }
+  };
+
+  walk(dir);
+  return found;
+}
+
+/**
+ * Detect MDX usage declared in next.config (`pageExtensions` including "mdx" or
+ * an `@next/mdx` import). Filesystem `.mdx` detection is handled separately by
+ * the shared app/pages tree walk in `detectProject`.
+ */
+function detectMDXFromConfig(root: string): boolean {
   // Mirror the Next.js-compatible set in shims/constants.ts. We accept
   // `.cjs` and `.cts` defensively in case a user has them — Next.js itself
   // does not, but `findNextConfigPath` will only return the first match in
@@ -331,39 +402,6 @@ function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boole
       }
     }
   }
-
-  // Check for .mdx files in app/ or pages/ (with src/ fallback)
-  const dirs: string[] = [];
-  if (isAppRouter) {
-    const appDir = fs.existsSync(path.join(root, "app"))
-      ? path.join(root, "app")
-      : path.join(root, "src", "app");
-    dirs.push(appDir);
-  }
-  if (hasPages) {
-    const pagesDir = fs.existsSync(path.join(root, "pages"))
-      ? path.join(root, "pages")
-      : path.join(root, "src", "pages");
-    dirs.push(pagesDir);
-  }
-
-  for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForExtension(dir, ".mdx")) return true;
-  }
-
-  return false;
-}
-
-function scanDirForExtension(dir: string, ext: string): boolean {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
-      if (scanDirForExtension(fullPath, ext)) return true;
-    } else if (entry.isFile() && entry.name.endsWith(ext)) {
-      return true;
-    }
-  }
   return false;
 }
 
@@ -377,19 +415,12 @@ const NATIVE_MODULES_TO_STUB = [
 ];
 
 /**
- * Detect native Node modules in dependencies that need stubbing for Workers.
+ * Detect native Node modules in the project's merged dependency map that need
+ * stubbing for Workers. Accepts the already-built `allDeps` (dependencies +
+ * devDependencies) so package.json is not re-read or re-parsed.
  */
-function detectNativeModules(root: string): string[] {
-  const pkgPath = path.join(root, "package.json");
-  if (!fs.existsSync(pkgPath)) return [];
-
-  try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-    return NATIVE_MODULES_TO_STUB.filter((mod) => mod in allDeps);
-  } catch {
-    return [];
-  }
+function detectNativeModules(allDeps: Record<string, unknown>): string[] {
+  return NATIVE_MODULES_TO_STUB.filter((mod) => mod in allDeps);
 }
 
 // ─── Project Preparation (pre-build transforms) ─────────────────────────────
@@ -414,15 +445,7 @@ export function generateWranglerConfig(info: ProjectInfo): string {
     name: info.projectName,
     compatibility_date: today,
     compatibility_flags: ["nodejs_compat"],
-    // App Router needs no custom worker — the default entry handles routing AND
-    // image optimization (via the configured images.optimizer). Pages Router
-    // still uses a generated worker entry. A user-authored worker/index.ts
-    // (custom worker without a wrangler config yet) keeps winning for both
-    // routers so it is never silently dropped.
-    main:
-      info.isAppRouter && !info.hasWorkerEntry
-        ? "vinext/server/app-router-entry"
-        : "./worker/index.ts",
+    main: "./worker/index.ts",
     assets: {
       // Wrangler 4.69+ requires `directory` when `assets` is an object.
       // The @cloudflare/vite-plugin always writes static assets to dist/client/.
@@ -432,10 +455,9 @@ export function generateWranglerConfig(info: ProjectInfo): string {
       // optimization handler can fetch source images programmatically.
       binding: "ASSETS",
     },
-    // Cloudflare Images binding for next/image optimization. Read by the
-    // `imageAdapter()` optimizer (configured via vinext({ images })). Enables
-    // resize, format negotiation (AVIF/WebP), and quality transforms at the edge.
-    // No user setup needed — wrangler creates the binding automatically.
+    // Cloudflare Images binding for next/image optimization.
+    // Enables resize, format negotiation (AVIF/WebP), and quality transforms
+    // at the edge. No user setup needed — wrangler creates the binding automatically.
     images: {
       binding: "IMAGES",
     },
@@ -453,30 +475,57 @@ export function generateWranglerConfig(info: ProjectInfo): string {
   return JSON.stringify(config, null, 2) + "\n";
 }
 
+/** Generate worker/index.ts for App Router */
+export function generateAppRouterWorkerEntry(): string {
+  return `/**
+ * Cloudflare Worker entry point — auto-generated by vinext deploy.
+ * Edit freely or delete to regenerate on next deploy.
+ *
+ * Cache and image backends are configured declaratively in vite.config.
+ */
+import handler from "vinext/server/app-router-entry";
+
+interface Env {
+  ASSETS: Fetcher;
+}
+
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return handler.fetch(request, env, ctx);
+  },
+};
+`;
+}
+
 /** Generate worker/index.ts for Pages Router */
 export function generatePagesRouterWorkerEntry(): string {
   return `/**
  * Cloudflare Worker entry point -- auto-generated by vinext deploy.
  * Edit freely or delete to regenerate on next deploy.
  */
-import { runPagesRequest } from "vinext/server/pages-request-pipeline";
+import { fetchWorkerFilesystemRoute, runPagesRequest, wrapMiddlewareWithBasePath } from "vinext/server/pages-request-pipeline";
 import type { PagesPipelineDeps } from "vinext/server/pages-request-pipeline";
 import { handleConfiguredImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isImageOptimizationPath } from "vinext/server/image-optimization";
 import type { ImageConfig } from "vinext/server/image-optimization";
-import { cloneRequestWithHeaders, filterInternalHeaders, isOpenRedirectShaped } from "vinext/server/request-pipeline";
+import { cloneRequestWithHeaders, cloneRequestWithUrl, filterInternalHeaders, isOpenRedirectShaped } from "vinext/server/request-pipeline";
 import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
+import { finalizeMissingStaticAssetResponse } from "vinext/server/worker-utils";
 import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
 import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, normalizeDataRequest, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 
 interface Env {
-  // Static assets, used to fetch source images for /_next/image optimization.
   ASSETS: Fetcher;
 }
 
@@ -494,6 +543,7 @@ const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  qualities: vinextConfig.images.qualities,
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
   dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
   contentDispositionType: vinextConfig.images.contentDispositionType,
@@ -504,8 +554,6 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Pass the Worker \`env\` so binding-backed adapters (e.g. KV) resolve.
     registerConfiguredCacheAdapters(env);
-    // Register the configured image optimizer (images.optimizer in vite.config)
-    // so /_next/image transforms via the configured backend. No-op when unset.
     registerConfiguredImageOptimizer(env);
     try {
       const url = new URL(request.url);
@@ -521,20 +569,11 @@ export default {
         return new Response("This page could not be found", { status: 404 });
       }
 
-      // Invalid \`_next/static/*\` paths short-circuit with a plain-text 404
-      // instead of falling through to renderPage (which would render the full
-      // HTML 404 page with bootstrap scripts + CSS). Valid assets are served
-      // by Cloudflare's ASSETS binding BEFORE the worker runs; only misses
-      // reach this code. Matches Next.js (#1337):
-      //   packages/next/src/server/lib/router-server.ts
-      if (isNextStaticPath(pathname, basePath, assetPathPrefix)) {
-        return notFoundStaticAssetResponse();
-      }
-
-      // Capture x-nextjs-data before filterInternalHeaders strips it -- the
-      // middleware redirect protocol needs to know whether the inbound request
-      // was a _next/data fetch to emit x-nextjs-redirect instead of a 3xx.
-      const isDataRequest = request.headers.get("x-nextjs-data") === "1";
+      // Valid assets are served by Cloudflare's ASSETS binding before the
+      // worker runs. Missing asset-shaped requests still need to reach
+      // middleware so it can rewrite or respond; a final 404 is converted
+      // back to Next.js's canonical plain-text static-file response below.
+      const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
@@ -554,16 +593,21 @@ export default {
         if (stripped !== pathname) {
           const strippedUrl = new URL(request.url);
           strippedUrl.pathname = stripped;
-          request = new Request(strippedUrl, request);
+          request = cloneRequestWithUrl(request, strippedUrl.toString());
           pathname = stripped;
         }
       }
 
-      // ── Image optimization (/_next/image) ─────────────────────────
+      const dataNorm = normalizeDataRequest(request);
+      if (dataNorm.notFoundResponse) return dataNorm.notFoundResponse;
+      const isDataReq = dataNorm.isDataReq;
+      if (isDataReq) {
+        request = dataNorm.request;
+        pathname = dataNorm.normalizedPathname;
+      }
+
+      // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_next/image works.
-      // Uses the configured images.optimizer (e.g. Cloudflare Images) when set;
-      // otherwise serves the original asset unoptimized. Allowed widths come
-      // from next.config \`images\` (deviceSizes + imageSizes).
       if (isImageOptimizationPath(pathname)) {
         const allowedWidths = [
           ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
@@ -589,15 +633,18 @@ export default {
         configRewrites,
         configHeaders,
         hadBasePath,
-        // The worker adapter does not do _next/data URL normalization (no
-        // buildId available at request time). isDataReq is used by the pipeline
-        // only for renderPage options and shouldDeferErrorPageOnMiss -- false
-        // is correct here.
-        isDataReq: false,
-        isDataRequest,
+        isDataReq,
+        isDataRequest: isDataReq,
         ctx,
         matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
-        runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
+        // Pass the original (pre-basePath-stripping) URL to middleware so that
+        // request.nextUrl.basePath reflects whether the URL actually had the
+        // basePath prefix. Matches Next.js behavior and the prod-server.ts
+        // equivalent (shared via wrapMiddlewareWithBasePath).
+        runMiddleware:
+          typeof runMiddleware === "function"
+            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+            : null,
         renderPage: typeof renderPage === "function"
           ? (req, resolvedUrl, options, stagedHeaders) =>
               renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
@@ -605,14 +652,24 @@ export default {
         handleApi: typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)
           : null,
+        serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
+          return fetchWorkerFilesystemRoute(
+            request,
+            requestPathname,
+            phase,
+            (assetRequest) => env.ASSETS.fetch(assetRequest),
+          );
+        },
       };
 
       const result = await runPagesRequest(request, deps);
       if (result.type === "response") {
-        return result.response;
+        return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
       }
       // Should not reach here for prod/worker (all callbacks supplied).
-      return new Response("This page could not be found", { status: 404 });
+      return missingBuildAsset
+        ? notFoundStaticAssetResponse()
+        : new Response("This page could not be found", { status: 404 });
 
     } catch (error) {
       console.error("[vinext] Worker error:", error);
@@ -630,6 +687,7 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    `import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";`,
   ];
 
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
@@ -641,7 +699,7 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
-  plugins.push(`    vinext(),`);
+  plugins.push(`    vinext({ images: { optimizer: imageAdapter() } }),`);
 
   plugins.push(`    cloudflare({
       viteEnvironment: {
@@ -651,7 +709,7 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
     }),`);
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // automatically by vite-tsconfig-paths inside the vinext plugin)
+  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -688,7 +746,7 @@ export function generatePagesRouterViteConfig(info?: ProjectInfo): string {
   }
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // automatically by vite-tsconfig-paths inside the vinext plugin)
+  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -825,12 +883,12 @@ export function viteConfigHasCloudflarePlugin(root: string): boolean {
 }
 
 /**
- * Extract the object-literal text of a named key (e.g. the `{ ... }` passed as
- * `vinext({ cache })` or `vinext({ images })`) from a Vite config source, via
- * brace matching. Returns null if there is no such object literal.
+ * Extract the object-literal text of the `cache:` key (the `{ ... }` passed as
+ * `vinext({ cache })`) from a Vite config source, via brace matching. Returns
+ * null if there is no `cache:` object literal.
  */
-function extractObjectBlock(content: string, key: string): string | null {
-  const m = new RegExp(`\\b${key}\\s*:\\s*\\{`).exec(content);
+function extractObjectBlock(content: string, field: string): string | null {
+  const m = new RegExp(`\\b${field}\\s*:\\s*\\{`).exec(content);
   if (!m) return null;
   const open = m.index + m[0].length - 1; // index of the `{`
   let depth = 0;
@@ -842,22 +900,18 @@ function extractObjectBlock(content: string, key: string): string | null {
   return null;
 }
 
-/**
- * Extract the object-literal text of the `cache:` key (the `{ ... }` passed as
- * `vinext({ cache })`) from a Vite config source. Returns null if absent.
- */
 function extractCacheBlock(content: string): string | null {
   return extractObjectBlock(content, "cache");
 }
 
 /**
- * Whether a named field inside an object-literal block is assigned a real value
- * (not absent, `undefined`, or `null`). Reads the value up to the next comma /
- * closing brace / newline, which is enough to tell an assignment like
+ * Whether a `cdn` / `data` field inside the cache object is assigned a real
+ * value (not absent, `undefined`, or `null`). Reads the value up to the next
+ * comma / closing brace / newline, which is enough to tell an assignment like
  * `data: kvDataAdapter()` from `data: undefined`.
  */
-function objectFieldAssigned(block: string, field: string): boolean {
-  const m = new RegExp(`\\b${field}\\s*:\\s*([^,}\\n]+)`).exec(block);
+function cacheFieldAssigned(cacheBlock: string, field: "cdn" | "data"): boolean {
+  const m = new RegExp(`\\b${field}\\s*:\\s*([^,}\\n]+)`).exec(cacheBlock);
   if (!m) return false;
   const value = m[1].trim();
   return value.length > 0 && value !== "undefined" && value !== "null";
@@ -888,19 +942,12 @@ export function viteConfigHasCacheAdapter(root: string): boolean {
     }
     const block = extractCacheBlock(content);
     if (!block) return false; // no cache config at all
-    return objectFieldAssigned(block, "cdn") || objectFieldAssigned(block, "data");
+    return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
   }
   // No Vite config on disk — nothing to inspect; don't block here.
   return true;
 }
 
-/**
- * Detect whether the Vite config configures a server-side image optimizer — i.e.
- * the `optimizer` field of the `vinext({ images })` option is given a value.
- * Used only to decide whether to print the image-optimization hint during
- * deploy; never blocks a deploy. An unreadable config is treated as configured
- * so the hint isn't shown spuriously.
- */
 export function viteConfigHasImageAdapter(root: string): boolean {
   const candidates = [
     path.join(root, "vite.config.ts"),
@@ -913,14 +960,15 @@ export function viteConfigHasImageAdapter(root: string): boolean {
     try {
       content = fs.readFileSync(candidate, "utf-8");
     } catch {
-      // unreadable — assume it might be fine, don't nag.
       return true;
     }
     const block = extractObjectBlock(content, "images");
-    if (!block) return false; // no images config at all
-    return objectFieldAssigned(block, "optimizer");
+    if (!block) return false;
+    const match = /\boptimizer\s*:\s*([^,}\n]+)/.exec(block);
+    if (!match) return false;
+    const value = match[1].trim();
+    return value.length > 0 && value !== "undefined" && value !== "null";
   }
-  // No Vite config on disk — nothing to inspect; don't nag here.
   return true;
 }
 
@@ -984,13 +1032,6 @@ export function formatMissingCacheAdapterError(options: { configFile?: string })
   );
 }
 
-/**
- * Build the informational hint printed during deploy when no image optimizer is
- * configured. `next/image` still works (URLs are served unoptimized), but to
- * enable on-the-fly resize/format/quality transforms at the edge, the
- * Cloudflare Images optimizer must be declared on the vinext() plugin. This is
- * a hint, not an error — image optimization is opt-in.
- */
 export function formatImageOptimizationHint(): string {
   return (
     `  [vinext] next/image is served unoptimized. To enable edge image\n` +
@@ -1018,13 +1059,13 @@ export function getFilesToGenerate(info: ProjectInfo): GeneratedFile[] {
     });
   }
 
-  // App Router needs no custom worker: wrangler `main` points at the default
-  // entry (vinext/server/app-router-entry), which handles routing AND image
-  // optimization. Only the Pages Router needs a generated worker.
-  if (!info.isAppRouter && !info.hasWorkerEntry) {
+  if (!info.hasWorkerEntry) {
+    const workerContent = info.isAppRouter
+      ? generateAppRouterWorkerEntry()
+      : generatePagesRouterWorkerEntry();
     files.push({
       path: path.join(info.root, "worker", "index.ts"),
-      content: generatePagesRouterWorkerEntry(),
+      content: workerContent,
       description: "worker/index.ts",
     });
   }
@@ -1129,62 +1170,83 @@ type WranglerDeployArgs = {
   env: string | undefined;
 };
 
+export function validateWranglerEnvName(env: string): string {
+  if (env.includes("\0")) {
+    throw new Error("Wrangler environment names cannot contain null bytes.");
+  }
+  return env;
+}
+
 export function buildWranglerDeployArgs(
   options: Pick<DeployOptions, "preview" | "env">,
 ): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
-    args.push("--env", env);
+    args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
 }
 
 /**
- * Resolve the wrangler executable in node_modules.
+ * Resolve Wrangler's JavaScript CLI entrypoint in node_modules.
  *
- * Walks up ancestor directories so the binary is found even when node_modules
- * is hoisted to the workspace root in a monorepo.
- *
- * On Windows, `node_modules/.bin/` contains both a Unix shebang script (no
- * extension) and a `.CMD` shim. Node's `execFileSync` uses CreateProcess(),
- * which only resolves PATHEXT extensions (`.cmd`, `.exe`, ...) — spawning the
- * bare-name shebang file fails with ENOENT even though the file exists. So on
- * Windows we prefer the `.CMD` shim and only fall back to the bare name for a
- * clearer error message if neither is present.
+ * Invoking the JavaScript file through `process.execPath` avoids the `.cmd`
+ * shim and command shell that package managers create on Windows.
  */
 export function resolveWranglerBin(
   root: string,
-  platform: NodeJS.Platform = process.platform,
+  resolvePackageJson: (root: string) => string | null = (projectRoot) => {
+    try {
+      return createRequire(path.join(projectRoot, "package.json")).resolve("wrangler/package.json");
+    } catch {
+      return _findInNodeModules(projectRoot, "wrangler/package.json");
+    }
+  },
 ): string {
-  const candidates =
-    platform === "win32"
-      ? [".bin/wrangler.CMD", ".bin/wrangler.cmd", ".bin/wrangler"]
-      : [".bin/wrangler"];
-
-  for (const candidate of candidates) {
-    const found = _findInNodeModules(root, candidate);
-    if (found) return found;
+  const packageJsonPath = resolvePackageJson(root);
+  if (packageJsonPath) {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+      bin?: string | Record<string, string>;
+    };
+    const bin = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.wrangler;
+    if (bin) return path.resolve(path.dirname(packageJsonPath), bin);
   }
 
-  // Not found — return platform-appropriate path under root for error clarity.
-  return path.join(root, "node_modules", ...candidates[0].split("/"));
+  return path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 }
 
-function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
-  const wranglerBin = resolveWranglerBin(root);
+export function buildNodeCliInvocation(
+  scriptPath: string,
+  args: string[],
+  nodeExecutable: string = process.execPath,
+): { file: string; args: string[] } {
+  return { file: nodeExecutable, args: [scriptPath, ...args] };
+}
 
+export function buildWranglerInvocation(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+  nodeExecutable: string = process.execPath,
+): { file: string; args: string[]; env: string | undefined } {
+  const wranglerBin = resolveWranglerBin(root);
+  const { args, env } = buildWranglerDeployArgs(options);
+  return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
+}
+
+export function runWranglerDeploy(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+  execute: typeof execFileSync = execFileSync,
+): string {
   const execOpts: ExecFileSyncOptions = {
     cwd: root,
     stdio: "pipe",
     encoding: "utf-8",
-    // On Windows, .bin/wrangler is a .cmd wrapper; execFileSync can't run
-    // it without a shell.  Enabling shell only on win32 keeps the
-    // no-shell-injection guarantee on other platforms.
-    shell: process.platform === "win32",
+    shell: false,
   };
 
-  const { args, env } = buildWranglerDeployArgs(options);
+  const { file, args, env } = buildWranglerInvocation(root, options);
 
   if (env) {
     console.log(`\n  Deploying to env: ${env}...`);
@@ -1192,10 +1254,7 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
     console.log("\n  Deploying to production...");
   }
 
-  // execFileSync passes args as an array, avoiding shell injection on Unix.
-  // On Windows, shell: true is required for .cmd wrappers but the array form
-  // still prevents trivial injection.
-  const output = execFileSync(wranglerBin, args, execOpts) as string;
+  const output = execute(file, args, execOpts) as string;
 
   // Parse the deployed URL from wrangler output
   // Wrangler prints: "Published <name> (version_id)\n  https://<name>.<subdomain>.workers.dev"
@@ -1212,16 +1271,63 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
 
+// ─── Pregenerated Concrete Paths Injection ────────────────────────────────────
+
+const VINEXT_PREGEN_START = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */";
+const VINEXT_PREGEN_END = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */";
+const VINEXT_PREGEN_RE = new RegExp(
+  `${escapeRegExp(VINEXT_PREGEN_START)}[\\s\\S]*?${escapeRegExp(VINEXT_PREGEN_END)}\\n?`,
+  "g",
+);
+
+/**
+ * Read the prerender manifest and inject pregenerated concrete paths into the
+ * App Router Worker bundle so the PPR fallback-shell guard is populated at
+ * module init time without calling `seedMemoryCacheFromPrerender`.
+ *
+ * The paths are injected as `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS`
+ * wrapped in replaceable marker comments, and consumed by
+ * `initPregeneratedPathsFromGlobals` in the generated RSC entry.
+ *
+ * Idempotent: repeated calls strip the previous injection before writing the
+ * new one. If the manifest is missing, corrupt, or empty, any prior injection
+ * is stripped and nothing new is written — failing closed to empty.
+ */
+export function injectPregeneratedConcretePaths(root: string): void {
+  const workerEntry = path.resolve(root, "dist", "server", "index.js");
+  if (!fs.existsSync(workerEntry)) return;
+
+  let code = fs.readFileSync(workerEntry, "utf-8");
+  code = code.replace(VINEXT_PREGEN_RE, "");
+
+  const manifestPath = path.join(root, "dist", "server", "vinext-prerender.json");
+  const manifest = readPrerenderManifest(manifestPath);
+  const table = buildPregeneratedConcretePathTable(manifest ?? {});
+
+  if (table.length > 0) {
+    const injection =
+      `${VINEXT_PREGEN_START}\n` +
+      `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n` +
+      `${VINEXT_PREGEN_END}\n`;
+    code = injection + code;
+  }
+
+  fs.writeFileSync(workerEntry, code);
+}
+
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
+  const deployEnv = validateWranglerEnvName(
+    options.env || (options.preview ? "preview" : "production"),
+  );
   const root = path.resolve(options.root);
   loadDotenv({ root, mode: "production" });
 
   console.log("\n  vinext deploy\n");
 
   // Step 1: Detect project structure
-  const info = detectProject(root);
+  const info = detectProject(normalizePathSeparators(root));
 
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
@@ -1262,7 +1368,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     // Re-detect so all fields reflect the freshly installed packages.
     // Preserve any CLI name override applied above.
     const nameOverride = options.name ? info.projectName : undefined;
-    Object.assign(info, detectProject(root));
+    Object.assign(info, detectProject(normalizePathSeparators(root)));
     if (nameOverride) info.projectName = nameOverride;
   }
 
@@ -1304,9 +1410,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     throw new Error(formatMissingCacheAdapterError({}));
   }
 
-  // Hint (not an error): image optimization is opt-in. If the Vite config
-  // doesn't configure an image optimizer, next/image is served unoptimized —
-  // tell the user how to turn on edge optimization via Cloudflare Images.
   if (!viteConfigHasImageAdapter(root)) {
     console.log();
     console.log(formatImageOptimizationHint());
@@ -1319,10 +1422,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   // Step 5: Build
   if (!options.skipBuild) {
-    // Resolve the env name the same way buildWranglerDeployArgs does, so the
-    // build emits a wrangler.json that matches the env we'll deploy with.
-    const buildEnv = options.env || (options.preview ? "preview" : undefined);
-    await runBuild(info, buildEnv);
+    await runBuild(info, deployEnv === "production" && !options.env ? undefined : deployEnv);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
@@ -1347,6 +1447,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
       }
       await runPrerender({ root: info.root, concurrency: options.prerenderConcurrency });
     }
+
+    // Inject pregenerated concrete paths into the Worker bundle so the PPR
+    // fallback-shell guard is populated without calling seedMemoryCacheFromPrerender.
+    injectPregeneratedConcretePaths(root);
   }
 
   // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
@@ -1366,8 +1470,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   // Step 7: Deploy via wrangler
   const url = runWranglerDeploy(root, {
-    preview: options.preview ?? false,
-    env: options.env,
+    env: deployEnv === "production" && !options.env ? undefined : deployEnv,
   });
 
   console.log("\n  ─────────────────────────────────────────");

@@ -18,6 +18,9 @@
  *   - `packages/next/src/server/render.tsx` — JSON envelope emission (`isNextDataRequest`).
  */
 
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
 
@@ -98,7 +101,21 @@ export function buildNextDataJsonResponse(
   safeJsonStringify: (value: unknown) => string,
   init?: ResponseInit,
 ): Response {
-  const body = safeJsonStringify({ pageProps });
+  return buildNextDataPropsJsonResponse({ pageProps }, safeJsonStringify, init);
+}
+
+/**
+ * Build a `_next/data` JSON response from the full Pages props object returned
+ * through `_app.getInitialProps`. Next.js serializes the same outer props
+ * object that would be passed to `<App />`, so custom app-level props remain
+ * siblings of `pageProps` in the data envelope.
+ */
+export function buildNextDataPropsJsonResponse(
+  props: Record<string, unknown>,
+  safeJsonStringify: (value: unknown) => string,
+  init?: ResponseInit,
+): Response {
+  const body = safeJsonStringify(props);
   return new Response(body, {
     status: init?.status ?? 200,
     statusText: init?.statusText,
@@ -121,10 +138,16 @@ export function buildNextDataJsonResponse(
  * before checking the status code.
  */
 export function buildNextDataNotFoundResponse(): Response {
-  return new Response("{}", {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Mirror Next.js pages-handler.ts: always include x-nextjs-deployment-id so
+  // the client router can detect a new deployment and trigger a hard navigation
+  // instead of silently rendering stale data (deployment-skew protection).
+  // Fixes #1829.
+  const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+  if (deploymentId) {
+    headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+  }
+  return new Response("{}", { status: 404, headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -175,9 +198,12 @@ type NormalizePagesDataRequestResult =
 export function normalizePagesDataRequest(
   request: Request,
   buildId: string | null,
+  basePath = "",
 ): NormalizePagesDataRequestResult {
   const reqUrl = new URL(request.url);
-  if (!isNextDataPathname(reqUrl.pathname)) {
+  const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
+  const dataPathname = basePath ? stripBasePath(reqUrl.pathname, basePath) : reqUrl.pathname;
+  if (!isNextDataPathname(dataPathname)) {
     return {
       isDataReq: false,
       request,
@@ -186,7 +212,7 @@ export function normalizePagesDataRequest(
       notFoundResponse: null,
     };
   }
-  const dataMatch = buildId ? parseNextDataPathname(reqUrl.pathname, buildId) : null;
+  const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
   if (!dataMatch) {
     return {
       isDataReq: false,
@@ -197,7 +223,9 @@ export function normalizePagesDataRequest(
     };
   }
   const normalizedUrl = new URL(reqUrl);
-  normalizedUrl.pathname = dataMatch.pagePathname;
+  normalizedUrl.pathname = hadBasePath
+    ? addBasePathToPathname(dataMatch.pagePathname, basePath)
+    : dataMatch.pagePathname;
   return {
     isDataReq: true,
     request: new Request(normalizedUrl, request),

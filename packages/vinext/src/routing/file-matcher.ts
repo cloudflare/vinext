@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
 import { escapeRegExp } from "../utils/regex.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -98,7 +99,7 @@ export function findFileWithExts(
   matcher: ValidFileMatcher,
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
+    const filePath = path.posix.join(dir, name + ext);
     if (existsSync(filePath)) return filePath;
   }
   return null;
@@ -140,7 +141,34 @@ export function buildViteResolveExtensions(
 }
 
 /**
+ * Normalize an explicit Next.js resolver extension list for Vite.
+ *
+ * Unlike `pageExtensions`, both Turbopack's `resolveExtensions` and webpack's
+ * `resolve.extensions` replace their resolver defaults. The empty string is a
+ * webpack/Turbopack convention for trying the import exactly as written; Vite
+ * already does that before appending extensions, so it must be omitted here.
+ */
+export function normalizeViteResolveExtensions(extensions: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const extension of extensions) {
+    const trimmed = extension.trim();
+    if (!trimmed) continue;
+    const dotted = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+    if (seen.has(dotted)) continue;
+    seen.add(dotted);
+    result.push(dotted);
+  }
+  return result;
+}
+
+/**
  * Use function-form exclude for Node < 22.14 compatibility.
+ *
+ * Yields forward-slash relative paths: node's glob emits native (backslash)
+ * separators on Windows, so each match is normalized — this is the entry point
+ * that lets downstream consumers treat the scanned paths as canonical
+ * forward-slash ids.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -153,6 +181,6 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield file;
+    yield normalizePathSeparators(file);
   }
 }

@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+import path from "node:path";
 
 export default defineConfig({
   plugins: [
@@ -14,4 +15,12 @@ export default defineConfig({
       },
     }),
   ],
+  resolve: {
+    alias: {
+      "@test/og-font": path.resolve(
+        import.meta.dirname,
+        "../../tests/fixtures/og-font-package/lib",
+      ),
+    },
+  },
 });

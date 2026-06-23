@@ -22,7 +22,13 @@ export function scrollToHashTarget(hash: string): void {
     return;
   }
 
-  document.getElementsByName(fragment)[0]?.scrollIntoView({ behavior: "auto" });
+  const namedElement = document.getElementsByName(fragment)[0];
+  if (namedElement) {
+    namedElement.scrollIntoView({ behavior: "auto" });
+    return;
+  }
+
+  window.scrollTo(0, 0);
 }
 
 export function scrollToHashTargetOnNextFrame(hash: string): void {

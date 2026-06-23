@@ -23,6 +23,10 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   headers.delete("Cache-Control");
   const map = getCdnCacheAdapter().buildResponseHeaders(input);
   for (const [name, value] of Object.entries(map)) {
+    if (value === null) {
+      headers.delete(name);
+      continue;
+    }
     // Never stamp an empty header. An adapter returns an empty `Cache-Control`
     // only when it has no default for an empty policy (e.g. the default
     // origin-managed adapter), in which case the header should stay absent

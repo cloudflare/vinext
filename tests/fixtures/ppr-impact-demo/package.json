@@ -1,0 +1,24 @@
+{
+  "name": "ppr-impact-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vinext build --prerender-all",
+    "start": "vinext start --port 4187",
+    "wrangler": "wrangler dev --config dist/server/wrangler.json --port 4187"
+  },
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

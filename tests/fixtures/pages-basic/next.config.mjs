@@ -39,6 +39,25 @@ const nextConfig = {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
         },
+        {
+          source: "/rewrite-navigation/:id",
+          destination: "/rewrite-navigation/:id/destination",
+        },
+        // Ported from Next.js:
+        // test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+        // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+        {
+          source: "/rewrite-navigation-same/1",
+          destination: "/rewrite-navigation-same/001",
+        },
+        {
+          source: "/rewrite-navigation-same/2",
+          destination: "/rewrite-navigation-same/002",
+        },
+        {
+          source: "/rewrite-navigation-same/3",
+          destination: "/rewrite-navigation-same/003",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this

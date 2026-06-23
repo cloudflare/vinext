@@ -1,14 +1,25 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser-error.js";
+import {
+  createDevOnCaughtError,
+  createOnUncaughtError,
+  createProdOnCaughtError,
+  prodOnCaughtError,
+  prodOnRecoverableError,
+} from "../packages/vinext/src/server/app-browser-error.js";
+import {
+  clearAppNavigationFailureTarget,
+  handleAppNavigationFailure,
+  stageAppNavigationFailureTarget,
+} from "../packages/vinext/src/client/app-nav-failure-handler.js";
+import { applyServerActionResultDecision } from "../packages/vinext/src/server/app-browser-server-action-navigation.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  createServerActionResultFacts,
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
-  resolveServerActionRedirectCompatibilityHardNavigationTarget,
-  shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
@@ -89,11 +100,16 @@ import {
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
+import { createInitialBfcacheMaps } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import {
   HistoryStateSnapshotCache,
   RestorableClientStateController,
 } from "../packages/vinext/src/server/app-history-state.js";
-import { resolveRscRedirectLifecycleHop } from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
+import {
+  blockDangerousStreamedRscRedirect,
+  resolveRscRedirectLifecycleHop,
+  resolveStreamedRscRedirectLifecycleHop,
+} from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
 import {
   applyApprovedVisibleCommit,
   approveHmrVisibleCommit,
@@ -106,9 +122,12 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
+import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
+  ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_TYPE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -757,33 +776,63 @@ describe("app browser entry navigation scheduling", () => {
     ).toEqual({ kind: "compatible" });
   });
 
-  it("does not classify non-Flight action HTTP errors as RSC compatibility failures", () => {
-    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
-    expect(
-      shouldCheckRscCompatibilityForServerActionResponse(
-        new Response("Custom error!", {
-          headers: { "content-type": "text/plain" },
-          status: 500,
-        }),
-      ),
-    ).toBe(false);
-    expect(
-      shouldCheckRscCompatibilityForServerActionResponse(
-        new Response(JSON.stringify({ error: "Custom error!" }), {
-          headers: { "content-type": "application/json" },
-          status: 500,
-        }),
-      ),
-    ).toBe(false);
-    expect(
-      shouldCheckRscCompatibilityForServerActionResponse(
-        new Response("flight", {
-          headers: { "content-type": "text/x-component" },
-          status: 200,
-        }),
-      ),
-    ).toBe(true);
+  it("createServerActionResultFacts normalises raw response data into planner facts", () => {
+    const currentHref = "https://example.com/current";
+
+    // RSC redirect with push type
+    const pushFacts = createServerActionResultFacts({
+      actionRedirectHref: "https://example.com/target",
+      actionRedirectType: "push",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      contentTypeHeader: "text/x-component",
+      currentHref,
+      origin: "https://example.com",
+      responseUrl: currentHref,
+    });
+    expect(pushFacts.actionRedirectHref).toBe("https://example.com/target");
+    expect(pushFacts.actionRedirectType).toBe("push");
+    expect(pushFacts.isRscContentType).toBe(true);
+
+    // RSC redirect with unknown type normalises to replace
+    const replaceFacts = createServerActionResultFacts({
+      actionRedirectHref: "https://example.com/target",
+      actionRedirectType: "unknown",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      contentTypeHeader: "text/x-component",
+      currentHref,
+      origin: "https://example.com",
+      responseUrl: currentHref,
+    });
+    expect(replaceFacts.actionRedirectType).toBe("replace");
+
+    // No redirect — the raw type is still normalized for the planner contract
+    const noRedirectFacts = createServerActionResultFacts({
+      actionRedirectHref: null,
+      actionRedirectType: null,
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      contentTypeHeader: "text/x-component",
+      currentHref,
+      origin: "https://example.com",
+      responseUrl: currentHref,
+    });
+    expect(noRedirectFacts.actionRedirectHref).toBeNull();
+    expect(noRedirectFacts.actionRedirectType).toBe("replace");
+
+    // Non-RSC response — isRscContentType should be false
+    const nonRscFacts = createServerActionResultFacts({
+      actionRedirectHref: null,
+      actionRedirectType: null,
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      contentTypeHeader: "text/plain",
+      currentHref,
+      origin: "https://example.com",
+      responseUrl: currentHref,
+    });
+    expect(nonRscFacts.isRscContentType).toBe(false);
   });
 
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
@@ -853,6 +902,12 @@ describe("app browser entry navigation scheduling", () => {
     }
   });
 
+  it("preserves ordinary server action errors for 500 responses", () => {
+    const error = new Error("sanitized action failure");
+
+    expect(normalizeServerActionThrownValue(error, 500)).toBe(error);
+  });
+
   it("uses text/plain action response bodies as boundary errors", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
@@ -867,34 +922,202 @@ describe("app browser entry navigation scheduling", () => {
     expect(error?.message).toBe("Custom error!");
   });
 
-  it("hard-navigates incompatible RSC action redirect responses to the redirect target", () => {
-    const target = resolveServerActionRedirectCompatibilityHardNavigationTarget({
-      actionRedirectHref: "https://example.com/target",
-      clientCompatibilityId: "client-build",
-      response: new Response("flight", {
-        headers: {
-          "content-type": "text/x-component",
-          [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
-        },
-      }),
-    });
+  it("applyServerActionResultDecision clears caches and hard-navigates for a redirect mismatch", () => {
+    // Executor regression: verifies the wiring between classifyServerActionResult output and
+    // the executor's performHardNavigation + clearClientNavigationCaches dispatch.
+    const clearCaches = vi.fn();
+    const performHardNavigation = vi.fn();
 
-    expect(target).toBe("https://example.com/target");
+    // push redirect with an incompatible build — executor should hard-navigate and clear caches
+    const pushDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/target?tab=1",
+      actionRedirectType: "push",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(applyServerActionResultDecision(pushDecision, clearCaches, performHardNavigation)).toBe(
+      true,
+    );
+    expect(clearCaches).toHaveBeenCalledOnce();
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/target?tab=1",
+      "assign",
+    );
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // replace redirect with an incompatible build — executor should use replace history mode
+    const replaceDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/replaced",
+      actionRedirectType: "replace",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(
+      applyServerActionResultDecision(replaceDecision, clearCaches, performHardNavigation),
+    ).toBe(true);
+    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/replaced", "replace");
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // no-redirect RSC mismatch — executor reloads current href, does NOT clear caches
+    const noRedirectDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: null,
+      actionRedirectType: "replace",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/dashboard?view=grid",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/dashboard?view=grid",
+    });
+    expect(
+      applyServerActionResultDecision(noRedirectDecision, clearCaches, performHardNavigation),
+    ).toBe(true);
+    expect(clearCaches).not.toHaveBeenCalled();
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/dashboard?view=grid",
+      undefined,
+    );
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // compatible build — executor should proceed, not hard-navigate
+    const proceedDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/target",
+      actionRedirectType: "push",
+      clientCompatibilityId: "same-build",
+      compatibilityIdHeader: "same-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(
+      applyServerActionResultDecision(proceedDecision, clearCaches, performHardNavigation),
+    ).toBe(false);
+    expect(clearCaches).not.toHaveBeenCalled();
+    expect(performHardNavigation).not.toHaveBeenCalled();
   });
 
-  it("does not hard-navigate compatible RSC action redirect responses", () => {
-    const target = resolveServerActionRedirectCompatibilityHardNavigationTarget({
-      actionRedirectHref: "https://example.com/target",
-      clientCompatibilityId: "same-build",
-      response: new Response("flight", {
-        headers: {
-          "content-type": "text/x-component",
-          [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "same-build",
-        },
-      }),
-    });
+  it("wiring: createServerActionResultFacts + classifyServerActionResult end-to-end", () => {
+    // Regression for the browser-entry seam: production derives facts via
+    // createServerActionResultFacts and passes them to the planner. This test
+    // exercises the real helper against synthetic responses so the seam cannot
+    // drift out of sync.
+    const currentHref = "https://example.com/current";
+    const origin = "https://example.com";
 
-    expect(target).toBeNull();
+    // Incompatible RSC action redirect — mimics the headers a real server would return.
+    const redirectResponse = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
+        [ACTION_REDIRECT_HEADER]: "https://example.com/target",
+        [ACTION_REDIRECT_TYPE_HEADER]: "push",
+      },
+    });
+    const pushFacts = createServerActionResultFacts({
+      actionRedirectHref: redirectResponse.headers.get(ACTION_REDIRECT_HEADER),
+      actionRedirectType: redirectResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER),
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: redirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      contentTypeHeader: redirectResponse.headers.get("content-type"),
+      currentHref,
+      origin,
+      responseUrl: currentHref,
+    });
+    const pushDecision = navigationPlanner.classifyServerActionResult(pushFacts);
+    expect(pushDecision.kind).toBe("hardNavigate");
+    if (pushDecision.kind === "hardNavigate") {
+      expect(pushDecision.url).toBe("https://example.com/target");
+      expect(pushDecision.historyMode).toBe("assign");
+      expect(pushDecision.clearClientNavigationCaches).toBe(true);
+      expect(pushDecision.reason).toBe("serverActionRedirectCompatibilityMismatch");
+    }
+
+    // Non-standard redirect type (e.g. misspelled header) should normalise to "replace".
+    const weirdRedirectResponse = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
+        [ACTION_REDIRECT_HEADER]: "https://example.com/target",
+        [ACTION_REDIRECT_TYPE_HEADER]: "unknown",
+      },
+    });
+    const weirdFacts = createServerActionResultFacts({
+      actionRedirectHref: weirdRedirectResponse.headers.get(ACTION_REDIRECT_HEADER),
+      actionRedirectType: weirdRedirectResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER),
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: weirdRedirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      contentTypeHeader: weirdRedirectResponse.headers.get("content-type"),
+      currentHref,
+      origin,
+      responseUrl: currentHref,
+    });
+    const weirdDecision = navigationPlanner.classifyServerActionResult(weirdFacts);
+    expect(weirdDecision.kind).toBe("hardNavigate");
+    if (weirdDecision.kind === "hardNavigate") {
+      expect(weirdDecision.url).toBe("https://example.com/target");
+      expect(weirdDecision.historyMode).toBe("replace");
+      expect(weirdDecision.clearClientNavigationCaches).toBe(true);
+      expect(weirdDecision.reason).toBe("serverActionRedirectCompatibilityMismatch");
+    }
+
+    // No-redirect incompatible RSC response — should reload current href without clearing caches.
+    const noRedirectResponse = new Response("flight", {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
+      },
+    });
+    const noRedirectFacts = createServerActionResultFacts({
+      actionRedirectHref: null,
+      actionRedirectType: null,
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: noRedirectResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      contentTypeHeader: noRedirectResponse.headers.get("content-type"),
+      currentHref,
+      origin,
+      responseUrl: currentHref,
+    });
+    const noRedirectDecision = navigationPlanner.classifyServerActionResult(noRedirectFacts);
+    expect(noRedirectDecision.kind).toBe("hardNavigate");
+    if (noRedirectDecision.kind === "hardNavigate") {
+      expect(noRedirectDecision.url).toBe(currentHref);
+      expect(noRedirectDecision.clearClientNavigationCaches).toBe(false);
+      expect(noRedirectDecision.reason).toBe("serverActionRscCompatibilityMismatch");
+    }
+
+    // Non-RSC response should always proceed regardless of compatibility header.
+    const nonRscResponse = new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        "content-type": "application/json",
+        [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
+      },
+    });
+    const nonRscFacts = createServerActionResultFacts({
+      actionRedirectHref: null,
+      actionRedirectType: null,
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: nonRscResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      contentTypeHeader: nonRscResponse.headers.get("content-type"),
+      currentHref,
+      origin,
+      responseUrl: currentHref,
+    });
+    expect(navigationPlanner.classifyServerActionResult(nonRscFacts).kind).toBe("proceed");
   });
 
   it("uses a stable generic error for non-RSC action responses", async () => {
@@ -2421,7 +2644,7 @@ describe("app browser navigation controller", () => {
       void controller.renderNavigationPayload({
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => vi.fn(),
+        createNavigationCommitEffect: () => () => {},
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements,
@@ -2474,7 +2697,7 @@ describe("app browser navigation controller", () => {
       const result = controller.renderNavigationPayload({
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => vi.fn(),
+        createNavigationCommitEffect: () => () => {},
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/marketing",
@@ -2637,6 +2860,7 @@ describe("app browser navigation controller", () => {
   it("skips stale browser navigations before committing their payload", async () => {
     const { controller, detach } = createControllerHarness();
     const { assign } = stubWindow("https://example.com/initial");
+    vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
     const createNavigationCommitEffect = vi.fn(() => vi.fn());
     let resolveNextElements: ((value: AppElements) => void) | undefined;
     const nextElements = new Promise<AppElements>((resolve) => {
@@ -2645,6 +2869,7 @@ describe("app browser navigation controller", () => {
 
     try {
       const navId = controller.beginNavigation();
+      stageAppNavigationFailureTarget("/dashboard");
       const renderPromise = controller.renderNavigationPayload({
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
@@ -2674,8 +2899,56 @@ describe("app browser navigation controller", () => {
       await expect(renderPromise).resolves.toBe("no-commit");
       expect(createNavigationCommitEffect).not.toHaveBeenCalled();
       expect(assign).not.toHaveBeenCalled();
+      expect(window.next?.__pendingUrl).toBeUndefined();
     } finally {
       detach();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves a newer same-URL failure target when an older navigation is discarded", async () => {
+    const { controller, detach } = createControllerHarness();
+    stubWindow("https://example.com/initial");
+    vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
+    let resolveNextElements!: (value: AppElements) => void;
+
+    try {
+      stageAppNavigationFailureTarget("/dashboard");
+      const olderTarget = window.next?.__pendingUrl;
+      const olderNavId = controller.beginNavigation();
+      const renderPromise = controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
+        nextElements: new Promise<AppElements>((resolve) => {
+          resolveNextElements = resolve;
+        }),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId: olderNavId,
+      });
+
+      controller.beginNavigation();
+      stageAppNavigationFailureTarget("/dashboard");
+      const newerTarget = window.next?.__pendingUrl;
+      expect(newerTarget).not.toBe(olderTarget);
+
+      resolveNextElements(
+        createResolvedElements("route:/dashboard", "/", null, {
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        }),
+      );
+
+      await expect(renderPromise).resolves.toBe("no-commit");
+      expect(window.next?.__pendingUrl).toBe(newerTarget);
+    } finally {
+      detach();
+      vi.unstubAllEnvs();
     }
   });
 
@@ -2724,6 +2997,83 @@ describe("app browser navigation controller", () => {
       expect(settled).toBe(false);
     } finally {
       detach();
+    }
+  });
+
+  it("does not clear a newer navigation failure target when an older render commits", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+    vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://example.com/initial",
+        origin: "https://example.com",
+      },
+      next: {},
+    });
+
+    try {
+      stageAppNavigationFailureTarget("/older");
+      const olderNavId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/older", "/", null, {
+            "page:/older": React.createElement("main", null, "older"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/older",
+        navId: olderNavId,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      let resolveNewer!: (elements: AppElements) => void;
+      stageAppNavigationFailureTarget("/newer");
+      const newerNavId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: new Promise<AppElements>((resolve) => {
+          resolveNewer = resolve;
+        }),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/newer",
+        navId: newerNavId,
+      });
+
+      controller.clearCommittedNavigationFailureTargets(1);
+      expect(window.next?.__pendingUrl?.pathname).toBe("/newer");
+
+      resolveNewer(
+        createResolvedElements("route:/newer", "/", null, {
+          "page:/newer": React.createElement("main", null, "newer"),
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      controller.clearCommittedNavigationFailureTargets(2);
+      expect(window.next?.__pendingUrl).toBeUndefined();
+    } finally {
+      detach();
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
     }
   });
 
@@ -4731,6 +5081,50 @@ describe("app browser entry bfcacheId helpers", () => {
     });
   });
 
+  it("builds initial bfcache maps from shared App Elements metadata", () => {
+    const elements = createBfcacheElements(pageX1Id);
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+
+    expect(maps.bfcacheIds).toEqual(createInitialBfcacheIdMap(elements));
+    expect(maps.stateKeys).toEqual(
+      createBfcacheSegmentStateKeyMap({
+        elements,
+        pathname: "/x/1",
+      }),
+    );
+  });
+
+  it("writes only history-readable bfcache segment ids", () => {
+    const routeId = AppElementsWire.encodeRouteId("/x/1", null);
+    const elements = createResolvedElements(routeId, "/", null, {
+      [routeId]: React.createElement("main", null),
+      [rootLayoutId]: React.createElement("div", null),
+      [pageX1Id]: React.createElement("main", null),
+    });
+    const metadata = AppElementsWire.readMetadata(elements);
+    const maps = createInitialBfcacheMaps({
+      elements,
+      metadata,
+      pathname: "/x/1",
+    });
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: maps.bfcacheIds,
+      bfcacheVersion: 1,
+      previousNextUrl: null,
+    });
+
+    expect(maps.bfcacheIds).toEqual({
+      [rootLayoutId]: "0",
+      [pageX1Id]: "0",
+    });
+    expect(readHistoryStateBfcacheIds(state)).toEqual(maps.bfcacheIds);
+  });
+
   it("derives page segment state keys from pathname, not history bfcache ids", () => {
     const dynamicPageId = AppElementsWire.encodePageId("/page/[n]", null);
     const pageOneKeys = createBfcacheSegmentStateKeyMap({
@@ -5636,6 +6030,30 @@ describe("createPopstateRestoreHandler", () => {
 });
 
 describe("app browser RSC redirect lifecycle", () => {
+  it("blocks dangerous streamed redirects before browser navigation", async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(
+      blockDangerousStreamedRscRedirect(
+        response,
+        "javascript:window.location.assign('/nextjs-compat/javascript-urls/boom')",
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(consoleError).toHaveBeenCalledWith(
+      "Next.js has blocked a javascript: URL as a security precaution.",
+    );
+  });
+
+  it("allows safe streamed redirects to reach the navigation planner", () => {
+    const response = new Response("rsc payload");
+
+    expect(blockDangerousStreamedRscRedirect(response, "/dashboard")).toBe(false);
+    expect(response.bodyUsed).toBe(false);
+  });
+
   it("keeps RSC redirect hops in the initiating lifecycle and preserves push history intent", () => {
     const decision = resolveRscRedirectLifecycleHop({
       currentHref: "https://example.com/start",
@@ -5726,9 +6144,148 @@ describe("app browser RSC redirect lifecycle", () => {
       redirectDepth: 2,
     });
   });
+
+  it("preserves streamed redirect target hashes", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/old#old",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/new#new",
+    });
+
+    expect(decision).toEqual({
+      href: "/new#new",
+      historyUpdateMode: "replace",
+      kind: "follow",
+      previousNextUrl: null,
+      redirectDepth: 1,
+    });
+  });
+
+  it("treats streamed hash-only same-path changes as redirects", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/same#old",
+      historyUpdateMode: "push",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: "/feed",
+      streamedRedirectTarget: "/same#new",
+    });
+
+    expect(decision).toEqual({
+      href: "/same#new",
+      historyUpdateMode: "push",
+      kind: "follow",
+      previousNextUrl: "/feed",
+      redirectDepth: 1,
+    });
+  });
+
+  it("preserves streamed redirect visible query params and hash", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/source",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 1,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+    });
+
+    expect(decision).toEqual({
+      href: "/target.rsc?visible=1&_rsc=abc#details",
+      historyUpdateMode: "replace",
+      kind: "follow",
+      previousNextUrl: null,
+      redirectDepth: 2,
+    });
+  });
+
+  it("turns same-target streamed redirects into no-redirect decisions", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/same?tab=1#section",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/same?tab=1#section",
+    });
+
+    expect(decision).toEqual({ href: "/same?tab=1#section", kind: "no-redirect" });
+  });
+
+  it("turns external streamed redirects into terminal hard navigations", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/account",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "https://idp.example/login#step",
+    });
+
+    expect(decision).toEqual({
+      href: "https://idp.example/login#step",
+      kind: "terminal-hard-navigation",
+      reason: "externalRedirect",
+      redirectDepth: 0,
+    });
+  });
+
+  it("turns over-budget streamed redirects into terminal hard navigations", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/a",
+      historyUpdateMode: "replace",
+      maxRedirectDepth: 2,
+      origin: "https://example.com",
+      redirectDepth: 2,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/b#target",
+    });
+
+    expect(decision).toEqual({
+      href: "/b#target",
+      kind: "terminal-hard-navigation",
+      reason: "maxRedirectsExceeded",
+      redirectDepth: 2,
+    });
+  });
 });
 
 describe("devOnCaughtError (hydrateRoot dev handler)", () => {
+  it("routes the framework dev recovery boundary through the uncaught handler", () => {
+    const onCaughtError = vi.fn();
+    const onImplicitRootError = vi.fn();
+    const handler = createDevOnCaughtError(onCaughtError, onImplicitRootError);
+    const error = new Error("navigation render failed");
+    const errorInfo = {
+      componentStack: "\n    at Lazy",
+      errorBoundary: { props: { isImplicitRootErrorBoundary: true } },
+    };
+
+    handler(error, errorInfo);
+
+    expect(onImplicitRootError).toHaveBeenCalledWith(error, errorInfo);
+    expect(onCaughtError).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit dev error boundaries on the caught-error path", () => {
+    const onCaughtError = vi.fn();
+    const onImplicitRootError = vi.fn();
+    const handler = createDevOnCaughtError(onCaughtError, onImplicitRootError);
+    const error = new Error("route error");
+    const errorInfo = {
+      componentStack: "\n    at Page",
+      errorBoundary: { props: { isImplicitRootErrorBoundary: false } },
+    };
+
+    handler(error, errorInfo);
+
+    expect(onCaughtError).toHaveBeenCalledWith(error, errorInfo);
+    expect(onImplicitRootError).not.toHaveBeenCalled();
+  });
+
   it("ignores redirect sentinels handled by RedirectBoundary", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -6267,80 +6824,273 @@ describe("dev overlay store", () => {
 });
 
 describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
-  function withFakeWindow<T>(fn: (assignSpy: ReturnType<typeof vi.fn>) => T): T {
+  function withFakeWindow<T>(
+    fn: (spies: {
+      assignSpy: ReturnType<typeof vi.fn>;
+      reportErrorSpy: ReturnType<typeof vi.fn>;
+    }) => T,
+  ): T {
     const assignSpy = vi.fn();
+    const reportErrorSpy = vi.fn();
     const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalReportError = Object.getOwnPropertyDescriptor(globalThis, "reportError");
     (globalThis as { window?: unknown }).window = {
       location: { assign: assignSpy },
     };
+    Object.defineProperty(globalThis, "reportError", {
+      configurable: true,
+      value: reportErrorSpy,
+      writable: true,
+    });
     try {
-      return fn(assignSpy);
+      return fn({ assignSpy, reportErrorSpy });
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as { window?: unknown }).window;
       } else {
         (globalThis as { window?: unknown }).window = originalWindow;
       }
+      if (originalReportError) {
+        Object.defineProperty(globalThis, "reportError", originalReportError);
+      } else {
+        delete (globalThis as { reportError?: unknown }).reportError;
+      }
     }
   }
 
-  it("hard-navigates to the recovery href when one is pending", () => {
+  it("reports the error globally without writing to console.error", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      withFakeWindow((assignSpy) => {
-        const handler = createOnUncaughtError(() => "/broken-route");
-        handler(new Error("render boom"), {});
-        expect(assignSpy).toHaveBeenCalledWith("/broken-route");
-      });
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  it("does not navigate when no navigation is in flight (initial hydration error)", () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      withFakeWindow((assignSpy) => {
-        const handler = createOnUncaughtError(() => null);
-        handler(new Error("hydration boom"), {});
-        expect(assignSpy).not.toHaveBeenCalled();
-      });
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  it("logs the error and component stack regardless of recovery", () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      withFakeWindow(() => {
-        const handler = createOnUncaughtError(() => null);
+      withFakeWindow(({ reportErrorSpy }) => {
+        const handler = createOnUncaughtError();
         const err = new Error("boom");
         handler(err, { componentStack: "\n    at Page (page.tsx:10)" });
-        const loggedFirst = consoleSpy.mock.calls[0]?.[0];
-        expect(loggedFirst).toBe(err);
-        expect(String(consoleSpy.mock.calls[1]?.[0])).toContain("page.tsx:10");
+        expect(reportErrorSpy).toHaveBeenCalledWith(err);
+        expect(consoleSpy).not.toHaveBeenCalled();
       });
     } finally {
       consoleSpy.mockRestore();
     }
   });
 
-  it("reads the recovery href lazily so newer navigations win", () => {
-    // Module-level pendingNavigationRecoveryHref is reassigned across
-    // navigations; the handler must read it at call time, not at construction.
+  it("leaves navigation failure dispatch to the global error listener", () => {
+    withFakeWindow(({ assignSpy, reportErrorSpy }) => {
+      const handler = createOnUncaughtError();
+      const error = new Error("late error");
+      handler(error, {});
+      expect(reportErrorSpy).toHaveBeenCalledWith(error);
+      expect(assignSpy).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("app navigation failure handling", () => {
+  it("hard-navigates to the latest pending URL when enabled", () => {
+    vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
+    const originalWindow = globalThis.window;
+    const assign = vi.fn();
+    globalThis.window = {
+      location: { assign, href: "https://example.com/current" },
+      next: { version: "vinext" },
+    } as unknown as Window & typeof globalThis;
+
+    try {
+      stageAppNavigationFailureTarget("/first");
+      stageAppNavigationFailureTarget("/latest");
+      expect(handleAppNavigationFailure(new Error("boom"))).toBe(true);
+      expect(assign).toHaveBeenCalledWith("https://example.com/latest");
+    } finally {
+      globalThis.window = originalWindow;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("clears only the matching committed URL", () => {
+    vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
+    const originalWindow = globalThis.window;
+    globalThis.window = {
+      location: { href: "https://example.com/current" },
+      next: { version: "vinext" },
+    } as unknown as Window & typeof globalThis;
+
+    try {
+      stageAppNavigationFailureTarget("/latest");
+      clearAppNavigationFailureTarget("/older");
+      expect(window.next?.__pendingUrl?.pathname).toBe("/latest");
+      clearAppNavigationFailureTarget("/latest");
+      expect(window.next?.__pendingUrl).toBeUndefined();
+    } finally {
+      globalThis.window = originalWindow;
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
+  it("ignores redirect sentinels handled by RedirectBoundary", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      withFakeWindow((assignSpy) => {
-        let current: string | null = "/first";
-        const handler = createOnUncaughtError(() => current);
-        current = "/second";
-        handler(new Error("late error"), {});
-        expect(assignSpy).toHaveBeenCalledWith("/second");
-      });
+      prodOnCaughtError(
+        Object.assign(new Error("NEXT_REDIRECT:/result"), {
+          digest: "NEXT_REDIRECT;;%2Fresult",
+        }),
+        { componentStack: "\n    at Root" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+
+  it("ignores notFound and HTTP fallback sentinels (notFound/forbidden/unauthorized)", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      prodOnCaughtError(Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" }), {
+        componentStack: "\n    at Page",
+      });
+      prodOnCaughtError(
+        Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;403"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+        }),
+        { componentStack: "\n    at Page" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("forwards real caught errors to console.error", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("Maximum update depth exceeded");
+      prodOnCaughtError(err, { componentStack: "\n    at List\n    at Apps" });
+      const loggedErrors = consoleSpy.mock.calls.map((args) => args[0]);
+      expect(loggedErrors).toContain(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("routes implicit root-boundary errors through the uncaught handler", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onImplicitRootError = vi.fn();
+      const handler = createProdOnCaughtError(onImplicitRootError);
+      const err = new Error("hydration mismatch");
+
+      handler(err, {
+        componentStack: "\n    at Lazy",
+        errorBoundary: {
+          props: { isImplicitRootErrorBoundary: true },
+        },
+      });
+
+      expect(onImplicitRootError).toHaveBeenCalledWith(
+        err,
+        expect.objectContaining({ componentStack: "\n    at Lazy" }),
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("does not treat explicit segment boundaries as implicit", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const onImplicitRootError = vi.fn();
+      const handler = createProdOnCaughtError(onImplicitRootError);
+      const err = new Error("segment error");
+
+      handler(err, {
+        componentStack: "\n    at Page",
+        errorBoundary: {
+          props: { isImplicitRootErrorBoundary: false },
+        },
+      });
+
+      expect(onImplicitRootError).not.toHaveBeenCalled();
+      expect(consoleSpy.mock.calls.map((args) => args[0])).toContain(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("includes the React component stack in the log when provided", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      prodOnCaughtError(new Error("boom"), {
+        componentStack: "\n    at List (apps/list.tsx:202)",
+      });
+      expect(consoleSpy).toHaveBeenCalledTimes(2);
+      expect(String(consoleSpy.mock.calls[1][0])).toContain("apps/list.tsx:202");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("logs only the error when no component stack is provided", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("no stack");
+      prodOnCaughtError(err, {});
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+      expect(consoleSpy.mock.calls[0][0]).toBe(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("does not swallow a plain error that merely mentions NEXT_REDIRECT (no digest)", () => {
+    // Classification is digest-based; an error whose *message* contains the
+    // sentinel text but has no framework digest must still be logged.
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("user code threw: NEXT_REDIRECT");
+      prodOnCaughtError(err, {});
+      expect(consoleSpy.mock.calls.map((args) => args[0])).toContain(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+});
+
+describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
+  function withFakeReportError<T>(fn: (reportErrorSpy: ReturnType<typeof vi.fn>) => T): T {
+    const reportErrorSpy = vi.fn();
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "reportError");
+    Object.defineProperty(globalThis, "reportError", {
+      configurable: true,
+      value: reportErrorSpy,
+      writable: true,
+    });
+    try {
+      return fn(reportErrorSpy);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(globalThis, "reportError", originalDescriptor);
+      } else {
+        delete (globalThis as { reportError?: unknown }).reportError;
+      }
+    }
+  }
+
+  it("reports recoverable hydration errors through reportError", () => {
+    withFakeReportError((reportErrorSpy) => {
+      const err = new Error("Minified React error #418");
+      prodOnRecoverableError(err);
+      expect(reportErrorSpy).toHaveBeenCalledWith(err);
+    });
+  });
+
+  it("reports the underlying cause when React provides one", () => {
+    withFakeReportError((reportErrorSpy) => {
+      const cause = new Error("server/client text mismatch");
+      const err = new Error("recoverable", { cause });
+      prodOnRecoverableError(err);
+      expect(reportErrorSpy).toHaveBeenCalledWith(cause);
+    });
   });
 });
 
@@ -6377,6 +7127,7 @@ describe("app browser form-state hydration", () => {
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     const global = { [RSC_FORM_STATE_GLOBAL]: formState };
     const onCaughtError = vi.fn();
+    const onRecoverableError = vi.fn();
     const onUncaughtError = vi.fn();
     const hydrateRoot = vi.fn();
 
@@ -6384,6 +7135,7 @@ describe("app browser form-state hydration", () => {
     const hydrateOptions = createVinextHydrateRootOptions({
       formState: consumedFormState,
       onCaughtError,
+      onRecoverableError,
       onUncaughtError,
     });
     hydrateRoot("document", "root", hydrateOptions);
@@ -6397,6 +7149,7 @@ describe("app browser form-state hydration", () => {
     expect(hydrateOptions).toEqual({
       formState,
       onCaughtError,
+      onRecoverableError,
       onUncaughtError,
     });
   });

@@ -239,14 +239,26 @@ describe("Next.js compat: draft-mode", () => {
     expect(data).toEqual({ isEnabled: true });
   });
 
-  it('await draftMode() preserves the dynamic = "error" failure', async () => {
+  it('await draftMode() remains readable with dynamic = "error"', async () => {
+    // Ported from Next.js: packages/next/src/server/request/draft-mode.ts
+    // dynamicShouldError is checked by enable()/disable(), not by draftMode()
+    // or its isEnabled getter.
     const res = await fetch(`${baseUrl}/nextjs-compat/draft-mode-dynamic-error`);
     const html = await res.text();
 
-    expect(html).toMatch(
-      /Page with `dynamic = (?:&quot;|\\")error(?:&quot;|\\")` used a dynamic API/,
-    );
+    expect(html).toContain("enabled:false");
     expect(res.headers.getSetCookie()).toEqual([]);
+
+    const enableRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
+    const bypassCookie = enableRes.headers
+      .getSetCookie()
+      .find((cookie) => cookie.includes("__prerender_bypass"));
+    expect(bypassCookie).toBeDefined();
+
+    const enabledRes = await fetch(`${baseUrl}/nextjs-compat/draft-mode-dynamic-error`, {
+      headers: { Cookie: bypassCookie!.split(";")[0] },
+    });
+    expect(await enabledRes.text()).toContain("enabled:true");
   });
 
   // ── Draft mode streams Suspense fallbacks ────────────────────

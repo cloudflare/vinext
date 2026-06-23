@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
   createPprFallbackShellSuspensePromise,
   isPprFallbackShellAbortError,
@@ -11,6 +12,16 @@ import {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > 200) {
+      throw new Error(message);
+    }
+    await delay(1);
+  }
 }
 
 describe("ppr fallback shell cache task tracking", () => {
@@ -188,10 +199,37 @@ describe("ppr fallback shell render lifecycle", () => {
 
     expect(state.phase).toBe("final");
     expect(state.hasDynamicBoundary).toBe(false);
+    expect(state.isFinalRenderStarted).toBe(false);
     expect(state.pendingCacheTasks).toBe(0);
     expect(state.isAbortScheduled).toBe(false);
     expect(state.cacheReadyResolvers.length).toBe(0);
     expect(state.abortController.signal.aborted).toBe(false);
+  });
+
+  it("does not abort the final shell before the React prerender starts", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("params");
+    });
+
+    await waitForCondition(
+      () => state.pendingCacheReadyCleanup === null,
+      "Timed out waiting for final shell cache-ready scheduling to settle",
+    );
+    expect(state.reactAbortController.signal.aborted).toBe(false);
+
+    beginPprFallbackShellFinalRender(state);
+    await waitForCondition(
+      () => state.reactAbortController.signal.aborted,
+      "Timed out waiting for final shell abort after React prerender started",
+    );
+    expect(state.reactAbortController.signal.aborted).toBe(true);
+    expect(state.abortController.signal.aborted).toBe(true);
   });
 
   it("isPprFallbackShellAbortError returns true for DOMException AbortError", () => {
@@ -277,11 +315,10 @@ describe("ppr fallback shell render lifecycle", () => {
       expect(p2).not.toBeNull();
     });
 
-    await delay(5);
+    await ready;
     expect(isReady).toBe(true);
     expect(state.pendingCacheTasks).toBe(0);
 
     state.abortController.abort();
-    await ready.catch(() => {});
   });
 });

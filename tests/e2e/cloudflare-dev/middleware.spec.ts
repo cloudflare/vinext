@@ -71,17 +71,12 @@ test.describe("middleware.ts with @cloudflare/vite-plugin", () => {
   });
 
   test("root route runs inside the Cloudflare Worker", async ({ request }) => {
-    // / is matched by both pages/index.tsx (stub) and app/page.tsx (App Router).
     // The connect handler must call next() so the Cloudflare plugin dispatches
     // the request to app/page.tsx inside the Worker.
-    //
-    // "vinext on Cloudflare Workers" — app/page.tsx rendered in the Worker
-    // "pages index"                  — pages stub rendered by the connect handler
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
 
     const body = await res.text();
     expect(body).toContain("vinext on Cloudflare Workers");
-    expect(body).not.toContain("pages index");
   });
 });

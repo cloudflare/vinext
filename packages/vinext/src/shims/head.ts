@@ -126,6 +126,14 @@ const SELF_CLOSING_HEAD_TAGS = new Set(["meta", "link", "base"]);
 /** Tags whose content is raw text — closing-tag sequences must be escaped during SSR. */
 const RAW_CONTENT_TAGS = new Set(["script", "style"]);
 
+// Pre-compiled regexes for escapeInlineContent — one per RAW_CONTENT_TAGS member.
+// The capture group preserves original casing in the replacement. `gi` flags,
+// no `lastIndex` hazard since they're only used via String.prototype.replace.
+const INLINE_CLOSE_TAG_RES: Record<string, RegExp> = {
+  script: /<\/(script)/gi,
+  style: /<\/(style)/gi,
+};
+
 type HeadDOMElement = Pick<HTMLElement, "innerHTML" | "setAttribute" | "textContent">;
 
 function warnDisallowedHeadTag(tag: string): void {
@@ -367,10 +375,8 @@ export function escapeAttr(s: string): string {
  * context but prevents the HTML parser from seeing a closing tag.
  */
 export function escapeInlineContent(content: string, tag: string): string {
-  // Build a pattern like `<\/script` or `<\/style`, case-insensitive.
-  // `tag` is always a literal developer-controlled value ("script" or "style")
-  // guarded by the RAW_CONTENT_TAGS.has(tag) check at all call sites — never user input.
-  const pattern = new RegExp(`<\\/(${tag})`, "gi");
+  const pattern = INLINE_CLOSE_TAG_RES[tag];
+  if (!pattern) return content;
   return content.replace(pattern, "<\\/$1");
 }
 

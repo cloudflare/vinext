@@ -544,6 +544,135 @@ describe("app page execution helpers", () => {
     );
   });
 
+  it("returns HTTP 200 when notFound() is thrown from generateMetadata (fromMetadata)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+    //   "should support notFound in generateMetadata"
+    //
+    // When notFound() / forbidden() / unauthorized() is thrown from
+    // generateMetadata(), Next.js treats the error as a suspended metadata
+    // result — the React not-found boundary handles the UI client-side while
+    // the HTTP response stays 200. The rendered fallback response (status 404
+    // from renderAppPageHttpAccessFallback) must be overridden to 200.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 200 for metadata notFound when no fallback page is available", async () => {
+    // When there is no renderFallbackPage (e.g. no not-found.tsx exists), the
+    // plain text fallback should also be 200 for fromMetadata errors.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, with fallback)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 404 response status when html limited bots access notFound"
+    //
+    // When serveStreamingMetadata === false (html-limited bots), metadata blocks
+    // the render synchronously. Next.js sets the real HTTP error status in this
+    // path (app-render.tsx ~2845). Mirror the redirect-from-metadata path, which
+    // is already gated on serveStreamingMetadata !== false.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, no fallback)", async () => {
+    // Same bot scenario but with no renderFallbackPage (no not-found.tsx).
+    // The plain text fallback must also use the real error status.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it("returns the original status for non-metadata http-access-fallback errors", async () => {
+    // Page-level notFound() calls (fromMetadata absent/false) must still return
+    // the original 404 status — only metadata-originated errors get the 200
+    // override.
+    const fallbackResponse = new Response("page-level-not-found", { status: 404 });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/page"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+      },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
   it("probes layouts from inner to outer and stops on a handled special response", async () => {
     const probedLayouts: number[] = [];
 
@@ -632,8 +761,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -665,15 +794,15 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCallCount++;
-          const result = fn();
+          const result = await fn();
           // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
           // detects dynamic usage
-          return Promise.resolve({
+          return {
             result,
             dynamicDetected: probeCallCount === 2,
-          });
+          };
         },
       },
     });
@@ -801,9 +930,9 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -879,8 +1008,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -917,8 +1046,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin", "layout:/admin/posts"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -964,12 +1093,12 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
           // probeAppPageLayouts iterates inner-to-outer:
           // first call → layout 1 (dashboard) → dynamic
           // second call → layout 0 (root) → static
-          return Promise.resolve({ result: fn(), dynamicDetected: probeCalls === 1 });
+          return { result: await fn(), dynamicDetected: probeCalls === 1 };
         },
       },
     });

@@ -221,6 +221,20 @@ describe("Image SSR rendering", () => {
     expect(html).toContain("data:image/png;base64,xyz");
   });
 
+  it("bypasses optimization for deployment-tagged SVG static imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "static svg",
+        src: { src, width: 32, height: 32 },
+      }),
+    );
+
+    expect(html).toContain(`src="${src.replaceAll("&", "&amp;")}"`);
+    expect(html).toContain(`srcSet="${src.replaceAll("&", "&amp;")}`);
+    expect(html).not.toContain("/_next/image?");
+  });
+
   it("applies className and custom style", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
@@ -444,6 +458,17 @@ describe("getImageProps", () => {
     expect(props.height).toBe(1080);
   });
 
+  it("getImageProps bypasses optimization for deployment-tagged SVG imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const { props } = getImageProps({
+      alt: "static svg",
+      src: { src, width: 32, height: 32 },
+    });
+
+    expect(props.src).toBe(src);
+    expect(props.srcSet).toBeUndefined();
+  });
+
   it("generates srcSet for local images", () => {
     const { props } = getImageProps({
       alt: "local",
@@ -653,6 +678,152 @@ describe("onLoadingComplete prop", () => {
     expect(html).not.toContain("onLoadingComplete");
     expect(html).not.toContain("onloadingcomplete");
     expect(html).toContain('alt="remote"');
+  });
+});
+
+// Ported from Next.js: test/e2e/next-image-new/unoptimized/unoptimized.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/next-image-new/unoptimized/unoptimized.test.ts
+describe("unoptimized remote images", () => {
+  it("preserves a Cloudflare Images variant URL without generating srcSet", () => {
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,test",
+        style: { borderRadius: 8 },
+      }),
+    );
+
+    expect(html).toContain(`src="${src}"`);
+    expect(html).toContain('width="100"');
+    expect(html).toContain('height="100"');
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('data-nimg="1"');
+    expect(html).toContain("background-image:url(data:image/png;base64,test)");
+    expect(html).toContain("border-radius:8px");
+    expect(html).not.toContain("public=undefined");
+    expect(html).not.toContain("srcSet");
+    expect(html).not.toContain("sizes=");
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,test",
+      style: { borderRadius: 8 },
+    });
+    expect(props.src).toBe(src);
+    expect(props.srcSet).toBeUndefined();
+    expect(props.sizes).toBeUndefined();
+    expect(props.style).toMatchObject({
+      backgroundImage: "url(data:image/png;base64,test)",
+      borderRadius: 8,
+    });
+  });
+
+  it("does not invoke a custom loader", () => {
+    const loader = vi.fn(() => "https://cdn.example.com/transformed.jpg");
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        loader,
+      }),
+    );
+
+    expect(loader).not.toHaveBeenCalled();
+    expect(html).toContain(`src="${src}"`);
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+      loader,
+    });
+    expect(loader).not.toHaveBeenCalled();
+    expect(props.src).toBe(src);
+  });
+
+  // Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/next-image-get-img-props.test.ts
+  it("honors overrideSrc", () => {
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const overrideSrc = "https://cdn.example.com/original.jpg";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        overrideSrc,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        priority: true,
+      }),
+    );
+
+    expect(html).toContain(`src="${overrideSrc}"`);
+    expect(html).not.toContain(`src="${src}"`);
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      overrideSrc,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+    });
+    expect(props.src).toBe(overrideSrc);
+    expect(props.srcSet).toBeUndefined();
+  });
+
+  it("bypasses remote pattern validation in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
+      { hostname: "allowed.example.com" },
+    ]);
+
+    vi.resetModules();
+    const { default: UnoptimizedImage, getImageProps: getUnoptimizedImageProps } =
+      await import("../packages/vinext/src/shims/image.js");
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(UnoptimizedImage, {
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }),
+    );
+
+    expect(html).toContain(`src="${src}"`);
+    expect(
+      getUnoptimizedImageProps({
+        alt: "cloudflare image",
+        src,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+      }).props.src,
+    ).toBe(src);
+
+    vi.unstubAllEnvs();
+    delete process.env.__VINEXT_IMAGE_REMOTE_PATTERNS;
+    vi.resetModules();
   });
 });
 

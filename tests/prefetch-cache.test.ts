@@ -688,6 +688,37 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
+  it("can probe stale navigation candidates without notifying invalidation callbacks", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const onInvalidate = vi.fn();
+    const now = 1_000_000;
+    const rscUrl = "/dynamic-stale-navigation.rsc";
+    cache.set(rscUrl, {
+      onInvalidateCallbacks: new Set([onInvalidate]),
+      outcome: "cache-seeded",
+      snapshot: {
+        buffer: new TextEncoder().encode("dynamic-navigation").buffer,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 10,
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        url: rscUrl,
+      },
+      timestamp: now,
+    });
+    prefetched.add(rscUrl);
+
+    vi.spyOn(Date, "now").mockReturnValue(now + 10_000);
+
+    expect(
+      hasPrefetchCacheEntryForNavigation(rscUrl, null, null, { notifyInvalidation: false }),
+    ).toBe(false);
+    expect(onInvalidate).not.toHaveBeenCalled();
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+  });
+
   it("preserves the original expiry when consuming a prefetched response", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();

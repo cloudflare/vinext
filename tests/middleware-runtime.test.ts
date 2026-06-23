@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
+import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
 // fixtures mirror the behaviour Next.js's edge adapter applies after a
@@ -160,5 +161,103 @@ describe("middleware redirect protocol", () => {
     expect(result.redirectUrl).toBe("/new-home");
     expect(result.response?.status).toBe(307);
     expect(result.response?.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+});
+
+// basePath handling. Mirrors Next.js getNextPathnameInfo semantics: the
+// middleware adapter receives the original URL, NextURL strips the prefix for
+// nextUrl.pathname, and nextUrl.basePath reflects whether the URL actually
+// carried the configured prefix. Reference:
+// test/e2e/middleware-base-path/test/index.test.ts (canary) — including the
+// "should execute from absolute paths" case for out-of-basePath requests.
+describe("middleware nextUrl basePath", () => {
+  function captureModule() {
+    const captured: { request?: NextRequest } = {};
+    const module = {
+      default: (req: NextRequest) => {
+        captured.request = req;
+        return undefined;
+      },
+    };
+    return { captured, module };
+  }
+
+  it("re-adds basePath for App Router calls that pass a stripped pathname (hadBasePath: true)", async () => {
+    const { captured, module } = captureModule();
+
+    // Mirrors applyAppMiddleware: the request URL and cleanPathname are both
+    // already basePath-stripped, and hadBasePath is asserted explicitly.
+    const result = await executeMiddleware({
+      basePath: "/app",
+      hadBasePath: true,
+      isProxy: false,
+      module,
+      normalizedPathname: "/dashboard",
+      request: new Request("http://localhost:3000/dashboard?q=1"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/app");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+    // req.url mirrors the un-stripped URL Next.js middleware receives.
+    expect(new URL(captured.request!.url).pathname).toBe("/app/dashboard");
+    expect(new URL(captured.request!.url).search).toBe("?q=1");
+  });
+
+  it("keeps basePath active for Pages flow requests whose URL carries the prefix", async () => {
+    const { captured, module } = captureModule();
+
+    // Mirrors the prod-server/deploy adapters: the runMiddleware closure
+    // passes the original prefixed URL and no normalizedPathname/hadBasePath.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/root/dashboard"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/root");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+    expect(new URL(captured.request!.url).pathname).toBe("/root/dashboard");
+  });
+
+  it("clears nextUrl.basePath for absolute paths outside the configured basePath", async () => {
+    const { captured, module } = captureModule();
+
+    // Out-of-basePath request (issue #1830): the adapter passes the bare URL,
+    // and the middleware must see basePath === "" so it can redirect the
+    // request into the basePath.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/about"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("");
+    expect(captured.request?.nextUrl.pathname).toBe("/about");
+    // The prefix must NOT be re-added for out-of-basePath requests.
+    expect(new URL(captured.request!.url).pathname).toBe("/about");
+  });
+
+  it("evaluates matchers against the basePath-stripped pathname", async () => {
+    const { captured, module } = captureModule();
+    const moduleWithMatcher = { ...module, config: { matcher: "/dashboard" } };
+
+    // The matcher is written against the stripped path ("/dashboard"), but the
+    // Pages adapters pass the prefixed URL — the runtime must strip before
+    // matching, like Next.js does.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module: moduleWithMatcher,
+      request: new Request("http://localhost:3000/root/dashboard"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/root");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
   });
 });

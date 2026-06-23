@@ -122,6 +122,43 @@ describe("Pages i18n domain helpers", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/i18n-support/shared.ts
+// `addDefaultLocaleCookie` sets `NEXT_LOCALE=EN-US` (uppercase) "to ensure
+// it's case-insensitive". Next.js resolves the cookie case-insensitively and
+// returns the canonical configured locale (get-locale-redirect.ts
+// `getLocaleFromCookie`).
+// https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support/shared.ts
+describe("parseCookieLocaleFromHeader (issue #1969)", () => {
+  let parseCookieLocaleFromHeader: typeof import("../packages/vinext/src/server/pages-i18n.js").parseCookieLocaleFromHeader;
+
+  beforeAll(async () => {
+    ({ parseCookieLocaleFromHeader } = await import("../packages/vinext/src/server/pages-i18n.js"));
+  });
+
+  const i18n = {
+    locales: ["en-US", "fr"],
+    defaultLocale: "en-US",
+    localeDetection: true,
+    domains: [],
+  };
+
+  it("matches an exact-case cookie value", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=en-US", i18n)).toBe("en-US");
+  });
+
+  it("resolves an uppercase cookie to the canonical configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=EN-US", i18n)).toBe("en-US");
+  });
+
+  it("resolves a mixed-case cookie to the canonical configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=Fr", i18n)).toBe("fr");
+  });
+
+  it("returns null when the cookie value is not a configured locale", () => {
+    expect(parseCookieLocaleFromHeader("NEXT_LOCALE=de", i18n)).toBeNull();
+  });
+});
+
 // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
 // (the "should redirect to api route with locale" case)
 // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts

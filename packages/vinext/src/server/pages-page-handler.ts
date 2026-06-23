@@ -25,9 +25,10 @@ import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
-  buildNextDataJsonResponse,
+  buildNextDataPropsJsonResponse,
   buildNextDataNotFoundResponse,
   normalizePagesDataRequest,
+  parseNextDataPathname,
 } from "./pages-data-route.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import {
@@ -44,6 +45,9 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,8 +81,10 @@ type I18nConfig = {
 
 type VinextConfigSubset = {
   basePath: string;
+  assetPrefix: string;
   trailingSlash: boolean;
   expireTime?: number;
+  htmlLimitedBots?: string;
   clientTraceMetadata?: readonly string[];
   disableOptimizedLoading: boolean;
 };
@@ -155,13 +161,13 @@ export type CreatePagesPageHandlerOptions = {
   createPageElement: (
     PageComponent: ComponentType,
     AppComponent: ComponentType | null,
-    pageProps: Record<string, unknown>,
+    props: Record<string, unknown>,
   ) => ReactNode;
   /** Build the element with optional App/Component enhancers (for _document). */
   enhancePageElement: (
     PageComponent: ComponentType,
     AppComponent: ComponentType | null,
-    pageProps: Record<string, unknown>,
+    props: Record<string, unknown>,
     opts: RenderPageEnhancers,
   ) => ReactNode;
   /** The `_app` page component (or null). */
@@ -175,6 +181,7 @@ type RenderPageOptions = {
   isDataReq?: boolean;
   statusCode?: number;
   asPath?: string;
+  originalUrl?: string;
   renderErrorPageOnMiss?: boolean;
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
@@ -284,25 +291,51 @@ export function createPagesPageHandler(
     options: RenderPageOptions | null | undefined,
   ): Promise<Response> {
     let isDataReq = !!(options && options.isDataReq);
+    const requestUrl = new URL(request.url);
+    const rawOriginalUrl =
+      options && typeof options.originalUrl === "string"
+        ? options.originalUrl
+        : requestUrl.pathname + requestUrl.search;
+    const originalRequestUrl = new URL(rawOriginalUrl, requestUrl);
+    const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
+    let dataRequestPathname: string | null = null;
+    let dataRequestSearch = "";
+    const initialDataNorm = normalizePagesDataRequest(request, buildId);
 
     // Auto-detect /_next/data/... requests by inspecting the incoming URL.
     // When the worker pipeline forwards an unrewritten data URL as the `url`
     // arg, normalize it to the page path here.
     if (!isDataReq) {
-      const dataNorm = normalizePagesDataRequest(request, buildId);
-      if (dataNorm.notFoundResponse) return dataNorm.notFoundResponse;
-      if (dataNorm.isDataReq) {
+      if (initialDataNorm.notFoundResponse) return initialDataNorm.notFoundResponse;
+      if (initialDataNorm.isDataReq) {
         isDataReq = true;
+        dataRequestPathname = initialDataNorm.normalizedPathname;
+        dataRequestSearch = initialDataNorm.search;
         if (url && url.startsWith("/_next/data/")) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          url = dataNorm.normalizedPathname + qs;
+          url = initialDataNorm.normalizedPathname + qs;
         }
+      }
+    } else if (initialDataNorm.isDataReq) {
+      dataRequestPathname = initialDataNorm.normalizedPathname;
+      dataRequestSearch = initialDataNorm.search;
+    }
+
+    if (isDataReq && dataRequestPathname === null && buildId) {
+      const originalDataMatch = parseNextDataPathname(originalRequestUrl.pathname, buildId);
+      if (originalDataMatch) {
+        dataRequestPathname = originalDataMatch.pagePathname;
+        dataRequestSearch = originalRequestUrl.search;
       }
     }
 
     const statusCode =
       options && typeof options.statusCode === "number" ? options.statusCode : undefined;
-    const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
+    const defaultAsPath =
+      isDataReq && dataRequestPathname
+        ? dataRequestPathname + dataRequestSearch
+        : originalRequestPathAndSearch;
+    const asPath = options && typeof options.asPath === "string" ? options.asPath : defaultAsPath;
     const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
     // Guard against infinite recursion when the user's custom 500/error page
     // itself throws during render. When this flag is set, the catch block
@@ -455,8 +488,20 @@ export function createPagesPageHandler(
           if (methodResponse) return methodResponse;
         }
 
-        const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
-        const appModuleUrl = resolveClientModuleUrl(manifest, appAssetPath);
+        const pageModuleUrl = resolveClientModuleUrl(
+          manifest,
+          route.filePath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+          process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+        );
+        const appModuleUrl = resolveClientModuleUrl(
+          manifest,
+          appAssetPath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+          process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+        );
         const serializedPagesNextData = {
           ...pagesNextData,
           __vinext: {
@@ -476,24 +521,43 @@ export function createPagesPageHandler(
           if (allFontPreloads.length > 0) {
             fontLinkHeader = allFontPreloads
               .map(
-                (p) => "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin",
+                (p) =>
+                  "<" +
+                  appendAssetDeploymentIdQuery(p.href) +
+                  ">; rel=preload; as=font; type=" +
+                  p.type +
+                  "; crossorigin",
               )
               .join(", ");
           }
         } catch {
           /* font preloads not available */
         }
+        const parsedRouteUrl = new URL(routeUrl, originalRequestUrl);
+        const routePathname = parsedRouteUrl.pathname || "/";
+        const pagesResolvedUrl = routePathname + originalRequestUrl.search;
 
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
-          err,
+          err: err instanceof Error ? err : undefined,
           applyRequestContexts: applySSRContext,
           buildId,
+          deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+          htmlLimitedBots: vinextConfig.htmlLimitedBots,
           createGsspReqRes() {
-            return createPagesReqRes({ body: undefined, query, request, url: routeUrl });
+            return createPagesReqRes({
+              body: undefined,
+              query,
+              request,
+              url: originalRequestPathAndSearch,
+            });
           },
-          createPageElement(currentPageProps) {
-            const el = createPageElement(PageComponent, AppComponent, currentPageProps);
+          createAppTree(appTreeProps) {
+            const el = createPageElement(PageComponent, AppComponent, appTreeProps);
+            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+          },
+          createPageElement(currentProps) {
+            const el = createPageElement(PageComponent, AppComponent, currentProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
           fontLinkHeader,
@@ -517,16 +581,18 @@ export function createPagesPageHandler(
             request.headers.get(PRERENDER_REVALIDATE_HEADER),
           ),
           pageModule,
+          AppComponent,
           params,
           query,
           asPath: renderAsPath ?? routeUrl,
+          resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
           route: { isDynamic: route.isDynamic },
           routePattern,
           routeUrl,
           runInFreshUnifiedContext(callback) {
             const revalCtx = createRequestContext({
-              executionContext: getRequestExecutionContext(),
+              executionContext: null,
             });
             return runWithRequestContext(revalCtx, async () => {
               ensureFetchPatch();
@@ -540,6 +606,9 @@ export function createPagesPageHandler(
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
 
         if (pageDataResult.kind === "notFound") {
@@ -559,8 +628,10 @@ export function createPagesPageHandler(
         }
 
         let pageProps = pageDataResult.pageProps;
+        let renderProps = pageDataResult.props;
         if (routePattern === "/_error" && typeof renderStatusCode === "number") {
           pageProps = { ...pageProps, statusCode: renderStatusCode };
+          renderProps = { ...renderProps, pageProps };
         }
         const gsspRes = pageDataResult.gsspRes;
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
@@ -584,7 +655,8 @@ export function createPagesPageHandler(
 
         // ── _next/data JSON envelope short-circuit ─────────────────────────
         // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
-        // and expects { pageProps } as JSON instead of the full HTML page.
+        // and expects the full props envelope (pageProps plus any app-level
+        // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
           const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
@@ -606,11 +678,22 @@ export function createPagesPageHandler(
               }
             }
             if (!hasUserCacheControl) {
-              init.headers["Cache-Control"] =
-                "private, no-cache, no-store, max-age=0, must-revalidate";
+              init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           }
-          return buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
+          // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
+          // every _next/data response so the client router can detect a new
+          // deployment and trigger a hard navigation (deployment-skew
+          // protection). Next.js skips the success path for /_error and /500
+          // (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error" && routePattern !== "/500") {
+            const deploymentId =
+              process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+            if (deploymentId) {
+              init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+            }
+          }
+          return buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
         }
 
         // Include both the matched page module and the global _app module.
@@ -624,6 +707,9 @@ export function createPagesPageHandler(
           moduleIds: pageModuleIds,
           scriptNonce,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+          basePath: vinextConfig.basePath,
+          assetPrefix: vinextConfig.assetPrefix,
+          deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         });
 
         return await renderPagesPageResponse({
@@ -632,15 +718,16 @@ export function createPagesPageHandler(
           clearSsrContext() {
             if (typeof setSSRContext === "function") setSSRContext(null);
           },
-          createPageElement(currentPageProps) {
-            const el = createPageElement(PageComponent, AppComponent, currentPageProps);
+          createPageElement(currentProps) {
+            const el = createPageElement(PageComponent, AppComponent, currentProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
           enhancePageElement(renderPageOpts) {
-            const el = enhancePageElement(PageComponent, AppComponent, pageProps, renderPageOpts);
+            const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
           DocumentComponent,
+          err: err instanceof Error ? err : undefined,
           flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
           fontLinkHeader,
           fontPreloads: allFontPreloads,
@@ -656,7 +743,9 @@ export function createPagesPageHandler(
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,
+          props: renderProps,
           params,
+          query,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },
@@ -670,6 +759,9 @@ export function createPagesPageHandler(
           scriptNonce,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);

@@ -7,6 +7,30 @@ type ClientAssetFileNameInfo = {
   readonly originalFileNames?: readonly string[];
 };
 
+type RscFrameworkModuleInfo = {
+  importers: string[];
+  isEntry: boolean;
+};
+
+type RscFrameworkManualChunksMeta = {
+  getModuleInfo(id: string): RscFrameworkModuleInfo | null;
+};
+
+const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "compat-router",
+  "dynamic",
+  "dynamic-preload-chunks",
+  "form",
+  "image",
+  "layout-segment-context",
+  "legacy-image",
+  "link",
+  "offline",
+  "router",
+  "script",
+  "web-vitals",
+]);
+
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
 // that layout so migrated apps keep stable, Next-shaped asset URLs.
@@ -55,9 +79,10 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const nmIdx = id.lastIndexOf("node_modules/");
+  const normalizedId = id.replaceAll("\\", "/");
+  const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
-  const rest = id.slice(nmIdx + "node_modules/".length);
+  const rest = normalizedId.slice(nmIdx + "node_modules/".length);
   if (rest.startsWith("@")) {
     // Scoped package: @org/pkg
     const parts = rest.split("/");
@@ -71,12 +96,10 @@ function getPackageName(id: string): string | null {
  *
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
- * - "vinext"    — vinext shims (router, head, link, etc.)
+ * - "vinext"    — shared vinext runtime shims
  *
- * All other vendor code is left to Rollup's default chunk-splitting
- * algorithm. Rollup automatically deduplicates shared modules into
- * common chunks based on the import graph — no manual intervention
- * needed.
+ * Route-owned client shims and all other vendor code are left to the bundler's
+ * graph-based chunking so they stay behind their client-reference boundaries.
  *
  * Why not split every npm package into its own chunk?
  * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
@@ -93,7 +116,7 @@ function getPackageName(id: string): string | null {
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
-export function createClientManualChunks(shimsDir: string) {
+export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
   return function clientManualChunks(id: string): string | undefined {
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value
@@ -112,10 +135,13 @@ export function createClientManualChunks(shimsDir: string) {
       return undefined;
     }
 
-    // vinext shims — small runtime, shared across all pages.
-    // Use the absolute shims directory path to avoid matching user files
-    // that happen to have "/shims/" in their path.
     if (id.startsWith(shimsDir)) {
+      if (preserveRouteBoundaries) {
+        const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const extensionIndex = relativeId.lastIndexOf(".");
+        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      }
       return "vinext";
     }
 
@@ -132,11 +158,20 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
+export function createClientFileNameConfig(assetsDir: string) {
+  const chunksDir = `${assetsDir}/chunks`;
+  return {
+    entryFileNames: `${chunksDir}/[name]-[hash].js`,
+    chunkFileNames: `${chunksDir}/[name]-[hash].js`,
+  };
+}
+
 export function createClientOutputConfig(
   clientManualChunks: (id: string) => string | undefined,
   assetsDir: string,
 ) {
   return {
+    ...createClientFileNameConfig(assetsDir),
     assetFileNames: createClientAssetFileNames(assetsDir),
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,
@@ -199,24 +234,51 @@ export function isRscFrameworkModule(id: string): boolean {
   return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
 }
 
+function isStaticallyReachableFromEntry(
+  id: string,
+  meta: RscFrameworkManualChunksMeta,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(id)) return false;
+  visited.add(id);
+
+  const moduleInfo = meta.getModuleInfo(id);
+  if (!moduleInfo) return false;
+  if (moduleInfo.isEntry) return true;
+  return moduleInfo.importers.some((importer) =>
+    isStaticallyReachableFromEntry(importer, meta, visited),
+  );
+}
+
 /**
  * Output config that isolates React (and the RSC flight runtime) into a
  * dedicated "framework" chunk in the RSC server build. Returns the bundler-
  * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
  * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
- * motivation (issue #1549).
+ * motivation (issue #1549). Framework modules that are only reachable through
+ * dynamic imports must stay out of the eager framework chunk (issue #2073).
  */
 export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
     return {
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            // Split by the entries that use each module so lazy framework
+            // imports cannot become eager Worker-startup dependencies (#2073).
+            entriesAware: true,
+          },
+        ],
       },
     };
   }
   return {
-    manualChunks(id: string): string | undefined {
-      return isRscFrameworkModule(id) ? "framework" : undefined;
+    manualChunks(id: string, meta: RscFrameworkManualChunksMeta): string | undefined {
+      return isRscFrameworkModule(id) && isStaticallyReachableFromEntry(id, meta)
+        ? "framework"
+        : undefined;
     },
   };
 }

@@ -6,6 +6,7 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
   readAppPageCacheResponse,
+  readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -19,6 +20,7 @@ import {
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function buildISRCacheEntry(
@@ -535,6 +537,10 @@ describe("app page cache helpers", () => {
 
   it("serves stale RSC entries and regenerates only the matching RSC cache key", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrRscKey = vi.fn(
+      (pathname: string, mountedSlotsHeader?: string | null) =>
+        `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`,
+    );
     const isrSetCalls: Array<{
       key: string;
       html: string;
@@ -555,9 +561,7 @@ describe("app page cache helpers", () => {
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
-      isrRscKey(pathname, mountedSlotsHeader) {
-        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
-      },
+      isrRscKey,
       async isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
         isrSetCalls.push({
           key,
@@ -589,6 +593,7 @@ describe("app page cache helpers", () => {
 
     await scheduledRegenerations[0]();
 
+    expect(isrRscKey).toHaveBeenCalledOnce();
     expect(isrSetCalls).toEqual([
       {
         key: "rsc:/stale:slot:auth:/",
@@ -638,6 +643,7 @@ describe("app page cache helpers", () => {
 
   it("serves stale HTML entries and regenerates HTML plus canonical RSC cache keys", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrHtmlKey = vi.fn((pathname: string) => "html:" + pathname);
     const isrSetCalls: Array<{
       key: string;
       expireSeconds: number | undefined;
@@ -652,9 +658,7 @@ describe("app page cache helpers", () => {
       async isrGet() {
         return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
       },
-      isrHtmlKey(pathname) {
-        return "html:" + pathname;
-      },
+      isrHtmlKey,
       isrRscKey(pathname, mountedSlotsHeader) {
         return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
       },
@@ -678,9 +682,79 @@ describe("app page cache helpers", () => {
 
     expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
     await scheduledRegenerations[0]();
+    expect(isrHtmlKey).toHaveBeenCalledOnce();
     expect(isrSetCalls).toEqual([
       { key: "rsc:/stale-html:none", expireSeconds: 20, revalidateSeconds: 10 },
       { key: "html:/stale-html", expireSeconds: 20, revalidateSeconds: 10 },
+    ]);
+  });
+
+  it("serves stale static fallback shells without regenerating the shared shell key", async () => {
+    const debugCalls: Array<[string, string]> = [];
+
+    const response = await readAppPageFallbackShellCacheResponse({
+      clearRequestContext() {},
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<html><head></head><body>stale shell</body></html>"),
+          true,
+          { revalidate: 60, expire: 300 },
+        );
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      expireSeconds: 300,
+      middlewareHeaders: new Headers({ "X-From-Middleware": "yes" }),
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html.replace("stale shell", "rewritten stale shell");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(response?.headers.get("x-from-middleware")).toBe("yes");
+    await expect(response?.text()).resolves.toContain("rewritten stale shell");
+    expect(debugCalls).toContainEqual(["STALE (fallback shell)", "/en/blog/[slug]"]);
+  });
+
+  it("falls through when a cached fallback shell requires request-time resume", async () => {
+    const debugCalls: Array<[string, string]> = [];
+
+    const response = await readAppPageFallbackShellCacheResponse({
+      clearRequestContext() {
+        throw new Error("should not clear request context when falling through");
+      },
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue(
+            markAppPprDynamicFallbackShellHtml(
+              "<html><head></head><body>dynamic shell</body></html>",
+            ),
+          ),
+        );
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(debugCalls).toContainEqual([
+      "MISS (dynamic fallback shell requires resume)",
+      "/en/blog/[slug]",
     ]);
   });
 

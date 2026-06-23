@@ -5,6 +5,7 @@ import * as ReactDOM from "react-dom";
 import {
   consumeAppRouterScrollIntent,
   getPendingAppRouterScrollIntent,
+  markAppRouterScrollIntentHeadHoisted,
 } from "./app-router-scroll-state.js";
 import { decodeHashFragment } from "./hash-scroll.js";
 
@@ -58,14 +59,13 @@ function topOfElementInViewport(element: HTMLElement, viewportHeight: number): b
   return elementTop >= 0 && elementTop <= viewportHeight;
 }
 
-function getHashFragmentDomNode(hash: string): HTMLElement | null {
+function getHashFragmentDomNode(hash: string): Element | null {
   const fragment = decodeHashFragment(hash.startsWith("#") ? hash.slice(1) : hash);
   if (fragment === "top") {
     return document.body;
   }
 
-  const element = document.getElementById(fragment) ?? document.getElementsByName(fragment)[0];
-  return element instanceof HTMLElement ? element : null;
+  return document.getElementById(fragment) ?? document.getElementsByName(fragment)[0] ?? null;
 }
 
 function isInDocumentHead(node: Element | Text): boolean {
@@ -73,16 +73,7 @@ function isInDocumentHead(node: Element | Text): boolean {
   return head != null && head.contains(node);
 }
 
-type NextScrollTarget =
-  | { kind: "element"; element: HTMLElement }
-  // The route content's first DOM node was hoisted into <head> (e.g. a
-  // `<style precedence>` or metadata element) so there is no in-body element to
-  // scroll into view. Next.js skips this layout-router level and lets a higher
-  // one scroll the document to the top; vinext owns the whole page branch in a
-  // single scroll target, so it performs that document-top scroll here instead
-  // of leaving the navigation without a committed scroll.
-  | { kind: "document-top" }
-  | null;
+type NextScrollTarget = { kind: "element"; element: HTMLElement } | null;
 
 function findNextScrollTarget(node: Element | Text | null): NextScrollTarget {
   if (!(node instanceof Element)) {
@@ -90,7 +81,7 @@ function findNextScrollTarget(node: Element | Text | null): NextScrollTarget {
   }
 
   if (isInDocumentHead(node)) {
-    return { kind: "document-top" };
+    return null;
   }
 
   let target: Element = node;
@@ -133,50 +124,66 @@ export class AppRouterScrollTargetInner extends React.Component<{
   children: React.ReactNode;
   commitId: number | null;
 }> {
+  scheduledCommitId: number | null = null;
+
+  schedulePotentialScroll = () => {
+    const commitId = this.props.commitId;
+    this.scheduledCommitId = commitId;
+    queueMicrotask(() => {
+      if (this.scheduledCommitId !== commitId) return;
+      this.handlePotentialScroll();
+    });
+  };
+
   handlePotentialScroll = () => {
     const intent = getPendingAppRouterScrollIntent();
     if (intent === null) return;
     if (this.props.commitId === null || intent.commitId !== this.props.commitId) return;
 
-    let target: HTMLElement | null;
+    let node: Element | Text | null;
     if (intent.hash !== null) {
-      target = getHashFragmentDomNode(intent.hash);
-      if (target === null) return;
+      node = getHashFragmentDomNode(intent.hash);
     } else {
+      node = null;
+    }
+    if (node === null) {
       // oxlint-disable-next-line react/no-find-dom-node -- Next's default App Router scroll handler targets wrapperless route content after commit.
-      const next = findNextScrollTarget(findDOMNode(this));
-      if (next === null) return;
+      node = findDOMNode(this);
 
-      if (next.kind === "document-top") {
-        // The route content hoisted its first DOM node into <head>, so there is
-        // no in-body element to focus or scroll into view. Claim the intent and
-        // scroll the document to the top — the committed-effect equivalent of
-        // Next.js letting a higher layout-router handle the document scroll.
-        const consumedTop = consumeAppRouterScrollIntent(intent, this.props.commitId);
-        if (consumedTop === null) return;
-        document.documentElement.scrollTop = 0;
+      if (node !== null && isInDocumentHead(node)) {
+        // React hoisted this navigation's first route DOM node into <head>
+        // (e.g. a precedence-ordered stylesheet rendered as the page's first
+        // child). Next's old App Router scroll handler walks the head siblings,
+        // finds nothing scrollable, and gives up without scrolling. Record that
+        // on this navigation's intent — without consuming it — so the
+        // post-commit fallback in next/navigation skips its document-top scroll
+        // for this navigation alone, never for unrelated navigations.
+        markAppRouterScrollIntentHeadHoisted(intent, this.props.commitId);
         return;
       }
-
-      target = next.element;
     }
+
+    const next = findNextScrollTarget(node);
+    if (next === null) return;
+    const target = next.element;
 
     const consumed = consumeAppRouterScrollIntent(intent, this.props.commitId);
     if (consumed === null) return;
 
     scrollToElement(target, consumed.hash);
-    // Next's default handler uses plain focus(), but that lets the browser run
-    // a second implicit scroll after our explicit navigation scroll. Keep the
-    // focus transfer while preserving the scroll position we just chose.
-    target.focus({ preventScroll: true });
+    target.focus();
   };
 
   componentDidMount() {
-    this.handlePotentialScroll();
+    this.schedulePotentialScroll();
   }
 
   componentDidUpdate() {
-    this.handlePotentialScroll();
+    this.schedulePotentialScroll();
+  }
+
+  componentWillUnmount() {
+    this.scheduledCommitId = null;
   }
 
   render() {

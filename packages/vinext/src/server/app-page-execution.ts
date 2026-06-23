@@ -12,6 +12,7 @@ import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
 import { isPromiseLike } from "../utils/promise.js";
+import { runWithConnectionProbe } from "vinext/shims/headers";
 
 /**
  * Builds the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest that
@@ -175,7 +176,9 @@ export type LayoutClassificationOptions = {
    */
   isLayoutObservationDynamic?: (layoutId: string) => boolean;
   /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
+  runWithIsolatedDynamicScope: <T>(
+    fn: () => T | Promise<T>,
+  ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 type ProbeAppPageLayoutsOptions = {
@@ -190,6 +193,11 @@ type ProbeAppPageLayoutsOptions = {
 type ProbeAppPageComponentOptions = {
   awaitAsyncResult: boolean;
   onError: (error: unknown) => Promise<Response | null>;
+  probePage: () => unknown;
+  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
+};
+
+type ProbeAppPageThrownErrorOptions = {
   probePage: () => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
 };
@@ -422,14 +430,47 @@ export async function buildAppPageSpecialErrorResponse(
   if (options.renderFallbackPage) {
     const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
     if (fallbackResponse) {
-      return mergeAppPageSpecialErrorHeaders(fallbackResponse, options.middlewareContext);
+      // When notFound() / forbidden() / unauthorized() is thrown from
+      // generateMetadata(), Next.js treats the error as a suspended metadata
+      // result — the not-found UI is rendered through the React boundary
+      // client-side while the HTTP response itself stays 200. Mirror that
+      // behavior by overriding the rendered boundary response status to 200.
+      // Mirrors the redirect-from-metadata path above, which also returns 200.
+      // Reference: test/e2e/app-dir/metadata-navigation
+      //   "should support notFound in generateMetadata"
+      //
+      // Exception: when serveStreamingMetadata === false (html-limited bots),
+      // metadata blocks the render synchronously. Next.js sets the real HTTP
+      // error status in this case (app-render.tsx ~2845). Mirror by not
+      // overriding the status, symmetrically with the redirect-from-metadata
+      // path which is already gated on serveStreamingMetadata !== false.
+      const responseToMerge =
+        options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+          ? new Response(fallbackResponse.body, {
+              headers: fallbackResponse.headers,
+              status: 200,
+              statusText: fallbackResponse.statusText,
+            })
+          : fallbackResponse;
+      return mergeAppPageSpecialErrorHeaders(responseToMerge, options.middlewareContext);
     }
   }
 
   options.clearRequestContext();
+  // When notFound() is thrown from generateMetadata() with no fallback page
+  // available, keep the 200 status to stay consistent with the streamed
+  // metadata contract (the error is surfaced in the page UI, not the status).
+  // Exception: when serveStreamingMetadata === false (html-limited bots),
+  // metadata blocks the render synchronously — Next.js sets the real HTTP
+  // error status in this case (app-render.tsx ~2845), symmetric with the
+  // redirect-from-metadata path that is already gated on the same flag.
+  const responseStatus =
+    options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+      ? 200
+      : options.specialError.statusCode;
   return mergeAppPageSpecialErrorHeaders(
     new Response(getAppPageStatusText(options.specialError.statusCode), {
-      status: options.specialError.statusCode,
+      status: responseStatus,
     }),
     options.middlewareContext,
   );
@@ -488,9 +529,10 @@ export async function probeAppPageLayouts(
         // Layer 3: probe with isolated dynamic scope to detect per-layout
         // dynamic API usage (headers(), cookies(), connection(), etc.)
         try {
-          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(() =>
-            options.probeLayoutAt(layoutIndex),
-          );
+          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
+            const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
+            return outcome.completed ? outcome.result : null;
+          });
           const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
           const layoutDynamic = dynamicDetected || observationDynamic;
           layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
@@ -531,35 +573,64 @@ async function probeLayoutForErrors(
   options: ProbeAppPageLayoutsOptions,
   layoutIndex: number,
 ): Promise<Response | null> {
-  try {
-    const layoutResult = options.probeLayoutAt(layoutIndex);
-    if (isPromiseLike(layoutResult)) {
-      await layoutResult;
+  const outcome = await runWithConnectionProbe(async () => {
+    try {
+      const layoutResult = options.probeLayoutAt(layoutIndex);
+      if (isPromiseLike(layoutResult)) {
+        await layoutResult;
+      }
+    } catch (error) {
+      return options.onLayoutError(error, layoutIndex);
     }
-  } catch (error) {
-    return options.onLayoutError(error, layoutIndex);
-  }
-  return null;
+    return null;
+  });
+
+  return outcome.completed ? outcome.result : null;
 }
 
 export async function probeAppPageComponent(
   options: ProbeAppPageComponentOptions,
 ): Promise<Response | null> {
   return options.runWithSuppressedHookWarning(async () => {
-    try {
-      const pageResult = options.probePage();
-      if (isPromiseLike(pageResult)) {
-        if (options.awaitAsyncResult) {
-          await pageResult;
-        } else {
-          void Promise.resolve(pageResult).catch(() => {});
+    const outcome = await runWithConnectionProbe(async () => {
+      try {
+        const pageResult = options.probePage();
+        if (isPromiseLike(pageResult)) {
+          if (options.awaitAsyncResult) {
+            await pageResult;
+          } else {
+            void Promise.resolve(pageResult).catch(() => {});
+          }
         }
+      } catch (error) {
+        return options.onError(error);
       }
-    } catch (error) {
-      return options.onError(error);
-    }
 
-    return null;
+      return null;
+    });
+
+    return outcome.completed ? outcome.result : null;
+  });
+}
+
+export async function probeAppPageThrownError(
+  options: ProbeAppPageThrownErrorOptions,
+): Promise<unknown> {
+  return options.runWithSuppressedHookWarning(async () => {
+    const outcome = await runWithConnectionProbe(async () => {
+      try {
+        const pageResult = options.probePage();
+        if (isPromiseLike(pageResult)) {
+          await pageResult;
+        }
+      } catch (error) {
+        return { error, thrown: true } as const;
+      }
+
+      return { error: null, thrown: false } as const;
+    });
+
+    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
   });
 }
 

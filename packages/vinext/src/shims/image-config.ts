@@ -22,6 +22,12 @@ export type RemotePattern = {
   search?: string;
 };
 
+// Cache compiled glob regexes — bounded by the number of distinct configured
+// remotePatterns. Key uses \0 as a separator; \0 cannot appear in a valid glob
+// or separator character, so there are no collisions. Compiled regexes are
+// flagless, so sharing via .test() is safe.
+const globRegexCache = new Map<string, RegExp>();
+
 /**
  * Convert a glob pattern (with `*` and `**`) to a RegExp.
  *
@@ -36,6 +42,9 @@ export type RemotePattern = {
  * Literal characters are escaped for regex safety.
  */
 function globToRegex(pattern: string, separator: "." | "/"): RegExp {
+  const key = `${separator}\0${pattern}`;
+  const cached = globRegexCache.get(key);
+  if (cached !== undefined) return cached;
   // Split by ** first, then handle * within each part
   let regexStr = "^";
   const doubleStar = separator === "." ? ".+" : ".*";
@@ -57,7 +66,9 @@ function globToRegex(pattern: string, separator: "." | "/"): RegExp {
     }
   }
   regexStr += "$";
-  return new RegExp(regexStr);
+  const re = new RegExp(regexStr);
+  globRegexCache.set(key, re);
+  return re;
 }
 
 /**

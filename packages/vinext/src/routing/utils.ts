@@ -72,14 +72,93 @@ function routePrecedence(pattern: string): number {
 }
 
 /**
- * Sort comparator for routes — lower precedence score sorts first (higher priority).
- * Lexicographic tiebreaker on pattern for determinism.
+ * Sort routes by precedence — lower score sorts first (higher priority), with a
+ * lexicographic tiebreaker on the pattern for determinism. Sorts in place and
+ * returns the same array (mirrors `Array.prototype.sort`).
  *
- * Usage: routes.sort(compareRoutes)
+ * `routePrecedence` is a pure function of the pattern, so each pattern's score
+ * is computed exactly once up front (decorate-sort) instead of ~2·log n times
+ * by a comparator that re-parses on every comparison. The `localeCompare`
+ * tiebreaker already guarantees a total order, so the result is byte-identical
+ * to comparing precedence inline.
+ *
+ * Usage: sortRoutes(routes)
  */
-export function compareRoutes<T extends { pattern: string }>(a: T, b: T): number {
-  const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-  return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+export function sortRoutes<T extends { pattern: string }>(routes: T[]): T[] {
+  const scores = new Map<string, number>();
+  for (const route of routes) {
+    if (!scores.has(route.pattern)) {
+      scores.set(route.pattern, routePrecedence(route.pattern));
+    }
+  }
+  return routes.sort((a, b) => {
+    const diff = (scores.get(a.pattern) ?? 0) - (scores.get(b.pattern) ?? 0);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+  });
+}
+
+/**
+ * Single source of truth for hybrid App/Pages route ownership.
+ *
+ * Mirrors Next.js's DefaultRouteMatcherManager ordering: Pages providers
+ * are registered before App providers, then merged dynamic matchers sort
+ * together. Returns the router that should own a request/navigation to
+ * a URL that matched BOTH routers.
+ *
+ * Centralised so the server's request handling and the client's link /
+ * prefetch / programmatic-navigation paths all reach the same owner for
+ * the same (pages pattern, app pattern) pair. This intentionally implements
+ * Next.js's segment-tree ordering directly instead of vinext's broader
+ * `sortRoutes()` score heuristic. It only arbitrates two routes that already
+ * matched the same URL; each router's own trie ordering remains unchanged.
+ *
+ * Usage:
+ *   compareHybridRoutePatterns("/:slug", true, "/:slug", true)  // → "pages"
+ *   compareHybridRoutePatterns("/_sites/:slug*", true, "/:slug*", true)  // → "pages"
+ *   compareHybridRoutePatterns("/:path+", true, "/dashboard", false)  // → "app"
+ *   compareHybridRoutePatterns("/", false, "/", false)  // → "app"
+ */
+export function compareHybridRoutePatterns(
+  pagesPattern: string,
+  pagesIsDynamic: boolean,
+  appPattern: string,
+  appIsDynamic: boolean,
+): "app" | "pages" {
+  if (pagesPattern === appPattern) {
+    throw new Error(`Conflicting app and page routes found for "${pagesPattern}"`);
+  }
+
+  // Static-only paths: if Pages is static and App is also static, both have
+  // a literal route, but the App's catch-all is irrelevant — App still owns
+  // the literal hit (Next.js registers App providers after Pages but a
+  // static App segment always beats a static Pages segment when both match
+  // the same URL). If App is dynamic, Pages wins because Pages has the
+  // literal and App only has a catch-all.
+  if (!pagesIsDynamic) return appIsDynamic ? "pages" : "app";
+  // Pages is dynamic, App is static: App's literal always wins.
+  if (!appIsDynamic) return "app";
+  const pagesSegments = pagesPattern.split("/").filter(Boolean);
+  const appSegments = appPattern.split("/").filter(Boolean);
+  const segmentRank = (segment: string): number => {
+    if (!segment.startsWith(":")) return 0;
+    if (segment.endsWith("*")) return 3;
+    if (segment.endsWith("+")) return 2;
+    return 1;
+  };
+
+  for (let index = 0; index < Math.min(pagesSegments.length, appSegments.length); index++) {
+    const pagesRank = segmentRank(pagesSegments[index]);
+    const appRank = segmentRank(appSegments[index]);
+    if (pagesRank !== appRank) return pagesRank < appRank ? "pages" : "app";
+  }
+
+  if (pagesSegments.length !== appSegments.length) {
+    return pagesSegments.length < appSegments.length ? "pages" : "app";
+  }
+
+  // Matching dynamic routes with the same structural specificity retain
+  // provider order. Next.js registers Pages providers before App providers.
+  return "pages";
 }
 
 // Matches literal delimiter characters and their percent-encoded equivalents.

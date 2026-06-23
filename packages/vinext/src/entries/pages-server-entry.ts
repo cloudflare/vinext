@@ -72,23 +72,21 @@ export async function generateServerEntry(
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
   // own assets. Without this, `_app`-imported CSS is emitted by Vite but
   // never `<link>`ed from the rendered HTML — see LHF-5 cluster.
-  const appAssetPathJson =
-    appFilePath !== null ? JSON.stringify(normalizePathSeparators(appFilePath)) : "null";
+  const appAssetPathJson = appFilePath !== null ? JSON.stringify(appFilePath) : "null";
   const appImportCode =
     appFilePath !== null
-      ? `import { default as AppComponent } from ${JSON.stringify(normalizePathSeparators(appFilePath))};`
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
-      ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
       : `const DocumentComponent = null;`;
 
-  const errorAssetPathJson =
-    errorFilePath !== null ? JSON.stringify(normalizePathSeparators(errorFilePath)) : "null";
+  const errorAssetPathJson = errorFilePath !== null ? JSON.stringify(errorFilePath) : "null";
   const errorImportCode =
     errorFilePath !== null
-      ? `import * as ErrorPageModule from ${JSON.stringify(normalizePathSeparators(errorFilePath))};`
+      ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
       : `const ErrorPageModule = null;`;
 
   // Serialize i18n config for embedding in the server entry
@@ -116,6 +114,7 @@ export async function generateServerEntry(
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
     cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
+    htmlLimitedBots: nextConfig?.htmlLimitedBots,
     i18n: nextConfig?.i18n ?? null,
     // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
     // (the default), page scripts are emitted with `defer` in <head>. See
@@ -125,6 +124,7 @@ export async function generateServerEntry(
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
+      qualities: nextConfig?.images?.qualities,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
@@ -171,43 +171,21 @@ if (typeof _instrumentation.onRequestError === "function") {
   const middlewareExportCode = middlewarePath
     ? `
 export async function runMiddleware(request, ctx, options) {
-  // Auto-detect /_next/data/<buildId>/<page>.json requests so user-written
-  // worker entries don't need to know about the data endpoint protocol.
-  // Mismatched buildId → JSON 404 short-circuit. Matched → middleware sees
-  // the normalized page path via the request URL, and the worker sees the
-  // normalized URL via result.rewriteUrl (if middleware didn't already
-  // rewrite to something else).
-  const __dataNorm = __normalizePagesDataRequest(request, buildId);
-  if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
-  }
-  const __result = await __runGeneratedMiddleware({
+  return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
+    filePath: ${JSON.stringify(normalizePathSeparators(middlewarePath))},
     i18nConfig,
-    isDataRequest: options?.isDataRequest === true || __dataNorm.isDataReq,
+    isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
-    request: __dataNorm.request,
+    request,
     trailingSlash: vinextConfig.trailingSlash,
   });
-  if (__dataNorm.isDataReq && __result.continue && !__result.rewriteUrl && !__result.redirectUrl) {
-    return { ...__result, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
-  }
-  return __result;
 }
 `
     : `
 export async function runMiddleware(request) {
-  // Even without user middleware, the data-endpoint URL must be normalized so
-  // the worker pipeline sees the page path. Mismatched buildId → JSON 404.
-  const __dataNorm = __normalizePagesDataRequest(request, buildId);
-  if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
-  }
-  if (__dataNorm.isDataReq) {
-    return { continue: true, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
-  }
   return { continue: true };
 }
 `;
@@ -220,8 +198,9 @@ import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
-import { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
-import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
+import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
+import { _runWithCacheState } from "vinext/shims/cache-request-state";
+import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
@@ -256,6 +235,9 @@ const i18nConfig = ${i18nConfigJson};
 // match _next/data requests against the embedded buildId without needing
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
+export function normalizeDataRequest(request) {
+  return __normalizePagesDataRequest(request, buildId);
+}
 const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
@@ -344,6 +326,20 @@ export function matchPageRoute(url, request) {
   return matchRoute(routeUrl, pageRoutes);
 }
 
+export function matchApiRoute(url, request) {
+  const routeUrl = i18nConfig && request
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      ).url
+    : url;
+  return matchRoute(routeUrl, apiRoutes);
+}
+
 // ── Pages render orchestrator — delegates to server/pages-page-handler.ts ──
 //
 // All next/*-derived values are passed as closures so the handler module
@@ -356,8 +352,10 @@ const _renderPage = __createPagesPageHandler({
   i18nConfig,
   vinextConfig: {
     basePath: vinextConfig.basePath,
+    assetPrefix: vinextConfig.assetPrefix,
     trailingSlash: vinextConfig.trailingSlash,
     expireTime: vinextConfig.expireTime,
+    htmlLimitedBots: vinextConfig.htmlLimitedBots,
     clientTraceMetadata: vinextConfig.clientTraceMetadata,
     disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
   },
@@ -404,18 +402,36 @@ const _renderPage = __createPagesPageHandler({
   renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
   safeJsonStringify,
   sanitizeDestination: sanitizeDestinationLocal,
-  createPageElement(PageComponent, AppComponent, pageProps) {
+  createPageElement(PageComponent, AppComponent, props) {
+    const rawPageProps = props?.pageProps;
+    const pageProps = rawPageProps && typeof rawPageProps === "object"
+      ? props.pageProps
+      : {};
     return AppComponent
-      ? React.createElement(AppComponent, { Component: PageComponent, pageProps })
+      ? React.createElement(AppComponent, {
+          ...props,
+          Component: PageComponent,
+          pageProps: rawPageProps,
+          router: Router,
+        })
       : React.createElement(PageComponent, pageProps);
   },
-  enhancePageElement(PageComponent, AppComponent, pageProps, opts) {
+  enhancePageElement(PageComponent, AppComponent, props, opts) {
+    const rawPageProps = props?.pageProps;
+    const pageProps = rawPageProps && typeof rawPageProps === "object"
+      ? props.pageProps
+      : {};
     let FinalApp = AppComponent;
     let FinalComp = PageComponent;
     if (opts && typeof opts.enhanceApp === "function" && FinalApp) FinalApp = opts.enhanceApp(FinalApp);
     if (opts && typeof opts.enhanceComponent === "function") FinalComp = opts.enhanceComponent(FinalComp);
     return FinalApp
-      ? React.createElement(FinalApp, { Component: FinalComp, pageProps })
+      ? React.createElement(FinalApp, {
+          ...props,
+          Component: FinalComp,
+          pageProps: rawPageProps,
+          router: Router,
+        })
       : React.createElement(FinalComp, pageProps);
   },
   AppComponent,
@@ -436,6 +452,7 @@ export async function handleApiRoute(request, url, ctx) {
   return __handlePagesApiRoute({
     ctx,
     match,
+    nextConfig: vinextConfig,
     request,
     url,
     reportRequestError(error, routePattern) {

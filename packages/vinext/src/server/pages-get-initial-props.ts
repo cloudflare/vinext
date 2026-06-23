@@ -2,13 +2,13 @@ type PagesGetInitialPropsContext = {
   req?: unknown;
   res?: unknown;
   err?: unknown;
-  pathname: string;
-  query: Record<string, unknown>;
-  asPath: string;
+  pathname?: string;
+  query?: Record<string, unknown>;
+  asPath?: string;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
-};
+} & Record<string, unknown>;
 
 type PagesGetInitialProps = (context: PagesGetInitialPropsContext) => unknown;
 
@@ -91,4 +91,91 @@ export async function loadPagesGetInitialProps(
   }
 
   return result;
+}
+
+/**
+ * Decision returned by {@link loadDevAppInitialProps}.
+ *
+ * - `skip`: the custom `App` has no `getInitialProps`; the caller renders with
+ *   its existing props unchanged.
+ * - `response-sent`: `_app.getInitialProps` ended the response itself (wrote
+ *   headers / body); the caller must stop and not render.
+ * - `render`: the caller should render with the returned `pageProps` /
+ *   `renderProps`.
+ */
+export type DevAppInitialPropsResult =
+  | { kind: "skip" }
+  | { kind: "response-sent" }
+  | {
+      kind: "render";
+      pageProps: Record<string, unknown>;
+      renderProps: Record<string, unknown> & { pageProps: unknown };
+    };
+
+export type DevAppInitialPropsContext = {
+  appComponent: unknown;
+  /**
+   * Builds the `AppTree` element passed to `getInitialProps`. Injected so this
+   * module stays free of React; the dev SSR handler supplies the real
+   * `React.createElement` closure.
+   */
+  appTree: (appTreeProps: Record<string, unknown>) => unknown;
+  component: unknown;
+  req: unknown;
+  res: unknown;
+  pathname: string;
+  query: Record<string, unknown>;
+  asPath: string;
+  locale?: string;
+  locales?: string[];
+  defaultLocale?: string;
+};
+
+/**
+ * Run the custom `App`'s `getInitialProps` for the dev SSR render path and
+ * return a decision the caller applies.
+ *
+ * This is the dev-server counterpart to the production page-data resolver's
+ * app-initial-props loading. It is invoked lazily — only when a request is
+ * actually going to render (cache miss / on-demand revalidation), never on an
+ * ISR cache HIT/STALE that serves cached HTML verbatim — so userland `App`
+ * data code does not run on the cache hot path.
+ */
+export async function loadDevAppInitialProps(
+  ctx: DevAppInitialPropsContext,
+): Promise<DevAppInitialPropsResult> {
+  if (!hasPagesGetInitialProps(ctx.appComponent)) {
+    return { kind: "skip" };
+  }
+
+  const initialProps = await loadPagesGetInitialProps(ctx.appComponent, {
+    AppTree: ctx.appTree,
+    Component: ctx.component,
+    router: { pathname: ctx.pathname, query: ctx.query, asPath: ctx.asPath },
+    ctx: {
+      req: ctx.req,
+      res: ctx.res,
+      pathname: ctx.pathname,
+      query: ctx.query,
+      asPath: ctx.asPath,
+      locale: ctx.locale,
+      locales: ctx.locales,
+      defaultLocale: ctx.defaultLocale,
+    },
+  });
+
+  if (isResponseSent(ctx.res)) {
+    return { kind: "response-sent" };
+  }
+
+  // Post-guard, loadPagesGetInitialProps always resolves to an object (it only
+  // returns null when getInitialProps is absent, excluded above). Preserve the
+  // raw `pageProps` value in the App envelope; derive an object-safe projection
+  // only for merging data-function props and direct page rendering.
+  const initialPageProps = isPropsObject(initialProps) ? initialProps.pageProps : undefined;
+  const pageProps = isPropsObject(initialPageProps) ? initialPageProps : {};
+  const renderProps = isPropsObject(initialProps)
+    ? { ...initialProps, pageProps: initialPageProps }
+    : { pageProps: initialPageProps };
+  return { kind: "render", pageProps, renderProps };
 }

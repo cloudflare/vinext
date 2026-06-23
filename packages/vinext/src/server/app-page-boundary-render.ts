@@ -1,7 +1,12 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
 import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
 import DefaultGlobalError from "vinext/shims/default-global-error";
-import { ErrorBoundary, GlobalErrorBoundary } from "vinext/shims/error-boundary";
+import {
+  ErrorBoundary,
+  GlobalErrorBoundary,
+  SerializedErrorBoundary,
+  type SerializedBoundaryError,
+} from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
@@ -9,7 +14,7 @@ import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead } from "./app-page-head.js";
+import { resolveAppPageHead, type ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -23,7 +28,8 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
+import { createAppPageLayoutEntries, createAppPageSourcePage } from "./app-page-route-wiring.js";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
@@ -48,6 +54,7 @@ type AppPageBoundaryRscPayloadOptions<TModule extends AppPageModule = AppPageMod
   layoutModules: readonly (TModule | null | undefined)[];
   pathname: string;
   route?: AppPageBoundaryRoute<TModule> | null;
+  sourcePageSegments?: readonly string[] | null;
 };
 
 type AppPageBoundaryLayoutEntry = {
@@ -70,6 +77,7 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
@@ -86,6 +94,8 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   metadataRoutes: MetadataFileRoute[];
   /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
   basePath?: string;
+  /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
+  trailingSlash?: boolean;
   renderToReadableStream: (
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
@@ -98,6 +108,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   ) => string[];
   rootLayouts: readonly (TModule | null | undefined)[];
   scriptNonce?: string;
+  sourcePageSegments?: readonly string[] | null;
 };
 
 type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -122,6 +133,7 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
 
 type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
   error: unknown;
+  errorOrigin?: "rsc" | "ssr";
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;
   sanitizeErrorForClient: (error: Error) => Error;
@@ -246,6 +258,7 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
 ): AppElements {
   const routeId = AppElementsWire.encodeRouteId(options.pathname, null);
   const layoutEntries = createAppPageBoundaryLayoutEntries(options.route, options.layoutModules);
+  const sourcePageSegments = options.sourcePageSegments ?? options.route?.routeSegments;
 
   return {
     ...AppElementsWire.createMetadataEntries({
@@ -253,6 +266,7 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
       layoutIds: layoutEntries.map((entry) => entry.id),
       rootLayoutTreePath: layoutEntries[0]?.treePath ?? null,
       routeId,
+      sourcePage: sourcePageSegments ? createAppPageSourcePage(sourcePageSegments) : null,
     }),
     [routeId]: options.element,
   };
@@ -276,6 +290,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     layoutModules: options.layoutModules,
     pathname,
     route: options.route,
+    sourcePageSegments: options.sourcePageSegments,
   });
 
   return renderAppPageBoundaryResponse({
@@ -343,6 +358,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const pathname = new URL(options.requestUrl).pathname;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
+    applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules,
     layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
@@ -361,7 +377,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     createElement("meta", { key: "robots", name: "robots", content: "noindex" }),
   ];
   if (metadata) {
-    headElements.push(createElement(MetadataHead, { key: "metadata", metadata, pathname }));
+    headElements.push(
+      createElement(MetadataHead, {
+        key: "metadata",
+        metadata,
+        pathname,
+        trailingSlash: options.trailingSlash,
+      }),
+    );
   }
   headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
 
@@ -411,7 +434,8 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   const rawError =
     options.error instanceof Error ? options.error : new Error(String(options.error));
   rewriteClientHookError(rawError);
-  const errorObject = options.sanitizeErrorForClient(rawError);
+  const errorObject =
+    options.errorOrigin === "ssr" ? rawError : options.sanitizeErrorForClient(rawError);
   const matchedParams = options.matchedParams ?? options.route?.params ?? {};
   const layoutModules = options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
@@ -420,6 +444,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   if (!errorBoundary.isGlobalError) {
     try {
       const { metadata, viewport } = await resolveAppPageHead({
+        applyFileBasedMetadata: options.applyFileBasedMetadata,
         basePath: options.basePath ?? "",
         fallbackOnFileMetadataError: true,
         layoutModules,
@@ -430,7 +455,14 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
         routeSegments: options.route?.routeSegments,
       });
       if (metadata) {
-        headElements.push(createElement(MetadataHead, { key: "metadata", metadata, pathname }));
+        headElements.push(
+          createElement(MetadataHead, {
+            key: "metadata",
+            metadata,
+            pathname,
+            trailingSlash: options.trailingSlash,
+          }),
+        );
       }
       headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
     } catch (error) {
@@ -452,7 +484,19 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   // this extra wrapping. Mirrors Next.js's outer
   // `RootErrorBoundary errorComponent={DefaultGlobalError}`.
   const buildElement = (BoundaryComponent: AppPageComponent): ReactNode => {
-    const boundaryElement = createElement(BoundaryComponent, { error: errorObject });
+    const serializedError = {
+      digest: "digest" in errorObject ? String(errorObject.digest) : undefined,
+      message: errorObject.message,
+      name: errorObject.name,
+      stack: process.env.NODE_ENV !== "production" ? errorObject.stack : undefined,
+    } satisfies SerializedBoundaryError;
+    const boundaryElement =
+      errorBoundary.isGlobalError && BoundaryComponent !== DEFAULT_GLOBAL_ERROR_COMPONENT
+        ? createElement(SerializedErrorBoundary, {
+            error: serializedError,
+            fallback: BoundaryComponent,
+          })
+        : createElement(BoundaryComponent, { error: errorObject });
     return wrapRenderedBoundaryElement({
       element: createElement(
         Fragment,
@@ -479,8 +523,8 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     });
   };
 
-  const renderWith = (BoundaryComponent: AppPageComponent): Promise<Response> =>
-    renderAppPageBoundaryElementResponse({
+  const renderWith = async (BoundaryComponent: AppPageComponent): Promise<Response> => {
+    const response = await renderAppPageBoundaryElementResponse({
       ...options,
       element: buildElement(BoundaryComponent),
       initialDevServerError: rawError,
@@ -488,8 +532,16 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       navigationParams: matchedParams,
       route: options.route,
       routePattern: options.route?.pattern,
-      status: 200,
+      status: errorBoundary.isGlobalError ? 500 : 200,
     });
+    if (errorBoundary.isGlobalError) {
+      response.headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+      response.headers.delete("CDN-Cache-Control");
+      response.headers.delete("Cloudflare-CDN-Cache-Control");
+      response.headers.delete("Cache-Tag");
+    }
+    return response;
+  };
 
   try {
     return await renderWith(errorBoundary.component);

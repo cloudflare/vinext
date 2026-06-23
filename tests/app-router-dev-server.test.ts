@@ -1,4 +1,5 @@
 import http from "node:http";
+import fsp from "node:fs/promises";
 import { type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
@@ -84,6 +85,17 @@ describe("App Router integration", () => {
     expect(html).toContain("<html");
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("Server Component");
+  });
+
+  it("loads the current source App Router request handler in source-checkout tests", async () => {
+    const response = await fetch(`${baseUrl}/`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+
+    const rscModuleIds = server.environments.rsc.moduleGraph.idToModuleMap.keys();
+    const handlerIds = [...rscModuleIds].filter((id) => id.includes("app-rsc-handler"));
+    expect(handlerIds.some((id) => id.includes("/src/server/app-rsc-handler.ts"))).toBe(true);
+    expect(handlerIds.some((id) => id.includes("/dist/server/app-rsc-handler.js"))).toBe(false);
   });
 
   it("renders the about page", async () => {
@@ -495,6 +507,20 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="slot-collision-child-default"');
     expect(html).toContain("Child modal default");
     expect(html).toContain('data-testid="slot-collision-page"');
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  it("renders a sibling parallel slot when children are inside a route group", async () => {
+    const res = await fetch(`${baseUrl}/parallel-route-group-depth`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="parallel-route-group-depth-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-slot-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-slot-page"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-children-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-children-page"');
   });
 
   it("parallel slots do not affect URL routing", async () => {
@@ -1151,7 +1177,7 @@ describe("App Router integration", () => {
   // instead of silently returning a fallback value.
   it("errors when client hook is used in a Server Component without 'use client' (#834)", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/missing-use-client-test");
-    expect(res.status).toBe(200); // error boundary renders, not a 500
+    expect(res.status).toBe(500);
     // The error message should be clear and actionable
     expect(html).toContain("usePathname()");
     expect(html).toContain("Client Components");
@@ -1162,7 +1188,7 @@ describe("App Router integration", () => {
 
   it("errors when React client hook is used in a Server Component without 'use client' (#834)", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/missing-use-client-react-hook");
-    expect(res.status).toBe(200); // error boundary renders, not a 500
+    expect(res.status).toBe(500);
     // The error message should be clear and actionable
     expect(html).toContain("useState()");
     expect(html).toContain("Client Components");
@@ -1852,7 +1878,7 @@ describe("App Router integration", () => {
 
   it("applies dynamic = 'error' as only-cache fetch policy", async () => {
     const res = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-fetch`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(await res.text()).toContain("only-cache");
   });
 
@@ -1991,6 +2017,42 @@ describe("App Router integration", () => {
     expect(clientInclude).toContain("react-dom/client");
   });
 
+  it("drops unused NODE_ENV branches from optimized server dependencies", async () => {
+    expect(server.config.environments.rsc?.keepProcessEnv).toBe(true);
+    expect(server.config.environments.ssr?.keepProcessEnv).toBe(true);
+
+    const response = await fetch(`${baseUrl}/`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+
+    for (const envName of ["rsc", "ssr"]) {
+      const environment = server.environments[envName];
+      await environment.waitForRequestsIdle();
+
+      const depInfos = environment.depsOptimizer?.metadata.depInfoList ?? [];
+      await Promise.all(depInfos.flatMap((dep) => (dep.processing ? [dep.processing] : [])));
+      const files = [...new Set(depInfos.map((dep) => dep.file))];
+      expect(files.length, `${envName} optimized dependencies`).toBeGreaterThan(0);
+
+      const optimizedCode = (
+        await Promise.all(files.map((file) => fsp.readFile(file, "utf8")))
+      ).join("\n");
+      expect(optimizedCode, `${envName} NODE_ENV references`).not.toContain("process.env.NODE_ENV");
+      expect(optimizedCode, `${envName} production branches`).not.toMatch(
+        /react(?:-dom|-server-dom-webpack)?[^"\n]*\.production\.js/,
+      );
+    }
+  });
+
+  it("includes the static RSC renderer in startup dependency optimization", async () => {
+    const rscEnvironment = server.environments.rsc;
+    await rscEnvironment.waitForRequestsIdle();
+
+    const optimizedDependencies =
+      rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
+    expect(optimizedDependencies).toContain("react-server-dom-webpack/static.edge");
+  });
+
   // ── CSRF protection for server actions ───────────────────────────────
   it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
@@ -2071,7 +2133,7 @@ describe("App Router integration", () => {
     expect(await res.text()).toBe("Server action not found.");
   });
 
-  it("rejects cyclic multipart server action payloads before decodeReply", async () => {
+  it("returns action-not-found before reading cyclic multipart payloads for stale ids", async () => {
     const body = new FormData();
     body.set("0", '["$Q0"]');
 
@@ -2086,8 +2148,9 @@ describe("App Router integration", () => {
       signal: AbortSignal.timeout(5_000),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.text()).toBe("Invalid server action payload");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
   });
 
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {

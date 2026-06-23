@@ -1,6 +1,11 @@
 import "./server-globals.js";
 import type { Route } from "../routing/pages-router.js";
-import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import {
+  mergeRouteParamsIntoQuery,
+  parseQueryString,
+  urlQueryToSearchParams,
+} from "../utils/query.js";
 import {
   createPagesReqRes,
   parsePagesApiBody,
@@ -11,6 +16,7 @@ import {
 } from "./pages-node-compat.js";
 import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
+import { cloneRequestWithUrl } from "./request-pipeline.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
@@ -24,21 +30,29 @@ type PagesApiRouteConfig = {
    * `bodyParser: false` is critical for webhook handlers (Stripe, GitHub,
    * Slack, etc.) that need to read the raw bytes to verify an HMAC
    * signature. With it set, `req.body` is left undefined and the raw stream
-   * is exposed on `req.body` as a Web `ReadableStream<Uint8Array>` so user
-   * code can consume it.
+   * remains available through the Node-readable request object.
    *
    * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
    */
   api?: {
     bodyParser?: boolean | { sizeLimit?: string | number };
     responseLimit?: boolean | string | number;
+    /**
+     * `externalResolver: true` declares that the response is sent by an
+     * external resolver (e.g. express/connect proxy middleware) that may
+     * complete after the handler's promise settles. Next.js uses it to
+     * suppress the "API resolved without sending a response" dev warning;
+     * vinext additionally uses it to suppress the auto-`end()` safety net,
+     * which would otherwise resolve an empty response before the external
+     * resolver writes.
+     *
+     * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
+     */
+    externalResolver?: boolean;
   };
 };
 
-type PagesNodeApiRouteHandler = (
-  req: PagesReqResRequest,
-  res: PagesReqResResponse,
-) => void | Promise<void>;
+type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesReqResResponse) => unknown;
 
 type PagesEdgeApiRouteHandler = (request: Request) => Response | Promise<Response>;
 
@@ -82,10 +96,24 @@ type HandlePagesApiRouteOptions = {
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
   url: string;
+  nextConfig?: {
+    basePath?: string;
+    i18n?: NextI18nConfig | null;
+    trailingSlash?: boolean;
+  };
 };
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
   return mergeRouteParamsIntoQuery(parseQueryString(url), params);
+}
+
+function createEdgeApiRequest(request: Request, url: string, params: PagesRequestQuery): Request {
+  const resolvedUrl = new URL(request.url);
+  resolvedUrl.search = urlQueryToSearchParams(buildPagesApiQuery(url, params)).toString();
+  const resolvedUrlString = resolvedUrl.toString();
+  return resolvedUrlString === request.url
+    ? request
+    : cloneRequestWithUrl(request, resolvedUrlString);
 }
 
 function isEdgeApiRouteModule(
@@ -119,7 +147,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       // Next.js wraps the incoming Request in a NextRequest before invoking
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
-      const nextRequest = new NextRequest(options.request);
+      const nextRequest = new NextRequest(
+        createEdgeApiRequest(options.request, options.url, params),
+        options.nextConfig
+          ? {
+              nextConfig: {
+                basePath: options.nextConfig.basePath,
+                i18n: options.nextConfig.i18n ?? undefined,
+                trailingSlash: options.nextConfig.trailingSlash,
+              },
+            }
+          : undefined,
+      );
       const response = await route.module.default(nextRequest);
       if (response instanceof Response) {
         return response;
@@ -139,9 +178,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // Honour `export const config = { api: { bodyParser: ... } }` on the
     // route module. When the handler opts out (`bodyParser: false`) we must
     // not consume the stream — `req.body` stays `undefined` and the raw
-    // bytes are exposed via the async-iterator on `req` itself, matching
-    // Next.js's Node `IncomingMessage` contract. User code (e.g. a Stripe/
-    // GitHub webhook) drains them with `for await (const chunk of req)`.
+    // bytes are exposed via the Node-readable `req` itself, matching Next.js's
+    // `IncomingMessage` contract. User code can drain them with
+    // `for await (const chunk of req)` or stream them with `req.pipe(...)`.
     // See issue #1479.
     const bodyParserConfig = resolveBodyParserConfig(route.module.config);
 
@@ -156,8 +195,30 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       url: options.url,
     });
 
+    // Track whether `res` has had a pipe destination attached. Next.js skips
+    // auto-ending when a stream is being piped (matching the Node.js "pipe"
+    // event on ServerResponse). The "pipe" event is the canonical stream
+    // signal; the handler return value is not — chainable helpers like
+    // `return res.status(202)` return `this` without implying streaming.
+    let resWasPiped = false;
+    res.once("pipe", () => {
+      resWasPiped = true;
+    });
+
+    // Mirrors apiResolver: `config.api?.externalResolver || false`. Next.js
+    // never auto-ends — when this flag is set it only suppresses the dev
+    // warning and the response is delivered whenever the external resolver
+    // (e.g. proxy middleware that attaches its pipe asynchronously) sends it.
+    const externalResolver = route.module.config?.api?.externalResolver || false;
+
     await route.module.default(req, res);
-    res.end();
+    // Auto-end if no stream is in progress. Without this guard a handler
+    // that forgets to call res.end() would leave the request hanging.
+    // Skipped for `externalResolver: true` routes, which legitimately
+    // respond after the handler settles.
+    if (!externalResolver && !resWasPiped && !res.headersSent) {
+      res.end();
+    }
     return await responsePromise;
   } catch (error) {
     if (error instanceof PagesApiBodyParseError) {

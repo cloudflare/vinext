@@ -48,9 +48,9 @@ let fakeOgDistDir: string;
 
 beforeAll(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "og-font-patch-test-"));
-  fakeOgDistDir = path.join(tmpDir, "node_modules/@vercel/og/dist");
+  fakeOgDistDir = path.posix.join(tmpDir, "node_modules/@vercel/og/dist");
   await fsp.mkdir(fakeOgDistDir, { recursive: true });
-  await fsp.writeFile(path.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
+  await fsp.writeFile(path.posix.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
 });
 
 afterAll(async () => {
@@ -91,7 +91,7 @@ describe("vinext:og-font-patch plugin", () => {
       const result = transform.call(
         plugin,
         fakeEdgeEntry(FAKE_YOGA_B64),
-        path.join(fakeOgDistDir, "index.edge.js"),
+        path.posix.join(fakeOgDistDir, "index.edge.js"),
       );
       if (!result) throw new Error("Expected transform to produce output, got null");
       code = result.code;
@@ -163,14 +163,18 @@ describe("vinext:og-font-patch plugin", () => {
   // conflicting with the shared transform above.
 
   it("writes yoga.wasm to disk at transform time", () => {
-    const writeDistDir = path.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
+    const writeDistDir = path.posix.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
     fs.mkdirSync(writeDistDir, { recursive: true });
 
     const plugin = createOgFontPatchPlugin();
     const transform = unwrapHook(plugin.transform);
-    transform.call(plugin, fakeEdgeEntry(FAKE_YOGA_B64), path.join(writeDistDir, "index.edge.js"));
+    transform.call(
+      plugin,
+      fakeEdgeEntry(FAKE_YOGA_B64),
+      path.posix.join(writeDistDir, "index.edge.js"),
+    );
 
-    const yogaPath = path.join(writeDistDir, "yoga.wasm");
+    const yogaPath = path.posix.join(writeDistDir, "yoga.wasm");
     expect(fs.existsSync(yogaPath)).toBe(true);
     expect(fs.readFileSync(yogaPath)).toEqual(Buffer.from(FAKE_YOGA_B64, "base64"));
   });

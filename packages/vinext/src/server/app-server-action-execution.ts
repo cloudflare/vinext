@@ -1,6 +1,10 @@
-import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "vinext/shims/cache";
+import {
+  getAndClearActionRevalidationKind,
+  type ActionRevalidationKind,
+} from "vinext/shims/cache-request-state";
 import {
   headersContextFromRequest,
+  isDraftModeRequest,
   setHeadersContext,
   type HeadersAccessPhase,
 } from "vinext/shims/headers";
@@ -8,6 +12,7 @@ import {
   type FetchCacheMode,
   setCurrentFetchCacheMode,
   setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
 import { isExternalUrl } from "../config/config-matchers.js";
@@ -27,8 +32,9 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
+import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
-import { buildPageCacheTags } from "./implicit-tags.js";
+import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import {
@@ -48,6 +54,7 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -90,6 +97,18 @@ type AppServerActionRoute = {
   pattern: string;
   routeHandler?: unknown;
   routeSegments?: readonly string[];
+  params?: readonly string[] | null;
+  slots?: Readonly<
+    Record<
+      string,
+      {
+        default?: { default?: unknown } | null;
+        page?: { default?: unknown } | null;
+        slotPatternParts?: readonly string[] | null;
+        slotParamNames?: readonly string[] | null;
+      }
+    >
+  > | null;
 };
 
 /**
@@ -134,6 +153,7 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
 
 type AppServerActionIntercept<TPage = unknown> = {
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   slotId?: string | null;
   slotKey: string;
@@ -150,6 +170,8 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   route: TRoute;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  observeMetadataSearchParamsAccess?: boolean;
+  observePageSearchParamsAccess?: boolean;
 };
 
 type AppServerActionRscModel<TElement> = {
@@ -229,6 +251,7 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  draftModeSecret: string;
   /**
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
@@ -258,6 +281,7 @@ export type HandleServerActionRscRequestOptions<
   ) => BodyInit | null | Promise<BodyInit | null>;
   reportRequestError: AppServerActionErrorReporter;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   request: Request;
   sanitizeErrorForClient: (error: unknown) => unknown;
@@ -270,6 +294,27 @@ export type HandleServerActionRscRequestOptions<
   }) => void;
   toInterceptOpts: (intercept: AppServerActionIntercept<TPage>) => TInterceptOpts;
 };
+
+function prepareActionPageRerenderContext(options: {
+  draftModeSecret: string;
+  dynamicConfig: string | null | undefined;
+  request: Request;
+  routePattern: string;
+  searchParams: URLSearchParams;
+}): URLSearchParams {
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    setHeadersContext(
+      createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: options.dynamicConfig,
+        routeKind: "page",
+        routePattern: options.routePattern,
+      }),
+    );
+  }
+  return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
 
 /**
  * Matches Next.js' server action argument cap to prevent stack overflow in
@@ -303,6 +348,11 @@ function resolveActionRevalidationKind(hasModifiedCookies: boolean): ActionReval
   // this matches the max-precedence semantics in markActionRevalidation.
   if (hasModifiedCookies) return ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC;
   return revalidationKind;
+}
+
+function clearRejectedActionSideEffects(getAndClearPendingCookies: () => string[]): void {
+  getAndClearPendingCookies();
+  getAndClearActionRevalidationKind();
 }
 
 function cloneActionRedirectHeaders(requestHeaders: Headers): Headers {
@@ -504,7 +554,7 @@ export async function readActionFormDataWithLimit(
 
     totalSize += result.value.byteLength;
     if (totalSize > maxBytes) {
-      await reader.cancel();
+      void reader.cancel();
       throw new Error("Request body too large");
     }
     chunks.push(result.value);
@@ -580,7 +630,7 @@ export function applyActionRedirectBasePath(url: string, basePath: string): stri
 }
 
 function buildServerActionPageTags(route: AppServerActionRoute, pathname: string): string[] {
-  return buildPageCacheTags(pathname, [], [...(route.routeSegments ?? [])], "page");
+  return buildAppPageTags(pathname, [], route.routeSegments ?? []);
 }
 
 function resolveInternalActionRedirectTarget(
@@ -776,6 +826,7 @@ export async function handleProgressiveServerActionRequest(
 
     const payloadResponse = await validateServerActionPayload(body);
     if (payloadResponse) {
+      clearRejectedActionSideEffects(options.getAndClearPendingCookies);
       options.clearRequestContext();
       return payloadResponse;
     }
@@ -835,7 +886,13 @@ export async function handleProgressiveServerActionRequest(
       // flushes `requestStore.mutableCookies` onto the response before SSR
       // streaming begins. Without this, no-JS server-action form POSTs lose
       // cookies/headers — see issue #1483.
-      const actionPendingCookies = options.getAndClearPendingCookies();
+      //
+      // Dedupe by name (last value wins) before returning, matching the
+      // redirect branch below and the RSC paths. Next.js' mutable cookies are
+      // a name-keyed `ResponseCookies` map, so two `cookies().set("x", ...)`
+      // calls collapse to a single Set-Cookie; without this, the no-JS
+      // non-redirect path would emit one Set-Cookie per call — see issue #1976.
+      const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
       const revalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -1018,10 +1075,38 @@ export async function handleServerActionRscRequest<
 
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
+    if (options.request.body) {
+      void options.request.body.cancel().catch(() => {});
+    }
     return renderFetchActionBodyExceededResponse(options);
   }
 
   try {
+    let action: AppServerActionFunction | undefined;
+    if (options.contentType.startsWith("multipart/form-data")) {
+      let loadedAction: unknown;
+      try {
+        loadedAction = await options.loadServerAction(options.actionId);
+      } catch (error) {
+        if (isServerActionNotFoundError(error, options.actionId)) {
+          return createActionNotFoundResponse(options.actionId, {
+            clearRequestContext: options.clearRequestContext,
+            getAndClearPendingCookies: options.getAndClearPendingCookies,
+          });
+        }
+
+        throw error;
+      }
+
+      if (!isAppServerActionFunction(loadedAction)) {
+        return createActionNotFoundResponse(options.actionId, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
+      action = loadedAction;
+    }
+
     let body: string | FormData;
     try {
       body = options.contentType.startsWith("multipart/form-data")
@@ -1036,29 +1121,33 @@ export async function handleServerActionRscRequest<
 
     const payloadResponse = await validateServerActionPayload(body);
     if (payloadResponse) {
+      clearRejectedActionSideEffects(options.getAndClearPendingCookies);
       options.clearRequestContext();
       return payloadResponse;
     }
 
-    let action: unknown;
-    try {
-      action = await options.loadServerAction(options.actionId);
-    } catch (error) {
-      if (isServerActionNotFoundError(error, options.actionId)) {
+    if (action === undefined) {
+      let loadedAction: unknown;
+      try {
+        loadedAction = await options.loadServerAction(options.actionId);
+      } catch (error) {
+        if (isServerActionNotFoundError(error, options.actionId)) {
+          return createActionNotFoundResponse(options.actionId, {
+            clearRequestContext: options.clearRequestContext,
+            getAndClearPendingCookies: options.getAndClearPendingCookies,
+          });
+        }
+
+        throw error;
+      }
+
+      if (!isAppServerActionFunction(loadedAction)) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
           getAndClearPendingCookies: options.getAndClearPendingCookies,
         });
       }
-
-      throw error;
-    }
-
-    if (!isAppServerActionFunction(action)) {
-      return createActionNotFoundResponse(options.actionId, {
-        clearRequestContext: options.clearRequestContext,
-        getAndClearPendingCookies: options.getAndClearPendingCookies,
-      });
+      action = loadedAction;
     }
 
     const temporaryReferences = options.createTemporaryReferenceSet();
@@ -1160,12 +1249,27 @@ export async function handleServerActionRscRequest<
         url: redirectTarget,
       });
       setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
+      const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: redirectDynamicConfig,
+        request: redirectRenderRequest,
+        routePattern: targetMatch.route.pattern,
+        searchParams: redirectTarget.searchParams,
+      });
+      const redirectNavigationParams = resolveAppPageNavigationParams(
+        targetMatch.route,
+        targetMatch.params,
+        targetPathname,
+        null,
+      );
       options.setNavigationContext({
         pathname: targetPathname,
-        searchParams: redirectTarget.searchParams,
-        params: targetMatch.params,
+        searchParams: redirectSearchParams,
+        params: redirectNavigationParams,
       });
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
+      setCurrentForceDynamicFetchDefault(redirectDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
       const element = options.buildPageElement({
         cleanPathname: targetPathname,
@@ -1175,8 +1279,10 @@ export async function handleServerActionRscRequest<
         params: targetMatch.params,
         request: redirectRenderRequest,
         route: targetMatch.route,
-        searchParams: redirectTarget.searchParams,
+        searchParams: redirectSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
       });
       const onRenderError = options.createRscOnErrorHandler(
         redirectRenderRequest,
@@ -1270,16 +1376,39 @@ export async function handleServerActionRscRequest<
         toInterceptOpts: options.toInterceptOpts,
       });
 
-      options.setNavigationContext({
-        pathname: options.cleanPathname,
-        searchParams: options.searchParams,
-        params: actionRerenderTarget.navigationParams,
-      });
+      // Use the full navigationParams (not narrowed params) as the merge base so
+      // interception-specific extras from a source-route intercept survive the
+      // slot param merge — mirroring the dispatch ISR path in app-page-dispatch.ts.
+      // The `as` cast is safe because TInterceptOpts is always produced by toInterceptOpts
+      // in app-rsc-entry.ts with the same structural shape. Tightening the generic constraint
+      // on TInterceptOpts would remove this cast but requires updating all callers.
+      const resolvedActionNavigationParams = resolveAppPageNavigationParams(
+        actionRerenderTarget.route,
+        actionRerenderTarget.navigationParams,
+        options.cleanPathname,
+        actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
+      );
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
+        actionRerenderTarget.route,
+      );
+      const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeSecret: options.draftModeSecret,
+        dynamicConfig: actionRerenderDynamicConfig,
+        request: options.request,
+        routePattern: actionRerenderTarget.route.pattern,
+        searchParams: options.searchParams,
+      });
+      options.setNavigationContext({
+        pathname: options.cleanPathname,
+        searchParams: actionRerenderSearchParams,
+        params: resolvedActionNavigationParams,
+      });
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );
+      setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
         buildServerActionPageTags(actionRerenderTarget.route, options.cleanPathname),
       );
@@ -1291,8 +1420,10 @@ export async function handleServerActionRscRequest<
         params: actionRerenderTarget.params,
         request: options.request,
         route: actionRerenderTarget.route,
-        searchParams: options.searchParams,
+        searchParams: actionRerenderSearchParams,
         renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+        observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+        observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
       });
       errorPattern = actionRerenderTarget.route.pattern;
     } else {

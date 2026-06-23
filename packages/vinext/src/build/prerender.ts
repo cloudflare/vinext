@@ -31,12 +31,8 @@ import {
   RSC_EMBEDDED_BINARY_CHUNK,
   type RscEmbeddedChunk,
 } from "../server/app-rsc-embedded-chunks.js";
-import {
-  NoOpCacheHandler,
-  setCacheHandler,
-  getCacheHandler,
-  _consumeRequestScopedCacheLife,
-} from "vinext/shims/cache";
+import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims/cache-handler";
+import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
@@ -54,8 +50,19 @@ import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
-import { createAppPprFallbackShells } from "../server/app-ppr-fallback-shell.js";
+import {
+  createAppPprFallbackShells,
+  markAppPprDynamicFallbackShellHtml,
+} from "../server/app-ppr-fallback-shell.js";
 export { readPrerenderSecret } from "./server-manifest.js";
+
+const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
+
+function isExperimentalPprFallbackShellGenerationEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return env[EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV] === "1";
+}
 
 function getErrorMessageWithStack(err: Error): string {
   // Include the full stack trace for sourcemap-aware error reporting during
@@ -63,6 +70,32 @@ function getErrorMessageWithStack(err: Error): string {
   // and the server bundle includes sourcemaps, this resolves bundled stack frames to
   // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
   return err.stack || err.message;
+}
+
+// A user's generateStaticParams/getStaticPaths threw, surfaced by the prerender
+// endpoint as a 500. Distinct from transport/`fetch` failures (a crashed prod
+// server, connection reset) so only genuine user-function errors are marked
+// fatal to the build. Refs cloudflare/vinext#1982
+class PrerenderUserFunctionError extends Error {}
+
+// The prerender static-params / static-paths endpoints return the real error
+// thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
+// body (app-prerender-endpoints.ts). Extract that message. For our JSON envelope
+// with a missing/empty/non-string `error`, return a generic message rather than
+// echoing the raw `{"error":""}` back; for a non-JSON body, use the raw text.
+// Refs cloudflare/vinext#1982
+function parsePrerenderEndpointError(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      return typeof parsed.error === "string" && parsed.error.length > 0
+        ? parsed.error
+        : "Unknown prerender endpoint error";
+    }
+  } catch {
+    // Non-JSON body — fall through to the raw text.
+  }
+  return text || "Unknown prerender endpoint error";
 }
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -90,6 +123,8 @@ export type PrerenderRouteResult =
       path?: string;
       /** Which router produced this route. Used by cache seeding. */
       router: "app" | "pages";
+      /** Set to true when this is a PPR fallback shell. */
+      fallback?: boolean;
     }
   | {
       route: string;
@@ -100,6 +135,13 @@ export type PrerenderRouteResult =
       route: string;
       status: "error";
       error: string;
+      /**
+       * Set when the error must fail the build in ALL modes (default included),
+       * not just `output: 'export'`. Used for a thrown generateStaticParams /
+       * getStaticPaths, which Next.js treats as a fatal build error rather than a
+       * silently-skipped route. Refs cloudflare/vinext#1982
+       */
+      fatal?: true;
     };
 
 /** Called after each route is resolved (rendered, skipped, or error). */
@@ -626,6 +668,15 @@ export async function prerenderPages({
               );
               const text = await res.text();
               if (!res.ok) {
+                // A 500 carries the real error thrown by the user's getStaticPaths
+                // in the JSON body (app-prerender-endpoints.ts). Surface it so the
+                // route fails with the genuine message, matching Next.js — rather
+                // than swallowing it into a misleading no-static-params skip. Other
+                // statuses (e.g. 404 = disabled/stale secret) keep the warn-and-skip
+                // behavior. Refs cloudflare/vinext#1982
+                if (res.status === 500) {
+                  throw new PrerenderUserFunctionError(parsePrerenderEndpointError(text));
+                }
                 console.warn(
                   `[vinext] Warning: /__vinext/prerender/pages-static-paths returned ${res.status} for ${r.pattern}. ` +
                     `Dynamic paths will be skipped. This may indicate a stale or missing prerender secret.`,
@@ -658,12 +709,6 @@ export async function prerenderPages({
       // it with a 404 status, so the generic static-page loop must not treat
       // that non-2xx response as a prerender failure.
       if (route.pattern === "/404") continue;
-
-      // Cross-reference with file-system route scan.
-      const fsRoute = routes.find(
-        (r) => r.filePath === route.filePath || r.pattern === route.pattern,
-      );
-      if (!fsRoute) continue;
 
       const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
 
@@ -706,7 +751,23 @@ export async function prerenderPages({
           continue;
         }
 
-        const pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        // A throwing getStaticPaths (surfaced as a 500 by the proxy above)
+        // becomes a per-route 'error' with the real message instead of crashing
+        // the whole prerender, matching Next.js. Refs cloudflare/vinext#1982
+        let pathsResult: { paths?: Array<StaticPathsEntry>; fallback?: unknown } | undefined;
+        try {
+          pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        } catch (e) {
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: `Failed to call getStaticPaths(): ${(e as Error).message}`,
+            // Only a thrown user getStaticPaths (a 500 from the endpoint) is fatal
+            // to the build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
+          });
+          continue;
+        }
         const fallback = pathsResult?.fallback ?? false;
 
         if (mode === "export" && fallback !== false) {
@@ -1000,6 +1061,16 @@ export async function prerenderApp({
             });
             const text = await res.text();
             if (!res.ok) {
+              // A 500 carries the real error thrown by the user's
+              // generateStaticParams in the JSON body (app-prerender-endpoints.ts).
+              // Surface it so prerenderApp's catch records a per-route 'error' and
+              // the build fails with the genuine message, matching Next.js — rather
+              // than swallowing it into a misleading no-static-params skip. Other
+              // statuses (e.g. 404 = disabled/stale secret) keep the warn-and-skip
+              // behavior. Refs cloudflare/vinext#1982
+              if (res.status === 500) {
+                throw new PrerenderUserFunctionError(parsePrerenderEndpointError(text));
+              }
               console.warn(
                 `[vinext] Warning: /__vinext/prerender/static-params returned ${res.status} for ${pattern}. ` +
                   `Static params will be skipped. This may indicate a stale or missing prerender secret.`,
@@ -1029,6 +1100,7 @@ export async function prerenderApp({
       prerenderRouteParams: PrerenderRouteParamsPayload | null;
       revalidate: number | false;
       isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
+      isFallback?: boolean;
     };
     const urlsToRender: UrlToRender[] = [];
 
@@ -1149,7 +1221,7 @@ export async function prerenderApp({
             continue;
           }
 
-          if (!Array.isArray(paramSets) || paramSets.length === 0) {
+          if (paramSets.length === 0) {
             // Empty params — skip with warning
             results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
             continue;
@@ -1169,6 +1241,12 @@ export async function prerenderApp({
               );
             }
             const urlPath = buildUrlFromParams(route.pattern, params);
+            // Dedup concrete URLs from duplicate generateStaticParams entries.
+            // (see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.ts
+            // filterUniqueParams + prerenderedRoutesByPathname).
+            // Without this, e.g. [{slug:'a'},{slug:'a'}] renders twice and
+            // writes a duplicate vinext-prerender.json entry.
+            if (queuedRouteUrls.has(urlPath)) continue;
             queuedRouteUrls.add(urlPath);
             urlsToRender.push({
               urlPath,
@@ -1178,7 +1256,14 @@ export async function prerenderApp({
               isSpeculative: false,
             });
 
-            if (config.cacheComponents === true) {
+            // These artifacts contain a partial HTML/RSC shell that requires
+            // request-time resume. Keep generation internal-only until vinext
+            // implements that resume lifecycle; serving one as complete HTML
+            // causes hydration to fall into the global error boundary.
+            if (
+              config.cacheComponents === true &&
+              isExperimentalPprFallbackShellGenerationEnabled()
+            ) {
               for (const fallbackShell of createAppPprFallbackShells(route, params)) {
                 if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
                 queuedRouteUrls.add(fallbackShell.pathname);
@@ -1192,6 +1277,7 @@ export async function prerenderApp({
                   ),
                   revalidate,
                   isSpeculative: false,
+                  isFallback: true,
                 });
               }
             }
@@ -1205,6 +1291,9 @@ export async function prerenderApp({
             route: route.pattern,
             status: "error",
             error: `Failed to call generateStaticParams(): ${detail}`,
+            // Only a thrown user generateStaticParams (a 500 from the endpoint) is
+            // fatal to the build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
           });
         }
       } else if (type === "unknown") {
@@ -1242,6 +1331,7 @@ export async function prerenderApp({
       prerenderRouteParams,
       revalidate,
       isSpeculative,
+      isFallback,
     }: UrlToRender): Promise<PrerenderRouteResult> {
       try {
         // Invoke RSC handler directly with a synthetic Request.
@@ -1315,7 +1405,9 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
-        const html = htmlRender.html;
+        const html = isFallback
+          ? markAppPprDynamicFallbackShellHtml(htmlRender.html)
+          : htmlRender.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
         // streamed into the HTML body. The chunks went through fixFlightHints
@@ -1386,6 +1478,7 @@ export async function prerenderApp({
             : {}),
           router: "app",
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
+          ...(isFallback ? { fallback: true } : {}),
         };
       } catch (e) {
         if (isSpeculative) {
@@ -1538,6 +1631,7 @@ export function writePrerenderIndex(
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
         ...(r.path ? { path: r.path } : {}),
+        ...(r.fallback ? { fallback: true } : {}),
       };
     }
     if (r.status === "skipped") {

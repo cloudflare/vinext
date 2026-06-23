@@ -19,9 +19,10 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getDataCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { markDynamicUsage } from "./headers.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -43,6 +44,9 @@ const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 // Cache key version — bump when changing the key format to bust stale entries
 const CACHE_KEY_PREFIX = "v3";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+// "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
+const ONE_YEAR_SECONDS = 31536000;
 
 class BodyTooLargeForCacheKeyError extends Error {
   constructor() {
@@ -478,6 +482,7 @@ export type FetchCacheState = {
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
+  currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
@@ -513,6 +518,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
   currentFetchSoftTags: [],
   currentFetchCacheMode: null,
+  currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
@@ -534,6 +540,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
   _fallbackState.currentFetchCacheMode = null;
+  _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
@@ -545,6 +552,11 @@ function getFetchObservationUrl(input: string | URL | Request): string {
 
 function recordDynamicFetchObservation(input: string | URL | Request): void {
   _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function markUncachedFetchForPageOutput(input: string | URL | Request): void {
+  recordDynamicFetchObservation(input);
+  markDynamicUsage();
 }
 
 function recordCacheableFetchObservation(input: string | URL | Request): void {
@@ -608,8 +620,23 @@ export function setCurrentFetchSoftTags(tags: string[]): void {
   _getState().currentFetchSoftTags = [...tags];
 }
 
+/**
+ * Read the path-derived soft tags for the current render.
+ *
+ * Used by the "use cache" runtime to pass soft tags to the cache handler
+ * so that `revalidatePath()` invalidates "use cache" entries during the
+ * affected route's next request, even when the entry carries no hard tags.
+ */
+export function getCurrentFetchSoftTags(): string[] {
+  return _getState().currentFetchSoftTags;
+}
+
 export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
   _getState().currentFetchCacheMode = mode;
+}
+
+export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
+  _getState().currentForceDynamicFetchDefault = enabled;
 }
 
 function isNoStoreFetch(
@@ -617,32 +644,57 @@ function isNoStoreFetch(
   nextOpts: NextFetchOptions | undefined,
 ): boolean {
   return (
-    cacheDirective === "no-store" ||
-    cacheDirective === "no-cache" ||
-    nextOpts?.revalidate === false ||
-    nextOpts?.revalidate === 0
+    cacheDirective === "no-store" || cacheDirective === "no-cache" || nextOpts?.revalidate === 0
   );
 }
 
+// Note: `revalidate: false` is cacheable-indefinitely (it normalizes to
+// INFINITE_CACHE), so it belongs here — and therefore conflicts with
+// `only-no-store` — and must not be re-added to `isNoStoreFetch` above.
 function isCacheableFetch(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
 ): boolean {
   return (
     cacheDirective === "force-cache" ||
+    nextOpts?.revalidate === false ||
     (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0)
   );
 }
 
+// Returns true when the fetch call carries any defined `next.revalidate` value.
+// Used by segment cache defaults (default-cache, default-no-store) where
+// `revalidate: 0` and `revalidate: false` are both explicit opt-outs that
+// should prevent the segment default from kicking in.
 function hasExplicitRevalidateValue(nextOpts: NextFetchOptions | undefined): boolean {
   return nextOpts?.revalidate !== undefined;
+}
+
+// Matches upstream's `!currentFetchRevalidate` truthiness check in
+// noFetchConfigAndForceDynamic.  `false` and `0` are both falsy, so they
+// count as "no fetch revalidate config" for the force-dynamic default path.
+function isFalsyRevalidate(nextOpts: NextFetchOptions | undefined): boolean {
+  return !nextOpts?.revalidate;
 }
 
 function resolveSegmentCacheDirective(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
   mode: FetchCacheMode | null,
+  forceDynamicFetchDefault: boolean,
 ): RequestCache | undefined {
+  // Explicit segment fetchCache modes (e.g. default-cache/default-no-store)
+  // skip this guard and are handled below, taking precedence over the
+  // force-dynamic no-store default.
+  if (
+    forceDynamicFetchDefault &&
+    (!mode || mode === "auto") &&
+    (cacheDirective === undefined || cacheDirective === "default") &&
+    isFalsyRevalidate(nextOpts)
+  ) {
+    return "no-store";
+  }
+
   if (!mode || mode === "auto") {
     return cacheDirective;
   }
@@ -773,6 +825,34 @@ function cloneDedupeResponse(response: Response): [Response, Response] {
   return [buildDedupeClone(body1, response), buildDedupeClone(body2, response)];
 }
 
+function buildCachedFetchResponse(
+  data: CachedFetchValue["data"],
+  input: string | URL | Request,
+): Response {
+  const response = new Response(data.body, {
+    status: data.status ?? 200,
+    headers: data.headers,
+  });
+  // `data.url` is typed as required, but cached entries may cross a
+  // serialization boundary (e.g. KV) where a legacy or third-party writer
+  // never populated it — fall back to the request URL (what an uncached,
+  // redirect-free fetch would report) so consumers that read `response.url`
+  // (e.g. to resolve relative redirects) still see a usable absolute URL.
+  Object.defineProperty(response, "url", {
+    value: data.url ?? getFetchObservationUrl(input),
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  // Intentional change from the previous inline reconstruction: cached
+  // responses now participate in body-stream cleanup too, so an unconsumed
+  // cached body gets cancelled when the Response is GC'd instead of leaking.
+  if (_responseBodyRegistry && response.body) {
+    _responseBodyRegistry.register(response, new WeakRef(response.body));
+  }
+  return response;
+}
+
 function dedupeFetch(
   input: string | URL | Request,
   init: RequestInit | undefined,
@@ -859,12 +939,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
       getFetchCacheDirective(input, init),
       nextOpts,
       _getState().currentFetchCacheMode,
+      _getState().currentForceDynamicFetchDefault,
     );
 
     // Determine caching behavior:
     // - cache: 'no-store' → skip cache entirely
     // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
-    // - next.revalidate: false → same as 'no-store'
+    // - next.revalidate: false → cache indefinitely (same as force-cache)
     // - next.revalidate: 0 → same as 'no-store'
     // - next.revalidate: N → cache for N seconds
     // - No cache/next options → default behavior (no caching, pass-through)
@@ -876,15 +957,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Explicit no-store or no-cache — bypass cache entirely
+    // Deliberate divergence from upstream: Next.js only calls
+    // markCurrentScopeAsDynamic for 'no-store'/revalidate: 0, while 'no-cache'
+    // merely opts the fetch out of caching. We conservatively mark the page
+    // dynamic for 'no-cache' too, since its response is never reusable.
     if (
       cacheDirective === "no-store" ||
       cacheDirective === "no-cache" ||
-      nextOpts?.revalidate === false ||
       nextOpts?.revalidate === 0
     ) {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      markUncachedFetchForPageOutput(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -893,8 +977,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // `next.revalidate`, skip caching to prevent accidental cross-user data
     // leakage. Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
+    // This is an automatic safety bypass, not an explicit opt-out, so it does
+    // NOT mark the page dynamic via markDynamicUsage(). It still records a
+    // dynamic fetch observation: the per-user response must downgrade the
+    // page output to fresh render, or a statically cached page could leak
+    // one user's auth-keyed data to everyone else.
+    // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
+    // takes the stronger branch above and fully marks the page dynamic even
+    // when auth headers are present — this bypass only handles auth-keyed
+    // fetches that would otherwise be implicitly cacheable.
     const hasExplicitCacheOpt =
       cacheDirective === "force-cache" ||
+      nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -909,7 +1003,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       revalidateSeconds =
         nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
           ? nextOpts.revalidate
-          : 31536000; // 1 year
+          : ONE_YEAR_SECONDS;
+    } else if (nextOpts?.revalidate === false) {
+      // revalidate: false means cache indefinitely
+      revalidateSeconds = ONE_YEAR_SECONDS;
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
@@ -917,7 +1014,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // caching when `next` is present (force-cache behavior).
       // If only tags are specified, cache indefinitely.
       if (nextOpts?.tags && nextOpts.tags.length > 0) {
-        revalidateSeconds = 31536000;
+        revalidateSeconds = ONE_YEAR_SECONDS;
       } else {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -958,6 +1055,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
         err instanceof SkipCacheKeyGenerationError
       ) {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
+        // The developer opted into caching but we couldn't build a cache key
+        // (body too large / unserializable). That is an internal vinext
+        // limitation, not an explicit uncached-fetch decision, so record only
+        // the observation (downgrading the page output to fresh render)
+        // without marking the whole page dynamic.
         recordDynamicFetchObservation(input);
         return dedupeFetch(input, fetchInit);
       }
@@ -970,11 +1072,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         const cachedData = cached.value.data;
-        // Reconstruct a Response from the cached data
-        return new Response(cachedData.body, {
-          status: cachedData.status ?? 200,
-          headers: cachedData.headers,
-        });
+        return buildCachedFetchResponse(cachedData, input);
       }
 
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
@@ -1004,12 +1102,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
                 data: {
                   headers: freshHeaders,
                   body: freshBody,
-                  url:
-                    typeof input === "string"
-                      ? input
-                      : input instanceof URL
-                        ? input.toString()
-                        : input.url,
+                  url: freshResp.url,
                   status: freshResp.status,
                 },
                 tags,
@@ -1057,10 +1150,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         // Return stale data immediately
-        return new Response(staleData.body, {
-          status: staleData.status ?? 200,
-          headers: staleData.headers,
-        });
+        return buildCachedFetchResponse(staleData, input);
       }
     } catch (cacheErr) {
       // Cache read failed — fall through to network
@@ -1088,8 +1178,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         data: {
           headers,
           body,
-          url:
-            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+          url: response.url,
           status: cloned.status,
         },
         tags,
@@ -1199,6 +1288,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,
+      currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),

@@ -1,4 +1,5 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 type DigestError = Error & { digest?: string };
 
@@ -29,6 +30,34 @@ type CreateRscOnErrorHandlerOptions = {
 
 export function hasDigest(error: unknown): error is { digest: unknown } {
   return Boolean(error && typeof error === "object" && "digest" in error);
+}
+
+const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
+const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
+
+/**
+ * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
+ * string only when the error is a genuine control-flow signal — a redirect,
+ * notFound/HTTP-access fallback, bail-out-to-client-side-rendering, or
+ * dynamic-server-usage throw. Any other digest (e.g. a hashed digest stamped on
+ * a real error, or an obfuscated digest transported from a nested boundary)
+ * returns undefined so the caller still reports it as a real error. Mere
+ * presence of a `digest` field is NOT enough — that conflation swallowed a class
+ * of server render errors with no instrumentation/telemetry.
+ */
+export function getDigestForWellKnownError(error: unknown): string | undefined {
+  if (!hasDigest(error)) {
+    return undefined;
+  }
+  const digest = String(error.digest);
+  if (
+    isNavigationSignalError(error) ||
+    digest === BAILOUT_TO_CSR_DIGEST ||
+    digest === DYNAMIC_SERVER_USAGE_DIGEST
+  ) {
+    return digest;
+  }
+  return undefined;
 }
 
 function getThrownValueMessage(error: unknown): string {
@@ -74,8 +103,13 @@ export function createRscOnErrorHandler(
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
 
-    if (hasDigest(error)) {
-      return String(error.digest);
+    // Well-known control-flow signals (redirect / notFound / bailout-to-CSR /
+    // dynamic-server) carry a recognized digest and are not real failures:
+    // return the digest and skip reporting, exactly like Next.js. A digest on
+    // its own is NOT a signal — those errors fall through to reporting below.
+    const wellKnownDigest = getDigestForWellKnownError(error);
+    if (wellKnownDigest !== undefined) {
+      return wellKnownDigest;
     }
 
     if (
@@ -112,8 +146,25 @@ export function createRscOnErrorHandler(
       );
     }
 
-    if (nodeEnv === "production" && error) {
-      return errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+    // A non-signal error that already carries a digest keeps it as-is (matching
+    // Next.js's err.digest branch) rather than being re-hashed — but only after
+    // it has been reported above.
+    if (hasDigest(error)) {
+      return String(error.digest);
+    }
+
+    if (error) {
+      const digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+      if (error instanceof Error) {
+        try {
+          Object.assign(error, { digest });
+        } catch {
+          // Digest attachment is best-effort. User code can throw frozen or
+          // otherwise non-extensible Error instances, and the onError handler
+          // must not replace the original failure with a mutation TypeError.
+        }
+      }
+      return digest;
     }
 
     return undefined;

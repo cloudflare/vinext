@@ -85,19 +85,15 @@ describe("pagesRouter - route discovery", () => {
     expect(dynamicRoute!.params).toEqual(["id"]);
   });
 
-  it("sorts static routes before dynamic routes", async () => {
+  it("sorts static routes before dynamic routes at the same depth", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
 
-    const staticRoutes = routes.filter((r) => !r.isDynamic);
-    const dynamicRoutes = routes.filter((r) => r.isDynamic);
+    const aboutIndex = routes.findIndex((route) => route.pattern === "/about");
+    const postIndex = routes.findIndex((route) => route.pattern === "/posts/:id");
 
-    // All static routes should come before dynamic routes
-    const lastStaticIndex = routes.findIndex((r) => r === staticRoutes[staticRoutes.length - 1]);
-    const firstDynamicIndex = routes.findIndex((r) => r === dynamicRoutes[0]);
-
-    if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
-      expect(lastStaticIndex).toBeLessThan(firstDynamicIndex);
-    }
+    expect(aboutIndex).not.toBe(-1);
+    expect(postIndex).not.toBe(-1);
+    expect(aboutIndex).toBeLessThan(postIndex);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {

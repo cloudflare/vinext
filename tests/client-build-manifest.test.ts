@@ -20,6 +20,7 @@ import {
   readClientEntryManifest,
   VINEXT_CLIENT_ENTRY_MANIFEST,
 } from "../packages/vinext/src/utils/client-entry-manifest.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -262,5 +263,267 @@ describe("client build manifest helpers", () => {
     });
 
     expect(entry).toBeUndefined();
+  });
+});
+
+describe("computeClientRuntimeMetadata", () => {
+  let tmpDir: string;
+  let clientDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-client-runtime-metadata-"));
+    clientDir = path.join(tmpDir, "client");
+    await fsp.mkdir(path.join(clientDir, ".vite"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const baseManifest = {
+    "entry.js": {
+      file: "_next/static/entry-abc123.js",
+      isEntry: true,
+      imports: ["shared.js"],
+      dynamicImports: ["LazyComponent"],
+    },
+    "shared.js": {
+      file: "_next/static/shared-def456.js",
+    },
+    LazyComponent: {
+      file: "_next/static/lazy-ghi789.js",
+      isDynamicEntry: true,
+      css: ["_next/static/lazy-jkl012.css"],
+    },
+  };
+
+  it("returns empty metadata when no manifest exists", () => {
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+    });
+    expect(result).toEqual({});
+  });
+
+  it("returns empty metadata when manifest is malformed", async () => {
+    await fsp.writeFile(path.join(clientDir, ".vite", "manifest.json"), "not json");
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+    });
+    expect(result).toEqual({});
+  });
+
+  it("computes client entry, lazy chunks, and dynamic preloads without base path or asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: true,
+    });
+    expect(result).toEqual({
+      clientEntryFile: "_next/static/entry-abc123.js",
+      lazyChunks: ["_next/static/lazy-ghi789.js"],
+      dynamicPreloads: {
+        LazyComponent: ["_next/static/lazy-ghi789.js", "_next/static/lazy-jkl012.css"],
+      },
+    });
+  });
+
+  it("applies base path to all paths", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/docs/",
+      assetPrefix: "",
+      includeClientEntry: true,
+    });
+    expect(result).toEqual({
+      clientEntryFile: "docs/_next/static/entry-abc123.js",
+      lazyChunks: ["docs/_next/static/lazy-ghi789.js"],
+      dynamicPreloads: {
+        LazyComponent: ["docs/_next/static/lazy-ghi789.js", "docs/_next/static/lazy-jkl012.css"],
+      },
+    });
+  });
+
+  it("applies path-based asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "/cdn",
+      includeClientEntry: true,
+    });
+    // lazyChunks stay base-only (SSR-manifest key-space for the modulepreload
+    // exclusion); only dynamicPreloads get the assetPrefix.
+    expect(result).toEqual({
+      clientEntryFile: "_next/static/entry-abc123.js",
+      lazyChunks: ["_next/static/lazy-ghi789.js"],
+      dynamicPreloads: {
+        LazyComponent: ["cdn/_next/static/lazy-ghi789.js", "cdn/_next/static/lazy-jkl012.css"],
+      },
+    });
+  });
+
+  it("applies absolute URL asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "https://cdn.example.com/assets",
+      includeClientEntry: true,
+    });
+    // lazyChunks must NOT take an absolute-URL prefix — the Pages Router
+    // modulepreload-exclusion compares them against base-relative SSR-manifest
+    // values, so an absolute URL here would leak lazy chunks into modulepreload.
+    // Only dynamicPreloads (real <link> hrefs) get the absolute prefix.
+    expect(result).toEqual({
+      clientEntryFile: "_next/static/entry-abc123.js",
+      lazyChunks: ["_next/static/lazy-ghi789.js"],
+      dynamicPreloads: {
+        LazyComponent: [
+          "https://cdn.example.com/assets/_next/static/lazy-ghi789.js",
+          "https://cdn.example.com/assets/_next/static/lazy-jkl012.css",
+        ],
+      },
+    });
+  });
+
+  it("does not double-prefix when manifest already has asset-prefix paths", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "entry.js": {
+          file: "cdn/_next/static/entry-abc123.js",
+          isEntry: true,
+          imports: ["shared.js"],
+          dynamicImports: ["LazyComponent"],
+        },
+        "shared.js": {
+          file: "cdn/_next/static/shared-def456.js",
+        },
+        LazyComponent: {
+          file: "cdn/_next/static/lazy-ghi789.js",
+          isDynamicEntry: true,
+          css: ["cdn/_next/static/lazy-jkl012.css"],
+        },
+      }),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "/cdn",
+      includeClientEntry: true,
+    });
+    expect(result).toEqual({
+      clientEntryFile: "cdn/_next/static/entry-abc123.js",
+      lazyChunks: ["cdn/_next/static/lazy-ghi789.js"],
+      dynamicPreloads: {
+        LazyComponent: ["cdn/_next/static/lazy-ghi789.js", "cdn/_next/static/lazy-jkl012.css"],
+      },
+    });
+  });
+
+  it("omits client entry when includeClientEntry is false", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: false,
+    });
+    expect(result.clientEntryFile).toBeUndefined();
+    expect(result.lazyChunks).toBeDefined();
+    expect(result.dynamicPreloads).toBeDefined();
+  });
+
+  it("falls back to on-disk client entry scan when manifest has no entry", async () => {
+    await fsp.mkdir(path.join(clientDir, "_next", "static"), { recursive: true });
+    await fsp.writeFile(path.join(clientDir, "_next", "static", "vinext-client-entry-abcd.js"), "");
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "lazy-chunk.js": {
+          file: "_next/static/lazy-1234.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: true,
+    });
+    expect(result.clientEntryFile).toBe("_next/static/vinext-client-entry-abcd.js");
+    expect(result.lazyChunks).toBeDefined();
+  });
+
+  it("falls back to on-disk client entry under _next/static/chunks/ (real build layout)", async () => {
+    // The real build emits client JS under `_next/static/chunks/`
+    // (createClientFileNameConfig), so the on-disk fallback must recurse into it.
+    // A flat scan of `_next/static` would miss the entry entirely.
+    await fsp.mkdir(path.join(clientDir, "_next", "static", "chunks"), { recursive: true });
+    await fsp.writeFile(
+      path.join(clientDir, "_next", "static", "chunks", "vinext-client-entry-abcd.js"),
+      "",
+    );
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "lazy-chunk.js": {
+          file: "_next/static/chunks/lazy-1234.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: true,
+    });
+    expect(result.clientEntryFile).toBe("_next/static/chunks/vinext-client-entry-abcd.js");
+  });
+
+  it("normalises lazy chunks (basePath only) and dynamic preloads (assetPrefix) into distinct key-spaces", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify(baseManifest),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/docs/",
+      assetPrefix: "/cdn",
+      includeClientEntry: true,
+    });
+    // Regression guard for the absolute/path assetPrefix lazy-chunk leak: the two
+    // consumers expect DIFFERENT key-spaces, so the same source chunk is
+    // normalised differently. lazyChunks keep the SSR-manifest key-space
+    // (basePath only) so the Pages Router modulepreload-exclusion membership test
+    // matches; dynamicPreloads get the full assetPrefix because they render real
+    // <link> hrefs.
+    expect(result.lazyChunks).toEqual(["docs/_next/static/lazy-ghi789.js"]);
+    expect(result.dynamicPreloads!.LazyComponent).toContain("cdn/_next/static/lazy-ghi789.js");
+    expect(result.dynamicPreloads!.LazyComponent).not.toContain("docs/_next/static/lazy-ghi789.js");
   });
 });

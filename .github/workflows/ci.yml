@@ -18,7 +18,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -43,7 +43,7 @@ jobs:
         shardIndex: [1, 2, 3]
         shardTotal: [3]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -70,7 +70,7 @@ jobs:
         shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         shardTotal: [10]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -124,7 +124,7 @@ jobs:
     needs: [test-integration]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -157,7 +157,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
@@ -270,6 +270,14 @@ jobs:
             label: pages-router
             shardIndex: 1
             shardTotal: 1
+          - project: pages-router-basepath-dev
+            label: pages-router-basepath-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-basepath
+            label: pages-router-basepath
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 1/3
             shardIndex: 1
@@ -302,6 +310,10 @@ jobs:
             label: pages-router-prod
             shardIndex: 1
             shardTotal: 1
+          - project: pages-scroll-restoration
+            label: pages-scroll-restoration
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-workers
             label: cloudflare-workers
             shardIndex: 1
@@ -326,8 +338,20 @@ jobs:
             label: standalone-output
             shardIndex: 1
             shardTotal: 1
+          - project: root-layout-redirect
+            label: root-layout-redirect
+            shardIndex: 1
+            shardTotal: 1
+          - project: ppr-impact-demo
+            label: ppr-impact-demo
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-front-redirect-issue
+            label: app-front-redirect-issue
+            shardIndex: 1
+            shardTotal: 1
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup

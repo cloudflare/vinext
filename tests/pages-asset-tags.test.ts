@@ -109,6 +109,11 @@ describe("resolveClientModuleUrl", () => {
     const m = makeManifest({ "page.tsx": ["style.css"] });
     expect(resolveClientModuleUrl(m, "page.tsx")).toBeUndefined();
   });
+
+  it("preserves native ESM identity for client module URLs", () => {
+    const m = makeManifest({ "page.tsx": ["page.js"] });
+    expect(resolveClientModuleUrl(m, "page.tsx", "", "", "dpl_123")).toBe("/page.js");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -138,6 +143,22 @@ describe("collectAssetTags", () => {
     });
     expect(result).toContain('<link rel="stylesheet"');
     expect(result).toContain('href="/style.css"');
+  });
+
+  // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
+  it("keeps JavaScript unqueried while tagging managed stylesheets", () => {
+    const result = collectAssetTags({
+      manifest: makeManifest({ "page.tsx": ["style.css", "page.js"] }),
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      deploymentId: "dpl_123",
+    });
+
+    expect(result).toContain('href="/style.css?dpl=dpl_123"');
+    expect(result).toContain('href="/page.js"');
+    expect(result).toContain('src="/page.js"');
+    expect(result).not.toContain("page.js?dpl=");
   });
 
   it("emits modulepreload + script for js files", () => {
@@ -284,5 +305,84 @@ describe("collectAssetTags", () => {
       disableOptimizedLoading: true,
     });
     expect(result).toBe("");
+  });
+
+  // basePath + assetPrefix re-anchoring: SSR-manifest values are base-anchored
+  // (e.g. "docs/cdn/_next/static/x.js") so the lazy-chunk membership test
+  // matches, but the EMITTED href must point where the asset is served.
+  // assetPrefix REPLACES basePath for asset URLs.
+  it("re-anchors hrefs to a path assetPrefix (not basePath) when both are set", () => {
+    // base "/docs/" + assetPrefix "/cdn": on-disk file lives at cdn/_next/static
+    // and the SSR-manifest value is base-anchored to docs/cdn/_next/static.
+    const manifest = makeManifest({ "page.tsx": ["docs/cdn/_next/static/page.js"] });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      basePath: "/docs",
+      assetPrefix: "/cdn",
+    });
+    // Served at /cdn/_next/static/... NOT /docs/cdn/_next/static/... (which 404s).
+    expect(result).toContain('src="/cdn/_next/static/page.js"');
+    expect(result).toContain('href="/cdn/_next/static/page.js"');
+    expect(result).not.toContain("/docs/cdn/");
+  });
+
+  it("re-anchors hrefs to an absolute assetPrefix when both basePath and assetPrefix are set", () => {
+    const manifest = makeManifest({ "page.tsx": ["docs/_next/static/page.js"] });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      basePath: "/docs",
+      assetPrefix: "https://cdn.example.com",
+    });
+    expect(result).toContain('src="https://cdn.example.com/_next/static/page.js"');
+    expect(result).not.toContain("/docs/_next/static/page.js");
+  });
+
+  it("re-anchors the injected client entry to the assetPrefix", () => {
+    globalThis.__VINEXT_CLIENT_ENTRY__ = "docs/cdn/_next/static/entry.js";
+    const result = collectAssetTags({
+      manifest: makeManifest({ "page.tsx": [] }),
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      basePath: "/docs",
+      assetPrefix: "/cdn",
+    });
+    expect(result).toContain('src="/cdn/_next/static/entry.js"');
+    expect(result).not.toContain("/docs/cdn/");
+  });
+
+  it("keeps the base-anchored href unchanged when no assetPrefix is set", () => {
+    // basePath only (assetPrefix falls back to basePath in Next.js): assets ARE
+    // served under basePath, so the base-anchored value is already correct.
+    const manifest = makeManifest({ "page.tsx": ["docs/_next/static/page.js"] });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      basePath: "/docs",
+      assetPrefix: "",
+    });
+    expect(result).toContain('src="/docs/_next/static/page.js"');
+  });
+
+  it("still excludes lazy chunks by their base-anchored key while re-anchoring the href", () => {
+    // The membership test must use the base-anchored value, NOT the re-anchored
+    // href, so exclusion keeps working under basePath + assetPrefix.
+    globalThis.__VINEXT_LAZY_CHUNKS__ = ["docs/cdn/_next/static/lazy.js"];
+    const manifest = makeManifest({
+      "page.tsx": ["docs/cdn/_next/static/page.js", "docs/cdn/_next/static/lazy.js"],
+    });
+    const result = collectAssetTags({
+      manifest,
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      basePath: "/docs",
+      assetPrefix: "/cdn",
+    });
+    expect(result).toContain('src="/cdn/_next/static/page.js"');
+    expect(result).not.toContain("lazy.js");
   });
 });

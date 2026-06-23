@@ -162,6 +162,17 @@ const HTML_REWRITE_EXCLUDED_REGION_RE =
   /<!--[\s\S]*?-->|<(script|style|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
 const HTML_REWRITE_EXCLUDED_REGION_START_RE = /<!--|<(script|style|textarea|title)\b[^>]*>/gi;
 
+// Pre-compiled close-tag regexes for the four tags captured by
+// HTML_REWRITE_EXCLUDED_REGION_START_RE. `match[1]` is always one of these
+// four names (lowercased below), so the lookup always hits. `i`-only flags —
+// no `lastIndex` state — safe to share across concurrent requests/chunks.
+const CLOSE_TAG_RES: Record<string, RegExp> = {
+  script: /<\/script\s*>/i,
+  style: /<\/style\s*>/i,
+  textarea: /<\/textarea\s*>/i,
+  title: /<\/title\s*>/i,
+};
+
 function getHtmlAttribute(tag: string, name: string): string | null {
   const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
   let match: RegExpExecArray | null;
@@ -234,7 +245,8 @@ function findTrailingOpenHtmlRewriteExcludedRegionStart(html: string): number | 
     const tagName = match[1]?.toLowerCase();
     if (!tagName) continue;
 
-    const closeTagRe = new RegExp(`</${tagName}\\s*>`, "i");
+    const closeTagRe = CLOSE_TAG_RES[tagName];
+    if (!closeTagRe) continue;
     const close = closeTagRe.exec(html.slice(HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex));
     if (!close) return start;
     HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex += close.index + close[0].length;

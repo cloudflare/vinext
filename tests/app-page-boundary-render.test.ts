@@ -8,6 +8,7 @@ import {
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
@@ -136,6 +138,10 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
+  return React.createElement("p", { "data-boundary": "global-error" }, error.stack);
+}
+
 type TestModule = {
   default: React.ComponentType<any>;
   metadata?: { description?: string; title?: string };
@@ -167,6 +173,10 @@ const routeErrorModule = {
 
 const globalErrorModule = {
   default: GlobalErrorBoundary,
+} satisfies TestModule;
+
+const globalErrorModuleWithStack = {
+  default: GlobalErrorBoundaryWithStack,
 } satisfies TestModule;
 
 function ThrowingGlobalErrorBoundary(): React.ReactNode {
@@ -368,6 +378,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/", "layout:/posts"]);
     expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -470,7 +481,26 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual([]);
     expect(payload.__rootLayout).toBeNull();
+    expect(payload.__sourcePage).toBeUndefined();
     expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("omits source-page metadata when route segments are unavailable", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: {},
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        notFound: notFoundModule,
+        pattern: "/posts/missing",
+      },
+      statusCode: 404,
+    });
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__sourcePage).toBeUndefined();
   });
 
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
@@ -498,6 +528,57 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("does not serialize production SSR stacks into the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const common = createCommonOptions();
+    const error = new Error("client page error");
+    error.stack = "/private/deployment/server.js:42";
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "ssr",
+        globalErrorModule,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("client page error");
+      expect(html).not.toContain("/private/deployment/server.js:42");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves development RSC stacks in the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const common = createCommonOptions();
+    const error = Object.assign(new Error("server page error"), {
+      digest: "12345",
+      stack: "/app/rsc/page.tsx:2",
+    });
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "rsc",
+        globalErrorModule: globalErrorModuleWithStack,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("/app/rsc/page.tsx:2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("preserves middleware headers on error boundary responses", async () => {
@@ -610,6 +691,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/"]);
     expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -631,7 +713,10 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await response?.text();
     expect(html).toContain('data-boundary="global-error"');
@@ -645,7 +730,7 @@ describe("app page boundary render helpers", () => {
     // When the resolved global-error boundary itself throws while rendering, the
     // SSR render rejects; renderAppPageErrorBoundary catches it and re-renders
     // with the built-in default global-error so the request still produces a
-    // usable document (HTTP 200) instead of a raw 500. Locks in the server-side
+    // usable error document with the original HTTP 500 semantics. Locks in the server-side
     // retry directly (the integration test in tests/nextjs-compat/global-error
     // exercises the same path through the dev/preview server). Fixes #1548.
     const common = createCommonOptions();
@@ -665,7 +750,10 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await response?.text();
     // The built-in default global-error UI from

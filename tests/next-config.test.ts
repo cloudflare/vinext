@@ -2,8 +2,10 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   detectNextIntlConfig,
+  lightningCssFeatureNamesToMask,
   loadNextConfig,
   parseBodySizeLimit,
   reassignsModuleExports,
@@ -71,7 +73,9 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     fs.writeFileSync(
       path.join(tmpDir, "next.config.js"),
       `const path = require('node:path');\n` +
-        `module.exports = { basePath: path.join('/', 'docs') };\n`,
+        // posix.join keeps the result "/docs" on Windows too — the point of
+        // this fixture is exercising require(), not platform join behavior.
+        `module.exports = { basePath: path.posix.join('/', 'docs') };\n`,
     );
 
     const config = await loadNextConfig(tmpDir);
@@ -107,14 +111,72 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     expect(config?.env?.WRAPPED).toBe("yes");
   });
 
-  it("does not leave temp .cjs files in the project root", async () => {
-    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+  it("loads nested CommonJS .js dependencies", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "config-helper.js"),
+      `const values = require("./config-values.js");
+module.exports = { basePath: values.basePath };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "config-values.js"),
+      `module.exports = { basePath: "/nested" };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("./config-helper.js");
+`,
+    );
 
-    await loadNextConfig(tmpDir);
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.basePath).toBe("/nested");
+  });
+
+  it("loads nested CommonJS .js dependencies from read-only symlink targets", async () => {
+    const packageDir = path.join(tmpDir, "packages", "config-wrapper");
+    const packageLink = path.join(tmpDir, "node_modules", "config-wrapper");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.mkdirSync(path.dirname(packageLink), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "config-wrapper", main: "index.js", type: "module" }),
+    );
+    fs.writeFileSync(path.join(packageDir, "value.js"), `module.exports = "/linked";\n`);
+    fs.writeFileSync(
+      path.join(packageDir, "index.js"),
+      `module.exports = { basePath: require("./value.js") };\n`,
+    );
+    fs.symlinkSync(packageDir, packageLink, "junction");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("config-wrapper");\n`,
+    );
+    fs.chmodSync(packageDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/linked");
+      expect(fs.readdirSync(packageDir).some((name) => name.startsWith(".vinext-"))).toBe(false);
+    } finally {
+      fs.chmodSync(packageDir, 0o755);
+    }
+  });
+
+  it("does not write temporary modules beside the config", async () => {
+    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+    fs.chmodSync(tmpDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/x");
+    } finally {
+      fs.chmodSync(tmpDir, 0o755);
+    }
 
     const stray = fs
       .readdirSync(tmpDir)
-      .filter((name) => name.startsWith(".vinext-next-config.") && name.endsWith(".cjs"));
+      .filter((name) => name.startsWith(".vinext-") && name.endsWith(".cjs"));
     expect(stray).toEqual([]);
   });
 });
@@ -774,6 +836,130 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 });
 
 describe("resolveNextConfig alias extraction", () => {
+  it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
+    const fallback = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".jsx", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(fallback.resolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+    expect(fallback.serverResolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+
+    const preferred = await resolveNextConfig({
+      turbopack: { resolveExtensions: ["", ".web.tsx", ".tsx"] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+
+    const explicitlyEmpty = await resolveNextConfig({
+      turbopack: { resolveExtensions: [] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".png"];
+        return webpackConfig;
+      },
+    });
+    expect(explicitlyEmpty.resolveExtensions).toEqual([]);
+    expect(explicitlyEmpty.serverResolveExtensions).toEqual([]);
+  });
+
+  it("supports legacy experimental.turbo resolveExtensions", async () => {
+    const legacy = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+    });
+    expect(legacy.resolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+    expect(legacy.serverResolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+
+    const preferred = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+      turbopack: { resolveExtensions: ["", ".modern.ts", ".ts"] },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+  });
+
+  it("provides Next.js webpack defaults to resolve.extensions callbacks", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".web.tsx", ...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("ignores untouched webpack resolve.extensions defaults", async () => {
+    const untouched = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        return webpackConfig;
+      },
+    });
+    expect(untouched.resolveExtensions).toBeNull();
+
+    const copied = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(copied.resolveExtensions).toBeNull();
+  });
+
+  it("captures in-place webpack resolve.extensions mutations", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions.unshift(".web.tsx");
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("preserves client/server and dev/build webpack resolve.extensions", async () => {
+    const webpack = (webpackConfig: any, options: any) => {
+      webpackConfig.resolve.extensions = [
+        options.isServer ? ".server.ts" : ".client.ts",
+        options.dev ? ".dev.ts" : ".prod.ts",
+        ".ts",
+      ];
+      return webpackConfig;
+    };
+
+    const build = await resolveNextConfig({ webpack });
+    expect(build.resolveExtensions).toEqual([".client.ts", ".prod.ts", ".ts"]);
+    expect(build.serverResolveExtensions).toEqual([".server.ts", ".prod.ts", ".ts"]);
+
+    const dev = await resolveNextConfig({ webpack }, process.cwd(), { dev: true });
+    expect(dev.resolveExtensions).toEqual([".client.ts", ".dev.ts", ".ts"]);
+    expect(dev.serverResolveExtensions).toEqual([".server.ts", ".dev.ts", ".ts"]);
+  });
+
   let tmpDir: string;
 
   afterEach(() => {
@@ -1037,14 +1223,14 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     }
   });
 
-  it("extracts aliases and mdx from a single async webpack probe", async () => {
+  it("extracts aliases and mdx while probing client and server webpack configs", async () => {
     tmpDir = makeTempDir();
 
-    let invocations = 0;
+    const invocations: boolean[] = [];
     const fakeRemarkPlugin = () => {};
     const rawConfig = {
-      webpack: async (webpackConfig: any) => {
-        invocations++;
+      webpack: async (webpackConfig: any, options: any) => {
+        invocations.push(options.isServer);
         webpackConfig.resolve = webpackConfig.resolve || {};
         webpackConfig.resolve.alias = webpackConfig.resolve.alias || {};
         webpackConfig.resolve.alias["wrapped/config"] = "./config/request.ts";
@@ -1066,7 +1252,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(invocations).toBe(1);
+    expect(invocations).toEqual([false, true]);
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
@@ -1184,6 +1370,14 @@ describe("resolveNextConfig serverExternalPackages", () => {
     });
     expect(resolved.serverExternalPackages).toEqual(["payload"]);
   });
+
+  it("preserves transpilePackages for default external precedence", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["typescript", "shiki"],
+    });
+
+    expect(resolved.transpilePackages).toEqual(["typescript", "shiki"]);
+  });
 });
 
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
@@ -1255,6 +1449,20 @@ describe("resolveNextConfig disableOptimizedLoading", () => {
   });
 });
 
+describe("resolveNextConfig scrollRestoration", () => {
+  it("defaults scrollRestoration to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.scrollRestoration).toBe(false);
+  });
+
+  it("reads experimental.scrollRestoration from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { scrollRestoration: true },
+    });
+    expect(resolved.scrollRestoration).toBe(true);
+  });
+});
+
 describe("resolveNextConfig prefetchInlining", () => {
   it("reads experimental.prefetchInlining from next.config", async () => {
     const disabled = await resolveNextConfig({});
@@ -1269,6 +1477,34 @@ describe("resolveNextConfig prefetchInlining", () => {
       experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
     });
     expect(enabledByThresholds.prefetchInlining).toBe(true);
+  });
+});
+
+describe("resolveNextConfig gestureTransition", () => {
+  it("defaults experimental.gestureTransition to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.gestureTransition).toBe(false);
+  });
+
+  it("reads experimental.gestureTransition from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { gestureTransition: true },
+    });
+    expect(resolved.gestureTransition).toBe(true);
+  });
+});
+
+describe("resolveNextConfig appNavFailHandling", () => {
+  it("defaults experimental.appNavFailHandling to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.appNavFailHandling).toBe(false);
+  });
+
+  it("reads experimental.appNavFailHandling from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appNavFailHandling: true },
+    });
+    expect(resolved.appNavFailHandling).toBe(true);
   });
 });
 
@@ -1614,7 +1850,11 @@ describe("detectNextIntlConfig", () => {
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
+      resolveExtensions: null,
+      serverResolveExtensions: null,
       cacheComponents: false,
+      appNavFailHandling: false,
+      gestureTransition: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -1626,6 +1866,7 @@ describe("detectNextIntlConfig", () => {
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
+      transpilePackages: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
@@ -1643,11 +1884,14 @@ describe("detectNextIntlConfig", () => {
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
+      useLightningcss: false,
+      lightningCssFeatures: { include: 0, exclude: 0 },
       ...overrides,
     };
   }
@@ -2189,10 +2433,15 @@ describe("resolveNextConfig rootParams deprecation warning", () => {
 
 describe("resolveNextConfig cacheHandler", () => {
   it("resolves file:// URLs to filesystem paths", async () => {
+    // Build the URL with pathToFileURL so it is valid on Windows too, where a
+    // file:// URL must carry a drive letter (a drive-less file:///… throws in
+    // fileURLToPath). In production the URL comes from import.meta.resolve, so
+    // it is always platform-valid.
+    const handlerPath = path.resolve("/absolute/path/to/handler.js");
     const resolved = await resolveNextConfig({
-      cacheHandler: "file:///absolute/path/to/handler.js",
+      cacheHandler: pathToFileURL(handlerPath).href,
     });
-    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+    expect(resolved.cacheHandler).toBe(handlerPath);
   });
 
   it("passes through absolute paths unchanged", async () => {
@@ -2359,5 +2608,90 @@ describe("resolveNextConfig appShells", () => {
     );
     expect(appShellsWarnings).toHaveLength(0);
     warnSpy.mockRestore();
+  });
+});
+
+describe("lightningCssFeatureNamesToMask", () => {
+  // Bit values are copied from `lightningcss/node/targets.d.ts` (`Features` enum)
+  // and `.nextjs-ref/crates/next-core/src/next_config.rs`
+  // (`lightningcss_feature_names_to_mask`).
+  it("returns 0 for an empty list", () => {
+    expect(lightningCssFeatureNamesToMask([])).toBe(0);
+  });
+
+  it("maps individual feature names to their canonical bit values", () => {
+    expect(lightningCssFeatureNamesToMask(["nesting"])).toBe(1);
+    expect(lightningCssFeatureNamesToMask(["not-selector-list"])).toBe(2);
+    expect(lightningCssFeatureNamesToMask(["light-dark"])).toBe(1048576);
+    expect(lightningCssFeatureNamesToMask(["logical-properties"])).toBe(524288);
+  });
+
+  it("maps composite groups to the OR of their constituent bits", () => {
+    expect(lightningCssFeatureNamesToMask(["selectors"])).toBe(31);
+    expect(lightningCssFeatureNamesToMask(["media-queries"])).toBe(448);
+    expect(lightningCssFeatureNamesToMask(["colors"])).toBe(1113088);
+  });
+
+  it("OR-merges multiple names into a single bitmask", () => {
+    expect(lightningCssFeatureNamesToMask(["nesting", "light-dark"])).toBe(1 | 1048576);
+  });
+
+  it("warns and skips unknown feature names", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(lightningCssFeatureNamesToMask(["nesting", "not-a-real-feature"])).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("not-a-real-feature"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("resolveNextConfig experimental.lightningCssFeatures", () => {
+  it("defaults to disabled with empty bitmasks when unset", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.useLightningcss).toBe(false);
+    expect(resolved.lightningCssFeatures).toEqual({ include: 0, exclude: 0 });
+  });
+
+  it("plumbs `useLightningcss: true` through", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { useLightningcss: true },
+    });
+    expect(resolved.useLightningcss).toBe(true);
+  });
+
+  it("converts dash-case feature names into the canonical bitmask", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        useLightningcss: true,
+        lightningCssFeatures: {
+          include: ["nesting"],
+          exclude: ["light-dark", "logical-properties"],
+        },
+      },
+    });
+    expect(resolved.lightningCssFeatures).toEqual({
+      include: 1,
+      exclude: 1048576 | 524288,
+    });
+  });
+
+  it("warns when lightningCssFeatures is set without useLightningcss", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const resolved = await resolveNextConfig({
+        experimental: {
+          lightningCssFeatures: { exclude: ["light-dark"] },
+        },
+      });
+      expect(resolved.useLightningcss).toBe(false);
+      expect(resolved.lightningCssFeatures.exclude).toBe(1048576);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("lightningCssFeatures is set but experimental.useLightningcss"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -72,7 +72,7 @@ describe("Next.js compat: global-error", () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/route-group-error/child");
     expect(res.status).toBe(200);
     expect(html).toContain("Route group error boundary");
-    expect(html).not.toContain("global-error");
+    expect(html).not.toContain('data-testid="global-error"');
   });
 
   // ── Server component error (RSC throw -> global-error) ─────
@@ -85,10 +85,13 @@ describe("Next.js compat: global-error", () => {
 
   it("server component throw without local error.tsx renders global-error", async () => {
     // global-error-rsc/page.tsx throws "server page error" with no error.tsx.
-    // Next.js renders global-error.tsx and returns 200 (the boundary "handles" it).
+    // Next.js renders global-error.tsx with a 500 status for an unhandled error.
     // Source: index.test.ts#L29-L49
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(html).toContain("global-error");
     expect(html).toContain("server page error");
   });
@@ -103,7 +106,10 @@ describe("Next.js compat: global-error", () => {
     // "use client" component throws during SSR. Next.js renders global-error.tsx.
     // Source: index.test.ts#L51-L66
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(html).toContain("global-error");
     expect(html).toContain("client page error");
   });
@@ -131,13 +137,13 @@ describe("Next.js compat: global-error", () => {
 
   it("generateMetadata() error without local boundary renders global-error", async () => {
     // generateMetadata() throws, no local error.tsx — escalates to global-error.tsx.
-    // Next.js returns 200 with global-error rendered.
+    // Next.js returns 500 with global-error rendered.
     // Source: index.test.ts#L75-L93
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/metadata-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
     expect(html).toContain("Metadata error");
   });
@@ -161,7 +167,7 @@ describe("Next.js compat: global-error", () => {
       baseUrl,
       "/nextjs-compat/layout-metadata-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
     expect(html).toContain("Layout metadata error");
   });
@@ -185,7 +191,7 @@ describe("Next.js compat: global-error", () => {
       baseUrl,
       "/nextjs-compat/layout-viewport-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
     expect(html).toContain("Layout viewport error");
   });
@@ -207,7 +213,7 @@ describe("Next.js compat: global-error", () => {
 
   it("self-throwing global-error renders the built-in default fallback", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     // The built-in default global-error UI from
     // packages/vinext/src/shims/default-global-error.tsx.
     expect(html).toContain("This page couldn");
@@ -298,20 +304,22 @@ describe("Next.js compat: global-error (production preview)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
-  it("server component throw without local error.tsx renders global-error with 200", async () => {
+  it("server component throw without local error.tsx renders global-error with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
     expect(html).toContain("The specific message is omitted in production builds");
     expect(html).not.toContain("server page error");
+    expect(html).toMatch(/data-testid="global-error-digest"[^>]*>\w+</);
   });
 
-  it("client component SSR throw without local error.tsx renders global-error with 200", async () => {
+  it("client component SSR throw without local error.tsx renders global-error with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
-    expect(html).toContain("The specific message is omitted in production builds");
-    expect(html).not.toContain("client page error");
+    expect(html).toContain("client page error");
+    expect(html).not.toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain('data-testid="global-error-digest"');
   });
 
   it("server component throw with local error.tsx renders that boundary with 200", async () => {
@@ -335,12 +343,12 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).not.toContain("global-error");
   });
 
-  it("generateMetadata() errors without a local boundary escalate to global-error with 200", async () => {
+  it("generateMetadata() errors without a local boundary escalate to global-error with 500", async () => {
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/metadata-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
   });
 
@@ -354,12 +362,12 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).not.toContain("global-error");
   });
 
-  it("layout generateMetadata() errors without a local boundary escalate to global-error with 200", async () => {
+  it("layout generateMetadata() errors without a local boundary escalate to global-error with 500", async () => {
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/layout-metadata-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
   });
 
@@ -373,18 +381,18 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).not.toContain("global-error");
   });
 
-  it("layout generateViewport() errors without a local boundary escalate to global-error with 200", async () => {
+  it("layout generateViewport() errors without a local boundary escalate to global-error with 500", async () => {
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/layout-viewport-error-without-boundary",
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("global-error");
   });
 
-  it("self-throwing global-error renders the built-in default fallback with 200", async () => {
+  it("self-throwing global-error renders the built-in default fallback with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("This page couldn");
     expect(html).toContain("load");
     expect(html).not.toContain("Something went wrong!");

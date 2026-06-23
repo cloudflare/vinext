@@ -2,6 +2,15 @@ export type AppRouterScrollIntent = Readonly<{
   commitId: number | null;
   hash: string | null;
   id: number;
+  // Set by the committed `AppRouterScrollTarget` when this navigation's first
+  // route DOM node was a React-hoisted resource in `<head>` (e.g. a
+  // precedence-ordered stylesheet rendered as the page's first child). Next's
+  // old App Router scroll handler gives up without scrolling in that case, so
+  // the post-commit fallback in next/navigation must skip its document-top
+  // scroll for THIS navigation only. The decision is per-intent on purpose: a
+  // hoisted stylesheet merely *present* in `<head>` for unrelated navigations
+  // must never suppress the fallback.
+  targetHoistedInHead: boolean;
 }>;
 
 // A scroll intent is staged by `navigateClientSide` (next/navigation) before an
@@ -37,6 +46,7 @@ export function beginAppRouterScrollIntent(hash: string | null): AppRouterScroll
     commitId: null,
     hash,
     id: store.nextId,
+    targetHoistedInHead: false,
   };
   store.pending = intent;
   return intent;
@@ -62,6 +72,27 @@ export function claimAppRouterScrollIntentForCommit(
   store.pending = {
     ...intent,
     commitId,
+  };
+}
+
+// Record that the committed scroll target for this navigation resolved to a
+// React-hoisted node in `<head>`. Called by `AppRouterScrollTarget` instead of
+// consuming the intent, so the next/navigation fallback can later read the flag
+// and decline its document-top scroll for this navigation alone. Guarded by id
+// and commitId so a stale or not-yet-claimed intent is never marked.
+export function markAppRouterScrollIntentHeadHoisted(
+  expected: AppRouterScrollIntent | null | undefined,
+  commitId: number,
+): void {
+  const store = getScrollIntentStore();
+  const intent = store.pending;
+  if (expected === null || expected === undefined || intent === null) return;
+  if (intent.id !== expected.id) return;
+  if (intent.commitId !== commitId) return;
+
+  store.pending = {
+    ...intent,
+    targetHoistedInHead: true,
   };
 }
 

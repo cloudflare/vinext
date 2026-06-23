@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ensureAppRouteModulesLoaded,
+  loadAppInterceptLayouts,
   type LazyLoadableRoute,
 } from "../packages/vinext/src/server/app-route-module-loader.js";
 
@@ -113,5 +114,89 @@ describe("ensureAppRouteModulesLoaded", () => {
   it("tolerates null / undefined routes", () => {
     expect(ensureAppRouteModulesLoaded(null)).toBeNull();
     expect(ensureAppRouteModulesLoaded(undefined)).toBeUndefined();
+  });
+
+  it("hydrates array module fields positionally, skipping null loaders and pre-filled slots", async () => {
+    const rootLayout = { default: () => null };
+    const childLayout = { default: () => null };
+    const eagerLayout = { default: () => null };
+    // Index 1 has a null loader (no module at that position); index 2 is already
+    // populated and must not be re-imported — mirrors the manifest emitting
+    // `[null, load_x]` plus an eagerly-set entry.
+    const __loadLayouts = [vi.fn(async () => rootLayout), null, vi.fn(async () => childLayout)];
+    const route: LazyLoadableRoute = {
+      layouts: [null, null, eagerLayout],
+      __loadLayouts,
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.layouts).toEqual([rootLayout, null, eagerLayout]);
+    expect(__loadLayouts[0]).toHaveBeenCalledTimes(1);
+    expect(__loadLayouts[2]).not.toHaveBeenCalled();
+  });
+
+  it("ignores array loaders beyond the manifest placeholder length", async () => {
+    const layout = { default: () => null };
+    const outOfRangeLoader = vi.fn(async () => layout);
+    const route: LazyLoadableRoute = {
+      layouts: [null],
+      __loadLayouts: [null, outOfRangeLoader],
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.layouts).toEqual([null]);
+    expect(outOfRangeLoader).not.toHaveBeenCalled();
+  });
+
+  it("hydrates parallel-slot modules onto each slot", async () => {
+    const slotPage = { default: () => null };
+    const slotLayout = { default: () => null };
+    const nestedSlotLayout = { default: () => null, revalidate: 30 };
+    const __loadPage = vi.fn(async () => slotPage);
+    const __loadLayout = vi.fn(async () => slotLayout);
+    const __loadConfigLayout = vi.fn(async () => nestedSlotLayout);
+    const route: LazyLoadableRoute = {
+      slots: {
+        "@modal": {
+          page: null,
+          layout: null,
+          configLayouts: [null],
+          __loadPage,
+          __loadLayout,
+          __loadConfigLayouts: [__loadConfigLayout],
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.slots?.["@modal"].page).toBe(slotPage);
+    expect(route.slots?.["@modal"].layout).toBe(slotLayout);
+    expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
+  });
+});
+
+describe("loadAppInterceptLayouts", () => {
+  it("hydrates intercept layouts from their loaders and returns the array", async () => {
+    const layoutA = { default: () => null };
+    const layoutB = { default: () => null };
+    const intercept = {
+      interceptLayouts: [null, null],
+      __loadInterceptLayouts: [async () => layoutA, async () => layoutB],
+    };
+
+    const result = await loadAppInterceptLayouts(intercept);
+
+    expect(intercept.interceptLayouts).toEqual([layoutA, layoutB]);
+    expect(result).toBe(intercept.interceptLayouts);
+  });
+
+  it("resolves synchronously to the existing array when there are no loaders", () => {
+    const intercept = { interceptLayouts: [] as unknown[] };
+
+    // No loaders → returns a resolved promise wrapping the same array, no imports.
+    return expect(loadAppInterceptLayouts(intercept)).resolves.toBe(intercept.interceptLayouts);
   });
 });

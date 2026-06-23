@@ -280,13 +280,19 @@ describe("registration is wired into the router/runtime entries", () => {
 
   it("App Router RSC entry inlines image allowed-widths + config for the worker entry", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
-      images: { deviceSizes: [320, 640], imageSizes: [16, 32], dangerouslyAllowSVG: true },
+      imageConfig: {
+        deviceSizes: [320, 640],
+        imageSizes: [16, 32],
+        qualities: [75, 90],
+        dangerouslyAllowSVG: true,
+      },
     });
     expect(code).toContain("export const __imageAllowedWidths =");
     expect(code).toContain("export const __imageConfig =");
     // deviceSizes + imageSizes union, in order.
     expect(code).toContain("[320,640,16,32]");
     expect(code).toContain('"dangerouslyAllowSVG":true');
+    expect(code).toContain('"qualities":[75,90]');
   });
 
   it("App Router RSC entry falls back to Next.js default widths when images is unset", () => {

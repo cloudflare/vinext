@@ -42,8 +42,20 @@ export function normalizeReactFlightPreloadHints(
   );
 }
 
-type RscRawRenderer = (model: unknown, options?: unknown) => ReadableStream<Uint8Array>;
+export type RscRawRenderer = (model: unknown, options?: unknown) => ReadableStream<Uint8Array>;
+
+export type RscRawPrerenderer = (
+  model: unknown,
+  options?: unknown,
+) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
 
 export function createRscRenderer(render: RscRawRenderer): RscRawRenderer {
   return (model, options) => normalizeReactFlightPreloadHints(render(model, options));
+}
+
+export function createRscPrerenderer(prerender: RscRawPrerenderer): RscRawPrerenderer {
+  return async (model, options) => {
+    const result = await prerender(model, options);
+    return { prelude: normalizeReactFlightPreloadHints(result.prelude) };
+  };
 }

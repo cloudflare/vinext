@@ -98,9 +98,12 @@ describe("CloudflareCdnCacheAdapter", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     ]) {
       const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });
-      expect(headers).toEqual({ "Cache-Control": cc });
-      expect(headers["CDN-Cache-Control"]).toBeUndefined();
-      expect(headers["Cache-Tag"]).toBeUndefined();
+      expect(headers).toEqual({
+        "Cache-Control": cc,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      });
     }
   });
 

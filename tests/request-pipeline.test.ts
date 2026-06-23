@@ -15,7 +15,6 @@ import {
   resolvePublicFileRoute,
   validateCsrfOrigin,
   validateServerActionPayload,
-  validateImageUrl,
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
@@ -441,6 +440,56 @@ describe("normalizeTrailingSlash", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(404);
   });
+
+  // Regression coverage for issue #1979 — the Location is built from the
+  // already percent-decoded pathname. A character above U+00FF (e.g. a CJK
+  // slug) makes `new Response(..., { headers: { Location } })` throw
+  // TypeError 'Cannot convert argument to a ByteString' in Workers/undici,
+  // which surfaces as a 500 instead of a 308. Latin-1 chars like spaces do
+  // not throw but emit a malformed, un-percent-encoded Location.
+  // Refs cloudflare/vinext#1979
+  it("percent-encodes non-Latin-1 pathnames in the Location instead of throwing", () => {
+    const res = normalizeTrailingSlash("/日本", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%E6%97%A5%E6%9C%AC/");
+  });
+
+  it("percent-encodes spaces in the redirect Location", () => {
+    const res = normalizeTrailingSlash("/about us", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/about%20us/");
+  });
+
+  // The pathname reaches us with path delimiters already re-encoded
+  // (encodePathDelimiters in routing/utils.ts turns `# ? / \` into
+  // `%23 %3F %2F %5C`). The redirect encoder must NOT re-encode the `%`
+  // of those sequences, otherwise `/foo%23bar` becomes `/foo%2523bar`.
+  it("does not double-encode already-encoded delimiters in the Location", () => {
+    const res = normalizeTrailingSlash("/foo%23bar", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/foo%23bar/");
+  });
+
+  // Astral characters (emoji) are surrogate pairs in UTF-16; the encoder
+  // must treat them as whole code points, not encode each surrogate half.
+  it("percent-encodes astral characters (emoji) without mangling surrogates", () => {
+    const res = normalizeTrailingSlash("/😀", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%F0%9F%98%80/");
+  });
+
+  // Printable-ASCII characters that RFC 3986 forbids raw in a path (e.g. `<>"`)
+  // must be percent-encoded in the Location, not echoed verbatim.
+  it("percent-encodes reserved ASCII characters that are invalid raw in a path", () => {
+    const res = normalizeTrailingSlash('/a<b>"c', "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/a%3Cb%3E%22c/");
+  });
 });
 
 // ── validateCsrfOrigin ──────────────────────────────────────────────────
@@ -590,45 +639,57 @@ describe("validateServerActionPayload", () => {
     expect(res!.status).toBe(400);
     await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
-});
 
-// ── validateImageUrl ────────────────────────────────────────────────────
+  it("validates the first hex chunk id in container references with path suffixes", async () => {
+    for (const reference of ["$Q1:x", "$W1:0:name", "$i1:value"]) {
+      const body = new FormData();
+      body.set("0", JSON.stringify([reference]));
 
-describe("validateImageUrl", () => {
-  const requestUrl = "http://localhost:3000/page";
-
-  it("returns the normalized image URL for valid relative paths", () => {
-    expect(validateImageUrl("/images/photo.png", requestUrl)).toBe("/images/photo.png");
+      const res = await validateServerActionPayload(body);
+      expect(res?.status).toBe(400);
+      await expect(res?.text()).resolves.toBe("Invalid server action payload");
+    }
   });
 
-  it("returns 400 for missing url parameter", () => {
-    const res = validateImageUrl(null, requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("validates the first duplicate numeric field instead of overwriting it", async () => {
+    const body = new FormData();
+    body.append("0", '["$Q1"]');
+    body.append("0", "[]");
+
+    const res = await validateServerActionPayload(body);
+    expect(res?.status).toBe(400);
+    await expect(res?.text()).resolves.toBe("Invalid server action payload");
   });
 
-  it("returns 400 for empty string", () => {
-    const res = validateImageUrl("", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("allows duplicate numeric user fields when the first value has no container reference", async () => {
+    const body = new FormData();
+    body.append("0", "first checkbox");
+    body.append("0", "second checkbox");
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
   });
 
-  it("returns 400 for absolute URLs", () => {
-    const res = validateImageUrl("http://evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("rejects deeply nested acyclic graphs without overflowing the call stack", async () => {
+    const body = new FormData();
+    const fieldCount = 10_000;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
 
-  it("returns 400 for protocol-relative URLs", () => {
-    const res = validateImageUrl("//evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
-  });
+  it("allows valid container graphs below the depth limit", async () => {
+    const body = new FormData();
+    const fieldCount = 128;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
 
-  it("normalizes backslashes and blocks protocol-relative variants", () => {
-    const res = validateImageUrl("/\\evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
   });
 });
 

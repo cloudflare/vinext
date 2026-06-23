@@ -39,6 +39,14 @@ async function sha256CacheBustingHash(input: string): Promise<string> {
 }
 
 describe("App Router RSC cache-busting", () => {
+  // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
+  it("adds the deployment ID header to RSC requests", () => {
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", "dpl_123", () => {
+      expect(createRscRequestHeaders().get("x-deployment-id")).toBe("dpl_123");
+    });
+  });
+
   it("adds a bare _rsc search param when no variant headers are present", async () => {
     const headers = createRscRequestHeaders();
 

@@ -19,6 +19,7 @@ declare module "virtual:vinext-rsc-entry" {
   export const __hasPagesDir: boolean;
   export const __imageAllowedWidths: number[];
   export const __imageConfig: {
+    qualities?: number[];
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";

@@ -30,6 +30,15 @@
       "id": "08075d24ec854a19a52c13f031723def",
     },
   ],
+  "r2_buckets": [
+    {
+      "binding": "PERFORMANCE_PROFILES",
+      "bucket_name": "vinext-performance-profiles",
+    },
+  ],
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

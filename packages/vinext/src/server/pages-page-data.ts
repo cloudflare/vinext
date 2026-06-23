@@ -2,12 +2,17 @@ import type { ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
-import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
-import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
+import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache-handler";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
+  etagMatches,
+  generatePagesETag,
+  isPagesStreamingBot,
+  requestsNoCache,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
@@ -17,8 +22,11 @@ import {
   isResponseSent,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
-import { buildNextDataJsonResponse } from "./pages-data-route.js";
+import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -55,6 +63,10 @@ type PagesGsspContextResponse = {
   req: unknown;
   res: PagesMutableGsspResponse;
   responsePromise: Promise<Response>;
+};
+
+type PagesRenderProps = Record<string, unknown> & {
+  pageProps: unknown;
 };
 
 export type PagesPageModule = {
@@ -107,9 +119,10 @@ export type PagesPageModule = {
 type RenderPagesIsrHtmlOptions = {
   buildId: string | null;
   cachedHtml: string;
-  createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  createPageElement: (props: Record<string, unknown>) => ReactNode;
   i18n: PagesI18nRenderContext;
   pageProps: Record<string, unknown>;
+  props?: Record<string, unknown>;
   params: Record<string, unknown>;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
@@ -132,7 +145,8 @@ export type ResolvePagesPageDataOptions = {
   isDataReq?: boolean;
   err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
-  createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  createAppTree?: (props: Record<string, unknown>) => ReactNode;
+  createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
   i18n: PagesI18nRenderContext;
   isrCacheKey: (router: string, pathname: string) => string;
@@ -170,10 +184,20 @@ export type ResolvePagesPageDataOptions = {
    * presence — see the security note in `isr-cache.ts`.
    */
   isOnDemandRevalidate?: boolean;
+  /**
+   * The deployment ID used for deployment-skew protection. When set, it is
+   * included as `x-nextjs-deployment-id` on all `_next/data` responses
+   * (success, redirect, notFound). Mirrors Next.js pages-handler.ts behavior.
+   * Typically sourced from `process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID`.
+   */
+  deploymentId?: string;
+  htmlLimitedBots?: string;
   pageModule: PagesPageModule;
+  AppComponent?: unknown;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
   asPath?: string;
+  resolvedUrl?: string;
   route: Pick<Route, "isDynamic">;
   routePattern: string;
   routeUrl: string;
@@ -190,6 +214,27 @@ export type ResolvePagesPageDataOptions = {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
+  /**
+   * The request's User-Agent string. When this matches a known crawler/bot
+   * pattern, ISR cache-HIT and cache-STALE responses receive an ETag header
+   * for consistency with the fresh-MISS path (which also attaches an ETag for
+   * bot UAs via `renderPagesPageResponse`). See the divergence note in
+   * `pages-page-response.ts` for why UA-gating is used instead of Next.js's
+   * `isDynamic` check.
+   */
+  userAgent?: string;
+  /**
+   * The incoming request's `If-None-Match` header value. When the cached HTML
+   * ETag matches (weak-ETag semantics), the ISR cache-HIT or cache-STALE
+   * response is a `304 Not Modified` with no body.
+   */
+  ifNoneMatch?: string;
+  /**
+   * The incoming request's `Cache-Control` header value. When it contains
+   * `no-cache`, the 304 short-circuit is skipped and a full response is
+   * returned — mirroring the `fresh` package used by Next.js.
+   */
+  requestCacheControl?: string;
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -197,6 +242,7 @@ type ResolvePagesPageDataRenderResult = {
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
+  props: PagesRenderProps;
   /**
    * True when `getStaticPaths` returned `fallback: true` AND the requested path
    * is not in the pre-rendered list. The caller renders a loading shell with
@@ -220,23 +266,29 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult
   | ResolvePagesPageDataNotFoundResult;
 
-function buildPagesDataNotFoundResponse(): Response {
+function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
   // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
   // application/json with an empty object body so clients can call
   // `res.json()` without throwing before inspecting the status code.
+  // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
+  // `_next/data` notFound exits so the client can detect a new deployment.
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (deploymentId) {
+    headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+  }
   return new Response("{}", {
     status: 404,
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 }
 
 function buildPagesNotFoundResult(
-  options: Pick<ResolvePagesPageDataOptions, "isDataReq">,
+  options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(),
+      response: buildPagesDataNotFoundResponse(options.deploymentId),
     };
   }
 
@@ -245,6 +297,84 @@ function buildPagesNotFoundResult(
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
+}
+
+function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
+  return {
+    ...props,
+    pageProps: props.pageProps,
+  };
+}
+
+type PagesAppInitialPropsResult =
+  | { kind: "props"; pageProps: Record<string, unknown>; renderProps: PagesRenderProps }
+  | { kind: "response"; response: Promise<Response> };
+
+/**
+ * Load `_app.getInitialProps` and return the normalized render props and the
+ * extracted `pageProps`. This is shared between the foreground render path and
+ * the stale-while-revalidate background regeneration path so both produce the
+ * same full props envelope (app-level props plus the page's `pageProps`).
+ *
+ * `getSharedReqRes` lets callers share the same mock req/res with other
+ * data-fetching steps (e.g. `getServerSideProps`) when they run in the same
+ * request context.
+ */
+async function loadPagesAppInitialRenderProps(
+  options: Pick<
+    ResolvePagesPageDataOptions,
+    | "AppComponent"
+    | "createAppTree"
+    | "createPageElement"
+    | "err"
+    | "i18n"
+    | "pageModule"
+    | "query"
+    | "routePattern"
+    | "routeUrl"
+    | "asPath"
+  >,
+  getSharedReqRes: () => PagesGsspContextResponse,
+): Promise<PagesAppInitialPropsResult> {
+  let pageProps: Record<string, unknown> = {};
+  let renderProps: PagesRenderProps = { pageProps };
+
+  if (!hasPagesGetInitialProps(options.AppComponent)) {
+    return { kind: "props", pageProps, renderProps };
+  }
+
+  const { req, res, responsePromise } = getSharedReqRes();
+  const initialProps = await loadPagesGetInitialProps(options.AppComponent, {
+    AppTree: options.createAppTree ?? options.createPageElement,
+    Component: options.pageModule.default,
+    router: {
+      pathname: options.routePattern,
+      query: options.query,
+      asPath: options.asPath ?? options.routeUrl,
+    },
+    ctx: {
+      req,
+      res,
+      err: options.err,
+      pathname: options.routePattern,
+      query: options.query,
+      asPath: options.asPath ?? options.routeUrl,
+      locale: options.i18n.locale,
+      locales: options.i18n.locales,
+      defaultLocale: options.i18n.defaultLocale,
+    },
+  });
+
+  if (isResponseSent(res)) {
+    return { kind: "response", response: responsePromise };
+  }
+
+  if (initialProps) {
+    renderProps = normalizePagesRenderProps(initialProps);
+    pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
+  }
+
+  return { kind: "props", pageProps, renderProps };
 }
 
 /**
@@ -272,18 +402,30 @@ function buildPagesRedirectResponse(
   redirect: PagesRedirectResult,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "isDataReq" | "sanitizeDestination" | "safeJsonStringify"
+    "isDataReq" | "sanitizeDestination" | "safeJsonStringify" | "deploymentId"
   >,
+  props: PagesRenderProps = { pageProps: {} },
 ): Response {
   const destination = options.sanitizeDestination(redirect.destination);
 
   if (options.isDataReq) {
-    return buildNextDataJsonResponse(
+    // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
+    // `_next/data` redirect exits for deployment-skew protection.
+    const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+    if (options.deploymentId) {
+      init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
+    }
+    return buildNextDataPropsJsonResponse(
       {
-        __N_REDIRECT: destination,
-        __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
+        ...props,
+        pageProps: {
+          ...(isUnknownRecord(props.pageProps) ? props.pageProps : {}),
+          __N_REDIRECT: destination,
+          __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
+        },
       },
       options.safeJsonStringify,
+      init,
     );
   }
 
@@ -341,23 +483,22 @@ function buildPagesCacheResponse(
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
   // 60-second fallback for that migration window.
-  const effectiveRevalidateSeconds = cacheControl?.revalidate ?? revalidateSeconds ?? 60;
-  const effectiveExpireSeconds =
-    cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
+  const effectiveRevalidateSeconds = revalidateSeconds ?? 60;
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their get() returns null.
+  const { cacheControl: cacheControlHeader } = decideIsr({
+    cacheState,
+    kind: "pages",
+    revalidateSeconds: effectiveRevalidateSeconds,
+    expireSeconds,
+    cacheControlMeta: cacheControl,
+  });
   const headers = new Headers({
     "Content-Type": "text/html",
     ...buildCacheStateHeaders(cacheState),
   });
-  applyCdnResponseHeaders(headers, {
-    cacheControl: buildCachedRevalidateCacheControl(
-      cacheState,
-      effectiveRevalidateSeconds,
-      effectiveExpireSeconds,
-    ),
-  });
+  applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
@@ -369,6 +510,39 @@ function buildPagesCacheResponse(
   });
 }
 
+/**
+ * For bot / crawler UAs, attach an ETag to a cached ISR response (HIT or
+ * STALE) so it is consistent with the fresh-MISS path, then check for a
+ * matching `If-None-Match`. When the check passes — and the request did NOT
+ * carry `Cache-Control: no-cache` — returns a 304 response; otherwise returns
+ * `null` so the caller can return the full response.
+ *
+ * Extracted to avoid duplicating the same three-line block across the HIT and
+ * STALE branches.
+ */
+function applyBotETagAndCheck(
+  cachedResponse: Response,
+  html: string,
+  options: Pick<ResolvePagesPageDataOptions, "userAgent" | "ifNoneMatch" | "requestCacheControl">,
+): ResolvePagesPageDataResponseResult | null {
+  if (!options.userAgent || !isPagesStreamingBot(options.userAgent)) {
+    return null;
+  }
+  const etag = generatePagesETag(html);
+  cachedResponse.headers.set("ETag", etag);
+  const noCacheRequested = requestsNoCache(options.requestCacheControl);
+  if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+    return {
+      kind: "response",
+      response: new Response(null, {
+        status: 304,
+        headers: cachedResponse.headers,
+      }),
+    };
+  }
+  return null;
+}
+
 function rewritePagesCachedHtml(
   cachedHtml: string,
   freshBody: string,
@@ -377,11 +551,11 @@ function rewritePagesCachedHtml(
   const bodyMarker = '<div id="__next">';
   const bodyStart = cachedHtml.indexOf(bodyMarker);
   const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;
-  // This intentionally looks for the bare inline __NEXT_DATA__ marker.
-  // Pages responses with scriptNonce are excluded from ISR writes, so cached
-  // HTML should never contain nonce-prefixed __NEXT_DATA__ scripts here.
-  const nextDataMarker = "<script>window.__NEXT_DATA__";
-  const nextDataStart = cachedHtml.indexOf(nextDataMarker);
+  const canonicalNextDataStart = cachedHtml.search(
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
+  );
+  const legacyNextDataStart = cachedHtml.indexOf("<script>window.__NEXT_DATA__");
+  const nextDataStart = canonicalNextDataStart >= 0 ? canonicalNextDataStart : legacyNextDataStart;
 
   if (contentStart >= 0 && nextDataStart >= 0) {
     const region = cachedHtml.slice(contentStart, nextDataStart);
@@ -403,13 +577,15 @@ function rewritePagesCachedHtml(
 }
 
 export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
+  const renderProps = options.props ?? { pageProps: options.pageProps };
   const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(options.pageProps),
+    options.createPageElement(renderProps),
   );
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
     i18n: options.i18n,
     pageProps: options.pageProps,
+    props: renderProps,
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
@@ -443,6 +619,7 @@ export async function resolvePagesPageData(
   // (`/_next/data/...json`) still call `getStaticProps` so the client can
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
+  let shouldPersistFallbackData = false;
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
@@ -465,32 +642,70 @@ export async function resolvePagesPageData(
     // Render the fallback shell for unlisted paths under `fallback: true`.
     // Data requests resolve props normally so the client can fill in after
     // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
-    if (fallback === true && !isValidPath && !options.isDataReq) {
+    const isBotRequest =
+      !!options.userAgent && isBotUserAgent(options.userAgent, options.htmlLimitedBots);
+    if (fallback === true && !isValidPath && !options.isDataReq && !isBotRequest) {
       isFallback = true;
     }
+    shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
   }
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
 
+  let sharedReqRes: PagesGsspContextResponse | null = null;
+  function getSharedReqRes(): PagesGsspContextResponse {
+    sharedReqRes ??= options.createGsspReqRes();
+    return sharedReqRes;
+  }
+
+  let renderProps: PagesRenderProps = { pageProps };
+
+  async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
+    const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
+    if (result.kind === "response") {
+      return {
+        kind: "response",
+        response: await result.response,
+      };
+    }
+    renderProps = result.renderProps;
+    pageProps = result.pageProps;
+    return null;
+  }
+
   if (isFallback) {
-    return {
-      kind: "render",
-      gsspRes: null,
-      isrRevalidateSeconds: null,
-      pageProps,
-      isFallback: true,
-    };
+    const pathname = options.routeUrl.split("?")[0];
+    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    if (cached?.value.value?.kind !== "PAGES") {
+      const appShortCircuit = await loadForegroundAppInitialRenderProps();
+      if (appShortCircuit) return appShortCircuit;
+      pageProps = {};
+      renderProps = { ...renderProps, pageProps };
+      return {
+        kind: "render",
+        gsspRes: null,
+        isrRevalidateSeconds: null,
+        pageProps,
+        props: renderProps,
+        isFallback: true,
+      };
+    }
   }
 
   if (typeof options.pageModule.getServerSideProps === "function") {
-    const { req, res, responsePromise } = options.createGsspReqRes();
+    const shortCircuit = await loadForegroundAppInitialRenderProps();
+    if (shortCircuit) {
+      return shortCircuit;
+    }
+    renderProps = { ...renderProps, __N_SSP: true };
+    const { req, res, responsePromise } = getSharedReqRes();
     const result = await options.pageModule.getServerSideProps({
       params: userFacingParams,
       req,
       res,
       query: options.query,
-      resolvedUrl: options.routeUrl,
+      resolvedUrl: options.resolvedUrl ?? options.routeUrl,
       locale: options.i18n.locale,
       locales: options.i18n.locales,
       defaultLocale: options.i18n.defaultLocale,
@@ -508,13 +723,17 @@ export async function resolvePagesPageData(
       // before serialising; otherwise pageProps would be a Promise and the
       // rendered page would receive empty props. See
       // packages/next/src/server/render.tsx (deferredContent).
-      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
+      pageProps = {
+        ...pageProps,
+        ...((await Promise.resolve(result.props)) as Record<string, unknown>),
+      };
+      renderProps = { ...renderProps, pageProps };
     }
 
     if (result?.redirect) {
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options),
+        response: buildPagesRedirectResponse(result.redirect, options, renderProps),
       };
     }
 
@@ -552,29 +771,39 @@ export async function resolvePagesPageData(
     // handling in render.tsx / base-server.ts.
     if (
       !options.isOnDemandRevalidate &&
+      cached?.isStale === false &&
       cachedValue?.kind === "PAGES" &&
+      !cachedValue.generatedFromDataRequest &&
       cached &&
       !cached.isStale &&
       !options.scriptNonce &&
       !options.isDataReq
     ) {
+      const hitResponse = buildPagesCacheResponse(
+        cachedValue.html,
+        "HIT",
+        options.fontLinkHeader,
+        undefined,
+        options.expireSeconds,
+        cached.value.cacheControl,
+        cachedValue.status,
+      );
+      // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
+      // for bot UAs so they are consistent with fresh-MISS bot responses (which
+      // also carry an ETag via `renderPagesPageResponse`). When the incoming
+      // `If-None-Match` matches (and no `Cache-Control: no-cache`), return 304.
+      const hitBotResult = applyBotETagAndCheck(hitResponse, cachedValue.html, options);
+      if (hitBotResult) return hitBotResult;
       return {
         kind: "response",
-        response: buildPagesCacheResponse(
-          cachedValue.html,
-          "HIT",
-          options.fontLinkHeader,
-          undefined,
-          options.expireSeconds,
-          cached.value.cacheControl,
-          cachedValue.status,
-        ),
+        response: hitResponse,
       };
     }
 
     if (
       !options.isOnDemandRevalidate &&
       cachedValue?.kind === "PAGES" &&
+      !cachedValue.generatedFromDataRequest &&
       cached &&
       cached.isStale &&
       !options.scriptNonce &&
@@ -584,6 +813,22 @@ export async function resolvePagesPageData(
         cacheKey,
         async function () {
           return options.runInFreshUnifiedContext(async () => {
+            options.applyRequestContexts();
+            // Rebuild the full App render props before re-running getStaticProps
+            // so the regenerated HTML / __NEXT_DATA__ still contains app-level
+            // props from _app.getInitialProps. Mirrors the foreground path.
+            const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
+              options.createGsspReqRes(),
+            );
+            if (freshAppResult.kind === "response") {
+              // _app.getInitialProps short-circuited the request during background
+              // regeneration. We cannot turn that into an HTTP response here, so
+              // skip the cache write and let the stale entry remain.
+              return;
+            }
+            let freshPageProps = freshAppResult.pageProps;
+            let freshRenderProps = freshAppResult.renderProps;
+
             const freshResult = await options.pageModule.getStaticProps?.({
               params: userFacingParams,
               locale: options.i18n.locale,
@@ -596,18 +841,24 @@ export async function resolvePagesPageData(
               revalidateReason: "stale",
             });
 
-            if (
-              freshResult?.props &&
-              typeof freshResult.revalidate === "number" &&
-              freshResult.revalidate > 0
-            ) {
-              options.applyRequestContexts();
+            if (freshResult?.props) {
+              freshPageProps = { ...freshPageProps, ...freshResult.props };
+              freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
+            }
+
+            const freshRevalidateSeconds =
+              typeof freshResult?.revalidate === "number" && freshResult.revalidate > 0
+                ? freshResult.revalidate
+                : cached.value.cacheControl?.revalidate;
+
+            if (freshResult?.props && freshRevalidateSeconds && freshRevalidateSeconds > 0) {
               const freshHtml = await renderPagesIsrHtml({
                 buildId: options.buildId,
                 cachedHtml: cachedValue.html,
                 createPageElement: options.createPageElement,
                 i18n: options.i18n,
-                pageProps: freshResult.props,
+                pageProps: freshPageProps,
+                props: freshRenderProps,
                 params: options.params,
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
@@ -618,8 +869,8 @@ export async function resolvePagesPageData(
 
               await options.isrSet(
                 cacheKey,
-                buildPagesCacheValue(freshHtml, freshResult.props, options.statusCode),
-                freshResult.revalidate,
+                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
+                freshRevalidateSeconds,
                 undefined,
                 options.expireSeconds,
               );
@@ -633,46 +884,65 @@ export async function resolvePagesPageData(
         },
       );
 
+      const staleResponse = buildPagesCacheResponse(
+        cachedValue.html,
+        "STALE",
+        options.fontLinkHeader,
+        undefined,
+        options.expireSeconds,
+        cached.value.cacheControl,
+        cachedValue.status,
+      );
+      // Bot / crawler ETag consistency: same as the HIT branch — attach an
+      // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
+      const staleBotResult = applyBotETagAndCheck(staleResponse, cachedValue.html, options);
+      if (staleBotResult) return staleBotResult;
       return {
         kind: "response",
-        response: buildPagesCacheResponse(
-          cachedValue.html,
-          "STALE",
-          options.fontLinkHeader,
-          undefined,
-          options.expireSeconds,
-          cached.value.cacheControl,
-          cachedValue.status,
-        ),
+        response: staleResponse,
       };
     }
 
-    const result = await options.pageModule.getStaticProps({
-      params: userFacingParams,
-      locale: options.i18n.locale,
-      locales: options.i18n.locales,
-      defaultLocale: options.i18n.defaultLocale,
-      // Maps Next.js's resolution in `render.tsx`:
-      //   isOnDemandRevalidate ? "on-demand"
-      //     : isBuildTimeSSG    ? "build"
-      //                         : "stale"
-      // We pick "stale" as the default at runtime so existing-but-missing
-      // (cache evicted) entries surface as a regeneration rather than a build.
-      revalidateReason: options.isOnDemandRevalidate
-        ? "on-demand"
-        : options.isBuildTimePrerendering
-          ? "build"
-          : "stale",
-    });
+    const generatedPageData =
+      !options.isOnDemandRevalidate &&
+      cached?.isStale === false &&
+      cachedValue?.kind === "PAGES" &&
+      cachedValue.generatedFromDataRequest &&
+      isUnknownRecord(cachedValue.pageData)
+        ? cachedValue.pageData
+        : null;
+    if (!generatedPageData) {
+      const shortCircuit = await loadForegroundAppInitialRenderProps();
+      if (shortCircuit) return shortCircuit;
+    }
+    const result = generatedPageData
+      ? null
+      : await options.pageModule.getStaticProps({
+          params: userFacingParams,
+          locale: options.i18n.locale,
+          locales: options.i18n.locales,
+          defaultLocale: options.i18n.defaultLocale,
+          revalidateReason: options.isOnDemandRevalidate
+            ? "on-demand"
+            : options.isBuildTimePrerendering
+              ? "build"
+              : "stale",
+        });
+
+    if (generatedPageData) {
+      renderProps = generatedPageData as PagesRenderProps;
+      pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
+    }
 
     if (result?.props) {
-      pageProps = result.props;
+      pageProps = { ...pageProps, ...result.props };
+      renderProps = { ...renderProps, pageProps };
     }
 
     if (result?.redirect) {
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options),
+        response: buildPagesRedirectResponse(result.redirect, options, renderProps),
       };
     }
 
@@ -694,15 +964,47 @@ export async function resolvePagesPageData(
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {
       isrRevalidateSeconds = result.revalidate;
+    } else if (cachedValue?.kind === "PAGES" && cachedValue.generatedFromDataRequest) {
+      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+    }
+
+    if (shouldPersistFallbackData) {
+      const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
+      await options.isrSet(
+        cacheKey,
+        {
+          kind: "PAGES",
+          html: "",
+          pageData: renderProps,
+          generatedFromDataRequest: true,
+          headers: undefined,
+          status: undefined,
+        },
+        revalidateSeconds,
+        undefined,
+        options.expireSeconds,
+      );
     }
   }
 
   if (
     typeof options.pageModule.getServerSideProps !== "function" &&
     typeof options.pageModule.getStaticProps !== "function" &&
+    hasPagesGetInitialProps(options.AppComponent)
+  ) {
+    const shortCircuit = await loadForegroundAppInitialRenderProps();
+    if (shortCircuit) {
+      return shortCircuit;
+    }
+  }
+
+  if (
+    typeof options.pageModule.getServerSideProps !== "function" &&
+    typeof options.pageModule.getStaticProps !== "function" &&
+    !hasPagesGetInitialProps(options.AppComponent) &&
     hasPagesGetInitialProps(options.pageModule.default)
   ) {
-    const { req, res, responsePromise } = options.createGsspReqRes();
+    const { req, res, responsePromise } = getSharedReqRes();
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
       req,
       res,
@@ -724,6 +1026,7 @@ export async function resolvePagesPageData(
 
     if (initialProps) {
       pageProps = { ...pageProps, ...initialProps };
+      renderProps = { ...renderProps, pageProps };
     }
   }
 
@@ -732,6 +1035,7 @@ export async function resolvePagesPageData(
     gsspRes,
     isrRevalidateSeconds,
     pageProps,
+    props: renderProps,
     isFallback: false,
   };
 }
