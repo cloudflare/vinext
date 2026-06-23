@@ -153,7 +153,7 @@ export function TrendChart({
 
           if (segments.length === 0) return null;
           const pathD = segments.join(" ");
-          const visibleMarkers = visibleMarkerMask(s.values);
+          const visibleMarkers = visibleMarkerMask(s.values, formatY);
 
           return (
             <g key={s.name}>
