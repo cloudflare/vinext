@@ -1419,6 +1419,11 @@ function findCatchAllPage(dir: string, matcher: ValidFileMatcher): string | null
 
 /**
  * Convert a file path relative to app/ into an AppRoute.
+ *
+ * `file` and `appDir` must be forward-slash. `file` comes from
+ * `scanWithExtensions` (already forward-slash) and is joined onto `appDir` with
+ * `path.posix.join` to form the page/route path, so a native input would
+ * produce a mixed separator on Windows.
  */
 function fileToAppRoute(
   file: string,
@@ -1427,7 +1432,7 @@ function fileToAppRoute(
   matcher: ValidFileMatcher,
 ): AppRouteGraphRoute | null {
   // Remove the filename (page.tsx or route.ts)
-  let dir = path.dirname(file);
+  let dir = path.posix.dirname(file);
 
   // `@children` is transparent in routing: `app/foo/@children/page.tsx`
   // provides the children prop for `/foo` and registers a real page route
@@ -1437,8 +1442,8 @@ function fileToAppRoute(
   // layouts/boundaries are sourced from the parent. Mirrors Next.js'
   // `normalizeAppPath` which drops any `@` segment (including `@children`)
   // from the URL. See packages/next/src/shared/lib/router/utils/app-paths.ts.
-  if (type === "page" && dir !== "." && path.basename(dir) === "@children") {
-    const parent = path.dirname(dir);
+  if (type === "page" && dir !== "." && path.posix.basename(dir) === "@children") {
+    const parent = path.posix.dirname(dir);
     dir = parent === "" || parent === "." ? "." : parent;
   }
 
@@ -1446,8 +1451,8 @@ function fileToAppRoute(
     dir,
     appDir,
     matcher,
-    type === "page" ? path.join(appDir, file) : null,
-    type === "route" ? path.join(appDir, file) : null,
+    type === "page" ? path.posix.join(appDir, file) : null,
+    type === "route" ? path.posix.join(appDir, file) : null,
   );
 }
 
