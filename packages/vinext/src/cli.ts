@@ -639,7 +639,7 @@ async function buildApp() {
     process.stdout.write("\x1b[0m");
     console.log(`  ${label}`);
     prerenderResult = await runPrerender({
-      root: process.cwd(),
+      root: normalizePathSeparators(process.cwd()),
       concurrency: parsed.prerenderConcurrency,
     });
   }
