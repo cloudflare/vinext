@@ -768,7 +768,7 @@ export type VinextOptions = {
    * `/_next/image` falls back to serving the original asset unoptimized.
    *
    * @example
-   * import { imageAdapter } from "@vinext/cloudflare/image/image-adapter";
+   * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
    *
    * vinext({
    *   images: { optimizer: imageAdapter() },

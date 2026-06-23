@@ -1,6 +1,6 @@
 # @vinext/cloudflare
 
-Cloudflare cache adapters for [vinext](https://www.npmjs.com/package/vinext).
+Cloudflare cache and image adapters for [vinext](https://www.npmjs.com/package/vinext).
 
 This package provides the Cloudflare-specific cache backends that vinext uses for
 ISR and the `"use cache"` data cache when deploying to Cloudflare Workers:
@@ -10,6 +10,8 @@ ISR and the `"use cache"` data cache when deploying to Cloudflare Workers:
   namespace.
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — backs
   full-route, edge-managed page-level ISR with the Workers Cache API.
+- **`imageAdapter()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
+  `next/image` transformations with a Cloudflare Images binding.
 
 ## Usage
 
@@ -18,6 +20,7 @@ Declare the adapters on the `vinext()` plugin in your Vite config:
 ```ts
 import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
 
 export default defineConfig({
   plugins: [
@@ -26,6 +29,7 @@ export default defineConfig({
         data: kvDataAdapter(), // KV-backed data cache (binding: VINEXT_KV_CACHE)
         cdn: cdnAdapter(), // optional: edge-managed page-level ISR
       },
+      images: { optimizer: imageAdapter() }, // Cloudflare Images binding: IMAGES
     }),
     cloudflare(),
   ],

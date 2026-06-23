@@ -22,7 +22,7 @@
 /**
  * A serializable pointer to an image optimizer adapter module — the shape of the
  * `images.optimizer` slot in the vinext() plugin config. Produced by an adapter
- * builder (e.g. `imageAdapter(...)` from `@vinext/cloudflare/image/image-adapter`)
+ * builder (e.g. `imageAdapter(...)` from `@vinext/cloudflare/images/images-optimizer`)
  * or written by hand. `options` must be JSON-serializable: it is inlined into the
  * generated registration module and forwarded to the adapter factory at runtime.
  */

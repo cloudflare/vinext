@@ -130,6 +130,25 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
     });
     expect(observedCtx).toBe(ctx);
   });
+
+  it("the App Router Cloudflare example preserves its custom worker and forwards bindings", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const worker = await readFile(
+      resolve(import.meta.dirname, "../examples/app-router-cloudflare/worker/index.ts"),
+      "utf8",
+    );
+    const viteConfig = await readFile(
+      resolve(import.meta.dirname, "../examples/app-router-cloudflare/vite.config.ts"),
+      "utf8",
+    );
+
+    expect(worker).toContain("handler.fetch(request, env, ctx)");
+    expect(viteConfig).toContain(
+      'import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer"',
+    );
+    expect(viteConfig).toContain("images: { optimizer: imageAdapter() }");
+  });
 });
 
 describe("after() in deploy mode — Pages Router worker entry", () => {

@@ -26,8 +26,8 @@ import {
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
-import { imageAdapter } from "../packages/cloudflare/src/image/image-adapter.js";
-import createCloudflareImageOptimizer from "../packages/cloudflare/src/image/image-adapter.runtime.js";
+import { imageAdapter } from "../packages/cloudflare/src/images/images-optimizer.js";
+import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 
 describe("generateImageAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -55,7 +55,7 @@ describe("generateImageAdaptersModule", () => {
   it("inlines descriptor options and forwards them to the factory", () => {
     const code = generateImageAdaptersModule({
       optimizer: {
-        adapter: "@vinext/cloudflare/image/image-adapter",
+        adapter: "@vinext/cloudflare/images/images-optimizer",
         options: { binding: "MY_IMAGES" },
       },
     });
@@ -66,7 +66,7 @@ describe("generateImageAdaptersModule", () => {
 
   it("guards against double registration", () => {
     const code = generateImageAdaptersModule({
-      optimizer: { adapter: "@vinext/cloudflare/image/image-adapter" },
+      optimizer: { adapter: "@vinext/cloudflare/images/images-optimizer" },
     });
     expect(code).toContain("if (__vinextImageOptimizerRegistered) return;");
     expect(code).toContain("__vinextImageOptimizerRegistered = true;");
@@ -163,7 +163,7 @@ describe("imageAdapter builder", () => {
   it("resolves the runtime factory to an absolute path without touching the Workers runtime", () => {
     const descriptor = imageAdapter({ binding: "MY_IMAGES" });
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
-    expect(descriptor.adapter.endsWith("image-adapter.runtime.js")).toBe(true);
+    expect(descriptor.adapter.endsWith("images-optimizer.runtime.js")).toBe(true);
     expect(descriptor.options).toEqual({ binding: "MY_IMAGES" });
     expect(imageAdapter().options).toBeUndefined();
   });

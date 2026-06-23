@@ -17,7 +17,7 @@ export type ImageAdapterOptions = {
  *
  * @example
  * import { vinext } from "vinext";
- * import { imageAdapter } from "@vinext/cloudflare/image/image-adapter";
+ * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
  *
  * export default defineConfig({
  *   plugins: [vinext({ images: { optimizer: imageAdapter() } })],
@@ -28,7 +28,7 @@ export function imageAdapter(options?: ImageAdapterOptions) {
     throw new TypeError("[vinext] imageAdapter({ binding }) must be a string Images binding name.");
   }
   return {
-    adapter: fileURLToPath(import.meta.resolve("./image-adapter.runtime.js")),
+    adapter: fileURLToPath(import.meta.resolve("./images-optimizer.runtime.js")),
     options,
   };
 }

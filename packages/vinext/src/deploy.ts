@@ -996,7 +996,7 @@ export function formatImageOptimizationHint(): string {
     `  [vinext] next/image is served unoptimized. To enable edge image\n` +
     `  optimization (resize, AVIF/WebP, quality) via Cloudflare Images, add the\n` +
     `  image optimizer to your Vite config:\n\n` +
-    `    import { imageAdapter } from "@vinext/cloudflare/image/image-adapter";\n\n` +
+    `    import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";\n\n` +
     `    export default defineConfig({\n` +
     `      plugins: [\n` +
     `        vinext({ images: { optimizer: imageAdapter() } }),\n` +

@@ -641,7 +641,7 @@ describe("viteConfigHasImageAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `import { imageAdapter } from "@vinext/cloudflare/image/image-adapter";
+      `import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
        export default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };`,
     );
     expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
@@ -751,7 +751,7 @@ describe("formatImageOptimizationHint", () => {
   it("names the imageAdapter builder and the vinext({ images }) option", () => {
     const msg = formatImageOptimizationHint();
     expect(msg).toContain("served unoptimized");
-    expect(msg).toContain('from "@vinext/cloudflare/image/image-adapter"');
+    expect(msg).toContain('from "@vinext/cloudflare/images/images-optimizer"');
     expect(msg).toContain("vinext({ images: { optimizer: imageAdapter() } })");
   });
 

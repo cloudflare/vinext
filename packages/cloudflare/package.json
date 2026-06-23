@@ -17,9 +17,9 @@
       "types": "./dist/cache/*.d.ts",
       "import": "./dist/cache/*.js"
     },
-    "./image/*": {
-      "types": "./dist/image/*.d.ts",
-      "import": "./dist/image/*.js"
+    "./images/*": {
+      "types": "./dist/images/*.d.ts",
+      "import": "./dist/images/*.js"
     }
   },
   "scripts": {
