@@ -49,7 +49,17 @@ const TRANSPARENT_EXPRESSIONS = new Set([
 type Scope = {
   parent: Scope | null;
   bindings: AstScope["bindings"];
-  constants: Map<string, AstRecord>;
+  constants: Map<string, ConstantBinding>;
+};
+
+type ConstantBinding = {
+  initializer: AstRecord;
+  scope: Scope;
+};
+
+type ConstantResolution = {
+  active: Set<ConstantBinding>;
+  steps: number;
 };
 
 type EnvironmentLike = {
@@ -81,7 +91,7 @@ function stringValue(node: AstRecord): string | null {
 function staticStringValue(
   value: unknown,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
 ): string | null {
   const node = unwrapExpression(value);
   if (!node) return null;
@@ -99,32 +109,24 @@ function staticStringValue(
     return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    const left = staticStringValue(node.left, scope, resolvingBindings);
-    const right = staticStringValue(node.right, scope, resolvingBindings);
+    const left = staticStringValue(node.left, scope, resolution);
+    const right = staticStringValue(node.right, scope, resolution);
     return left === null || right === null ? null : left + right;
   }
   if (node.type === "ConditionalExpression") {
-    const truthiness = staticTruthiness(node.test, scope, resolvingBindings);
+    const truthiness = staticTruthiness(node.test, scope, resolution);
     if (truthiness !== null) {
-      return staticStringValue(
-        truthiness ? node.consequent : node.alternate,
-        scope,
-        resolvingBindings,
-      );
+      return staticStringValue(truthiness ? node.consequent : node.alternate, scope, resolution);
     }
-    const consequent = staticStringValue(node.consequent, scope, resolvingBindings);
-    const alternate = staticStringValue(node.alternate, scope, resolvingBindings);
+    const consequent = staticStringValue(node.consequent, scope, resolution);
+    const alternate = staticStringValue(node.alternate, scope, resolution);
     return consequent !== null && consequent === alternate ? consequent : null;
   }
   if (node.type === "SequenceExpression") {
-    return staticStringValue(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+    return staticStringValue(nodeArray(node.expressions).at(-1), scope, resolution);
   }
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return null;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return null;
-    return staticStringValue(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, null, staticStringValue);
   }
   return null;
 }
@@ -232,7 +234,7 @@ function hasDynamicRequestIgnoreDirective(
 function templateHasStaticPart(
   node: AstRecord,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
   useRaw = false,
 ): boolean {
   const quasis = nodeArray(node.quasis).filter(isAstRecord);
@@ -246,20 +248,20 @@ function templateHasStaticPart(
   return nodeArray(node.expressions).some((expression) => {
     const expressionNode = unwrapExpression(expression);
     if (!expressionNode) return false;
-    return requestHasStaticPart(expressionNode, scope, resolvingBindings);
+    return requestHasStaticPart(expressionNode, scope, resolution);
   });
 }
 
 function stringRawTemplateHasStaticPart(
   node: AstRecord,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
 ): boolean | null {
   if (node.type !== "TaggedTemplateExpression") return null;
   if (!isUnboundStringRawTag(node.tag, scope)) return null;
   const quasi = astNode(node.quasi);
   return quasi?.type === "TemplateLiteral"
-    ? templateHasStaticPart(quasi, scope, resolvingBindings, true)
+    ? templateHasStaticPart(quasi, scope, resolution, true)
     : null;
 }
 
@@ -278,7 +280,7 @@ function isNegativeNumericLiteral(value: unknown): boolean {
 function templateTruthiness(
   node: AstRecord,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
   useRaw = false,
 ): boolean | null {
   const quasis = nodeArray(node.quasis).filter(isAstRecord);
@@ -286,7 +288,7 @@ function templateTruthiness(
 
   let hasUnknownExpression = false;
   for (const expression of nodeArray(node.expressions)) {
-    const string = staticStringValue(expression, scope, resolvingBindings);
+    const string = staticStringValue(expression, scope, resolution);
     if (string !== null) {
       if (string !== "") return true;
       continue;
@@ -294,7 +296,7 @@ function templateTruthiness(
     const expressionNode = unwrapExpression(expression);
     if (
       isNegativeNumericLiteral(expressionNode) ||
-      staticTruthiness(expressionNode, scope, resolvingBindings) !== null
+      staticTruthiness(expressionNode, scope, resolution) !== null
     ) {
       return true;
     }
@@ -306,38 +308,34 @@ function templateTruthiness(
 function staticTruthiness(
   value: unknown,
   scope: Scope,
-  resolvingBindings = new Set<string>(),
+  resolution = createConstantResolution(),
 ): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
   if (node.type === "TemplateLiteral") {
-    return templateTruthiness(node, scope, resolvingBindings);
+    return templateTruthiness(node, scope, resolution);
   }
   if (node.type === "TaggedTemplateExpression" && isUnboundStringRawTag(node.tag, scope)) {
     const quasi = astNode(node.quasi);
     return quasi?.type === "TemplateLiteral"
-      ? templateTruthiness(quasi, scope, resolvingBindings, true)
+      ? templateTruthiness(quasi, scope, resolution, true)
       : null;
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    const string = staticStringValue(node, scope, resolvingBindings);
+    const string = staticStringValue(node, scope, resolution);
     return string === null ? null : Boolean(string);
   }
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return null;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return null;
-    return staticTruthiness(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, null, staticTruthiness);
   }
   if (node.type === "UnaryExpression") {
     if (node.operator === "void") {
       return isLiteralExpression(node.argument) ? false : null;
     }
     if (node.operator === "!") {
-      const argumentTruthiness = staticTruthiness(node.argument, scope, resolvingBindings);
+      const argumentTruthiness = staticTruthiness(node.argument, scope, resolution);
       return argumentTruthiness === null ? null : !argumentTruthiness;
     }
   }
@@ -356,18 +354,14 @@ function staticTruthiness(
 function staticNullishness(
   value: unknown,
   scope: Scope,
-  resolvingBindings = new Set<string>(),
+  resolution = createConstantResolution(),
 ): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return null;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return null;
-    return staticNullishness(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, null, staticNullishness);
   }
   if (node.type === "UnaryExpression") {
     return node.operator === "void" && isLiteralExpression(node.argument) ? true : null;
@@ -385,7 +379,7 @@ function staticNullishness(
   return null;
 }
 
-function findConstantBinding(scope: Scope, name: string): AstRecord | null {
+function findConstantBinding(scope: Scope, name: string): ConstantBinding | null {
   for (let current: Scope | null = scope; current; current = current.parent) {
     if (!current.bindings.has(name)) continue;
     return current.constants.get(name) ?? null;
@@ -393,22 +387,38 @@ function findConstantBinding(scope: Scope, name: string): AstRecord | null {
   return null;
 }
 
-function resolvingConstantBinding(
-  resolvingBindings: Set<string>,
+function createConstantResolution(): ConstantResolution {
+  return { active: new Set(), steps: 0 };
+}
+
+function resolveConstantBinding<T>(
+  scope: Scope,
   name: string,
-): Set<string> | null {
-  if (resolvingBindings.size >= MAX_CONSTANT_BINDING_DEPTH || resolvingBindings.has(name)) {
-    return null;
+  resolution: ConstantResolution,
+  fallback: T,
+  evaluate: (value: unknown, scope: Scope, resolution: ConstantResolution) => T,
+): T {
+  const binding = findConstantBinding(scope, name);
+  if (
+    !binding ||
+    resolution.steps >= MAX_CONSTANT_BINDING_DEPTH ||
+    resolution.active.has(binding)
+  ) {
+    return fallback;
   }
-  const nextResolvingBindings = new Set(resolvingBindings);
-  nextResolvingBindings.add(name);
-  return nextResolvingBindings;
+  resolution.steps++;
+  resolution.active.add(binding);
+  try {
+    return evaluate(binding.initializer, binding.scope, resolution);
+  } finally {
+    resolution.active.delete(binding);
+  }
 }
 
 function stringConcatHasStaticPart(
   node: AstRecord,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
 ): boolean | null {
   if (node.type !== "CallExpression") return null;
   const callee = unwrapExpression(node.callee);
@@ -416,51 +426,47 @@ function stringConcatHasStaticPart(
   if (
     callee?.type !== "MemberExpression" ||
     (callee.computed === true
-      ? property === null || staticStringValue(property, scope, resolvingBindings) !== "concat"
+      ? property === null || staticStringValue(property, scope, resolution) !== "concat"
       : !isIdentifierNamed(property, "concat"))
   ) {
     return null;
   }
 
   const receiver = unwrapExpression(callee.object);
-  if (!receiver || !isStaticStringExpression(receiver, scope, resolvingBindings)) return null;
-  if (requestHasStaticPart(receiver, scope, resolvingBindings)) return true;
+  if (!receiver || !isStaticStringExpression(receiver, scope, resolution)) return null;
+  if (requestHasStaticPart(receiver, scope, resolution)) return true;
 
   return nodeArray(node.arguments).some((argument) => {
     const argumentNode = unwrapExpression(argument);
-    return argumentNode ? requestHasStaticPart(argumentNode, scope, resolvingBindings) : false;
+    return argumentNode ? requestHasStaticPart(argumentNode, scope, resolution) : false;
   });
 }
 
 function isStaticStringExpression(
   value: unknown,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return false;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return false;
-    return isStaticStringExpression(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, false, isStaticStringExpression);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    return additionContainsString(node, scope, resolvingBindings);
+    return additionContainsString(node, scope, resolution);
   }
   if (node.type === "ConditionalExpression") {
     return (
-      isStaticStringExpression(node.consequent, scope, resolvingBindings) &&
-      isStaticStringExpression(node.alternate, scope, resolvingBindings)
+      isStaticStringExpression(node.consequent, scope, resolution) &&
+      isStaticStringExpression(node.alternate, scope, resolution)
     );
   }
   if (node.type === "SequenceExpression") {
-    return isStaticStringExpression(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+    return isStaticStringExpression(nodeArray(node.expressions).at(-1), scope, resolution);
   }
   if (node.type === "CallExpression") {
-    return stringConcatHasStaticPart(node, scope, resolvingBindings) !== null;
+    return stringConcatHasStaticPart(node, scope, resolution) !== null;
   }
   return false;
 }
@@ -468,40 +474,36 @@ function isStaticStringExpression(
 function additionContainsString(
   value: unknown,
   scope: Scope,
-  resolvingBindings: Set<string>,
+  resolution: ConstantResolution,
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return false;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return false;
-    return additionContainsString(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, false, additionContainsString);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
     return (
-      additionContainsString(node.left, scope, resolvingBindings) ||
-      additionContainsString(node.right, scope, resolvingBindings)
+      additionContainsString(node.left, scope, resolution) ||
+      additionContainsString(node.right, scope, resolution)
     );
   }
   if (node.type === "ConditionalExpression") {
     return (
-      additionContainsString(node.consequent, scope, resolvingBindings) &&
-      additionContainsString(node.alternate, scope, resolvingBindings)
+      additionContainsString(node.consequent, scope, resolution) &&
+      additionContainsString(node.alternate, scope, resolution)
     );
   }
   if (node.type === "SequenceExpression") {
-    return additionContainsString(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+    return additionContainsString(nodeArray(node.expressions).at(-1), scope, resolution);
   }
-  return stringConcatHasStaticPart(node, scope, resolvingBindings) !== null;
+  return stringConcatHasStaticPart(node, scope, resolution) !== null;
 }
 
 function requestHasStaticPart(
   value: unknown,
   scope: Scope,
-  resolvingBindings = new Set<string>(),
+  resolution = createConstantResolution(),
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
@@ -510,30 +512,26 @@ function requestHasStaticPart(
   if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
   if (node.type === "TemplateLiteral") {
-    return templateHasStaticPart(node, scope, resolvingBindings);
+    return templateHasStaticPart(node, scope, resolution);
   }
-  const stringRawHasStaticPart = stringRawTemplateHasStaticPart(node, scope, resolvingBindings);
+  const stringRawHasStaticPart = stringRawTemplateHasStaticPart(node, scope, resolution);
   if (stringRawHasStaticPart !== null) return stringRawHasStaticPart;
-  const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolvingBindings);
+  const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolution);
   if (concatHasStaticPart !== null) return concatHasStaticPart;
   if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
   if (node.type === "Identifier" && typeof node.name === "string") {
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return false;
-    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
-    if (!nextResolvingBindings) return false;
-    return requestHasStaticPart(binding, scope, nextResolvingBindings);
+    return resolveConstantBinding(scope, node.name, resolution, false, requestHasStaticPart);
   }
   if (node.type === "UnaryExpression") {
     if (node.operator === "void") {
       return isLiteralExpression(node.argument);
     }
     if (isNegativeNumericLiteral(node)) return true;
-    return staticTruthiness(node, scope, resolvingBindings) !== null;
+    return staticTruthiness(node, scope, resolution) !== null;
   }
 
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    if (!additionContainsString(node, scope, resolvingBindings)) return false;
+    if (!additionContainsString(node, scope, resolution)) return false;
     const left = unwrapExpression(node.left);
     const right = unwrapExpression(node.right);
     const leftString = left ? stringValue(left) : null;
@@ -541,39 +539,35 @@ function requestHasStaticPart(
     return (
       (leftString !== null && hasSignificantPathPart(leftString)) ||
       (rightString !== null && hasSignificantPathPart(rightString)) ||
-      (leftString === null && requestHasStaticPart(left, scope, resolvingBindings)) ||
-      (rightString === null && requestHasStaticPart(right, scope, resolvingBindings))
+      (leftString === null && requestHasStaticPart(left, scope, resolution)) ||
+      (rightString === null && requestHasStaticPart(right, scope, resolution))
     );
   }
 
   if (node.type === "ConditionalExpression") {
-    const truthiness = staticTruthiness(node.test, scope, resolvingBindings);
+    const truthiness = staticTruthiness(node.test, scope, resolution);
     return truthiness === null
-      ? requestHasStaticPart(node.consequent, scope, resolvingBindings) ||
-          requestHasStaticPart(node.alternate, scope, resolvingBindings)
-      : requestHasStaticPart(
-          truthiness ? node.consequent : node.alternate,
-          scope,
-          resolvingBindings,
-        );
+      ? requestHasStaticPart(node.consequent, scope, resolution) ||
+          requestHasStaticPart(node.alternate, scope, resolution)
+      : requestHasStaticPart(truthiness ? node.consequent : node.alternate, scope, resolution);
   }
   if (node.type === "LogicalExpression") {
-    const truthiness = staticTruthiness(node.left, scope, resolvingBindings);
+    const truthiness = staticTruthiness(node.left, scope, resolution);
     if (node.operator === "&&" && truthiness !== null) {
-      return requestHasStaticPart(truthiness ? node.right : node.left, scope, resolvingBindings);
+      return requestHasStaticPart(truthiness ? node.right : node.left, scope, resolution);
     }
     if (node.operator === "||" && truthiness !== null) {
-      return requestHasStaticPart(truthiness ? node.left : node.right, scope, resolvingBindings);
+      return requestHasStaticPart(truthiness ? node.left : node.right, scope, resolution);
     }
     if (node.operator === "??") {
-      const nullishness = staticNullishness(node.left, scope, resolvingBindings);
+      const nullishness = staticNullishness(node.left, scope, resolution);
       if (nullishness !== null) {
-        return requestHasStaticPart(nullishness ? node.right : node.left, scope, resolvingBindings);
+        return requestHasStaticPart(nullishness ? node.right : node.left, scope, resolution);
       }
     }
     return (
-      requestHasStaticPart(node.left, scope, resolvingBindings) ||
-      requestHasStaticPart(node.right, scope, resolvingBindings)
+      requestHasStaticPart(node.left, scope, resolution) ||
+      requestHasStaticPart(node.right, scope, resolution)
     );
   }
   if (node.type === "SequenceExpression") {
@@ -583,7 +577,7 @@ function requestHasStaticPart(
       expressions
         .slice(0, -1)
         .every((expression) => !expressionMayHaveSideEffects(expression, scope)) &&
-      requestHasStaticPart(expressions.at(-1), scope, resolvingBindings)
+      requestHasStaticPart(expressions.at(-1), scope, resolution)
     );
   }
 
@@ -689,7 +683,7 @@ function collectConstantBinding(declaration: AstRecord, declarator: AstRecord, s
     typeof identifier.name === "string" &&
     initializer
   ) {
-    scope.constants.set(identifier.name, initializer);
+    scope.constants.set(identifier.name, { initializer, scope });
   }
 }
 

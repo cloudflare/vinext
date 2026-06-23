@@ -195,6 +195,46 @@ import(alias);
     expect(transformed).toContain("Cannot find module as expression is too dynamic");
   });
 
+  it("resolves long constant alias chains below the linker budget", () => {
+    const aliases = ['const request0 = "./module.js";'];
+    for (let index = 1; index < 1_499; index++) {
+      aliases.push(`const request${index} = request${index - 1};`);
+    }
+    aliases.push("import(request1498);");
+
+    expect(_transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")).toBeNull();
+  });
+
+  it("resolves constant aliases in their declaration scope", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `const prefix = "./";
+const request = prefix + "module.js";
+{
+  const prefix = getPrefix();
+  import(request);
+}
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
+  it("tracks shadowed constant bindings by identity", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `const prefix = "./";
+const request = prefix + "module.js";
+{
+  const prefix = request;
+  import(prefix);
+}
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+  });
+
   it("resolves constant bindings in template interpolations", () => {
     expect(
       _transformVeryDynamicRequests(
