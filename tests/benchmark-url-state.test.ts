@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   benchmarkSelectionUrl,
   resolveSelectedBenchmark,
+  resolveSelectedBenchmarkFromSearch,
 } from "../apps/web/app/benchmarks/components/benchmark-url-state";
 
 describe("benchmark URL state", () => {
@@ -17,6 +18,15 @@ describe("benchmark URL state", () => {
       "client-size",
     );
     expect(resolveSelectedBenchmark([], "production-build")).toBeUndefined();
+  });
+
+  it("resolves the selected benchmark from a browser search string", () => {
+    expect(
+      resolveSelectedBenchmarkFromSearch(
+        ["client-size", "production-build"],
+        "?view=compact&benchmark=production-build",
+      ),
+    ).toBe("production-build");
   });
 
   it("updates the benchmark while preserving other URL state", () => {

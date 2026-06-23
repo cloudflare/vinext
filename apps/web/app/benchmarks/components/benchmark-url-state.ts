@@ -10,6 +10,16 @@ export function resolveSelectedBenchmark(
   return benchmarkIds[0];
 }
 
+export function resolveSelectedBenchmarkFromSearch(
+  benchmarkIds: readonly string[],
+  search: string,
+): string | undefined {
+  return resolveSelectedBenchmark(
+    benchmarkIds,
+    new URLSearchParams(search).get(BENCHMARK_QUERY_PARAM),
+  );
+}
+
 export function benchmarkSelectionUrl(
   pathname: string,
   searchParams: URLSearchParams,
