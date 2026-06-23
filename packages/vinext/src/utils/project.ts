@@ -272,10 +272,14 @@ export function hasViteConfig(root: string): boolean {
  * Return the first candidate directory (resolved against `root`) that exists,
  * or null. Used to locate conventional `app`/`pages` directories that may live
  * at the root or under `src/`.
+ *
+ * `root` and `candidates` must be forward-slash, and the returned path is
+ * forward-slash too: the candidate is joined with `path.posix.join`, which only
+ * stays canonical when its inputs already are.
  */
 export function findDir(root: string, ...candidates: string[]): string | null {
   for (const candidate of candidates) {
-    const full = path.join(root, candidate);
+    const full = path.posix.join(root, candidate);
     try {
       if (fs.statSync(full).isDirectory()) return full;
     } catch {

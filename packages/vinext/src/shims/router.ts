@@ -414,6 +414,7 @@ type PagesRouterRuntimeState = {
   cancelPendingRenderCommit: (() => void) | null;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
+  lastHash: string;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
@@ -441,6 +442,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     cancelPendingRenderCommit: null,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
+    lastHash: typeof window !== "undefined" ? window.location.hash : "",
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
@@ -1697,6 +1699,7 @@ async function navigateClientData(
 
     window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
     routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
+    routerRuntimeState.lastHash = window.location.hash;
     await navigateClientHtml(redirectedUrl, redirectedUrl, controller, navId, assertStillCurrent);
     return;
   }
@@ -2019,6 +2022,7 @@ async function navigateClientHtml(
   if (pendingRedirectHistoryUrl) {
     window.history.replaceState(window.history.state ?? {}, "", pendingRedirectHistoryUrl);
     routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
+    routerRuntimeState.lastHash = window.location.hash;
   }
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
@@ -2113,6 +2117,7 @@ async function navigateClient(
           window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
           routerRuntimeState.lastPathnameAndSearch =
             window.location.pathname + window.location.search;
+          routerRuntimeState.lastHash = window.location.hash;
           browserUrl = redirectedUrl;
           htmlFetchUrl = redirectedUrl;
         } else if (middlewareEffect?.rewriteTarget) {
@@ -2302,6 +2307,7 @@ function updateHistory(
   else window.history.replaceState(state, "", fullUrl);
   routerRuntimeState.currentHistoryKey = key;
   routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
+  routerRuntimeState.lastHash = window.location.hash;
   routerRuntimeState.routerDidNavigate = true;
 }
 
@@ -2858,6 +2864,12 @@ function getRouterStateKey(state: unknown): string | undefined {
   return typeof state.key === "string" ? state.key : undefined;
 }
 
+function getTrackedPagesRouterAsPath(): string {
+  const trackedUrl = new URL(routerRuntimeState.lastPathnameAndSearch, window.location.href);
+  const appPath = stripBasePath(trackedUrl.pathname, __basePath) + trackedUrl.search;
+  return removeNavigationLocalePrefix(appPath);
+}
+
 function handlePagesRouterPopState(e: PopStateEvent): void {
   const browserUrl = window.location.pathname + window.location.search;
   const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
@@ -2890,8 +2902,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   // still points at the entry we were on, so a genuine navigation is *not*
   // misidentified as a replay.
   //
-  // `state.as` is the canonical app-relative path (no basePath); compose the
-  // basePath back on for the comparison.
+  // `state.as` and Next.js's `router.asPath` are app-relative: neither carries
+  // basePath or the active locale prefix. Normalize the tracked browser URL to
+  // the same shape before comparing.
   //
   // Mirrors Next.js's:
   //   if (isFirstPopStateEvent && this.locale === state.options.locale
@@ -2907,14 +2920,17 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (
       state.options?.locale === currentLocale &&
       typeof state.as === "string" &&
-      withBasePath(state.as, __basePath) === routerRuntimeState.lastPathnameAndSearch
+      state.as === getTrackedPagesRouterAsPath()
     ) {
       return;
     }
   }
 
   // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
-  const isHashOnly = browserUrl === routerRuntimeState.lastPathnameAndSearch;
+  const currentHash = window.location.hash;
+  const isHashOnly =
+    browserUrl === routerRuntimeState.lastPathnameAndSearch &&
+    (currentHash !== routerRuntimeState.lastHash || currentHash !== "");
   const targetKey = getRouterStateKey(state);
   let forcedScroll: ScrollPosition | undefined;
 
@@ -2966,6 +2982,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     routerRuntimeState.currentHistoryKey = targetKey;
   }
   routerRuntimeState.lastPathnameAndSearch = browserUrl;
+  routerRuntimeState.lastHash = currentHash;
 
   if (isHashOnly) {
     // Hash-only back/forward — no page fetch needed.

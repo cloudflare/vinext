@@ -1,5 +1,41 @@
 # vinext
 
+## 0.1.7
+
+### Bug Fixes
+
+- **Image:** emit hoisted var for local image import binding to avoid TDZ (#2067)
+- **Dynamic:** render ssr:false loading with pastDelay:true to match client (#1967) (#2064)
+- **Actions:** dedupe Set-Cookie on no-JS non-redirect action responses (#1976) (#2063)
+- **RSC:** only short-circuit well-known signal digests so real errors reach onRequestError (#2066)
+
+### Performance
+
+#### App
+
+- omit unused server action runtime (#2206)
+- omit unused metadata route runtime (#2196)
+- omit unused middleware runtime (#2194)
+
+#### Misc
+
+- **Server:** skip duplicate App RSC vary merge (#2177)
+- **Server:** reuse App SSR bfcache metadata (#2182)
+- **Client:** preserve additional route-owned shims (#2205)
+- **Dev:** externalize SSR React runtime (#2191)
+- **App Router:** isolate action request detection (#2188)
+- **Client:** preserve App Router route chunk boundaries (#2189)
+- **OG:** use MagicString positional overwrites instead of repeated replaceAll (#2202)
+- **Dev Server:** memoize the Pages SSR handler across dev requests (#2201)
+- **Mdx:** gate the MDX transform handler behind a native id filter (#2200)
+
+### Contributors
+
+- @Divkix
+- @NathanDrake2406
+- @shulaoda
+- @TheAlexLichter
+
 ## 0.1.6
 
 ### Bug Fixes

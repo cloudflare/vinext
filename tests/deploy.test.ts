@@ -48,6 +48,7 @@ import {
 } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
+  finalizeMissingStaticAssetResponse,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
@@ -298,7 +299,7 @@ describe("resolveWranglerBin", () => {
   });
 
   it("returns a clear fallback path when Wrangler is missing", () => {
-    expect(resolveWranglerBin(tmpDir)).toBe(
+    expect(resolveWranglerBin(tmpDir, () => null)).toBe(
       path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
   });
@@ -1217,7 +1218,36 @@ describe("generatePagesRouterWorkerEntry", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain(
+      "return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
+  });
+
+  it("finalizes only missing build-asset 404 responses", async () => {
+    let canceled = false;
+    const routed404 = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("rendered 404"));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      { status: 404, headers: { "content-type": "text/html" } },
+    );
+
+    const finalized = finalizeMissingStaticAssetResponse(routed404, true);
+    expect(finalized.status).toBe(404);
+    expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(await finalized.text()).toBe("Not Found");
+    await vi.waitFor(() => expect(canceled).toBe(true));
+
+    const middlewareResponse = new Response("rewritten missing asset", { status: 200 });
+    expect(finalizeMissingStaticAssetResponse(middlewareResponse, true)).toBe(middlewareResponse);
+
+    const regular404 = new Response("rendered 404", { status: 404 });
+    expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -1321,11 +1351,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
-  // Regression for #1337: invalid `_next/static/*` paths must short-circuit
-  // with a plain-text 404 instead of falling through to renderPage (which
-  // would render the full HTML 404 page with bootstrap scripts + CSS).
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  it("short-circuits invalid `_next/static/*` paths with plain-text 404", () => {
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("runs middleware before finalizing missing `_next/static/*` responses", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain(
       'import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses"',
@@ -1334,15 +1362,23 @@ describe("generatePagesRouterWorkerEntry", () => {
       'import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix"',
     );
     expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
-    expect(content).toContain("isNextStaticPath(pathname, basePath, assetPathPrefix)");
-    expect(content).toContain("return notFoundStaticAssetResponse();");
+    expect(content).toContain(
+      "const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix)",
+    );
+    expect(content).toContain(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
 
-    // The short-circuit must fire BEFORE runPagesRequest (which invokes renderPage)
-    // so the rich HTML 404 is never rendered for asset misses.
+    // Detection happens before routing, but the response is finalized only
+    // after runPagesRequest has given middleware a chance to handle the miss.
     const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
     const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
+    const finalizePos = content.indexOf(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
     expect(staticPos).toBeGreaterThan(-1);
     expect(pipelinePos).toBeGreaterThan(staticPos);
+    expect(finalizePos).toBeGreaterThan(pipelinePos);
   });
 });
 

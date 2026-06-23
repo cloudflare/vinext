@@ -1318,10 +1318,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // Cloudflare's ASSETS binding serves these directly in Workers; this
     // branch is the Node fallback.
     //
-    // Asset-shaped requests that don't find a file return a plain-text 404
-    // instead of falling through to the RSC handler (which would render
-    // the full HTML 404 page). Matches Next.js's behaviour in
-    // packages/next/src/server/lib/router-server.ts.
+    // Existing build assets bypass middleware. Missing asset-shaped requests
+    // must still reach middleware so it can rewrite or respond; if routing
+    // ultimately returns 404, convert it back to the canonical plain-text
+    // static-file response below.
+    let missingBuildAsset = false;
     {
       const assetLookupPath = resolveAppRouterAssetPath(
         pathname,
@@ -1332,9 +1333,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
         }
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
-        return;
+        missingBuildAsset = true;
       }
     }
 
@@ -1432,6 +1431,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           res,
           compress,
         );
+        return;
+      }
+
+      if (missingBuildAsset && response.status === 404) {
+        cancelResponseBody(response);
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
         return;
       }
 
@@ -1659,19 +1665,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // `staticLookupPath` is still computed because non-asset paths below
     // (image-optimization, SSR routing) match against the basePath-stripped form.
     //
-    // Asset-shaped requests that don't find a file return a plain-text 404
-    // instead of falling through to the SSR/render handler (which would
-    // render the full HTML 404 page). Matches Next.js's behaviour in
-    // packages/next/src/server/lib/router-server.ts.
+    // Existing build assets bypass middleware. Missing asset-shaped requests
+    // must still reach middleware so it can rewrite or respond; if routing
+    // ultimately returns 404, convert it back to the canonical plain-text
+    // static-file response below.
     const staticLookupPath = stripBasePath(pathname, basePath);
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
+    const missingBuildAsset = pagesAssetLookup !== null;
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;
       }
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
-      return;
     }
 
     // ── Image optimization passthrough ──────────────────────────────
@@ -1856,6 +1860,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       if (result.type === "response") {
         const { response } = result;
+        if (missingBuildAsset && response.status === 404) {
+          cancelResponseBody(response);
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not Found");
+          return;
+        }
         const shouldStream = isVinextStreamedHtmlResponse(response);
         // Passthrough responses (middleware short-circuits, external proxies, redirects)
         // carry no defaultContentType — send them verbatim without injecting a

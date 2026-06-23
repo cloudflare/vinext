@@ -28,6 +28,8 @@ import {
 } from "../packages/vinext/src/shims/cache.js";
 import {
   cookies,
+  getHeadersContext,
+  headersContextFromRequest,
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -240,6 +242,7 @@ function createRscOptions(
     decodeReply() {
       return Promise.resolve([]);
     },
+    draftModeSecret: "draft-secret",
     findIntercept() {
       return null;
     },
@@ -1229,6 +1232,169 @@ describe("app server action execution helpers", () => {
       root: "redirect-target:{}:none",
       returnValue: { ok: true },
     });
+  });
+
+  it.each(["rerender", "redirect"] as const)(
+    "passes empty request APIs to force-static action %s targets",
+    async (kind) => {
+      const buildInputs: Array<{ query: string; header: string | null }> = [];
+      const targetRoute: TestRoute = {
+        id: kind === "redirect" ? "redirect-target" : "dashboard",
+        page: {},
+        params: [],
+        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
+      };
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({ searchParams }) {
+            buildInputs.push({
+              query: searchParams.toString(),
+              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            });
+            return "force-static-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(
+              kind === "redirect"
+                ? () => redirect("/redirect-target?user=alice")
+                : async () => {
+                    await revalidatePath("/dashboard");
+                    return "revalidated";
+                  },
+            );
+          },
+          matchRoute(pathname) {
+            if (kind === "redirect" && pathname === "/redirect-target") {
+              return { params: {}, route: targetRoute };
+            }
+            return {
+              params: {},
+              route:
+                kind === "rerender"
+                  ? targetRoute
+                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+            };
+          },
+          request: createFetchActionRequest({ "x-request-value": "present" }),
+          resolveRouteDynamicConfig(route) {
+            return route === targetRoute ? "force-static" : undefined;
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
+    },
+  );
+
+  it.each(["rerender", "redirect"] as const)(
+    "observes searchParams access for dynamic-error action %s targets",
+    async (kind) => {
+      const buildInputs: Array<{
+        metadata: boolean | undefined;
+        page: boolean | undefined;
+        query: string;
+      }> = [];
+      const targetRoute: TestRoute = {
+        id: kind === "redirect" ? "redirect-target" : "dashboard",
+        page: {},
+        params: [],
+        pattern: kind === "redirect" ? "/redirect-target" : "/dashboard",
+      };
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({
+            observeMetadataSearchParamsAccess,
+            observePageSearchParamsAccess,
+            searchParams,
+          }) {
+            buildInputs.push({
+              metadata: observeMetadataSearchParamsAccess,
+              page: observePageSearchParamsAccess,
+              query: searchParams.toString(),
+            });
+            return "dynamic-error-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(
+              kind === "redirect"
+                ? () => redirect("/redirect-target?user=alice")
+                : async () => {
+                    await revalidatePath("/dashboard");
+                    return "revalidated";
+                  },
+            );
+          },
+          matchRoute(pathname) {
+            if (kind === "redirect" && pathname === "/redirect-target") {
+              return { params: {}, route: targetRoute };
+            }
+            return {
+              params: {},
+              route:
+                kind === "rerender"
+                  ? targetRoute
+                  : { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+            };
+          },
+          resolveRouteDynamicConfig(route) {
+            return route === targetRoute ? "error" : undefined;
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(kind === "redirect" ? 303 : 200);
+      expect(buildInputs).toEqual([{ metadata: true, page: true, query: "user=alice" }]);
+    },
+  );
+
+  it("uses empty action request APIs for force-static targets in draft mode", async () => {
+    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const route: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+    const request = createFetchActionRequest({
+      cookie: "__prerender_bypass=draft-secret",
+      "x-request-value": "present",
+    });
+    setHeadersContext(headersContextFromRequest(request));
+    try {
+      const response = await handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement({ searchParams }) {
+            buildInputs.push({
+              query: searchParams.toString(),
+              header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            });
+            return "draft-target";
+          },
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await revalidatePath("/dashboard");
+              return "revalidated";
+            });
+          },
+          matchRoute() {
+            return { params: {}, route };
+          },
+          request,
+          resolveRouteDynamicConfig() {
+            return "force-static";
+          },
+          searchParams: new URLSearchParams("user=alice"),
+        }),
+      );
+
+      expect(response?.status).toBe(200);
+      expect(buildInputs).toEqual([{ query: "", header: null }]);
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it("renders internal action redirects with a clean GET request and action cookies", async () => {

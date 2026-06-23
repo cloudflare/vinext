@@ -77,8 +77,13 @@ describe("App Router Production build", () => {
       const source = entry?.src?.replaceAll("\\", "/") ?? key.replaceAll("\\", "/");
       return entry?.name === "link" || /\/shims\/link\.(?:js|tsx)$/.test(source);
     });
+    const serverActionClientKey = Object.keys(clientManifest).find((key) => {
+      const source = clientManifest[key]?.src?.replaceAll("\\", "/") ?? key.replaceAll("\\", "/");
+      return source.includes("/server/app-browser-server-action-client.");
+    });
     expect(browserEntryKey).toBeDefined();
     expect(linkEntryKey).toBeDefined();
+    expect(serverActionClientKey).toBeDefined();
 
     const eagerKeys = new Set<string>();
     const visitEagerImports = (key: string): void => {
@@ -107,6 +112,48 @@ describe("App Router Production build", () => {
     const buildIdPath = path.join(outDir, "server", "BUILD_ID");
     expect(fs.existsSync(buildIdPath)).toBe(true);
     expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("omits the browser server-action client when the app has no server actions", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-action-free-client-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>action-free</p>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const manifest = fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8");
+      expect(manifest).not.toContain("app-browser-server-action-client");
+      expect(readAllJs(clientDir)).not.toContain("UnrecognizedActionError");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }, 30000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {

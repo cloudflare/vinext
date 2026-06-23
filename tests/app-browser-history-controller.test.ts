@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   AppBrowserHistoryController,
+  createCanonicalBrowserHistoryHref,
   type RestorableSnapshotCandidate,
 } from "../packages/vinext/src/server/app-browser-history-controller.js";
 import {
@@ -230,6 +231,23 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
 });
 
 describe("AppBrowserHistoryController history metadata sync", () => {
+  it("canonicalizes a bare trailing query marker during bootstrap", () => {
+    const { controller, store } = createController({
+      initialHref: "https://example.com/reload-error?#section",
+    });
+
+    controller.writeBootstrapHistoryMetadata();
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBe("/reload-error#section");
+  });
+
+  it("preserves non-empty query strings when canonicalizing history hrefs", () => {
+    expect(createCanonicalBrowserHistoryHref("https://example.com/page?value=1#section")).toBe(
+      "/page?value=1#section",
+    );
+  });
+
   it("preserves the BFCache epoch check when deciding whether to re-sync", () => {
     // A fresh document with no stored epoch starts at document epoch 0.
     const { controller, store } = createController();

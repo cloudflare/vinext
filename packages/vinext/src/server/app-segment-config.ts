@@ -25,6 +25,7 @@ type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   page?: AppRouteSegmentConfigModule | null;
   parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
+  parallelSegments?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
 };
 
 const DYNAMIC_VALUES = new Set<unknown>(["auto", "error", "force-dynamic", "force-static"]);
@@ -115,12 +116,16 @@ export function resolveAppPageSegmentConfig(
   let hasOnlyCache = false;
   let hasOnlyNoStore = false;
   let hasParentDefaultNoStore = false;
+  let hasForceDynamic = false;
 
   for (const segment of segments) {
     if (!segment) continue;
 
     if (isRouteSegmentDynamic(segment.dynamic)) {
-      config.dynamicConfig = segment.dynamic;
+      if (segment.dynamic === "force-dynamic") {
+        hasForceDynamic = true;
+      }
+      config.dynamicConfig = hasForceDynamic ? "force-dynamic" : segment.dynamic;
     }
 
     if (isRouteSegmentRuntime(segment.runtime)) {
@@ -145,9 +150,10 @@ export function resolveAppPageSegmentConfig(
       if (fetchCache === "only-cache") hasOnlyCache = true;
       if (fetchCache === "only-no-store") hasOnlyNoStore = true;
 
-      const hasCacheEnforcer = hasForceCache || hasOnlyCache;
-      const hasNoStoreEnforcer = hasForceNoStore || hasOnlyNoStore;
-      if (hasCacheEnforcer && hasNoStoreEnforcer) {
+      const hasConflictingForces = hasForceCache && hasForceNoStore;
+      const hasConflictingOnlyModes =
+        !hasForceCache && !hasForceNoStore && hasOnlyCache && hasOnlyNoStore;
+      if (hasConflictingForces || hasConflictingOnlyModes) {
         throw new Error(describeFetchCacheConflict(fetchCache));
       }
 
@@ -166,6 +172,62 @@ export function resolveAppPageSegmentConfig(
       } else {
         config.fetchCache = fetchCache;
       }
+    }
+
+    config.revalidateSeconds = resolveRevalidateSeconds(
+      config.revalidateSeconds,
+      segment.revalidate,
+    );
+  }
+
+  for (const segment of options.parallelSegments ?? []) {
+    if (!segment) continue;
+
+    // Next.js traverses every parallel branch. Vinext's flattened route graph
+    // does not preserve the exact breadth-first overwrite order, so primary
+    // chain values remain authoritative when present. Slot-only values still
+    // define the route, while sticky route-wide constraints aggregate across
+    // every active branch.
+    if (segment.dynamic === "force-dynamic") {
+      hasForceDynamic = true;
+      config.dynamicConfig = "force-dynamic";
+    } else if (config.dynamicConfig === undefined && isRouteSegmentDynamic(segment.dynamic)) {
+      config.dynamicConfig = segment.dynamic;
+    }
+
+    if (segment.dynamicParams === false) {
+      config.dynamicParamsConfig = false;
+    } else if (segment.dynamicParams === true && config.dynamicParamsConfig === undefined) {
+      config.dynamicParamsConfig = true;
+    }
+
+    if (config.runtime === undefined && isRouteSegmentRuntime(segment.runtime)) {
+      config.runtime = segment.runtime;
+    }
+
+    if (isRouteSegmentFetchCache(segment.fetchCache)) {
+      const fetchCache = segment.fetchCache;
+      if (hasParentDefaultNoStore && (fetchCache === "auto" || isCacheFetchCacheMode(fetchCache))) {
+        throw new Error(describeFetchCacheConflict(fetchCache));
+      }
+      if (fetchCache === "force-cache") hasForceCache = true;
+      if (fetchCache === "force-no-store") hasForceNoStore = true;
+      if (fetchCache === "only-cache") hasOnlyCache = true;
+      if (fetchCache === "only-no-store") hasOnlyNoStore = true;
+      const hasConflictingForces = hasForceCache && hasForceNoStore;
+      const hasConflictingOnlyModes =
+        !hasForceCache && !hasForceNoStore && hasOnlyCache && hasOnlyNoStore;
+      if (hasConflictingForces || hasConflictingOnlyModes) {
+        throw new Error(describeFetchCacheConflict(fetchCache));
+      }
+      if (fetchCache === "default-no-store") {
+        hasParentDefaultNoStore = true;
+      }
+      if (hasForceCache) config.fetchCache = "force-cache";
+      else if (hasForceNoStore) config.fetchCache = "force-no-store";
+      else if (hasOnlyCache) config.fetchCache = "only-cache";
+      else if (hasOnlyNoStore) config.fetchCache = "only-no-store";
+      else if (config.fetchCache === undefined) config.fetchCache = fetchCache;
     }
 
     config.revalidateSeconds = resolveRevalidateSeconds(
