@@ -86,13 +86,47 @@ function staticStringValue(
   if (!node) return null;
   const valueString = stringValue(node);
   if (valueString !== null) return valueString;
-  if (node.type !== "Identifier" || typeof node.name !== "string") return null;
-  if (resolvingBindings.has(node.name)) return null;
-  const binding = findConstantBinding(scope, node.name);
-  if (!binding) return null;
-  const nextResolvingBindings = new Set(resolvingBindings);
-  nextResolvingBindings.add(node.name);
-  return staticStringValue(binding, scope, nextResolvingBindings);
+  if (node.type === "TemplateLiteral" && nodeArray(node.expressions).length === 0) {
+    const quasi = astNode(nodeArray(node.quasis)[0]);
+    const quasiValue = quasi?.value;
+    const cooked =
+      typeof quasiValue === "object" && quasiValue !== null
+        ? Reflect.get(quasiValue, "cooked")
+        : null;
+    const raw =
+      typeof quasiValue === "object" && quasiValue !== null ? Reflect.get(quasiValue, "raw") : null;
+    return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const left = staticStringValue(node.left, scope, resolvingBindings);
+    const right = staticStringValue(node.right, scope, resolvingBindings);
+    return left === null || right === null ? null : left + right;
+  }
+  if (node.type === "ConditionalExpression") {
+    const truthiness = staticTruthiness(node.test, scope, resolvingBindings);
+    if (truthiness !== null) {
+      return staticStringValue(
+        truthiness ? node.consequent : node.alternate,
+        scope,
+        resolvingBindings,
+      );
+    }
+    const consequent = staticStringValue(node.consequent, scope, resolvingBindings);
+    const alternate = staticStringValue(node.alternate, scope, resolvingBindings);
+    return consequent !== null && consequent === alternate ? consequent : null;
+  }
+  if (node.type === "SequenceExpression") {
+    return staticStringValue(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+  }
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return null;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return null;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return staticStringValue(binding, scope, nextResolvingBindings);
+  }
+  return null;
 }
 
 function hasSignificantPathPart(value: string): boolean {
@@ -445,6 +479,14 @@ function requestHasStaticPart(
       return isStaticSafeExpression(node.argument, scope, resolvingBindings);
     }
     if (node.operator === "!") return true;
+    const argument = unwrapExpression(node.argument);
+    if (
+      node.operator === "-" &&
+      argument?.type === "Literal" &&
+      typeof argument.value === "number"
+    ) {
+      return true;
+    }
     return staticTruthiness(node, scope, resolvingBindings) !== null;
   }
 

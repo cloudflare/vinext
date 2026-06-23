@@ -230,13 +230,14 @@ require(missing ?? request);
 
   it("matches constant template and unary request patterns", () => {
     const transformed = _transformVeryDynamicRequests(
-      "require(`/`); import(void 0); require(!0);",
+      "require(`/`); import(void 0); require(!0); import(-1); require(+1);",
       "/app/page.tsx",
     )?.code;
 
-    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
     expect(transformed).toContain("import(void 0)");
     expect(transformed).toContain("require(!0)");
+    expect(transformed).toContain("import(-1)");
   });
 
   it("does not evaluate side effects in void request expressions", () => {
@@ -263,11 +264,17 @@ try { require(void sideEffect()); } catch {}
       _transformVeryDynamicRequests(
         `const prefix = "./dir/";
 const concat = "concat";
+const templateConcat = \`concat\`;
+const addedConcat = "con" + "cat";
+const conditionalConcat = condition ? "concat" : \`concat\`;
 require("./dir/".concat(request));
 import("./dir/".concat(request, ".js"));
 require(prefix.concat(request));
 import(prefix["concat"](request));
 require(prefix[concat](request));
+import(prefix[templateConcat](request));
+require(prefix[addedConcat](request));
+import(prefix[conditionalConcat](request));
 import("".concat(request).concat(".js"));
 require((condition ? "./a/" : "./b/").concat(request));
 `,
