@@ -275,6 +275,34 @@ function isNegativeNumericLiteral(value: unknown): boolean {
   return argument?.type === "Literal" && typeof argument.value === "number";
 }
 
+function templateTruthiness(
+  node: AstRecord,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+  useRaw = false,
+): boolean | null {
+  const quasis = nodeArray(node.quasis).filter(isAstRecord);
+  if (quasis.some((quasi) => templateElementValue(quasi, useRaw) !== "")) return true;
+
+  let hasUnknownExpression = false;
+  for (const expression of nodeArray(node.expressions)) {
+    const string = staticStringValue(expression, scope, resolvingBindings);
+    if (string !== null) {
+      if (string !== "") return true;
+      continue;
+    }
+    const expressionNode = unwrapExpression(expression);
+    if (
+      isNegativeNumericLiteral(expressionNode) ||
+      staticTruthiness(expressionNode, scope, resolvingBindings) !== null
+    ) {
+      return true;
+    }
+    hasUnknownExpression = true;
+  }
+  return hasUnknownExpression ? null : false;
+}
+
 function staticTruthiness(
   value: unknown,
   scope: Scope,
@@ -283,6 +311,19 @@ function staticTruthiness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
+  if (node.type === "TemplateLiteral") {
+    return templateTruthiness(node, scope, resolvingBindings);
+  }
+  if (node.type === "TaggedTemplateExpression" && isUnboundStringRawTag(node.tag, scope)) {
+    const quasi = astNode(node.quasi);
+    return quasi?.type === "TemplateLiteral"
+      ? templateTruthiness(quasi, scope, resolvingBindings, true)
+      : null;
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const string = staticStringValue(node, scope, resolvingBindings);
+    return string === null ? null : Boolean(string);
+  }
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return null;

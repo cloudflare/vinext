@@ -228,6 +228,26 @@ require(missing ?? request);
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
   });
 
+  it("resolves constant string predicates", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const zero = 0;
+const empty = "";
+import(\`\` ? "./fallback" : request);
+require(\`enabled\` ? request : "./fallback");
+import(\`\${""}\` ? "./fallback" : request);
+require(\`prefix-\${request}\` ? request : "./fallback");
+import(\`\${zero}\` ? request : "./fallback");
+require(\`\${empty}\` ? "./fallback" : request);
+import(String.raw\`\` ? "./fallback" : request);
+require(String.raw\`enabled\` ? request : "./fallback");
+import(("" + "") ? "./fallback" : request);
+require(("enabled" + "") ? request : "./fallback");`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(10);
+  });
+
   it("matches constant template and unary request patterns", () => {
     const transformed = _transformVeryDynamicRequests(
       `require(\`/\`);
