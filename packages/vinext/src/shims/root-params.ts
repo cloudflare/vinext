@@ -17,7 +17,7 @@ export type RootParamsUsage =
   | { kind: "route-handler"; routePattern: string };
 
 type RootParamsUsageState = RootParamsUsage & {
-  phase: "active" | "render" | "inactive";
+  phase: "active" | "render";
 };
 
 export type RootParamsUsageController = {
