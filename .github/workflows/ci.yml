@@ -299,13 +299,15 @@ jobs:
             const f = "pnpm-workspace.yaml";
             let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
             y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
-            y = y.trimEnd() + "\n\nallowBuilds:\n  sharp: true\n  unrs-resolver: true\n";
+            y = y.trimEnd() + "\n\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n  workerd: true\n";
             fs.writeFileSync(f, y);
           '
 
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cna-cloudflare
-        run: vp add "${{ runner.temp }}"/vinext-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+        run: |
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare
