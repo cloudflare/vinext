@@ -1,3 +1,4 @@
+import path from "node:path";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import {
@@ -34,6 +35,7 @@ function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
     node.type !== "Program" &&
     node.type !== "BlockStatement" &&
     node.type !== "StaticBlock" &&
+    node.type !== "TSModuleBlock" &&
     node.type !== "SwitchStatement" &&
     node.type !== "CatchClause" &&
     node.type !== "ForStatement" &&
@@ -52,6 +54,9 @@ function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
     collectBindingNames(node.param, scope.bindings);
   }
   collectDirectScopeBindings(node, scope);
+  if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
+    collectVarScopeBindings(node, scope);
+  }
   if (node.type === "SwitchStatement") {
     collectSwitchScopeBindings(node, scope);
   } else if (
@@ -106,12 +111,21 @@ function evaluateTypeofWindowComparison(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
-export function replaceTypeofWindow(code: string, replacement: WindowType) {
+export function replaceTypeofWindow(code: string, replacement: WindowType, id = "file.js") {
   if (!/typeof\s+window/.test(code)) return null;
 
+  const extension = path.extname(id.split("?", 1)[0]);
+  const lang =
+    extension === ".ts" || extension === ".mts" || extension === ".cts"
+      ? "ts"
+      : extension === ".tsx"
+        ? "tsx"
+        : extension === ".jsx"
+          ? "jsx"
+          : "js";
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code);
+    ast = parseAst(code, { lang });
   } catch {
     return null;
   }

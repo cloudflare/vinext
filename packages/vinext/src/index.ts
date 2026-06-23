@@ -4457,7 +4457,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
             return null;
           }
-          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
+          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
         },
       },
     },

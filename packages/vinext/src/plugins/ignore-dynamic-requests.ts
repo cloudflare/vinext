@@ -77,6 +77,24 @@ function stringValue(node: AstRecord): string | null {
   return null;
 }
 
+function staticStringValue(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): string | null {
+  const node = unwrapExpression(value);
+  if (!node) return null;
+  const valueString = stringValue(node);
+  if (valueString !== null) return valueString;
+  if (node.type !== "Identifier" || typeof node.name !== "string") return null;
+  if (resolvingBindings.has(node.name)) return null;
+  const binding = findConstantBinding(scope, node.name);
+  if (!binding) return null;
+  const nextResolvingBindings = new Set(resolvingBindings);
+  nextResolvingBindings.add(node.name);
+  return staticStringValue(binding, scope, nextResolvingBindings);
+}
+
 function hasSignificantPathPart(value: string): boolean {
   const normalized = value.replaceAll("\\", "/");
   return normalized !== "" && normalized !== "/";
@@ -313,7 +331,7 @@ function stringConcatHasStaticPart(
   if (
     callee?.type !== "MemberExpression" ||
     (callee.computed === true
-      ? property === null || stringValue(property) !== "concat"
+      ? property === null || staticStringValue(property, scope, resolvingBindings) !== "concat"
       : !isIdentifierNamed(property, "concat"))
   ) {
     return null;
@@ -344,6 +362,21 @@ function isStaticStringExpression(
     const nextResolvingBindings = new Set(resolvingBindings);
     nextResolvingBindings.add(node.name);
     return isStaticStringExpression(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return additionContainsString(node, scope, resolvingBindings);
+  }
+  if (node.type === "ConditionalExpression") {
+    return (
+      isStaticStringExpression(node.consequent, scope, resolvingBindings) &&
+      isStaticStringExpression(node.alternate, scope, resolvingBindings)
+    );
+  }
+  if (node.type === "SequenceExpression") {
+    return isStaticStringExpression(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+  }
+  if (node.type === "CallExpression") {
+    return stringConcatHasStaticPart(node, scope, resolvingBindings) !== null;
   }
   return false;
 }

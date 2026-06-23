@@ -262,10 +262,14 @@ try { require(void sideEffect()); } catch {}
     expect(
       _transformVeryDynamicRequests(
         `const prefix = "./dir/";
+const concat = "concat";
 require("./dir/".concat(request));
 import("./dir/".concat(request, ".js"));
 require(prefix.concat(request));
 import(prefix["concat"](request));
+require(prefix[concat](request));
+import("".concat(request).concat(".js"));
+require((condition ? "./a/" : "./b/").concat(request));
 `,
         "/app/page.tsx",
       ),

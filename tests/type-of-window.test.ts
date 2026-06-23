@@ -166,6 +166,27 @@ for (let window; condition; ) console.log(typeof window)`,
     expect(result).toBeNull();
   });
 
+  it("contains var window bindings in TypeScript namespaces and static blocks", () => {
+    const result = replaceTypeofWindow(
+      `namespace Loader {
+  if (condition) var window
+  console.log(typeof window)
+}
+class BrowserLoader {
+  static {
+    if (condition) var window
+    console.log(typeof window)
+  }
+}
+console.log(typeof window)`,
+      "undefined",
+      "/app/page.ts",
+    );
+
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+    expect(result?.code).toContain('console.log("undefined")');
+  });
+
   it("preserves selected conditional expression precedence", () => {
     const result = replaceTypeofWindow(
       `const value = typeof window === "undefined" ? (serverValue, fallbackValue) : browserValue`,
