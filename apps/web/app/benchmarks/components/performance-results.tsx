@@ -231,7 +231,7 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
           router.replace(
             benchmarkSelectionUrl(
               pathname,
-              new URLSearchParams(searchParams),
+              new URLSearchParams(window.location.search),
               benchmarkId,
               window.location.hash,
             ),
