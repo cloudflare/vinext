@@ -1565,6 +1565,17 @@ describe("getMissingDeps", () => {
     expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
   });
 
+  it("reports missing @vinext/cloudflare for generated App Router image config", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    const missing = getMissingDeps(info, (_root, pkg) => pkg !== "@vinext/cloudflare");
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@vinext/cloudflare" }));
+  });
+
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {
     mkdir(tmpDir, "pages");
     const info = detectProject(tmpDir);

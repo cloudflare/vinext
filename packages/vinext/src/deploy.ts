@@ -813,6 +813,9 @@ export function getMissingDeps(
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
   }
   if (info.isAppRouter) {
+    if (!_isResolvable(info.root, "@vinext/cloudflare")) {
+      missing.push({ name: "@vinext/cloudflare", version: "latest" });
+    }
     // react-server-dom-webpack must be resolvable from the project root for Vite.
     if (!_isResolvable(info.root, "react-server-dom-webpack")) {
       missing.push({ name: "react-server-dom-webpack", version: "latest" });
