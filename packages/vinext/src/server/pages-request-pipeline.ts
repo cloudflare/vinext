@@ -45,6 +45,7 @@ export type PagesRenderOptions = {
   isDataReq?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
+  rewriteQueryKeys?: string[];
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
@@ -304,6 +305,21 @@ export async function runPagesRequest(
   // Step 5: Middleware
   const originalResolvedUrl = pathname + search;
   let resolvedUrl = originalResolvedUrl;
+  const rewriteQueryKeys = new Set<string>();
+  const recordRewriteQueryKeys = (rewriteUrl: string, inheritedUrl?: string): void => {
+    const rewriteParams = new URL(rewriteUrl, url).searchParams;
+    const inheritedParams = inheritedUrl ? new URL(inheritedUrl, url).searchParams : null;
+    for (const key of rewriteParams.keys()) {
+      if (
+        inheritedParams &&
+        inheritedParams.has(key) &&
+        JSON.stringify(inheritedParams.getAll(key)) === JSON.stringify(rewriteParams.getAll(key))
+      ) {
+        continue;
+      }
+      rewriteQueryKeys.add(key);
+    }
+  };
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
   const serveFilesystemRoute = async (
@@ -394,6 +410,7 @@ export async function runPagesRequest(
     }
 
     if (result.rewriteUrl) {
+      recordRewriteQueryKeys(result.rewriteUrl, originalResolvedUrl);
       resolvedUrl = result.rewriteUrl;
     }
 
@@ -468,6 +485,7 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return { type: "response", response: await proxyExternal(request, rewritten) };
       }
+      recordRewriteQueryKeys(rewritten);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       configRewriteFired = true;
@@ -547,6 +565,7 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return { type: "response", response: await proxyExternal(request, rewritten) };
         }
+        recordRewriteQueryKeys(rewritten);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameChanged = true;
@@ -595,6 +614,7 @@ export async function runPagesRequest(
             response: await proxyExternal(request, fallbackRewrite),
           };
         }
+        recordRewriteQueryKeys(fallbackRewrite);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
@@ -612,11 +632,22 @@ export async function runPagesRequest(
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
-    const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
-      ? { renderErrorPageOnMiss: false }
-      : isDataReq
-        ? { isDataReq: true }
-        : undefined;
+    const buildRenderOptions = (
+      extra?: Omit<PagesRenderOptions, "rewriteQueryKeys">,
+    ): PagesRenderOptions | undefined => {
+      if (!extra && rewriteQueryKeys.size === 0) return undefined;
+      return {
+        ...extra,
+        ...(rewriteQueryKeys.size > 0 ? { rewriteQueryKeys: [...rewriteQueryKeys] } : {}),
+      };
+    };
+    const initialRenderOptions = buildRenderOptions(
+      shouldDeferErrorPageOnMiss
+        ? { renderErrorPageOnMiss: false }
+        : isDataReq
+          ? { isDataReq: true }
+          : undefined,
+    );
 
     // Convert staged middleware headers to a Web Headers object for renderPage.
     // Adapters that need to inject per-request values (e.g. CSP nonces) into the
@@ -650,13 +681,14 @@ export async function runPagesRequest(
             response: await proxyExternal(request, fallbackRewrite),
           };
         }
+        recordRewriteQueryKeys(fallbackRewrite);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
         if (fallbackApiResult) return fallbackApiResult;
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(request, resolvedUrl, buildRenderOptions(), stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
@@ -664,7 +696,7 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(request, resolvedUrl, buildRenderOptions(), stagedHeaders);
     }
 
     const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
@@ -702,6 +734,7 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
       }
+      recordRewriteQueryKeys(fallbackRewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
@@ -716,7 +749,13 @@ export async function runPagesRequest(
   return {
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    renderOptions:
+      isDataReq || rewriteQueryKeys.size > 0
+        ? {
+            ...(isDataReq ? { isDataReq: true } : {}),
+            ...(rewriteQueryKeys.size > 0 ? { rewriteQueryKeys: [...rewriteQueryKeys] } : {}),
+          }
+        : undefined,
     stagedHeaders: middlewareHeaders,
     requestHeaders: request.headers,
     middlewareStatus,

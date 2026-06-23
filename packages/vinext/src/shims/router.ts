@@ -63,6 +63,7 @@ import {
   appendSearchParamsToUrl,
   mergeRouteParamsIntoQuery,
   parseQueryString,
+  setOwnQueryValue,
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
@@ -416,6 +417,8 @@ type PagesRouterRuntimeState = {
   lastPathnameAndSearch: string;
   lastHash: string;
   isFirstPopStateEvent: boolean;
+  // Any router-owned history update, including a hash-only change. This keeps
+  // Safari replay filtering and back/forward handling aligned with Next.js.
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
@@ -785,7 +788,7 @@ export function isHashOnlyChange(href: string): boolean {
 
 /**
  * Build router-shaped state for the initial document entry. Captures the
- * active locale (from `window.__VINEXT_LOCALE__`) so a back-navigation
+ * active locale (from the serialized document state) so a back-navigation
  * popstate to this entry can recover its locale instead of falling back to
  * the live window global — the locale may have changed by the time the user
  * navigates back.
@@ -793,36 +796,41 @@ export function isHashOnlyChange(href: string): boolean {
 function buildInitialRouterState(): VinextHistoryState {
   const appPath = stripBasePath(window.location.pathname, __basePath) + window.location.search;
   const options: { locale?: string; shallow?: boolean } = {};
-  if (window.__VINEXT_LOCALE__ !== undefined) options.locale = window.__VINEXT_LOCALE__;
+  const initialLocale = window.__VINEXT_LOCALE__ ?? window.__NEXT_DATA__?.locale;
+  if (initialLocale !== undefined) options.locale = initialLocale;
   return {
     url: appPath,
     as: appPath,
     options,
     __N: true,
     key: createHistoryKey(),
+    __vinext_queryOwner: "server",
   };
 }
 
 /**
- * Stamp the initial document entry with router-shaped state (only if no
- * state is present). Called once at runtime install so the entry has a
- * locale stamped before any push could overwrite the active locale global.
+ * Stamp the initial document entry with router-shaped state. Preserve fields
+ * owned by userland or third-party history integrations while ensuring the
+ * router metadata needed for back/forward and query ownership is present.
  */
 function stampInitialHistoryState(): void {
   installManualScrollRestoration();
 
+  syncInitialHistoryStateFromNextData();
+}
+
+function syncInitialHistoryStateFromNextData(): void {
   if (!window.history) return;
 
   const existingState = window.history.state;
-  if (existingState !== null && existingState !== undefined) {
-    routerRuntimeState.currentHistoryKey =
-      getRouterStateKey(existingState) ?? routerRuntimeState.currentHistoryKey;
-    return;
-  }
-
   const initialState = buildInitialRouterState();
+  const existingKey = getRouterStateKey(existingState);
+  if (existingKey !== undefined) initialState.key = existingKey;
   routerRuntimeState.currentHistoryKey = initialState.key;
-  window.history.replaceState(initialState, "");
+  window.history.replaceState(
+    isUnknownRecord(existingState) ? { ...existingState, ...initialState } : initialState,
+    "",
+  );
 }
 
 setStampInitialHistoryState(stampInitialHistoryState);
@@ -903,6 +911,7 @@ function readScrollPositionFromSessionStorage(key: string): ScrollPosition | nul
 type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
+  initialQuery?: Record<string, string | string[]>;
   asPath: string;
   navigationIsReady?: boolean;
   nextData?: VinextNextData;
@@ -1236,6 +1245,56 @@ function getRouteQueryFromNextData(
   return routeQuery;
 }
 
+function navigationRequiresServerQueryOwnership(nextData: VinextNextData): boolean {
+  const serverQuery = nextData.__vinext?.initialResolvedQuery;
+  if (!serverQuery || !nextData.page) return false;
+
+  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) return false;
+
+  const browserQuery: Record<string, string | string[]> = {};
+  for (const [key, value] of new URLSearchParams(window.location.search)) {
+    addQueryParam(browserQuery, key, value);
+  }
+  const routeParams = extractRouteParamsFromPath(nextData.page, resolvedPath);
+  if (routeParams) {
+    for (const [key, value] of Object.entries(routeParams)) {
+      setOwnQueryValue(browserQuery, key, Array.isArray(value) ? [...value] : value);
+    }
+  }
+
+  return !queryValuesEqual(browserQuery, serverQuery);
+}
+
+function queryValuesEqual(
+  left: Record<string, string | string[]>,
+  right: Record<string, string | string[]>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (const key of leftKeys) {
+    const leftValue = left[key];
+    const rightValue = right[key];
+    if (Array.isArray(leftValue) || Array.isArray(rightValue)) {
+      if (!Array.isArray(leftValue) || !Array.isArray(rightValue)) return false;
+      if (leftValue.length !== rightValue.length) return false;
+      if (leftValue.some((value, index) => value !== rightValue[index])) return false;
+    } else if (leftValue !== rightValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function updateCurrentQueryOwnership(nextData: VinextNextData): void {
+  if (!navigationRequiresServerQueryOwnership(nextData)) return;
+  const state = window.history.state;
+  if (!isNextRouterState(state) || state.__vinext_queryOwner === "server") return;
+  window.history.replaceState({ ...state, __vinext_queryOwner: "server" }, "");
+}
+
 function getPathnameAndQuery(): {
   pathname: string;
   query: Record<string, string | string[]>;
@@ -1244,9 +1303,16 @@ function getPathnameAndQuery(): {
   if (typeof window === "undefined") {
     const _ssrCtx = _getSSRContext();
     if (_ssrCtx) {
-      const query: Record<string, string | string[]> = {};
-      for (const [key, value] of Object.entries(_ssrCtx.query)) {
-        query[key] = Array.isArray(value) ? [...value] : value;
+      const isReady = _ssrCtx.navigationIsReady ?? true;
+      let query: Record<string, string | string[]> = {};
+      if (isReady) {
+        for (const [key, value] of Object.entries(_ssrCtx.query)) {
+          setOwnQueryValue(query, key, Array.isArray(value) ? [...value] : value);
+        }
+      } else {
+        for (const [key, value] of Object.entries(_ssrCtx.initialQuery ?? {})) {
+          setOwnQueryValue(query, key, Array.isArray(value) ? [...value] : value);
+        }
       }
       return { pathname: _ssrCtx.pathname, query, asPath: _ssrCtx.asPath };
     }
@@ -1257,15 +1323,48 @@ function getPathnameAndQuery(): {
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
-  const nextData = window.__NEXT_DATA__;
-  const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
-  // URL search params always reflect the current URL
-  const searchQuery: Record<string, string | string[]> = {};
-  const params = new URLSearchParams(window.location.search);
-  for (const [key, value] of params) {
-    addQueryParam(searchQuery, key, value);
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  const isReady = isPagesRouterReady();
+  const usesServerResolvedQuery = getCurrentQueryOwner() === "server";
+  const routeQuery: Record<string, string | string[]> = {};
+  if (isReady) {
+    const initialResolvedQuery = nextData?.__vinext?.initialResolvedQuery;
+    if (usesServerResolvedQuery && initialResolvedQuery) {
+      for (const [key, value] of Object.entries(initialResolvedQuery)) {
+        setOwnQueryValue(routeQuery, key, Array.isArray(value) ? [...value] : value);
+      }
+    } else {
+      for (const [key, value] of Object.entries(
+        getRouteQueryFromNextData(nextData, resolvedPath),
+      )) {
+        setOwnQueryValue(routeQuery, key, Array.isArray(value) ? [...value] : value);
+      }
+    }
+  } else {
+    for (const [key, value] of Object.entries(nextData?.query ?? {})) {
+      if (typeof value === "string") {
+        setOwnQueryValue(routeQuery, key, value);
+      } else if (Array.isArray(value)) {
+        setOwnQueryValue(routeQuery, key, [...value]);
+      }
+    }
   }
-  const query = { ...searchQuery, ...routeQuery };
+  // Before the initial Pages Router ready transition, Next.js exposes only
+  // route params. URL search values are published after hydration so the
+  // browser snapshot stays aligned with the prerendered server HTML.
+  const searchQuery: Record<string, string | string[]> = {};
+  if (isReady && (!usesServerResolvedQuery || !nextData?.__vinext?.initialResolvedQuery)) {
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of params) {
+      addQueryParam(searchQuery, key, value);
+    }
+  }
+  const query: Record<string, string | string[]> = {};
+  for (const source of [searchQuery, routeQuery]) {
+    for (const [key, value] of Object.entries(source)) {
+      setOwnQueryValue(query, key, Array.isArray(value) ? [...value] : value);
+    }
+  }
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
@@ -1291,6 +1390,12 @@ function getCurrentHistoryAsPath(): string | null {
   } catch {
     return null;
   }
+}
+
+function getCurrentQueryOwner(): VinextHistoryState["__vinext_queryOwner"] {
+  const state = window.history?.state;
+  if (!isNextRouterState(state)) return "browser";
+  return state.__vinext_queryOwner ?? "server";
 }
 
 export function getPagesNavigationIsReadyFromSerializedState(
@@ -1459,6 +1564,8 @@ type PagesDataResponse = {
   // that outer envelope through App during hydration/navigation.
   [key: string]: unknown;
 };
+
+const VINEXT_RESOLVED_QUERY_HEADER = "x-vinext-resolved-query";
 
 function isPageComponent(value: unknown): value is ComponentType<Record<string, unknown>> {
   if (typeof value === "function") return true;
@@ -1816,7 +1923,40 @@ async function navigateClientData(
   // merged in one object, with route params winning on key collision (so
   // `/posts/123?id=456` still exposes `id: "123"`). Without this, code reading
   // `window.__NEXT_DATA__.query` directly would see only the dynamic params.
-  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
+  let routeParams = target.params;
+  if (target.pattern === initialTarget.pattern) {
+    try {
+      const visibleUrl = new URL(url, window.location.href);
+      const visiblePagePath = stripBasePath(visibleUrl.pathname, __basePath);
+      const visibleLocale = getLocalePathPrefix(visiblePagePath, window.__VINEXT_LOCALES__);
+      const visibleRoutePath = visibleLocale
+        ? visiblePagePath.slice(visibleLocale.length + 1) || "/"
+        : visiblePagePath;
+      routeParams = extractRouteParamsFromPath(target.pattern, visibleRoutePath) ?? routeParams;
+    } catch {
+      routeParams = initialTarget.params;
+    }
+  }
+  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), routeParams);
+  const resolvedQueryHeader = res.headers.get(VINEXT_RESOLVED_QUERY_HEADER);
+  let resolvedQuery = mergedQuery;
+  if (resolvedQueryHeader) {
+    try {
+      const parsed = JSON.parse(resolvedQueryHeader);
+      if (isUnknownRecord(parsed)) {
+        const parsedResolvedQuery: Record<string, string | string[]> = {};
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === "string") setOwnQueryValue(parsedResolvedQuery, key, value);
+          else if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+            setOwnQueryValue(parsedResolvedQuery, key, [...value]);
+          }
+        }
+        resolvedQuery = mergeRouteParamsIntoQuery(parsedResolvedQuery, routeParams);
+      }
+    } catch {
+      // Ignore malformed optional metadata and retain browser-derived query ownership.
+    }
+  }
 
   const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
   // Locale-prefixed URLs change the active locale; the JSON envelope itself
@@ -1838,6 +1978,10 @@ async function navigateClientData(
     query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
+    __vinext: {
+      ...(prev as VinextNextData | undefined)?.__vinext,
+      initialResolvedQuery: resolvedQuery,
+    },
     ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
 
@@ -1846,6 +1990,7 @@ async function navigateClientData(
   // stable Pages Router commit boundary before routeChangeComplete, matching
   // Next.js's client Root callback without remounting the page tree.
   window.__NEXT_DATA__ = nextData;
+  updateCurrentQueryOwnership(nextData);
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
@@ -1928,6 +2073,24 @@ async function navigateClientHtml(
   }
 
   const nextData = parseVinextNextDataJson(nextDataJson);
+  try {
+    const visibleUrl = new URL(browserUrl, window.location.href);
+    const visiblePagePath = stripBasePath(visibleUrl.pathname, __basePath);
+    const visibleLocale = getLocalePathPrefix(visiblePagePath, window.__VINEXT_LOCALES__);
+    const visibleRoutePath = visibleLocale
+      ? visiblePagePath.slice(visibleLocale.length + 1) || "/"
+      : visiblePagePath;
+    const visibleRouteParams = extractRouteParamsFromPath(nextData.page, visibleRoutePath);
+    const initialResolvedQuery = nextData.__vinext?.initialResolvedQuery;
+    if (visibleRouteParams && initialResolvedQuery) {
+      nextData.__vinext = {
+        ...nextData.__vinext,
+        initialResolvedQuery: mergeRouteParamsIntoQuery(initialResolvedQuery, visibleRouteParams),
+      };
+    }
+  } catch {
+    // Keep the server-resolved query when the visible URL cannot be parsed.
+  }
   const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
   const rawPageProps = props.pageProps;
   const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
@@ -2025,6 +2188,7 @@ async function navigateClientHtml(
     routerRuntimeState.lastHash = window.location.hash;
   }
   window.__NEXT_DATA__ = nextData;
+  updateCurrentQueryOwnership(nextData);
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
@@ -2290,6 +2454,7 @@ function updateHistory(
   mode: "push" | "replace",
   fullUrl: string,
   navState: { url: string; as: string; options: { locale?: string; shallow?: boolean } },
+  marksPageNavigation = true,
 ): void {
   const previousKey = getRouterStateKey(window.history.state);
   const key =
@@ -2302,6 +2467,7 @@ function updateHistory(
     options: navState.options,
     __N: true,
     key,
+    __vinext_queryOwner: marksPageNavigation ? "browser" : getCurrentQueryOwner(),
   };
   if (mode === "push") window.history.pushState(state, "", fullUrl);
   else window.history.replaceState(state, "", fullUrl);
@@ -2321,6 +2487,7 @@ type VinextHistoryState = {
   options: { locale?: string; shallow?: boolean };
   __N: true;
   key: string;
+  __vinext_queryOwner?: "server" | "browser";
 };
 
 function createHistoryKey(): string {
@@ -2589,7 +2756,7 @@ async function performNavigation(
     if (mode === "push") saveScrollPosition();
     const eventUrl = resolveHashUrl(full);
     routerEvents.emit("hashChangeStart", eventUrl, { shallow });
-    updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState);
+    updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState, false);
     if (doScroll) scrollToHashTarget(extractHash(resolved));
     onStateUpdate?.();
     routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
@@ -2843,6 +3010,7 @@ function isNextRouterState(state: unknown): state is {
   options: TransitionOptions;
   __N: true;
   key?: string;
+  __vinext_queryOwner?: "server" | "browser";
 } {
   return (
     typeof state === "object" &&
@@ -3442,5 +3610,6 @@ const _PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
 // without relying on React effect timing in a Node test environment.
 export { markPagesRouterReady as _markPagesRouterReady };
 export { initializePagesRouterReadyFromNextData as _initializePagesRouterReadyFromNextData };
+export { syncInitialHistoryStateFromNextData as _syncInitialPagesRouterStateFromNextData };
 
 export default Router;

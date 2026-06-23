@@ -92,6 +92,11 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(url);
   }
 
+  if (url.pathname === "/prerender-middleware-clear") {
+    url.searchParams.delete("removed");
+    return NextResponse.rewrite(url);
+  }
+
   if (url.pathname === "/rewrite-with-cookie") {
     const res = NextResponse.rewrite(new URL("/ssr", request.url));
     res.cookies.set("rewrite-cookie", "visible", { path: "/" });

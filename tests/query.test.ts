@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   appendSearchParamsToUrl,
+  mergeRouteParamsIntoQuery,
   mergeRewriteQuery,
   parseQueryString,
 } from "../packages/vinext/src/utils/query.js";
@@ -131,6 +132,14 @@ describe("parseQueryString", () => {
     expect(parseQueryString("/search?tag=a&tag=b")).toEqual({ tag: ["a", "b"] });
   });
 
+  it("preserves duplicate __proto__ keys without changing the object prototype", () => {
+    const query = parseQueryString("/search?__proto__=first&__proto__=second");
+
+    expect(Object.getPrototypeOf(query)).toBe(Object.prototype);
+    expect(Object.hasOwn(query, "__proto__")).toBe(true);
+    expect(query.__proto__).toEqual(["first", "second"]);
+  });
+
   // Regression for #1471: Pages Router `<Link>` strips query string from href.
   // When a page is requested as `/linker?href=/about?hello=world`, the value of
   // the `href` query param is `/about?hello=world` (RFC 3986 only treats the
@@ -151,5 +160,17 @@ describe("parseQueryString", () => {
 
   it("stops at the URL hash fragment", () => {
     expect(parseQueryString("/about?foo=bar#section")).toEqual({ foo: "bar" });
+  });
+});
+
+describe("mergeRouteParamsIntoQuery", () => {
+  it("preserves own __proto__ query values and duplicate arrays", () => {
+    const query = parseQueryString("/search?__proto__=first&__proto__=second&tag=a&tag=b");
+    const merged = mergeRouteParamsIntoQuery(query, {});
+
+    expect(Object.getPrototypeOf(merged)).toBe(Object.prototype);
+    expect(Object.hasOwn(merged, "__proto__")).toBe(true);
+    expect(merged.__proto__).toEqual(["first", "second"]);
+    expect(merged.tag).toEqual(["a", "b"]);
   });
 });

@@ -439,7 +439,7 @@ describe("beforeFiles rewrites", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/to?keep=1&stage=1",
-      undefined,
+      { rewriteQueryKeys: ["stage"] },
       expect.any(Headers),
     );
   });
@@ -467,7 +467,7 @@ describe("beforeFiles rewrites", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/destination?first=1&second=2",
-      undefined,
+      { rewriteQueryKeys: ["first", "second"] },
       expect.any(Headers),
     );
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/destination?first=1&second=2");
@@ -1162,7 +1162,7 @@ describe("deferred error page re-render on 404", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/fallback-target?from=fallback",
-      undefined,
+      { rewriteQueryKeys: ["from"] },
       expect.any(Headers),
     );
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/fallback-target?from=fallback");

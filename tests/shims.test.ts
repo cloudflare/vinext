@@ -13820,6 +13820,77 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("suppresses search params from useRouter().query before prerender hydration", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    let capturedQuery: unknown;
+    function Probe() {
+      capturedQuery = useRouter().query;
+      return React.createElement("div");
+    }
+
+    setSSRContext({
+      pathname: "/something",
+      query: { hello: "world" },
+      initialQuery: {},
+      asPath: "/something?hello=world",
+      navigationIsReady: false,
+    });
+    try {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(capturedQuery).toEqual({});
+    } finally {
+      setSSRContext(null);
+    }
+
+    setSSRContext({
+      pathname: "/blog/[post]",
+      query: { post: "post-1", hello: "world" },
+      initialQuery: { post: "post-1" },
+      asPath: "/blog/post-1?hello=world",
+      navigationIsReady: false,
+    });
+    try {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(capturedQuery).toEqual({ post: "post-1" });
+    } finally {
+      setSSRContext(null);
+    }
+
+    setSSRContext({
+      pathname: "/docs/[[...slug]]",
+      query: { slug: "query" },
+      initialQuery: {},
+      asPath: "/docs?slug=query",
+      navigationIsReady: false,
+    });
+    try {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(capturedQuery).toEqual({});
+    } finally {
+      setSSRContext(null);
+    }
+
+    setSSRContext({
+      pathname: "/blog/[post]",
+      query: { post: "hello world", q: "1" },
+      initialQuery: { post: "hello world" },
+      asPath: "/blog/hello%20world?q=1",
+      navigationIsReady: false,
+    });
+    try {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(capturedQuery).toEqual({ post: "hello world" });
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
   it("does not defer Pages Router readiness for dynamic getStaticProps routes without search", async () => {
     const { getPagesNavigationIsReadyFromSerializedState } =
       await import("../packages/vinext/src/shims/router.js");
@@ -14387,6 +14458,178 @@ describe("Pages Router concurrent navigation", () => {
       } else {
         (globalThis as any).window = previousWindow;
       }
+    }
+  });
+
+  it("stamps initial router state without dropping third-party history fields", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    const listeners = new Map<string, (event: any) => void>();
+    win.history.state = {
+      analyticsEntry: "landing",
+      nested: { retained: true },
+    } as any;
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      locale: "fr",
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    } as any;
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    replaceState.mockImplementation((state: unknown) => {
+      win.history.state = state as any;
+    });
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      expect(win.history.state).toEqual(
+        expect.objectContaining({
+          analyticsEntry: "landing",
+          nested: { retained: true },
+          __N: true,
+          __vinext_queryOwner: "server",
+          url: "/",
+          as: "/",
+          options: { locale: "fr" },
+          key: expect.any(String),
+        }),
+      );
+      expect(replaceState).toHaveBeenCalledWith(win.history.state, "");
+
+      const beforePopState = vi.fn(() => false);
+      (win as any).next.router.beforePopState(beforePopState);
+      win.__VINEXT_LOCALE__ = "en";
+      listeners.get("popstate")!({ state: win.history.state });
+
+      expect(beforePopState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/",
+          as: "/",
+          options: { locale: "fr" },
+        }),
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("restores the serialized initial locale after cross-locale navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, pushState, replaceState } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/fr/about";
+    win.location.href = "http://localhost/fr/about";
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/about",
+      locale: "fr",
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    } as any;
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    replaceState.mockImplementation((state: unknown, _title: string, url?: string) => {
+      win.history.state = state as any;
+      if (url) {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.href = parsed.href;
+      }
+    });
+    pushState.mockImplementation((state: unknown, _title: string, url: string) => {
+      win.history.state = state as any;
+      const parsed = new URL(url, "http://localhost");
+      win.location.pathname = parsed.pathname;
+      win.location.search = parsed.search;
+      win.location.href = parsed.href;
+    });
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          buildNavHtml(
+            "/about",
+            pageModuleUrl,
+            {},
+            {
+              locale: "en",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          buildNavHtml(
+            "/about",
+            pageModuleUrl,
+            {},
+            {
+              locale: "fr",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+        ),
+      );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      win.__VINEXT_LOCALE__ = "fr";
+      win.__VINEXT_LOCALES__ = ["en", "fr"];
+      win.__VINEXT_DEFAULT_LOCALE__ = "en";
+      const routerModule = await import("./fixtures/instrumentation-client-imports-router.js");
+      const initialState = win.history.state;
+
+      expect((win as any).__INSTRUMENTATION_INITIAL_ROUTER_STATE__).toBe(initialState);
+      expect(initialState).toEqual(
+        expect.objectContaining({
+          url: "/fr/about",
+          as: "/fr/about",
+          options: { locale: "fr" },
+        }),
+      );
+
+      await routerModule.default.push("/about", undefined, { locale: "en" });
+
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+      expect(win.location.pathname).toBe("/about");
+
+      win.location.pathname = "/fr/about";
+      win.location.href = "http://localhost/fr/about";
+      listeners.get("popstate")!({ state: initialState });
+      await vi.waitFor(() => expect(win.__VINEXT_LOCALE__).toBe("fr"));
+
+      expect(fetch).toHaveBeenNthCalledWith(2, "/fr/about", expect.any(Object));
+      expect(win.location.pathname).toBe("/fr/about");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
     }
   });
 
@@ -22482,6 +22725,91 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
 // runtime object rather than in module-local variables.
 // ---------------------------------------------------------------------------
 describe("Pages Router runtime state sharing", () => {
+  it("keeps search params hidden until the initial Pages Router ready transition", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/something",
+        search: "?hello=world",
+        hash: "",
+        href: "http://localhost/something?hello=world",
+        hostname: "localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __NEXT_DATA__: {
+        page: "/something",
+        query: {},
+        gsp: true,
+        isFallback: false,
+        props: { pageProps: {} },
+      },
+      __VINEXT_PAGE_LOADERS__: {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      expect(Router.isReady).toBe(false);
+      expect(Router.query).toEqual({});
+
+      expect(routerModule._markPagesRouterReady()).toBe(true);
+      expect(Router.query).toEqual({ hello: "world" });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("filters rewritten search values from the pre-ready Pages Router query", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/source",
+        search: "?hello=world",
+        hash: "",
+        href: "http://localhost/source?hello=world",
+        hostname: "localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __NEXT_DATA__: {
+        page: "/destination/[slug]",
+        query: { slug: "article" },
+        gsp: true,
+        isFallback: false,
+        props: { pageProps: {} },
+        __vinext: { hasRewrites: true },
+      },
+      __VINEXT_PAGE_LOADERS__: {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      expect(routerModule.default.query).toEqual({ slug: "article" });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("shares RouterContext across duplicated next/router module instances", async () => {
     vi.resetModules();
     const contextA = await import("../packages/vinext/src/shims/internal/router-context.js");

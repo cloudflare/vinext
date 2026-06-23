@@ -124,6 +124,7 @@ type RenderPagesIsrHtmlOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  initialQuery?: Record<string, unknown>;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
@@ -196,6 +197,7 @@ export type ResolvePagesPageDataOptions = {
   AppComponent?: unknown;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
+  initialQuery?: Record<string, unknown>;
   asPath?: string;
   resolvedUrl?: string;
   route: Pick<Route, "isDynamic">;
@@ -587,6 +589,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    initialQuery: options.initialQuery,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
@@ -860,6 +863,7 @@ export async function resolvePagesPageData(
                 pageProps: freshPageProps,
                 props: freshRenderProps,
                 params: options.params,
+                initialQuery: options.initialQuery,
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,

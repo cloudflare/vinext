@@ -39,7 +39,11 @@ import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
-import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import {
+  buildInitialPagesRouterQuery,
+  mergeRouteParamsIntoQuery,
+  parseQueryString as parseQuery,
+} from "../utils/query.js";
 import path from "node:path";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -474,6 +478,7 @@ export function createSSRHandler(
      */
     isDataReq: boolean = false,
     originalUrl: string = url,
+    rewriteQueryKeys: string[] = [],
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -577,6 +582,7 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    const initialQuery = buildInitialPagesRouterQuery(query, params, rewriteQueryKeys);
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
@@ -648,6 +654,7 @@ export function createSSRHandler(
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
             query,
+            initialQuery,
             asPath: requestAsPath,
             navigationIsReady,
             nextData: pagesNextData,
@@ -789,6 +796,7 @@ export function createSSRHandler(
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
                 query,
+                initialQuery,
                 asPath: requestAsPath,
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
@@ -1170,6 +1178,7 @@ export function createSSRHandler(
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
                           query,
+                          initialQuery,
                           asPath: requestAsPath,
                           navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
@@ -1227,6 +1236,7 @@ export function createSSRHandler(
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
+                          initialResolvedQuery: query,
                         },
                       };
 
@@ -1234,7 +1244,7 @@ export function createSSRHandler(
                         {
                           props: freshRenderProps,
                           page: patternToNextFormat(route.pattern),
-                          query: params,
+                          query: initialQuery,
                           buildId: process.env.__VINEXT_BUILD_ID,
                           isFallback: false,
                           locale: locale ?? currentDefaultLocale,
@@ -1447,6 +1457,12 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          for (const headerName of Object.keys(dataHeaders)) {
+            if (headerName.toLowerCase() === "x-vinext-resolved-query") {
+              delete dataHeaders[headerName];
+            }
+          }
+          dataHeaders["x-vinext-resolved-query"] = JSON.stringify(query);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
@@ -1575,6 +1591,7 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            initialResolvedQuery: query,
           },
         };
 
@@ -1582,10 +1599,13 @@ export function createSSRHandler(
         // Stores the React root and page loader for client-side navigation.
         const hydrationScript = `
 <script type="module"${nonceAttr}>
-import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
+import Router, {
+  wrapWithRouterContext,
+  _initializePagesRouterReadyFromNextData,
+  _syncInitialPagesRouterStateFromNextData,
+} from "next/router";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -1593,8 +1613,10 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
   window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+  _syncInitialPagesRouterStateFromNextData();
 }
 const nextData = window.__NEXT_DATA__;
+await import("vinext/instrumentation-client");
 _initializePagesRouterReadyFromNextData(nextData);
 const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
 const rawPageProps = props.pageProps;
@@ -1657,7 +1679,7 @@ hydrate();
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: initialQuery,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,

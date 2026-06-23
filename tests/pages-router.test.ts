@@ -500,6 +500,16 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  it("preserves configured rewrite query during GSP prerender SSR in dev", async () => {
+    const res = await fetch(`${baseUrl}/prerender-rewrite?visible=browser&same=visible`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<pre id="params">{}</pre>');
+    expect(html).toContain(
+      '<pre id="query">{&quot;from&quot;:&quot;config&quot;,&quot;same&quot;:&quot;destination&quot;}</pre>',
+    );
+  });
+
   // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
   // (no `getServerSideProps`) pages with a 405 + `Allow: GET, HEAD`.
   // Ported from Next.js: test/e2e/prerender.test.ts
@@ -4903,6 +4913,16 @@ describe("Production server middleware (Pages Router)", () => {
     // Matches `head script[defer].length > 0` upstream.
     const deferInHead = head.match(/<script[^>]*\sdefer(\s|>|=)[^>]*>/g) ?? [];
     expect(deferInHead.length).toBeGreaterThan(0);
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("does not expose URL search params during non-dynamic GSP prerender SSR", async () => {
+    const res = await fetch(`${prodUrl}/prerender-query?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<pre id="params">{}</pre>');
+    expect(html).toContain('<pre id="query">{}</pre>');
   });
 
   it("does not serve cached production Pages ISR HTML to CSP nonce requests", async () => {

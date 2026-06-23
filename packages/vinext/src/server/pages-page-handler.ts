@@ -13,7 +13,11 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
-import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import {
+  buildInitialPagesRouterQuery,
+  mergeRouteParamsIntoQuery,
+  parseQueryString as parseQuery,
+} from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes } from "./pages-node-compat.js";
@@ -182,6 +186,7 @@ type RenderPageOptions = {
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
+  rewriteQueryKeys?: string[];
   renderErrorPageOnMiss?: boolean;
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
@@ -419,6 +424,7 @@ export function createPagesPageHandler(
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
         const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
+        const initialQuery = buildInitialPagesRouterQuery(query, params, options?.rewriteQueryKeys);
 
         // Model Pages Router readiness for `next/navigation` compat hooks. The
         // serialized `__NEXT_DATA__` flags (gssp/gsp/gip/appGip/autoExport) plus
@@ -444,6 +450,7 @@ export function createPagesPageHandler(
             setSSRContext({
               pathname: routePattern,
               query,
+              initialQuery,
               asPath: renderAsPath ?? routeUrl,
               navigationIsReady,
               locale,
@@ -509,6 +516,7 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            initialResolvedQuery: query,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
@@ -643,6 +651,7 @@ export function createPagesPageHandler(
           setSSRContext({
             pathname: routePattern,
             query,
+            initialQuery,
             asPath: renderAsPath ?? routeUrl,
             navigationIsReady: false,
             locale,
@@ -667,6 +676,12 @@ export function createPagesPageHandler(
               init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
             }
           }
+          for (const headerName of Object.keys(init.headers)) {
+            if (headerName.toLowerCase() === "x-vinext-resolved-query") {
+              delete init.headers[headerName];
+            }
+          }
+          init.headers["x-vinext-resolved-query"] = safeJsonStringify(query);
           if (gsspRes) {
             // Default Cache-Control for gSSP-driven _next/data responses —
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
@@ -745,6 +760,7 @@ export function createPagesPageHandler(
           pageProps,
           props: renderProps,
           params,
+          initialQuery,
           query,
           renderDocumentToString(element) {
             return renderToStringAsync(element);

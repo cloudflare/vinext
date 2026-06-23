@@ -58,6 +58,30 @@ const nextConfig = {
           source: "/rewrite-navigation-same/3",
           destination: "/rewrite-navigation-same/003",
         },
+        {
+          source: "/prerender-rewrite",
+          destination: "/prerender-query?from=config&same=destination",
+        },
+        {
+          source: "/prerender-rewrite-dynamic/:slug",
+          destination: "/prerender-query-dynamic/:slug?from=config&same=destination",
+        },
+        {
+          source: "/prerender-rewrite-optional",
+          destination: "/prerender-query-optional?from=config&same=destination",
+        },
+        {
+          source: "/prerender-rewrite-optional/:parts*",
+          destination: "/prerender-query-optional/:parts*?from=config&same=destination",
+        },
+        {
+          source: "/prerender-query-same",
+          destination: "/prerender-query-same?from=config&same=destination",
+        },
+        {
+          source: "/prerender-query-same-dynamic/:slug",
+          destination: "/prerender-query-same-dynamic/:slug?from=config&same=destination",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this

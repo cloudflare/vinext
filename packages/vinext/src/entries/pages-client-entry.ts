@@ -59,8 +59,6 @@ export async function generateClientEntry(
     ...pageRoutes.map(toPagesLinkPrefetchRoute),
     ...apiRoutes.map((route) => ({ ...toPagesLinkPrefetchRoute(route), documentOnly: true })),
   ];
-  const instrumentationClientPath = options.instrumentationClientPath ?? null;
-
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
   // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
@@ -75,31 +73,13 @@ export async function generateClientEntry(
 
   const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
 
-  // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
-  // (when present at project root or in `src/`) BEFORE any other module so its
-  // top-level statements run before `hydrateRoot()` is called. Mirrors
-  // Next.js's `page-bootstrap.ts`, which side-effect-imports
-  // `require-instrumentation-client` ahead of `initialize`/`hydrate`
-  // (.nextjs-ref/packages/next/src/client/page-bootstrap.ts L1).
-  //
-  // The `vinext/instrumentation-client` import below pulls in the hook
-  // surface (`onRouterTransitionStart`) for navigation events. It also
-  // re-imports the user file via the `private-next-instrumentation-client`
-  // alias, but tree-shakers can be conservative about the side effects of
-  // an indirectly-loaded module. Importing the user's file directly here
-  // makes the contract explicit: bare side-effect imports are always
-  // preserved by Vite/Rolldown's import-analysis pipeline.
-  const userInstrumentationImport = instrumentationClientPath
-    ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
-    : "";
-
-  return `${userInstrumentationImport}
-import "vinext/instrumentation-client";
+  return `
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import Router, {
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
+  _syncInitialPagesRouterStateFromNextData,
 } from "next/router";
 
 const pageLoaders = {
@@ -158,6 +138,7 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
   window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+  _syncInitialPagesRouterStateFromNextData();
 }
 
 async function hydrate() {
@@ -166,6 +147,9 @@ async function hydrate() {
     console.error("[vinext] No __NEXT_DATA__ found");
     return;
   }
+
+  // Load instrumentation only after serialized locale state is available.
+  await import("vinext/instrumentation-client");
 
   _initializePagesRouterReadyFromNextData(nextData);
 

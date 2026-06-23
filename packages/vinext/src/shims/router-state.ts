@@ -24,6 +24,7 @@ import {
 export type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
+  initialQuery?: Record<string, string | string[]>;
   asPath: string;
   navigationIsReady?: boolean;
   locale?: string;

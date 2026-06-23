@@ -186,6 +186,7 @@ type RenderPagesPageResponseOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  initialQuery?: Record<string, unknown>;
   query?: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
@@ -254,6 +255,7 @@ export function buildPagesNextDataScript(
     | "pageProps"
     | "props"
     | "params"
+    | "initialQuery"
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
@@ -265,7 +267,7 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: options.params,
+    query: options.initialQuery ?? options.params,
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };
@@ -483,6 +485,7 @@ export async function renderPagesPageResponse(
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    initialQuery: options.initialQuery,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,

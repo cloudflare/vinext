@@ -43,6 +43,8 @@ export type VinextNextData = {
     hasMiddleware?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
+    /** Server-resolved query retained through the initial router readiness transition. */
+    initialResolvedQuery?: Record<string, string | string[]>;
   };
 } & NEXT_DATA;
 
