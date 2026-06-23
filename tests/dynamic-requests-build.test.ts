@@ -230,14 +230,22 @@ require(missing ?? request);
 
   it("matches constant template and unary request patterns", () => {
     const transformed = _transformVeryDynamicRequests(
-      "require(`/`); import(void 0); require(!0); import(-1); require(+1);",
+      `require(\`/\`);
+import(void 0);
+require(void /pattern/);
+import(void -1);
+require(void value);
+import(!0);
+require(!value);
+import(-1);
+require(+1);`,
       "/app/page.tsx",
     )?.code;
 
-    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(6);
     expect(transformed).toContain("import(void 0)");
-    expect(transformed).toContain("require(!0)");
-    expect(transformed).toContain("import(-1)");
+    expect(transformed).toContain("require(void /pattern/)");
+    expect(transformed).toContain("import(!0)");
   });
 
   it("does not evaluate side effects in void request expressions", () => {

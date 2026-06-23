@@ -244,32 +244,9 @@ function templateHasStaticPart(
   });
 }
 
-function isStaticSafeExpression(
-  value: unknown,
-  scope: Scope,
-  resolvingBindings = new Set<string>(),
-): boolean {
+function isLiteralExpression(value: unknown): boolean {
   const node = unwrapExpression(value);
-  if (!node) return false;
-  if (node.type === "Literal" || node.type === "StringLiteral") return true;
-  if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
-  if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return false;
-    const binding = findConstantBinding(scope, node.name);
-    if (!binding) return false;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
-    return isStaticSafeExpression(binding, scope, nextResolvingBindings);
-  }
-  if (node.type === "UnaryExpression") {
-    return isStaticSafeExpression(node.argument, scope, resolvingBindings);
-  }
-  if (node.type === "TemplateLiteral") {
-    return nodeArray(node.expressions).every((expression) =>
-      isStaticSafeExpression(expression, scope, resolvingBindings),
-    );
-  }
-  return false;
+  return node?.type === "Literal" || node?.type === "StringLiteral";
 }
 
 function staticTruthiness(
@@ -291,7 +268,7 @@ function staticTruthiness(
   }
   if (node.type === "UnaryExpression") {
     if (node.operator === "void") {
-      return isStaticSafeExpression(node.argument, scope, resolvingBindings) ? false : null;
+      return isLiteralExpression(node.argument) ? false : null;
     }
     if (node.operator === "!") {
       const argumentTruthiness = staticTruthiness(node.argument, scope, resolvingBindings);
@@ -328,10 +305,7 @@ function staticNullishness(
     return staticNullishness(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
-    return node.operator === "void" &&
-      isStaticSafeExpression(node.argument, scope, resolvingBindings)
-      ? true
-      : null;
+    return node.operator === "void" && isLiteralExpression(node.argument) ? true : null;
   }
   if (
     node.type === "ArrayExpression" ||
@@ -476,16 +450,7 @@ function requestHasStaticPart(
   }
   if (node.type === "UnaryExpression") {
     if (node.operator === "void") {
-      return isStaticSafeExpression(node.argument, scope, resolvingBindings);
-    }
-    if (node.operator === "!") return true;
-    const argument = unwrapExpression(node.argument);
-    if (
-      node.operator === "-" &&
-      argument?.type === "Literal" &&
-      typeof argument.value === "number"
-    ) {
-      return true;
+      return isLiteralExpression(node.argument);
     }
     return staticTruthiness(node, scope, resolvingBindings) !== null;
   }
