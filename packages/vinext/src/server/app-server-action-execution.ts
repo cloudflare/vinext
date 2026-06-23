@@ -15,7 +15,12 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
-import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
+import {
+  createRootParamsUsageController,
+  pickRootParams,
+  runWithRootParamsScope,
+  runWithRootParamsUsage,
+} from "vinext/shims/root-params";
 import { isExternalUrl } from "../config/config-matchers.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -96,6 +101,7 @@ type AppServerActionRedirect = {
 type AppServerActionRoute = {
   page?: unknown;
   pattern: string;
+  rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   params?: readonly string[] | null;
@@ -1255,7 +1261,6 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      rootParamsUsage.transitionToRender();
       const currentMatch = options.matchRoute(options.cleanPathname);
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
@@ -1291,27 +1296,33 @@ export async function handleServerActionRscRequest<
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
       setCurrentForceDynamicFetchDefault(redirectDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
-      const element = options.buildPageElement({
-        cleanPathname: targetPathname,
-        interceptOpts: undefined,
-        isRscRequest: true,
-        mountedSlotsHeader: null,
-        params: targetMatch.params,
-        request: redirectRenderRequest,
-        route: targetMatch.route,
-        searchParams: redirectSearchParams,
-        renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-        observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
-        observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
-      });
-      const onRenderError = options.createRscOnErrorHandler(
-        redirectRenderRequest,
-        targetPathname,
-        targetMatch.route.pattern,
-      );
-      const rscStream = await options.renderToReadableStream(
-        { root: element, returnValue },
-        { temporaryReferences, onError: onRenderError },
+      const rscStream = await runWithRootParamsScope(
+        pickRootParams(targetMatch.params, targetMatch.route.rootParamNames),
+        () =>
+          runWithRootParamsUsage({ kind: "route" }, async () => {
+            const element = options.buildPageElement({
+              cleanPathname: targetPathname,
+              interceptOpts: undefined,
+              isRscRequest: true,
+              mountedSlotsHeader: null,
+              params: targetMatch.params,
+              request: redirectRenderRequest,
+              route: targetMatch.route,
+              searchParams: redirectSearchParams,
+              renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+              observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
+              observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
+            });
+            const onRenderError = options.createRscOnErrorHandler(
+              redirectRenderRequest,
+              targetPathname,
+              targetMatch.route.pattern,
+            );
+            return options.renderToReadableStream(
+              { root: element, returnValue },
+              { temporaryReferences, onError: onRenderError },
+            );
+          }),
       );
       const redirectResponseStatus = shouldUseForwardedActionRedirectStatus({
         actionWasForwarded,
@@ -1339,11 +1350,12 @@ export async function handleServerActionRscRequest<
 
     // HTTP access fallbacks always rerender so the page's fallback boundary and
     // metadata are included. Generic errors only rerender after revalidation.
-    // Forwarded actions never render because this worker does not own the page.
+    // Forwarded generic actions never render because this worker does not own
+    // the page, but HTTP fallbacks always rerender in Next.js.
     const isHttpFallback = actionStatus === 401 || actionStatus === 403 || actionStatus === 404;
     const shouldSkipPageRendering =
-      actionWasForwarded ||
-      (!isHttpFallback && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
+      !isHttpFallback &&
+      (actionWasForwarded || actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);
     if (shouldSkipPageRendering) {
       const onRenderError = options.createRscOnErrorHandler(
         options.request,
@@ -1432,19 +1444,26 @@ export async function handleServerActionRscRequest<
       setCurrentFetchSoftTags(
         buildServerActionPageTags(actionRerenderTarget.route, options.cleanPathname),
       );
-      element = options.buildPageElement({
-        cleanPathname: options.cleanPathname,
-        interceptOpts: actionRerenderTarget.interceptOpts,
-        isRscRequest: options.isRscRequest,
-        mountedSlotsHeader: options.mountedSlotsHeader,
-        params: actionRerenderTarget.params,
-        request: options.request,
-        route: actionRerenderTarget.route,
-        searchParams: actionRerenderSearchParams,
-        renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-        observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
-        observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
-      });
+      const buildActionRerenderElement = () =>
+        options.buildPageElement({
+          cleanPathname: options.cleanPathname,
+          interceptOpts: actionRerenderTarget.interceptOpts,
+          isRscRequest: options.isRscRequest,
+          mountedSlotsHeader: options.mountedSlotsHeader,
+          params: actionRerenderTarget.params,
+          request: options.request,
+          route: actionRerenderTarget.route,
+          searchParams: actionRerenderSearchParams,
+          renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+          observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
+        });
+      element =
+        actionWasForwarded && isHttpFallback
+          ? await runWithRootParamsUsage({ kind: "route" }, async () =>
+              buildActionRerenderElement(),
+            )
+          : buildActionRerenderElement();
       errorPattern = actionRerenderTarget.route.pattern;
     } else {
       const actionRouteId = options.createPayloadRouteId(options.cleanPathname, null);
@@ -1456,10 +1475,14 @@ export async function handleServerActionRscRequest<
       options.cleanPathname,
       errorPattern,
     );
-    const rscStream = await options.renderToReadableStream(
-      { root: element, returnValue },
-      { temporaryReferences, onError: onRenderError },
-    );
+    const renderActionRerender = () =>
+      options.renderToReadableStream(
+        { root: element, returnValue },
+        { temporaryReferences, onError: onRenderError },
+      );
+    const rscStream = await (actionWasForwarded && isHttpFallback
+      ? runWithRootParamsUsage({ kind: "route" }, renderActionRerender)
+      : renderActionRerender());
 
     const actionHeaders = new Headers({
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,

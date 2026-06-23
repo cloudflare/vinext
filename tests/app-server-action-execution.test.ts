@@ -41,6 +41,7 @@ type TestRoute = {
   page?: unknown;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
@@ -1700,6 +1701,50 @@ describe("app server action execution helpers", () => {
     expect(renderRequest.headers.get("cookie")).toBe("session=1; theme=dark");
   });
 
+  it("renders internal action redirects with the target route's root params", async () => {
+    let renderedRootParam: string | string[] | undefined;
+
+    await runWithRootParamsScope({ lang: "source" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          async renderToReadableStream(model) {
+            renderedRootParam = await getRootParam("lang");
+            return new Response(JSON.stringify(model)).body;
+          },
+          loadServerAction() {
+            return Promise.resolve(() => redirect("/fr/target"));
+          },
+          matchRoute(pathname) {
+            if (pathname === "/fr/target") {
+              return {
+                params: { lang: "fr" },
+                route: {
+                  id: "redirect-target",
+                  page: {},
+                  params: ["lang"],
+                  pattern: "/[lang]/target",
+                  rootParamNames: ["lang"],
+                },
+              };
+            }
+            return {
+              params: { lang: "source" },
+              route: {
+                id: "dashboard",
+                page: {},
+                params: ["lang"],
+                pattern: "/[lang]/dashboard",
+                rootParamNames: ["lang"],
+              },
+            };
+          },
+        }),
+      ),
+    );
+
+    expect(renderedRootParam).toBe("fr");
+  });
+
   it("keeps redirected action render context alive until the Flight body is consumed", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
@@ -2241,6 +2286,45 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true, data: "action-result" },
     });
     expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
+  });
+
+  it("rerenders forwarded action HTTP fallbacks", async () => {
+    let renderedModel: TestActionModel | null = null;
+    let renderedRootParam: string | string[] | undefined;
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+    const fallbackError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+    const response = await runWithRootParamsScope({ lang: "en" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          loadServerAction() {
+            return Promise.resolve(() => {
+              deferredRead = deferred.then(() => getRootParam("lang"));
+              throw fallbackError;
+            });
+          },
+          request: createFetchActionRequest({ "x-action-forwarded": "1" }),
+          async renderToReadableStream(model) {
+            renderedModel = model;
+            renderedRootParam = await getRootParam("lang");
+            return new Response("fallback-flight").body;
+          },
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(renderedRootParam).toBe("en");
+    expect(renderedModel).toEqual({
+      root: "dashboard:{}:none",
+      returnValue: { ok: false, data: fallbackError },
+    });
     releaseDeferred();
     await expect(deferredRead).rejects.toThrow("was used inside a Server Action");
   });

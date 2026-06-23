@@ -11,6 +11,7 @@ import {
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
   shouldClearClientNavigationCachesForServerActionResult,
+  shouldSyncServerActionHttpFallbackHead,
   type AppBrowserServerActionResult,
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
@@ -218,8 +219,9 @@ export async function invokeClientServerAction(
     return undefined;
   }
 
-  const hasSameUrlRerenderPayload = isServerActionResult(result) && result.root !== undefined;
-  deps.syncServerActionHttpFallbackHead(hasSameUrlRerenderPayload ? null : fetchResponse.status);
+  deps.syncServerActionHttpFallbackHead(
+    shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
+  );
 
   if (isServerActionResult(result)) {
     if (result.root !== undefined) {

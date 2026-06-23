@@ -759,11 +759,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionError && typeof actionError === "object" && "digest" in actionError
       ? String(actionError.digest)
       : null;
-  if (
-    actionFailed &&
-    middlewareContext.status === null &&
-    (!actionErrorDigest || parseNextHttpErrorDigest(actionErrorDigest) === null)
-  ) {
+  const actionHttpFallbackStatus = actionErrorDigest
+    ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null)
+    : null;
+  const normalizedProgressiveActionError =
+    actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
+      ? actionError
+      : { digest: "NEXT_NOT_FOUND" };
+  if (actionFailed && middlewareContext.status === null && actionHttpFallbackStatus === null) {
     middlewareContext.status = 500;
   }
 
@@ -1008,7 +1011,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathname,
     displayPathname: canonicalPathname,
     formState,
-    actionError,
+    actionError: normalizedProgressiveActionError,
     actionFailed,
     handlerStart,
     interceptionContext: interceptionContextHeader,
