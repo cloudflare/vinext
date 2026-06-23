@@ -831,8 +831,7 @@ describe("treeshake config integration", () => {
     );
     const clientAssetsDefaultsPlugin = plugins.find(
       (p: any) =>
-        p.name === "vinext:client-css-url-assets-defaults" &&
-        typeof p.configEnvironment === "function",
+        p.name === "vinext:css-url-assets-defaults" && typeof p.configEnvironment === "function",
     );
     expect(mainPlugin).toBeDefined();
     expect(clientAssetsDefaultsPlugin).toBeDefined();
@@ -890,6 +889,39 @@ describe("treeshake config integration", () => {
       });
       expect(
         (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+            },
+          },
+        },
+      });
+      const customAssetFileNames = "custom/[name][extname]";
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: { output: { assetFileNames: customAssetFileNames } },
+            },
+          },
+          { command: "build" },
+        ),
+      ).toBeNull();
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: {
+                output: [{ entryFileNames: "first.js" }, { chunkFileNames: "second.js" }],
+              },
+            },
+          },
+          { command: "build" },
+        ),
       ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

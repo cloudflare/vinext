@@ -3097,12 +3097,29 @@ export const loadServerActionClient = ${
       },
     },
     {
-      name: "vinext:client-css-url-assets-defaults",
+      name: "vinext:css-url-assets-defaults",
       apply: "build",
 
-      configEnvironment(name) {
-        if (name !== "client") return null;
-        return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+      configEnvironment(name, config) {
+        if (name === "client") {
+          return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+        }
+        if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
+        const output = getBuildBundlerOptions(config.build)?.output;
+        // Vite concatenates arrays returned from config hooks rather than
+        // merging output entries by index, so an array-shaped user config
+        // cannot be safely augmented here. Preserve it unchanged.
+        if (Array.isArray(output) || output?.assetFileNames !== undefined) return null;
+        const assetFileNames = createClientAssetFileNames(
+          resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+        );
+        return {
+          build: {
+            ...withBuildBundlerOptions(viteMajorVersion, {
+              output: { assetFileNames },
+            }),
+          },
+        };
       },
     },
     {
