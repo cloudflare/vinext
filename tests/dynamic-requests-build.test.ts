@@ -258,6 +258,23 @@ try { require(void sideEffect()); } catch {}
     ).toBeNull();
   });
 
+  it("preserves dynamic requests with statically bounded string concatenation", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `require("./dir/".concat(request));
+import("./dir/".concat(request, ".js"));
+`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+
+    const transformed = _transformVeryDynamicRequests(
+      `require("".concat(request)); import("/".concat(request));`,
+      "/app/page.tsx",
+    )?.code;
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
   it("preserves require calls shadowed by loop-header bindings", () => {
     expect(
       _transformVeryDynamicRequests(

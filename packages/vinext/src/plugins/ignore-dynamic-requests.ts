@@ -302,6 +302,32 @@ function findConstantBinding(scope: Scope, name: string): AstRecord | null {
   return null;
 }
 
+function stringConcatHasStaticPart(
+  node: AstRecord,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): boolean | null {
+  if (node.type !== "CallExpression") return null;
+  const callee = unwrapExpression(node.callee);
+  if (
+    callee?.type !== "MemberExpression" ||
+    callee.computed === true ||
+    !isIdentifierNamed(callee.property, "concat")
+  ) {
+    return null;
+  }
+
+  const receiver = unwrapExpression(callee.object);
+  const receiverString = receiver ? stringValue(receiver) : null;
+  if (receiverString === null) return null;
+  if (hasSignificantPathPart(receiverString)) return true;
+
+  return nodeArray(node.arguments).some((argument) => {
+    const argumentNode = unwrapExpression(argument);
+    return argumentNode ? requestHasStaticPart(argumentNode, scope, resolvingBindings) : false;
+  });
+}
+
 function requestHasStaticPart(
   value: unknown,
   scope: Scope,
@@ -316,6 +342,8 @@ function requestHasStaticPart(
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolvingBindings);
   }
+  const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolvingBindings);
+  if (concatHasStaticPart !== null) return concatHasStaticPart;
   if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return false;
