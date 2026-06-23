@@ -166,6 +166,20 @@ for (let window; condition; ) console.log(typeof window)`,
     expect(result).toBeNull();
   });
 
+  it("keeps switch-case bindings out of the discriminant scope", () => {
+    const result = replaceTypeofWindow(
+      `switch (typeof window) {
+  case typeof window:
+    let window
+    console.log(typeof window)
+}`,
+      "undefined",
+    );
+
+    expect(result?.code).toContain('switch ("undefined")');
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+  });
+
   it("contains var window bindings in TypeScript namespaces and static blocks", () => {
     const result = replaceTypeofWindow(
       `namespace Loader {

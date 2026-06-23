@@ -36,7 +36,6 @@ function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
     node.type !== "BlockStatement" &&
     node.type !== "StaticBlock" &&
     node.type !== "TSModuleBlock" &&
-    node.type !== "SwitchStatement" &&
     node.type !== "CatchClause" &&
     node.type !== "ForStatement" &&
     node.type !== "ForInStatement" &&
@@ -57,9 +56,7 @@ function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
   if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
     collectVarScopeBindings(node, scope);
   }
-  if (node.type === "SwitchStatement") {
-    collectSwitchScopeBindings(node, scope);
-  } else if (
+  if (
     node.type === "ForStatement" ||
     node.type === "ForInStatement" ||
     node.type === "ForOfStatement"
@@ -156,6 +153,16 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
         } else {
           visit(node.body, parameterScope);
         }
+      }
+      return;
+    }
+
+    if (node.type === "SwitchStatement") {
+      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
+      const switchScope = createAstScope(parentScope);
+      collectSwitchScopeBindings(node, switchScope);
+      for (const switchCase of nodeArray(node.cases)) {
+        if (isAstRecord(switchCase)) visit(switchCase, switchScope);
       }
       return;
     }

@@ -409,6 +409,20 @@ class StaticLoader {
     ).toBeNull();
   });
 
+  it("keeps switch-case bindings out of the discriminant scope", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `switch (require(request)) {
+  case require(request):
+    let require;
+    require(request);
+}`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed?.match(/require\(request\)/g)).toHaveLength(2);
+  });
+
   it("tracks TypeScript value bindings without treating type-only imports as values", () => {
     const transformed = _transformVeryDynamicRequests(
       `import type { require as TypeOnlyRequire } from "types";

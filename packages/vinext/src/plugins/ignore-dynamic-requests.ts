@@ -598,6 +598,20 @@ function transformVeryDynamicRequests(code: string, id: string) {
         }
       }
       return;
+    } else if (node.type === "SwitchStatement") {
+      const discriminant = astNode(node.discriminant);
+      if (discriminant) visit(discriminant, parentScope);
+      const switchScope: Scope = {
+        parent: parentScope,
+        bindings: new Set(),
+        constants: new Map(),
+      };
+      collectDirectBindings(node, switchScope);
+      for (const switchCase of nodeArray(node.cases)) {
+        const switchCaseNode = astNode(switchCase);
+        if (switchCaseNode) visit(switchCaseNode, switchScope);
+      }
+      return;
     } else if (
       (node.type === "BlockStatement" && node !== root) ||
       node.type === "StaticBlock" ||
@@ -611,9 +625,6 @@ function transformVeryDynamicRequests(code: string, id: string) {
     } else if (node.type === "CatchClause") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);
-    } else if (node.type === "SwitchStatement") {
-      scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
-      collectDirectBindings(node, scope);
     } else if (
       node.type === "ForStatement" ||
       node.type === "ForInStatement" ||
