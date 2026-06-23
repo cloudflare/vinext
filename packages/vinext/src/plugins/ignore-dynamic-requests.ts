@@ -134,6 +134,26 @@ function hasSignificantPathPart(value: string): boolean {
   return normalized !== "" && normalized !== "/";
 }
 
+function templateElementValue(quasi: AstRecord | undefined, raw: boolean): string {
+  const value = quasi?.value;
+  if (typeof value !== "object" || value === null) return "";
+  const elementValue = Reflect.get(value, raw ? "raw" : "cooked");
+  return typeof elementValue === "string" ? elementValue : "";
+}
+
+function isUnboundStringRawTag(value: unknown, scope: Scope): boolean {
+  const tag = unwrapExpression(value);
+  const object = tag?.type === "MemberExpression" ? unwrapExpression(tag.object) : null;
+  const property = tag?.type === "MemberExpression" ? unwrapExpression(tag.property) : null;
+  return (
+    tag?.type === "MemberExpression" &&
+    tag.computed !== true &&
+    isIdentifierNamed(object, "String") &&
+    !hasAstBinding(scope, "String") &&
+    isIdentifierNamed(property, "raw")
+  );
+}
+
 function hasDynamicRequestIgnoreDirective(
   code: string,
   requestNode: AstRecord,
@@ -213,27 +233,13 @@ function templateHasStaticPart(
   node: AstRecord,
   scope: Scope,
   resolvingBindings: Set<string>,
+  useRaw = false,
 ): boolean {
   const quasis = nodeArray(node.quasis).filter(isAstRecord);
   if (nodeArray(node.expressions).length === 0) {
-    const value = quasis[0]?.value;
-    const cooked =
-      typeof value === "object" && value !== null ? Reflect.get(value, "cooked") : null;
-    const raw = typeof value === "object" && value !== null ? Reflect.get(value, "raw") : null;
-    const constant = typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "";
-    return constant.replaceAll("\\", "/") !== "/";
+    return templateElementValue(quasis[0], useRaw).replaceAll("\\", "/") !== "/";
   }
-  if (
-    quasis.some((quasi) => {
-      const value = quasi.value;
-      const cooked =
-        typeof value === "object" && value !== null ? Reflect.get(value, "cooked") : null;
-      const raw = typeof value === "object" && value !== null ? Reflect.get(value, "raw") : null;
-      return hasSignificantPathPart(
-        typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : "",
-      );
-    })
-  ) {
+  if (quasis.some((quasi) => hasSignificantPathPart(templateElementValue(quasi, useRaw)))) {
     return true;
   }
 
@@ -250,21 +256,10 @@ function stringRawTemplateHasStaticPart(
   resolvingBindings: Set<string>,
 ): boolean | null {
   if (node.type !== "TaggedTemplateExpression") return null;
-  const tag = unwrapExpression(node.tag);
-  const object = tag?.type === "MemberExpression" ? unwrapExpression(tag.object) : null;
-  const property = tag?.type === "MemberExpression" ? unwrapExpression(tag.property) : null;
-  if (
-    tag?.type !== "MemberExpression" ||
-    tag.computed === true ||
-    !isIdentifierNamed(object, "String") ||
-    hasAstBinding(scope, "String") ||
-    !isIdentifierNamed(property, "raw")
-  ) {
-    return null;
-  }
+  if (!isUnboundStringRawTag(node.tag, scope)) return null;
   const quasi = astNode(node.quasi);
   return quasi?.type === "TemplateLiteral"
-    ? templateHasStaticPart(quasi, scope, resolvingBindings)
+    ? templateHasStaticPart(quasi, scope, resolvingBindings, true)
     : null;
 }
 
@@ -537,7 +532,9 @@ function requestHasStaticPart(
     const expressions = nodeArray(node.expressions);
     if (expressions.length === 0) return false;
     return (
-      expressions.slice(0, -1).every((expression) => !expressionMayHaveSideEffects(expression)) &&
+      expressions
+        .slice(0, -1)
+        .every((expression) => !expressionMayHaveSideEffects(expression, scope)) &&
       requestHasStaticPart(expressions.at(-1), scope, resolvingBindings)
     );
   }
@@ -545,7 +542,7 @@ function requestHasStaticPart(
   return false;
 }
 
-function expressionMayHaveSideEffects(value: unknown): boolean {
+function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (
@@ -558,51 +555,80 @@ function expressionMayHaveSideEffects(value: unknown): boolean {
     return false;
   }
   if (node.type === "TemplateLiteral") {
-    return nodeArray(node.expressions).some(expressionMayHaveSideEffects);
+    return nodeArray(node.expressions).some((expression) =>
+      expressionMayHaveSideEffects(expression, scope),
+    );
   }
   if (node.type === "UnaryExpression") {
-    return node.operator === "delete" || expressionMayHaveSideEffects(node.argument);
+    return node.operator === "delete" || expressionMayHaveSideEffects(node.argument, scope);
   }
   if (node.type === "AwaitExpression") {
-    return expressionMayHaveSideEffects(node.argument);
+    return expressionMayHaveSideEffects(node.argument, scope);
   }
   if (node.type === "BinaryExpression" || node.type === "LogicalExpression") {
-    return expressionMayHaveSideEffects(node.left) || expressionMayHaveSideEffects(node.right);
+    return (
+      expressionMayHaveSideEffects(node.left, scope) ||
+      expressionMayHaveSideEffects(node.right, scope)
+    );
   }
   if (node.type === "ConditionalExpression") {
     return (
-      expressionMayHaveSideEffects(node.test) ||
-      expressionMayHaveSideEffects(node.consequent) ||
-      expressionMayHaveSideEffects(node.alternate)
+      expressionMayHaveSideEffects(node.test, scope) ||
+      expressionMayHaveSideEffects(node.consequent, scope) ||
+      expressionMayHaveSideEffects(node.alternate, scope)
     );
   }
   if (node.type === "SequenceExpression") {
-    return nodeArray(node.expressions).some(expressionMayHaveSideEffects);
+    return nodeArray(node.expressions).some((expression) =>
+      expressionMayHaveSideEffects(expression, scope),
+    );
   }
   if (node.type === "ArrayExpression") {
     return nodeArray(node.elements).some((element) => {
       const elementNode = astNode(element);
-      return elementNode?.type === "SpreadElement" || expressionMayHaveSideEffects(elementNode);
+      return (
+        elementNode?.type === "SpreadElement" || expressionMayHaveSideEffects(elementNode, scope)
+      );
     });
   }
   if (node.type === "ObjectExpression") {
     return nodeArray(node.properties).some((property) => {
       const propertyNode = astNode(property);
+      if (propertyNode?.type === "SpreadElement") {
+        return expressionMayHaveSideEffects(propertyNode.argument, scope);
+      }
+      if (
+        propertyNode?.type !== "Property" ||
+        propertyNode.kind !== "init" ||
+        propertyNode.method === true
+      ) {
+        return true;
+      }
       return (
-        (propertyNode?.type === "SpreadElement"
-          ? expressionMayHaveSideEffects(propertyNode.argument)
-          : false) ||
-        expressionMayHaveSideEffects(propertyNode?.computed ? propertyNode.key : null) ||
-        expressionMayHaveSideEffects(propertyNode?.value)
+        expressionMayHaveSideEffects(propertyNode.computed ? propertyNode.key : null, scope) ||
+        expressionMayHaveSideEffects(propertyNode.value, scope)
       );
     });
   }
   if (node.type === "MemberExpression") {
     return (
-      expressionMayHaveSideEffects(node.object) ||
-      expressionMayHaveSideEffects(node.computed ? node.property : null)
+      expressionMayHaveSideEffects(node.object, scope) ||
+      expressionMayHaveSideEffects(node.computed ? node.property : null, scope)
     );
   }
+  if (node.type === "TaggedTemplateExpression") {
+    if (isUnboundStringRawTag(node.tag, scope)) {
+      const quasi = astNode(node.quasi);
+      return (
+        quasi?.type !== "TemplateLiteral" ||
+        nodeArray(quasi.expressions).some((expression) =>
+          expressionMayHaveSideEffects(expression, scope),
+        )
+      );
+    }
+    return true;
+  }
+  if (node.type === "MetaProperty") return false;
   return true;
 }
 

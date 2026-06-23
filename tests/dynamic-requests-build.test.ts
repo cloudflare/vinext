@@ -273,7 +273,10 @@ try { require(void sideEffect()); } catch {}
 
   it("preserves bounded String.raw templates", () => {
     expect(
-      _transformVeryDynamicRequests("require(String.raw`./dir/${request}.js`);", "/app/page.tsx"),
+      _transformVeryDynamicRequests(
+        String.raw`require(String.raw\`./dir/\${request}.js\`); import(String.raw\`\x2f\${request}\`);`,
+        "/app/page.tsx",
+      ),
     ).toBeNull();
 
     const transformed = _transformVeryDynamicRequests(
@@ -293,6 +296,30 @@ import((sideEffect(), "./module.js"));`,
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
     expect(transformed).toContain('require((0, "./module.js"))');
     expect(transformed).not.toContain("sideEffect()");
+  });
+
+  it("matches Turbopack side-effect analysis for sequence prefixes", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `require((String.raw\`./dir/\${request}\`, "./module.js"));
+import((import.meta.url, "./module.js"));
+require(({ value: request }, "./module.js"));
+import(({ ...source }, "./module.js"));`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
+
+    const transformed = _transformVeryDynamicRequests(
+      `require(({ get value() { return request; } }, "./module.js"));
+import(({ method() { return request; } }, "./module.js"));
+require((tag\`./dir/\${request}\`, "./module.js"));`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+    expect(transformed).not.toContain("get value");
+    expect(transformed).not.toContain("method()");
+    expect(transformed).not.toContain("tag`");
   });
 
   it("preserves dynamic requests with statically bounded string concatenation", () => {
