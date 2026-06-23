@@ -351,6 +351,19 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // ── Step 5: Generate vite.config.ts ────────────────────────────────────
 
   const projectInfo = platform === "cloudflare" ? detectProject(root) : undefined;
+  const wranglerPath =
+    platform === "cloudflare"
+      ? ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
+          .map((fileName) => path.join(root, fileName))
+          .find((candidate) => fs.existsSync(candidate))
+      : undefined;
+  const wranglerIsToml = wranglerPath?.endsWith(".toml") ?? false;
+  const imagesBinding = wranglerPath
+    ? getWranglerImagesBinding(
+        fs.readFileSync(wranglerPath, "utf-8"),
+        wranglerIsToml ? "toml" : "json",
+      )
+    : "IMAGES";
   let generatedViteConfig = false;
   let skippedViteConfig = false;
   if (platform === "cloudflare" && existingViteConfigPath) {
@@ -359,6 +372,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       isAppRouter: isApp,
       nativeModulesToStub: projectInfo!.nativeModulesToStub,
       cache: cloudflare,
+      imagesBinding,
     });
     if (updatedConfig !== currentConfig) {
       fs.writeFileSync(existingViteConfigPath, updatedConfig, "utf-8");
@@ -372,8 +386,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     const configContent =
       platform === "cloudflare"
         ? isApp
-          ? generateAppRouterViteConfig(projectInfo, cloudflare)
-          : generatePagesRouterViteConfig(projectInfo, cloudflare)
+          ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
+          : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding)
         : generateViteConfig(isApp);
     fs.writeFileSync(
       existingViteConfigPath ?? path.join(root, "vite.config.ts"),
@@ -386,7 +400,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const generatedPlatformFiles: string[] = [];
   if (platform === "cloudflare") {
     const info = projectInfo!;
-    let imagesBinding = "IMAGES";
     if (!info.hasWranglerConfig) {
       fs.writeFileSync(
         path.join(root, "wrangler.jsonc"),
@@ -395,16 +408,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
       );
       generatedPlatformFiles.push("wrangler.jsonc");
     } else {
-      const wranglerPath = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
-        .map((fileName) => path.join(root, fileName))
-        .find((candidate) => fs.existsSync(candidate));
       if (wranglerPath) {
         const currentConfig = fs.readFileSync(wranglerPath, "utf-8");
-        const isToml = wranglerPath.endsWith(".toml");
-        const updatedConfig = isToml
+        const updatedConfig = wranglerIsToml
           ? updateWranglerTomlForCloudflare(currentConfig, cloudflare)
           : updateWranglerConfigForCloudflare(currentConfig, cloudflare);
-        imagesBinding = getWranglerImagesBinding(updatedConfig, isToml ? "toml" : "json");
         if (updatedConfig !== currentConfig) {
           fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
           generatedPlatformFiles.push(path.basename(wranglerPath));
@@ -415,9 +423,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       fs.mkdirSync(path.join(root, "worker"), { recursive: true });
       fs.writeFileSync(
         path.join(root, "worker", "index.ts"),
-        isApp
-          ? generateAppRouterWorkerEntry(cloudflare.imageOptimization, imagesBinding)
-          : generatePagesRouterWorkerEntry(cloudflare.imageOptimization, imagesBinding),
+        isApp ? generateAppRouterWorkerEntry() : generatePagesRouterWorkerEntry(),
         "utf-8",
       );
       generatedPlatformFiles.push("worker/index.ts");

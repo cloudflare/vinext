@@ -490,7 +490,7 @@ describe("init — basic functionality", () => {
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("cdn: kvCdnAdapter()");
-    expect(config).toContain("imageOptimization: false");
+    expect(config).not.toContain("imageAdapter");
     expect(config).not.toContain("kvDataAdapter");
     const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
     expect(wrangler.kv_namespaces).toEqual([
@@ -562,7 +562,10 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     });
 
     expect(readFile(tmpDir, "wrangler.toml")).toContain('binding = "VINEXT_KV_CACHE"');
-    expect(readFile(tmpDir, "worker/index.ts")).toContain("env.CUSTOM_IMAGES.input(body)");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'imageAdapter({ binding: "CUSTOM_IMAGES" })',
+    );
+    expect(readFile(tmpDir, "worker/index.ts")).not.toContain("CUSTOM_IMAGES");
   });
 
   it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {

@@ -25,7 +25,7 @@ import {
   type ImageOptimizer,
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
+import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/init-cloudflare.js";
 import { imageAdapter } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 

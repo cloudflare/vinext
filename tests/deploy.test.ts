@@ -695,30 +695,21 @@ describe("generateAppRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain("fetch(request: Request, env: Env, ctx: ExecutionContext)");
     expect(content).toContain("Promise<Response>");
   });
 
-  it("includes image optimization handler", () => {
+  it("keeps image optimization out of the Worker", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
+    expect(content).not.toContain("isImageOptimizationPath");
+    expect(content).not.toContain("handleImageOptimization");
+    expect(content).toContain("handler.fetch(request, env, ctx)");
   });
 
-  it("threads configured image widths and qualities into the App Router worker", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
-    expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
-    expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
-  });
-
-  it("declares Env interface with IMAGES binding", () => {
+  it("does not declare an Images binding in the Worker", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
+    expect(content).not.toContain("IMAGES");
     expect(content).toContain("ASSETS");
   });
 
@@ -726,14 +717,6 @@ describe("generateAppRouterWorkerEntry", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface ExecutionContext");
     expect(content).toContain("waitUntil");
-  });
-
-  it("passes image handlers inline to handleImageOptimization", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
-    expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
   });
 
   it("never wires a cache handler into the Worker entry", () => {
@@ -746,9 +729,9 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
-  it("points users to the declarative cache config", () => {
+  it("points users to declarative cache and image config", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("vinext({ cache })");
+    expect(content).toContain("Cache and image backends are configured declaratively");
   });
 });
 
@@ -1079,13 +1062,14 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("includes image optimization handler", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
+    expect(content).toContain("handleConfiguredImageOptimization");
+    expect(content).toContain("registerConfiguredImageOptimizer(env)");
   });
 
-  it("declares Env interface with IMAGES binding", () => {
+  it("does not declare an Images binding in the Worker", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
+    expect(content).not.toContain("IMAGES");
     expect(content).toContain("ASSETS");
   });
 
@@ -1096,12 +1080,11 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
-  it("passes image handlers inline to handleImageOptimization", () => {
+  it("delegates image transforms to the configured adapter", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
+    expect(content).toContain("handleConfiguredImageOptimization(");
     expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
+    expect(content).not.toContain("env.IMAGES");
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
@@ -1131,7 +1114,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -1404,7 +1387,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
+    expect(content).toContain("allowedWidths,");
+    expect(content).toContain("imageConfig,");
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {

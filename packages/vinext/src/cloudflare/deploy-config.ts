@@ -139,9 +139,8 @@ export function viteConfigHasImageAdapter(root: string): boolean {
     for (let index = open; index < content.length; index++) {
       if (content[index] === "{") depth++;
       else if (content[index] === "}" && --depth === 0) {
-        return /\boptimizer\s*:\s*(?!undefined\b|null\b)[^,}\n]+/.test(
-          content.slice(open, index + 1),
-        );
+        const optimizer = /\boptimizer\s*:\s*([^,}\n]+)/.exec(content.slice(open, index + 1))?.[1];
+        return Boolean(optimizer && !/^(?:undefined|null)$/.test(optimizer.trim()));
       }
     }
     return false;
