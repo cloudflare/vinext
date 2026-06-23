@@ -135,6 +135,26 @@ test.describe("Pages Router Production Build", () => {
     expect(html).toContain("utf-8");
     expect(html).toContain("viewport");
   });
+
+  test("places charset first in head with a custom document", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+
+    expect(
+      await page.evaluate(() =>
+        Array.from(document.head.children)
+          .slice(0, 2)
+          .map((element) => element.outerHTML)
+          .join(""),
+      ),
+    ).toBe(
+      '<meta charset="utf-8" data-next-head=""><meta name="viewport" content="width=device-width" data-next-head="">',
+    );
+    await expect(page.locator('head meta[name="description"]')).toHaveAttribute(
+      "content",
+      "A vinext test app",
+    );
+    await expect(page.locator("head")).toHaveAttribute("data-document-head", "true");
+  });
 });
 
 function decodeHtmlText(text: string): string {

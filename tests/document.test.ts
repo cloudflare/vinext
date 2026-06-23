@@ -29,6 +29,14 @@ describe("NextScript", () => {
     // Dev-server replaces this HTML comment with __NEXT_DATA__ + module script tags
     expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
   });
+
+  it("preserves nonce and crossOrigin for document asset propagation", () => {
+    const html = render(
+      React.createElement(NextScript, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-script-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-script-cross-origin="anonymous"');
+  });
 });
 
 describe("Head", () => {
@@ -53,6 +61,14 @@ describe("Head", () => {
     // pipeline as user-supplied tags.
     expect(html).not.toContain("charSet=");
     expect(html).not.toContain('name="viewport"');
+  });
+
+  it("preserves nonce and crossOrigin for document preload propagation", () => {
+    const html = render(
+      React.createElement(Head, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-head-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-head-cross-origin="anonymous"');
   });
 });
 

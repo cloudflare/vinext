@@ -56,3 +56,40 @@ export function createNonceAttribute(nonce?: string): string {
 export function createInlineScriptTag(content: string, nonce?: string): string {
   return `<script${createNonceAttribute(nonce)}>${content}</script>`;
 }
+
+export function prependToHtmlHead(html: string, content: string): string {
+  if (!content) return html;
+
+  const headOpenEnd = html.search(/<head(?:\s[^>]*)?>/i);
+  if (headOpenEnd === -1) return html;
+
+  const insertionIndex = html.indexOf(">", headOpenEnd) + 1;
+  return html.slice(0, insertionIndex) + content + html.slice(insertionIndex);
+}
+
+export function movePagesDefaultHeadTagsFirst(html: string): string {
+  const headOpenStart = html.search(/<head(?:\s[^>]*)?>/i);
+  if (headOpenStart === -1) return html;
+
+  const headOpenEnd = html.indexOf(">", headOpenStart) + 1;
+  const headCloseStart = html.search(/<\/head\s*>/i);
+  if (headCloseStart === -1 || headCloseStart < headOpenEnd) return html;
+
+  const defaultTags: string[] = [];
+  const headContent = html.slice(headOpenEnd, headCloseStart);
+  const withoutDefaults = headContent.replace(
+    /<meta\b(?=[^>]*\bdata-next-head(?:=(?:""|'')|\s|>))(?=[^>]*(?:\bcharset=["'][^"']+["']|\bname=["']viewport["']))[^>]*\/?>/gi,
+    (tag) => {
+      if (/\bcharset=["'][^"']+["']/i.test(tag)) {
+        defaultTags.unshift(tag);
+      } else {
+        defaultTags.push(tag);
+      }
+      return "";
+    },
+  );
+
+  return (
+    html.slice(0, headOpenEnd) + defaultTags.join("") + withoutDefaults + html.slice(headCloseStart)
+  );
+}

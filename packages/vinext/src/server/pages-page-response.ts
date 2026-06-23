@@ -11,7 +11,7 @@ import {
 } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { createNonceAttribute, escapeHtmlAttr, prependToHtmlHead } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import {
@@ -23,6 +23,10 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -194,6 +198,8 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  crossOrigin?: string;
+  disableOptimizedLoading: boolean;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
@@ -220,6 +226,27 @@ type RenderPagesPageResponseOptions = {
    */
   requestCacheControl?: string;
 };
+
+function splitPagesAssetTags(assetTags: string): {
+  headAssetTags: string;
+  runtimeScriptTags: string;
+} {
+  const headAssetTags: string[] = [];
+  const runtimeScriptTags: string[] = [];
+
+  for (const tag of assetTags.split("\n")) {
+    if (tag.trimStart().startsWith("<script")) {
+      runtimeScriptTags.push(tag);
+    } else if (tag.trim()) {
+      headAssetTags.push(tag);
+    }
+  }
+
+  return {
+    headAssetTags: headAssetTags.join("\n"),
+    runtimeScriptTags: runtimeScriptTags.join("\n"),
+  };
+}
 
 function buildPagesFontHeadHtml(
   fontLinks: string[],
@@ -311,25 +338,62 @@ async function buildPagesShellHtml(
      * second time). `null` means use the normal fast path.
      */
     resolvedDocProps?: Record<string, unknown> | null;
+    crossOrigin?: string;
+    disableOptimizedLoading: boolean;
+    documentStylesHTML?: string;
   },
 ): Promise<string> {
+  const { headAssetTags, runtimeScriptTags } = options.disableOptimizedLoading
+    ? splitPagesAssetTags(options.assetTags)
+    : { headAssetTags: options.assetTags, runtimeScriptTags: "" };
+
   if (options.DocumentComponent) {
     const docProps =
       options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
-    let html = await options.renderDocumentToString(docElement);
+    const renderedDocument = extractDocumentAssetProps(
+      await options.renderDocumentToString(docElement),
+    );
+    let html = renderedDocument.html;
+    const generatedFontHeadHTML = applyDocumentAssetProps(
+      fontHeadHTML,
+      renderedDocument.props,
+      renderedDocument.props.headCrossOrigin ?? options.crossOrigin,
+      "head",
+    );
+    const generatedHeadAssetTags = applyDocumentAssetProps(
+      headAssetTags,
+      renderedDocument.props,
+      options.crossOrigin,
+      "head",
+    );
+    const generatedRuntimeScriptTags = applyDocumentAssetProps(
+      runtimeScriptTags,
+      renderedDocument.props,
+      options.crossOrigin,
+      "script",
+    );
+    const generatedNextDataScript = applyDocumentAssetProps(
+      [nextDataScript, generatedRuntimeScriptTags].filter(Boolean).join("\n"),
+      renderedDocument.props,
+      options.crossOrigin,
+      "script",
+    );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
+    if (options.ssrHeadHTML) {
+      html = prependToHtmlHead(html, `\n  ${options.ssrHeadHTML}\n`);
+    }
+    if (generatedHeadAssetTags || generatedFontHeadHTML || options.documentStylesHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${options.assetTags}\n</head>`,
+        `  ${generatedFontHeadHTML}${generatedHeadAssetTags}\n  ${options.documentStylesHTML ?? ""}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
     if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${nextDataScript}\n</body>`);
+      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
     }
     return html;
   }
@@ -337,14 +401,17 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
-  return (
+  return applyDocumentAssetProps(
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-    `  ${options.assetTags}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${nextDataScript}\n` +
-    "</body>\n</html>"
+      `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
+      `  ${headAssetTags}\n` +
+      "</head>\n<body>\n" +
+      `  <div id="__next">${bodyMarker}</div>\n` +
+      `  ${nextDataScript}\n` +
+      `  ${runtimeScriptTags}\n` +
+      "</body>\n</html>",
+    {},
+    options.crossOrigin,
   );
 }
 
@@ -565,12 +632,8 @@ export async function renderPagesPageResponse(
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
   let ssrHeadHTML = headFromShim;
   if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
-  // `styles` returned by `_document.getInitialProps()` (e.g. collected
-  // styled-components / emotion <style> tags) is already rendered to a string
-  // by the shared helper, ready to merge into the SSR head.
-  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    ssrHeadHTML += `\n  ${documentRenderPage.stylesHTML}`;
-  }
+  const documentStylesHTML =
+    documentRenderPage.status === "rendered" ? documentRenderPage.stylesHTML : "";
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
@@ -580,6 +643,9 @@ export async function renderPagesPageResponse(
     // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+    crossOrigin: options.crossOrigin,
+    disableOptimizedLoading: options.disableOptimizedLoading,
+    documentStylesHTML,
   });
 
   options.clearSsrContext();

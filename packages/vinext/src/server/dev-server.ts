@@ -36,7 +36,17 @@ import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  movePagesDefaultHeadTagsFirst,
+  prependToHtmlHead,
+  safeJsonStringify,
+} from "./html.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -210,6 +220,7 @@ async function streamPageToResponse(
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
     /** Buffer the body before writing headers so error-page fallback remains safe. */
     bufferBodyBeforeHeaders?: boolean;
+    crossOrigin?: string;
   },
 ): Promise<void> {
   const {
@@ -226,6 +237,7 @@ async function streamPageToResponse(
     documentContext,
     setDocumentInitialHead,
     bufferBodyBeforeHeaders = false,
+    crossOrigin,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -278,10 +290,9 @@ async function streamPageToResponse(
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
-  let headHTML = getHeadHTML();
-  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    headHTML += `\n  ${documentRenderPage.stylesHTML}`;
-  }
+  const headHTML = getHeadHTML();
+  const documentStylesHTML =
+    documentRenderPage.status === "rendered" ? documentRenderPage.stylesHTML : "";
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
@@ -297,17 +308,35 @@ async function streamPageToResponse(
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
-    let docHtml = await renderToStringAsync(docElement);
+    const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
+    let docHtml = renderedDocument.html;
+    const generatedFontHeadHTML = applyDocumentAssetProps(
+      fontHeadHTML,
+      renderedDocument.props,
+      renderedDocument.props.headCrossOrigin ?? crossOrigin,
+      "head",
+    );
+    const generatedScripts = applyDocumentAssetProps(
+      scripts,
+      renderedDocument.props,
+      crossOrigin,
+      "script",
+    );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML) {
+      docHtml = prependToHtmlHead(docHtml, `\n  ${headHTML}\n`);
+    }
+    if (generatedFontHeadHTML || documentStylesHTML) {
+      docHtml = docHtml.replace(
+        "</head>",
+        `  ${generatedFontHeadHTML}${documentStylesHTML}\n</head>`,
+      );
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
     if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
+      docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
     }
     shellTemplate = docHtml;
   } else {
@@ -317,7 +346,7 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${fontHeadHTML}${headHTML}
+  ${fontHeadHTML}${headHTML}${documentStylesHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -328,7 +357,10 @@ async function streamPageToResponse(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  const transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  if (DocumentComponent && headHTML) {
+    transformedShell = movePagesDefaultHeadTagsFirst(transformedShell);
+  }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
@@ -436,6 +468,7 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  crossOrigin?: string,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -1787,6 +1820,7 @@ hydrate();
               ? headShim.setDocumentInitialHead
               : undefined,
           bufferBodyBeforeHeaders: true,
+          crossOrigin,
         });
         _renderEnd = now();
 

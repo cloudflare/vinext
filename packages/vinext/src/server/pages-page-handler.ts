@@ -87,6 +87,7 @@ type VinextConfigSubset = {
   htmlLimitedBots?: string;
   clientTraceMetadata?: readonly string[];
   disableOptimizedLoading: boolean;
+  crossOrigin?: string;
 };
 
 /**
@@ -710,6 +711,7 @@ export function createPagesPageHandler(
           basePath: vinextConfig.basePath,
           assetPrefix: vinextConfig.assetPrefix,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
+          crossOrigin: vinextConfig.crossOrigin,
         });
 
         return await renderPagesPageResponse({
@@ -722,6 +724,7 @@ export function createPagesPageHandler(
             const el = createPageElement(PageComponent, AppComponent, currentProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
+          disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           enhancePageElement(renderPageOpts) {
             const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
@@ -757,6 +760,7 @@ export function createPagesPageHandler(
           routeUrl,
           safeJsonStringify,
           scriptNonce,
+          crossOrigin: vinextConfig.crossOrigin,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,

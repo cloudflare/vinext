@@ -193,7 +193,7 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
     expect(html).toContain("<html");
-    expect(html).toContain("<head>");
+    expect(html).toContain("<head");
     expect(html).toContain("</head>");
     expect(html).toContain("<body");
     expect(html).toContain("</body>");

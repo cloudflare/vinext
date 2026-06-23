@@ -7,6 +7,10 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import {
+  movePagesDefaultHeadTagsFirst,
+  prependToHtmlHead,
+} from "../packages/vinext/src/server/html.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -55,7 +59,7 @@ function createCommonOptions() {
   const isrSet = vi.fn(async () => {});
   const renderDocumentToString = vi.fn(
     async () =>
-      '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+      '<!DOCTYPE html><html><head><meta name="document-head" content="1" /></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
   const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
@@ -75,6 +79,7 @@ function createCommonOptions() {
       DocumentComponent: function TestDocument() {
         return null;
       },
+      disableOptimizedLoading: false,
       flushPreloads: vi.fn(async () => {}),
       fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       fontPreloads: [{ href: "/font.woff2", type: "font/woff2" }],
@@ -106,6 +111,49 @@ function createCommonOptions() {
     },
   };
 }
+
+describe("prependToHtmlHead", () => {
+  it("inserts managed tags before custom document children", () => {
+    expect(
+      prependToHtmlHead(
+        '<html><head data-theme="dark"><meta name="document" /></head></html>',
+        '<meta charset="utf-8" />',
+      ),
+    ).toBe(
+      '<html><head data-theme="dark"><meta charset="utf-8" /><meta name="document" /></head></html>',
+    );
+  });
+
+  it("moves transformed default head tags before injected development scripts", () => {
+    expect(
+      movePagesDefaultHeadTagsFirst(
+        '<html><head><script src="/@vite/client"></script><meta name="document" /><meta name="viewport" content="width=device-width" data-next-head="" /><meta charset="utf-8" data-next-head="" /></head></html>',
+      ),
+    ).toBe(
+      '<html><head><meta charset="utf-8" data-next-head="" /><meta name="viewport" content="width=device-width" data-next-head="" /><script src="/@vite/client"></script><meta name="document" /></head></html>',
+    );
+  });
+
+  it("leaves matching body markup outside the head untouched", () => {
+    expect(
+      movePagesDefaultHeadTagsFirst(
+        '<html><head><script src="/@vite/client"></script><meta charset="utf-8" data-next-head="" /></head><body><meta name="viewport" content="body" data-next-head="" /></body></html>',
+      ),
+    ).toBe(
+      '<html><head><meta charset="utf-8" data-next-head="" /><script src="/@vite/client"></script></head><body><meta name="viewport" content="body" data-next-head="" /></body></html>',
+    );
+  });
+
+  it("moves a user-overridden charset before transformed development scripts", () => {
+    expect(
+      movePagesDefaultHeadTagsFirst(
+        '<html><head><script src="/@vite/client"></script><meta charset="utf-16" data-next-head="" /><meta name="viewport" content="width=device-width" data-next-head="" /></head></html>',
+      ),
+    ).toBe(
+      '<html><head><meta charset="utf-16" data-next-head="" /><meta name="viewport" content="width=device-width" data-next-head="" /><script src="/@vite/client"></script></head></html>',
+    );
+  });
+});
 
 describe("isPagesStreamingBot", () => {
   it("detects Googlebot as a streaming bot", () => {
@@ -177,6 +225,12 @@ describe("pages page response", () => {
     const html = await response.text();
     expect(html).toContain("<div>live-body</div>");
     expect(html).toContain('<meta name="test-head" content="1" />');
+    expect(html.indexOf('<meta name="test-head"')).toBeLessThan(
+      html.indexOf('<meta name="document-head"'),
+    );
+    expect(html.indexOf('<meta name="document-head"')).toBeLessThan(
+      html.indexOf('<link rel="stylesheet" href="/font.css"'),
+    );
     expect(html).toContain('<link rel="stylesheet" href="/font.css" />');
     expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
     const nextDataMatch = html.match(
@@ -328,6 +382,66 @@ describe("pages page response", () => {
     expect(html).toContain('<style data-vinext-fonts nonce="pages-test-nonce">');
     expect(html).toContain(
       '<script type="module" nonce="pages-test-nonce" src="/entry.js" crossorigin></script>',
+    );
+  });
+
+  // Ported from Next.js: test/e2e/app-document/rendering.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
+  it("applies _document nonce and configured crossOrigin to generated scripts and preloads", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      assetTags:
+        '<link rel="modulepreload" href="/entry.js" />\n' +
+        '<script type="module" src="/entry.js"></script>',
+      crossOrigin: "anonymous",
+    });
+
+    const html = await response.text();
+    expect(html).not.toContain("data-vinext-head-nonce");
+    expect(html).not.toContain("data-vinext-script-nonce");
+    for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
+    }
+    for (const tag of html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? []) {
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
+    }
+  });
+
+  it("uses NextScript props for runtime scripts when optimized loading is disabled", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head data-vinext-head-nonce="head-nonce" data-vinext-head-cross-origin="use-credentials"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="script-nonce" data-vinext-script-cross-origin="anonymous"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      assetTags:
+        '<link rel="stylesheet" href="/style.css" />\n' +
+        '<link rel="modulepreload" href="/entry.js" />\n' +
+        '<script type="module" src="/entry.js"></script>',
+      disableOptimizedLoading: true,
+    });
+
+    const html = await response.text();
+    const head = html.slice(html.indexOf("<head"), html.indexOf("</head>"));
+    const body = html.slice(html.indexOf("<body"));
+
+    expect(head).toMatch(
+      /<link[^>]*rel="stylesheet"[^>]*href="\/style\.css"[^>]*nonce="head-nonce"[^>]*crossorigin="use-credentials"/,
+    );
+    expect(head).toMatch(
+      /<link[^>]*rel="modulepreload"[^>]*href="\/entry\.js"[^>]*nonce="head-nonce"[^>]*crossorigin="use-credentials"/,
+    );
+    expect(head).not.toContain('<script type="module" src="/entry.js"');
+    expect(body).toContain(
+      '<script type="module" src="/entry.js" nonce="script-nonce" crossorigin="anonymous">',
     );
   });
 
