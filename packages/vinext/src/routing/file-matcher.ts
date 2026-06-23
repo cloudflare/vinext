@@ -92,6 +92,9 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
+ *
+ * `dir` must be forward-slash. The returned path is built with `path.posix.join`,
+ * so it is forward-slash too.
  */
 export function findFileWithExts(
   dir: string,
