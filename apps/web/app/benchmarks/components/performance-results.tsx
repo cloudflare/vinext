@@ -1,12 +1,17 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from "react";
-import { useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Table } from "@cloudflare/kumo/components/table";
 import { TrendChart } from "./chart";
 import { formatBytes, formatMs, RUNNER_COLORS } from "./format";
+import {
+  BENCHMARK_QUERY_PARAM,
+  benchmarkSelectionUrl,
+  resolveSelectedBenchmark,
+} from "./benchmark-url-state";
 
 export type PerformanceMeasurement = {
   benchmarkId: string;
@@ -187,6 +192,9 @@ export function PerformanceResultsTable({
 }
 
 export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const latest = runs.at(-1);
   const scenarios = latest
     ? Array.from(
@@ -195,7 +203,10 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
         ).values(),
       )
     : [];
-  const [activeScenario, setActiveScenario] = useState(scenarios[0]?.scenarioId ?? "");
+  const activeScenario = resolveSelectedBenchmark(
+    scenarios.map((scenario) => scenario.scenarioId),
+    searchParams.get(BENCHMARK_QUERY_PARAM),
+  );
   const selectedScenario =
     scenarios.find((scenario) => scenario.scenarioId === activeScenario) ?? scenarios[0];
 
@@ -210,7 +221,17 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
           label: scenario.label,
         }))}
         value={selectedScenario.scenarioId}
-        onValueChange={setActiveScenario}
+        onValueChange={(benchmarkId) => {
+          router.replace(
+            benchmarkSelectionUrl(
+              pathname,
+              new URLSearchParams(searchParams),
+              benchmarkId,
+              window.location.hash,
+            ),
+            { scroll: false },
+          );
+        }}
       />
       <div className="mt-4">
         <PerformanceTrendChart runs={runs} scenario={selectedScenario} />
