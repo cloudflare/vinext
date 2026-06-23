@@ -3110,14 +3110,15 @@ export const loadServerActionClient = ${
           ? output.some((item) => item.assetFileNames !== undefined)
           : output?.assetFileNames !== undefined;
         if (hasAssetFileNames) return null;
+        const assetFileNames = createClientAssetFileNames(
+          resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+        );
         return {
           build: {
             ...withBuildBundlerOptions(viteMajorVersion, {
-              output: {
-                assetFileNames: createClientAssetFileNames(
-                  resolveAssetsDir(nextConfig.assetPrefix ?? ""),
-                ),
-              },
+              output: Array.isArray(output)
+                ? output.map((item) => ({ ...item, assetFileNames }))
+                : { assetFileNames },
             }),
           },
         };
