@@ -44,6 +44,41 @@ async function pushWithPagesRouter(page: Page, href: string): Promise<void> {
   }, href);
 }
 
+async function shallowPushWithoutScroll(page: Page, href: string): Promise<void> {
+  await page.evaluate(async (target) => {
+    if (!window.next?.router) {
+      throw new Error("window.next.router is not installed");
+    }
+    await Promise.resolve(
+      (window as any).next.router.push(target, undefined, { shallow: true, scroll: false }),
+    );
+  }, href);
+}
+
+async function traverseHistoryAndCaptureCompletion(
+  page: Page,
+  direction: "back" | "forward",
+): Promise<{ url: string; x: number; y: number }> {
+  return page.evaluate((historyDirection) => {
+    const router = window.next?.router;
+    if (!router || !("events" in router)) {
+      throw new Error("window.next.router events are not installed");
+    }
+    return new Promise<{ url: string; x: number; y: number }>((resolve) => {
+      const handler = (...args: unknown[]) => {
+        router.events.off("routeChangeComplete", handler);
+        const [url] = args;
+        if (typeof url !== "string") {
+          throw new Error("routeChangeComplete did not include a URL");
+        }
+        resolve({ url, x: Math.floor(window.scrollX), y: Math.floor(window.scrollY) });
+      };
+      router.events.on("routeChangeComplete", handler);
+      window.history[historyDirection]();
+    });
+  }, direction);
+}
+
 async function isPagesRouterReady(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const router = window.next?.router;
@@ -155,6 +190,33 @@ test.describe("reload-scroll-back-restoration", () => {
     const scrollAtEvent = await scrollAtEventPromise;
     expect(scrollAtEvent).not.toBeNull();
     expect(scrollAtEvent!.y).toBe(initialScroll.y);
+  });
+
+  test("should restore consecutive shallow history entries before routeChangeComplete", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/0`);
+    await waitForHydration(page);
+
+    await shallowPushWithoutScroll(page, "/0?step=1");
+    await page.evaluate(() => window.scrollTo(0, 1200));
+    const firstEntryScroll = await getScrollPosition(page);
+
+    await shallowPushWithoutScroll(page, "/0?step=2");
+    await page.evaluate(() => window.scrollTo(0, 2400));
+    const secondEntryScroll = await getScrollPosition(page);
+
+    expect(firstEntryScroll).not.toEqual(secondEntryScroll);
+
+    const backCompletion = await traverseHistoryAndCaptureCompletion(page, "back");
+    expect(backCompletion).toEqual({ url: "/0?step=1", ...firstEntryScroll });
+    await expect(page).toHaveURL(`${BASE}/0?step=1`);
+    await expectScrollPosition(page, firstEntryScroll);
+
+    const forwardCompletion = await traverseHistoryAndCaptureCompletion(page, "forward");
+    expect(forwardCompletion).toEqual({ url: "/0?step=2", ...secondEntryScroll });
+    await expect(page).toHaveURL(`${BASE}/0?step=2`);
+    await expectScrollPosition(page, secondEntryScroll);
   });
 
   test("should reject navigation, emit routeChangeError and fallback to hard navigation on render error", async ({

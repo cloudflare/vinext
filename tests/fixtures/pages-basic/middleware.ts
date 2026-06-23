@@ -30,6 +30,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  if (url.pathname === "/sha") {
+    const target = new URL(`/shallow-test${url.search}`, request.url);
+    target.searchParams.set("from", "middleware");
+    return NextResponse.rewrite(target);
+  }
+
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
   // request's query params on the rewrite target so getServerSideProps
   // sees them. Middleware preserves query by mutating `request.nextUrl`

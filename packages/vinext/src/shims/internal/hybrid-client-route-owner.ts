@@ -25,13 +25,24 @@ import {
 import type { NextRewrite } from "../../config/next-config.js";
 import { stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
-import { mergeRewriteQuery } from "../../utils/query.js";
+import {
+  mergeRewriteQuery,
+  mergeRouteParamsIntoQuery,
+  parseQueryString,
+} from "../../utils/query.js";
 import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../../client/vinext-next-data.js";
 
 export type HybridClientOwner = "app" | "document" | "pages";
+
+export type PagesClientRouteResolution = {
+  href: string;
+  params: Record<string, string | string[]>;
+  pattern: string;
+  query: Record<string, string | string[]>;
+};
 
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
@@ -133,13 +144,64 @@ function matchPagesRoute(
   href: string,
   basePath: string,
   routes: readonly VinextPagesLinkPrefetchRoute[],
-): VinextPagesLinkPrefetchRoute | null {
+): { params: Record<string, string | string[]>; route: VinextPagesLinkPrefetchRoute } | null {
   const pathname = resolveSameOriginPathname(href, basePath);
   if (pathname === null) return null;
-  return (
-    matchRouteWithTrie(pathname, routes as VinextPagesLinkPrefetchRoute[], pagesRouteTrieCache)
-      ?.route ?? null
+  return matchRouteWithTrie(
+    pathname,
+    routes as VinextPagesLinkPrefetchRoute[],
+    pagesRouteTrieCache,
   );
+}
+
+export function resolvePagesClientRoute(
+  href: string,
+  basePath: string,
+): PagesClientRouteResolution | null {
+  if (typeof window === "undefined") return null;
+
+  const pagesRoutes = window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__;
+  if (!pagesRoutes) return null;
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+
+  if (rewrites) {
+    const beforeFilesRewrite = resolveClientRewrite(href, basePath, rewrites.beforeFiles, true);
+    if (beforeFilesRewrite?.kind === "document") return null;
+    if (beforeFilesRewrite?.kind === "rewrite") href = beforeFilesRewrite.href;
+  }
+
+  let pagesMatch = matchPagesRoute(href, basePath, pagesRoutes);
+
+  if (rewrites && (pagesMatch === null || pagesMatch.route.isDynamic)) {
+    for (const rewrite of rewrites.afterFiles) {
+      const afterFilesRewrite = resolveClientRewrite(href, basePath, [rewrite]);
+      if (afterFilesRewrite?.kind === "document") return null;
+      if (afterFilesRewrite?.kind !== "rewrite") continue;
+      href = afterFilesRewrite.href;
+      pagesMatch = matchPagesRoute(href, basePath, pagesRoutes);
+      if (pagesMatch) break;
+    }
+  }
+
+  if (rewrites && pagesMatch === null) {
+    for (const rewrite of rewrites.fallback) {
+      const fallbackRewrite = resolveClientRewrite(href, basePath, [rewrite]);
+      if (fallbackRewrite?.kind === "document") return null;
+      if (fallbackRewrite?.kind !== "rewrite") continue;
+      href = fallbackRewrite.href;
+      pagesMatch = matchPagesRoute(href, basePath, pagesRoutes);
+      if (pagesMatch) break;
+    }
+  }
+
+  return pagesMatch
+    ? {
+        href,
+        params: pagesMatch.params,
+        pattern: patternFromParts(pagesMatch.route.patternParts),
+        query: mergeRouteParamsIntoQuery(parseQueryString(href), pagesMatch.params),
+      }
+    : null;
 }
 
 /**
@@ -171,7 +233,9 @@ export function resolveHybridClientRouteOwner(
   }
 
   let appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-  let pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
+  let pagesMatch = pagesRoutes
+    ? (matchPagesRoute(href, basePath, pagesRoutes)?.route ?? null)
+    : null;
 
   if (
     rewrites &&
@@ -184,7 +248,9 @@ export function resolveHybridClientRouteOwner(
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       href = afterFilesRewrite.href;
       appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-      pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
+      pagesMatch = pagesRoutes
+        ? (matchPagesRoute(href, basePath, pagesRoutes)?.route ?? null)
+        : null;
       if (appMatch || pagesMatch) break;
     }
   }
@@ -196,7 +262,9 @@ export function resolveHybridClientRouteOwner(
       if (fallbackRewrite?.kind !== "rewrite") continue;
       href = fallbackRewrite.href;
       appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-      pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
+      pagesMatch = pagesRoutes
+        ? (matchPagesRoute(href, basePath, pagesRoutes)?.route ?? null)
+        : null;
       if (appMatch || pagesMatch) break;
     }
   }

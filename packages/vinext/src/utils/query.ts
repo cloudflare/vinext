@@ -6,7 +6,7 @@ type UrlQueryValue = string | number | boolean | null | undefined;
 
 export type UrlQuery = Record<string, UrlQueryValue | readonly UrlQueryValue[]>;
 
-function setOwnQueryValue(
+export function setQueryValue(
   obj: Record<string, string | string[]>,
   key: string,
   value: string | string[],
@@ -26,13 +26,13 @@ export function addQueryParam(
 ): void {
   if (Object.hasOwn(obj, key)) {
     const current = obj[key];
-    setOwnQueryValue(
+    setQueryValue(
       obj,
       key,
       Array.isArray(current) ? current.concat(value) : [current as string, value],
     );
   } else {
-    setOwnQueryValue(obj, key, value);
+    setQueryValue(obj, key, value);
   }
 }
 
@@ -48,7 +48,7 @@ export function mergeRouteParamsIntoQuery(
 ): Record<string, string | string[]> {
   const merged: Record<string, string | string[]> = { ...query };
   for (const [key, value] of Object.entries(params)) {
-    setOwnQueryValue(merged, key, Array.isArray(value) ? [...value] : value);
+    setQueryValue(merged, key, Array.isArray(value) ? [...value] : value);
   }
   return merged;
 }

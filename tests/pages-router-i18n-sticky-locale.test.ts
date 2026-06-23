@@ -576,7 +576,7 @@ describe("Pages Router initial-entry history state", () => {
     }
   });
 
-  it("install does not overwrite pre-existing history state", async () => {
+  it("install replaces foreign history state with valid router state", async () => {
     const previousWindow = (globalThis as any).window;
     const { win, replaceState } = createNavWindow();
     win.history.state = { foreign: true };
@@ -584,7 +584,13 @@ describe("Pages Router initial-entry history state", () => {
 
     try {
       await installRuntime(win);
-      expect(replaceState).not.toHaveBeenCalled();
+      expect(replaceState).toHaveBeenCalledOnce();
+      expect(replaceState.mock.calls[0]?.[0]).toMatchObject({
+        __N: true,
+        url: "/",
+        as: "/",
+        options: { locale: "fr" },
+      });
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

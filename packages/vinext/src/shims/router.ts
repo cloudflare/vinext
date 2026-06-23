@@ -37,7 +37,11 @@ import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
 } from "./internal/app-route-detection.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import {
+  resolveHybridClientRouteOwner,
+  resolvePagesClientRoute,
+  type PagesClientRouteResolution,
+} from "./internal/hybrid-client-route-owner.js";
 import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -63,6 +67,7 @@ import {
   appendSearchParamsToUrl,
   mergeRouteParamsIntoQuery,
   parseQueryString,
+  setQueryValue,
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
@@ -411,15 +416,28 @@ type PagesRouterRuntimeState = {
   historyKeyCounter: number;
   navigationId: number;
   activeAbortController: AbortController | null;
+  activeNavigation: {
+    id: number;
+    eventUrl: string;
+    cancellationEventEmitted: boolean;
+  } | null;
   cancelPendingRenderCommit: (() => void) | null;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
   isFirstPopStateEvent: boolean;
   routerDidNavigate: boolean;
+  currentShallow: boolean;
+  currentShallowQuery: Record<string, string | string[]> | null;
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
   publicRouter?: Record<string, unknown>;
+};
+
+type PendingNavigation = {
+  activeNavigation: NonNullable<PagesRouterRuntimeState["activeNavigation"]>;
+  controller: AbortController;
+  navigationId: number;
 };
 
 type PagesRouterRuntimeComponents = {
@@ -439,12 +457,15 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     historyKeyCounter: 0,
     navigationId: 0,
     activeAbortController: null,
+    activeNavigation: null,
     cancelPendingRenderCommit: null,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
     isFirstPopStateEvent: true,
     routerDidNavigate: false,
+    currentShallow: false,
+    currentShallowQuery: null,
     deprecatedEventBridgeInstalled: false,
     pagesRouterReady: typeof window === "undefined" || !shouldDeferInitialPagesRouterReady(),
   };
@@ -627,6 +648,57 @@ function getLocalPathname(url: string): string | null {
   }
 }
 
+function resolveSamePagesRoute(destinationUrl: string): PagesClientRouteResolution | null {
+  const currentRoute = window.__NEXT_DATA__?.page;
+  if (!currentRoute) return null;
+  const destinationPathname = getLocalPathname(destinationUrl);
+  if (!destinationPathname) return null;
+  const stripLocale = (pathname: string): string => {
+    const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
+    return locale ? pathname.slice(locale.length + 1) || "/" : pathname;
+  };
+  const pathname = stripLocale(destinationPathname);
+  const currentPathname = stripLocale(stripBasePath(window.location.pathname, __basePath));
+  const resolveVisiblePathFallback = (): PagesClientRouteResolution | null => {
+    if (pathname !== currentPathname) return null;
+    const params: Record<string, string | string[]> = {};
+    const nextDataQuery = window.__NEXT_DATA__?.query;
+    for (const paramName of extractRouteParamNames(currentRoute)) {
+      const value = nextDataQuery?.[paramName];
+      if (typeof value === "string" || Array.isArray(value)) {
+        setQueryValue(params, paramName, Array.isArray(value) ? [...value] : value);
+      }
+    }
+    return {
+      href: destinationUrl,
+      params,
+      pattern: currentRoute,
+      query: mergeRouteParamsIntoQuery(parseQueryString(destinationUrl), params),
+    };
+  };
+  if (!window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__) {
+    const params =
+      pathname === currentPathname
+        ? (extractRouteParamsFromPath(currentRoute, pathname) ?? {})
+        : extractRouteParamsFromPath(currentRoute, pathname);
+    return params === null
+      ? null
+      : {
+          href: destinationUrl,
+          params,
+          pattern: currentRoute,
+          query: mergeRouteParamsIntoQuery(parseQueryString(destinationUrl), params),
+        };
+  }
+  const destinationRoute = resolvePagesClientRoute(destinationUrl, __basePath);
+  const currentPatternParts = routePatternParts(currentRoute);
+  const currentRoutePattern = `/${currentPatternParts.join("/")}`;
+  if (destinationRoute?.pattern === currentRoutePattern) return destinationRoute;
+  return destinationRoute === null && hasVinextMiddleware(window.__NEXT_DATA__)
+    ? resolveVisiblePathFallback()
+    : null;
+}
+
 function resolvePagesErrorHtmlFetchUrl(
   url: string | UrlObject,
   locale: string | undefined,
@@ -804,8 +876,8 @@ function buildInitialRouterState(): VinextHistoryState {
 }
 
 /**
- * Stamp the initial document entry with router-shaped state (only if no
- * state is present). Called once at runtime install so the entry has a
+ * Stamp the initial document entry with router-shaped state. Called once at
+ * runtime install so the entry has a
  * locale stamped before any push could overwrite the active locale global.
  */
 function stampInitialHistoryState(): void {
@@ -814,13 +886,11 @@ function stampInitialHistoryState(): void {
   if (!window.history) return;
 
   const existingState = window.history.state;
-  if (existingState !== null && existingState !== undefined) {
-    routerRuntimeState.currentHistoryKey =
-      getRouterStateKey(existingState) ?? routerRuntimeState.currentHistoryKey;
-    return;
-  }
-
   const initialState = buildInitialRouterState();
+  const existingKey = getRouterStateKey(existingState);
+  if (existingKey !== undefined) initialState.key = existingKey;
+  routerRuntimeState.currentShallow = false;
+  routerRuntimeState.currentShallowQuery = null;
   routerRuntimeState.currentHistoryKey = initialState.key;
   window.history.replaceState(initialState, "");
 }
@@ -1189,12 +1259,13 @@ function getRouteParamsFromQuery(
   const params: Record<string, string | string[]> = {};
   let hasParam = false;
   for (const name of names) {
+    if (!Object.hasOwn(query, name)) continue;
     const value = query[name];
     if (typeof value === "string") {
-      params[name] = value;
+      setQueryValue(params, name, value);
       hasParam = true;
     } else if (Array.isArray(value)) {
-      params[name] = [...value];
+      setQueryValue(params, name, [...value]);
       hasParam = true;
     }
   }
@@ -1211,9 +1282,9 @@ function getRouteQueryFromNextData(
   if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) {
     for (const [key, value] of Object.entries(nextData.query)) {
       if (typeof value === "string") {
-        routeQuery[key] = value;
+        setQueryValue(routeQuery, key, value);
       } else if (Array.isArray(value)) {
-        routeQuery[key] = [...value];
+        setQueryValue(routeQuery, key, [...value]);
       }
     }
     return routeQuery;
@@ -1228,9 +1299,9 @@ function getRouteQueryFromNextData(
   for (const key of routeParamNames) {
     const value = nextData.query[key];
     if (typeof value === "string") {
-      routeQuery[key] = value;
+      setQueryValue(routeQuery, key, value);
     } else if (Array.isArray(value)) {
-      routeQuery[key] = [...value];
+      setQueryValue(routeQuery, key, [...value]);
     }
   }
   return routeQuery;
@@ -1246,7 +1317,7 @@ function getPathnameAndQuery(): {
     if (_ssrCtx) {
       const query: Record<string, string | string[]> = {};
       for (const [key, value] of Object.entries(_ssrCtx.query)) {
-        query[key] = Array.isArray(value) ? [...value] : value;
+        setQueryValue(query, key, Array.isArray(value) ? [...value] : value);
       }
       return { pathname: _ssrCtx.pathname, query, asPath: _ssrCtx.asPath };
     }
@@ -1265,7 +1336,20 @@ function getPathnameAndQuery(): {
   for (const [key, value] of params) {
     addQueryParam(searchQuery, key, value);
   }
-  const query = { ...searchQuery, ...routeQuery };
+  const isShallowNavigation = routerRuntimeState.currentShallow;
+  const query = isShallowNavigation
+    ? { ...searchQuery, ...routerRuntimeState.currentShallowQuery }
+    : { ...searchQuery, ...routeQuery };
+  if (isShallowNavigation) {
+    for (const routeParamName of extractRouteParamNames(nextData?.page ?? "")) {
+      const routeParam = Object.hasOwn(query, routeParamName)
+        ? query[routeParamName]
+        : Object.hasOwn(routeQuery, routeParamName)
+          ? routeQuery[routeParamName]
+          : undefined;
+      if (routeParam !== undefined) setQueryValue(query, routeParamName, routeParam);
+    }
+  }
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
@@ -1408,6 +1492,7 @@ function notifyNextNavigationPagesContext(): void {
  */
 class NavigationCancelledError extends Error {
   cancelled = true;
+  cancellationEventEmitted = false;
   constructor(route: string) {
     super(`Abort fetching component for route: "${route}"`);
     this.name = "NavigationCancelledError";
@@ -1431,6 +1516,38 @@ function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit = null;
 }
 
+function supersedePendingNavigation(routeProps: { shallow: boolean } = { shallow: false }): number {
+  const activeNavigation = routerRuntimeState.activeNavigation;
+  if (activeNavigation && !activeNavigation.cancellationEventEmitted) {
+    activeNavigation.cancellationEventEmitted = true;
+    const error = new NavigationCancelledError(activeNavigation.eventUrl);
+    error.cancellationEventEmitted = true;
+    routerEvents.emit("routeChangeError", error, activeNavigation.eventUrl, routeProps);
+  }
+  const previousAbortController = routerRuntimeState.activeAbortController;
+  if (previousAbortController) queueMicrotask(() => previousAbortController.abort());
+  cancelPreviousRenderCommit();
+  routerRuntimeState.activeAbortController = null;
+  routerRuntimeState.activeNavigation = null;
+  return ++routerRuntimeState.navigationId;
+}
+
+function beginPendingNavigation(
+  eventUrl: string,
+  routeProps: { shallow: boolean },
+): PendingNavigation {
+  const navigationId = supersedePendingNavigation(routeProps);
+  const controller = new AbortController();
+  const activeNavigation = {
+    id: navigationId,
+    eventUrl,
+    cancellationEventEmitted: false,
+  };
+  routerRuntimeState.activeAbortController = controller;
+  routerRuntimeState.activeNavigation = activeNavigation;
+  return { activeNavigation, controller, navigationId };
+}
+
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
@@ -1449,6 +1566,7 @@ type NavigateClientOptions = {
    */
   mode?: "push" | "replace";
   scroll?: ScrollPosition | null;
+  eventUrl?: string;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -2057,20 +2175,13 @@ async function navigateClient(
    * (display) into the data fetch step.
    */
   routeUrl: string = url,
+  pendingNavigation?: PendingNavigation,
 ): Promise<void> {
   if (typeof window === "undefined") return;
 
-  // Supersede the prior navigation immediately via navigationId below, but
-  // defer its AbortSignal by one microtask. A synchronous identical push can
-  // then join the shared _next/data fetch before the prior waiter releases;
-  // different destinations still abort the abandoned request in this turn.
-  const previousAbortController = routerRuntimeState.activeAbortController;
-  if (previousAbortController) queueMicrotask(() => previousAbortController.abort());
-  cancelPreviousRenderCommit();
-  const controller = new AbortController();
-  routerRuntimeState.activeAbortController = controller;
-
-  const navId = ++routerRuntimeState.navigationId;
+  const navigation =
+    pendingNavigation ?? beginPendingNavigation(options.eventUrl ?? url, { shallow: false });
+  const { activeNavigation, controller, navigationId: navId } = navigation;
 
   /** Check if this navigation is still the active one. If not, throw. */
   function assertStillCurrent(): void {
@@ -2147,10 +2258,16 @@ async function navigateClient(
         );
       }
     }
+  } catch (error: unknown) {
+    if (error instanceof NavigationCancelledError) {
+      error.cancellationEventEmitted = activeNavigation.cancellationEventEmitted;
+    }
+    throw error;
   } finally {
     // Clean up the abort controller if this navigation is still the active one
     if (navId === routerRuntimeState.navigationId) {
       routerRuntimeState.activeAbortController = null;
+      routerRuntimeState.activeNavigation = null;
     }
   }
 }
@@ -2179,12 +2296,15 @@ async function runNavigateClient(
    * Defaults to `fullUrl`, making this a no-op for callers without a mask.
    */
   routeUrl: string = fullUrl,
+  pendingNavigation?: PendingNavigation,
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
-    await navigateClient(fullUrl, fetchUrl, options, routeUrl);
+    await navigateClient(fullUrl, fetchUrl, options, routeUrl, pendingNavigation);
     return "completed";
   } catch (err: unknown) {
-    routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
+    if (!(err instanceof NavigationCancelledError && err.cancellationEventEmitted)) {
+      routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
+    }
     if (err instanceof NavigationCancelledError) {
       return "cancelled";
     }
@@ -2289,7 +2409,11 @@ function dispatchNavigateEvent(): void {
 function updateHistory(
   mode: "push" | "replace",
   fullUrl: string,
-  navState: { url: string; as: string; options: { locale?: string; shallow?: boolean } },
+  navState: {
+    url: string;
+    as: string;
+    options: { locale?: string; shallow?: boolean };
+  },
 ): void {
   const previousKey = getRouterStateKey(window.history.state);
   const key =
@@ -2303,8 +2427,12 @@ function updateHistory(
     __N: true,
     key,
   };
+  if (navState.options.shallow === true && window.__NEXT_DATA__?.page) {
+    state.__vinext_route = window.__NEXT_DATA__.page;
+  }
   if (mode === "push") window.history.pushState(state, "", fullUrl);
   else window.history.replaceState(state, "", fullUrl);
+  routerRuntimeState.currentShallow = navState.options.shallow === true;
   routerRuntimeState.currentHistoryKey = key;
   routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
   routerRuntimeState.lastHash = window.location.hash;
@@ -2321,6 +2449,7 @@ type VinextHistoryState = {
   options: { locale?: string; shallow?: boolean };
   __N: true;
   key: string;
+  __vinext_route?: string;
 };
 
 function createHistoryKey(): string {
@@ -2430,6 +2559,7 @@ async function performNavigation(
   if (isExternalUrl(resolved)) {
     const localPath = toSameOriginAppPath(resolved, __basePath);
     if (localPath == null) {
+      supersedePendingNavigation({ shallow: false });
       if (mode === "push") window.location.assign(resolved);
       else window.location.replace(resolved);
       return true;
@@ -2517,8 +2647,12 @@ async function performNavigation(
   const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
   const htmlFetchUrl =
     errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(fullRouteUrl, navigationLocale);
-  const shallow = options?.shallow ?? false;
-  const doScroll = options?.scroll !== false;
+  const requestedShallow = options?.shallow === true;
+  const routeIdentityUrl = withBasePath(interpolatedRoute, __basePath);
+  const shallowRoute = requestedShallow ? resolveSamePagesRoute(routeIdentityUrl) : null;
+  const shallow = shallowRoute !== null;
+  const hashOnly = options?._h !== 1 && interpolatedRoute === resolved && isHashOnlyChange(full);
+  const doScroll = options?.scroll ?? (hashOnly || !shallow);
   const hash = extractHash(resolved);
   // Only pass {x, y} restoration through renderPagesRouterElement's commit
   // callback. Hash scrolling is deferred until after routeChangeComplete so
@@ -2526,8 +2660,8 @@ async function performNavigation(
   // scroll after completion.
   const scrollTarget = doScroll ? { x: 0, y: 0 } : null;
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
-    ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
-    : { mode, scroll: scrollTarget };
+    ? { allowNotFoundResponse: true, mode, scroll: scrollTarget, eventUrl: resolved }
+    : { mode, scroll: scrollTarget, eventUrl: resolved };
 
   // Next.js push→replace coercion (narrowed): when the display URL (asPath)
   // doesn't change AND the route URL DOES change AND the locale doesn't
@@ -2578,7 +2712,7 @@ async function performNavigation(
   // disagree), the underlying page module changes even if the address bar
   // didn't — so the hash-only shortcut MUST NOT skip the fetch. Mirrors
   // Next.js where `onlyAHashChange` runs only after the route is unchanged.
-  if (options?._h !== 1 && interpolatedRoute === resolved && isHashOnlyChange(full)) {
+  if (hashOnly) {
     // Snapshot the outgoing entry's scroll before updateHistory mints a new
     // key, so a later back-popstate restores the position the user had
     // reached here rather than {x: 0, y: 0}. Upstream snapshots inside
@@ -2588,6 +2722,7 @@ async function performNavigation(
     // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1034-1046.
     if (mode === "push") saveScrollPosition();
     const eventUrl = resolveHashUrl(full);
+    supersedePendingNavigation({ shallow });
     routerEvents.emit("hashChangeStart", eventUrl, { shallow });
     updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState);
     if (doScroll) scrollToHashTarget(extractHash(resolved));
@@ -2620,6 +2755,7 @@ async function performNavigation(
     (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) ||
     ["app", "document"].includes(resolveHybridClientRouteOwner(resolved, __basePath) ?? "");
   if (appRouteDetected) {
+    supersedePendingNavigation({ shallow: false });
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
@@ -2627,6 +2763,10 @@ async function performNavigation(
 
   if (mode === "push") saveScrollPosition();
   const isQueryUpdating = options?._h === 1;
+  const pendingNavigation = shallow
+    ? (supersedePendingNavigation({ shallow }), undefined)
+    : beginPendingNavigation(resolved, { shallow });
+  routerRuntimeState.currentShallowQuery = shallowRoute?.query ?? null;
   if (!isQueryUpdating) {
     routerEvents.emit("routeChangeStart", resolved, { shallow });
   }
@@ -2643,8 +2783,9 @@ async function performNavigation(
       // fullRouteUrl === full when there is no mask, so this is a no-op
       // for the dominant case.
       fullRouteUrl,
+      pendingNavigation,
     );
-    if (result === "cancelled") return true;
+    if (result === "cancelled") return false;
     if (result === "failed") return false;
   } else {
     // Shallow navigations skip the render-commit path, so apply the scroll
@@ -2843,6 +2984,7 @@ function isNextRouterState(state: unknown): state is {
   options: TransitionOptions;
   __N: true;
   key?: string;
+  __vinext_route?: string;
 } {
   return (
     typeof state === "object" &&
@@ -2973,6 +3115,21 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (!shouldContinue) return;
   }
 
+  // Next.js only carries shallow mode across popstate when both the target
+  // entry and the current router transition are shallow. A persisted shallow
+  // target must not promote a deep traversal back to shallow mode.
+  const restoredShallowRoute =
+    isNextRouterState(state) &&
+    state.options?.shallow === true &&
+    routerRuntimeState.currentShallow &&
+    state.__vinext_route === window.__NEXT_DATA__?.page &&
+    withBasePath(state.as, __basePath) === browserUrl
+      ? resolveSamePagesRoute(withBasePath(state.url, __basePath))
+      : null;
+  const shallow = restoredShallowRoute !== null;
+  routerRuntimeState.currentShallow = shallow;
+  routerRuntimeState.currentShallowQuery = restoredShallowRoute?.query ?? null;
+
   // Update trackers only after beforePopState confirms navigation proceeds.
   // If beforePopState cancels, the app stays on the previous history entry,
   // so both must retain their previous values: `lastPathnameAndSearch` so the
@@ -2983,6 +3140,8 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   }
   routerRuntimeState.lastPathnameAndSearch = browserUrl;
   routerRuntimeState.lastHash = currentHash;
+
+  const navigationId = supersedePendingNavigation({ shallow });
 
   if (isHashOnly) {
     // Hash-only back/forward — no page fetch needed.
@@ -2997,9 +3156,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     // L1381-1403 and L1780). The snapshot stays in sessionStorage, so a later
     // non-hash popstate to this entry still restores the saved position.
     const hashUrl = appUrl + window.location.hash;
-    routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
+    routerEvents.emit("hashChangeStart", hashUrl, { shallow });
     scrollToHashTarget(window.location.hash);
-    routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
+    routerEvents.emit("hashChangeComplete", hashUrl, { shallow });
     dispatchNavigateEvent();
     return;
   }
@@ -3011,13 +3170,28 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   const effectiveLocale = typeof stateLocale === "string" ? stateLocale : window.__VINEXT_LOCALE__;
 
   const fullAppUrl = appUrl + window.location.hash;
-  routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
+  routerEvents.emit("routeChangeStart", fullAppUrl, { shallow });
   // Note: The browser has already updated window.location by the time popstate
   // fires, so this is not truly "before" the URL change. In Next.js the popstate
   // handler calls replaceState to store history metadata — beforeHistoryChange
   // precedes that call, not the URL change itself. We emit it here for API
   // compatibility.
-  routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
+  routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow });
+  if (shallow) {
+    if (forcedScroll === undefined) {
+      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: true });
+      dispatchNavigateEvent();
+      return;
+    }
+    void (async () => {
+      const isCurrent = () => navigationId === routerRuntimeState.navigationId;
+      await restorePagesRouterScrollPosition(forcedScroll, isCurrent);
+      if (!isCurrent()) return;
+      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: true });
+      dispatchNavigateEvent();
+    })();
+    return;
+  }
   void (async () => {
     // When manual scroll restoration is enabled we drive the position from the
     // sessionStorage snapshot keyed by history key. When it is disabled we

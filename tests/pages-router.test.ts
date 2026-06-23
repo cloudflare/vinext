@@ -2507,20 +2507,23 @@ describe("Virtual server entry generation", () => {
       expect(code).toContain('"/posts/[id]"');
       // Catch-all routes: pages/docs/[...slug].tsx
       expect(code).toContain('"/docs/[...slug]"');
-      // Should NOT contain Express-style :param patterns for any route
-      expect(code).not.toMatch(/["']\/(posts|blog|articles|docs|products)\/:[\w]+["']/);
-      // Strip the `__VINEXT_PAGES_LINK_PREFETCH_ROUTES__` manifest before the
-      // next two assertions. The manifest is exempt because it carries the
-      // internal pattern shape (with `:slug+` / `:slug*`) so the client-side
-      // hybrid owner resolver can rebuild a pattern from `patternParts` to
-      // feed `routePrecedence`. The pageLoaders map (above) still uses
-      // Next.js bracket format for hydration keys.
-      const codeWithoutPrefetchManifest = code.replace(
-        /__VINEXT_PAGES_LINK_PREFETCH_ROUTES__\s*=\s*(\[[\s\S]*?\]);/,
-        "__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = /* stripped for test */;",
+      // Strip route manifests before checking page-loader keys. They retain
+      // internal `:param` patterns for client-side ownership and rewrite
+      // matching, while pageLoaders must use Next.js bracket format.
+      const codeWithoutRouteManifests = code
+        .replace(
+          /__VINEXT_PAGES_LINK_PREFETCH_ROUTES__\s*=\s*(\[[\s\S]*?\]);/,
+          "__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = /* stripped for test */;",
+        )
+        .replace(
+          /__VINEXT_CLIENT_REWRITES__\s*=\s*([^;]+);/,
+          "__VINEXT_CLIENT_REWRITES__ = /* stripped for test */;",
+        );
+      expect(codeWithoutRouteManifests).not.toMatch(
+        /["']\/(posts|blog|articles|docs|products)\/:[\w]+["']/,
       );
-      expect(codeWithoutPrefetchManifest).not.toContain(":slug+");
-      expect(codeWithoutPrefetchManifest).not.toContain(":slug*");
+      expect(codeWithoutRouteManifests).not.toContain(":slug+");
+      expect(codeWithoutRouteManifests).not.toContain(":slug*");
     } finally {
       await testServer.close();
     }
