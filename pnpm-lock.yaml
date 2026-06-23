@@ -198,6 +198,9 @@ catalogs:
     server-only:
       specifier: ^0.0.1
       version: 0.0.1
+    shiki:
+      specifier: 4.0.2
+      version: 4.0.2
     swr:
       specifier: ^2.0.0
       version: 2.4.0
@@ -338,6 +341,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.7(react@19.2.7)
+      shiki:
+        specifier: 'catalog:'
+        version: 4.0.2
       vinext:
         specifier: workspace:*
         version: link:../../packages/vinext
