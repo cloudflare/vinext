@@ -1452,10 +1452,11 @@ function fileToAppRoute(
 }
 
 /**
- * `dir` and `appDir` must both be forward-slash. `dir` is split on
- * `path.posix.sep` and joined onto `appDir` with `path.posix.join`, and `appDir`
- * is threaded to the layout/slot/boundary discovery below, which build paths the
- * same way.
+ * `dir`, `appDir`, `pagePath`, and `routePath` must all be forward-slash. `dir`
+ * is split on `path.posix.sep` and joined onto `appDir` with `path.posix.join`.
+ * `appDir` is threaded to the layout/slot/boundary discovery below, which builds
+ * paths the same way. `pagePath` and `routePath` are stored on the route node as
+ * canonical ids that get compared and re-joined downstream.
  */
 function directoryToAppRoute(
   dir: string,
@@ -1464,7 +1465,7 @@ function directoryToAppRoute(
   pagePath: string | null,
   routePath: string | null,
 ): AppRouteGraphRoute | null {
-  const segments = dir === "." ? [] : dir.split(path.posix.sep);
+  const segments = dir === "." ? [] : dir.split("/");
 
   const params: string[] = [];
   let isDynamic = false;
