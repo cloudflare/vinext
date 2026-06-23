@@ -184,6 +184,17 @@ import(alias);
     ).toBeNull();
   });
 
+  it("bounds constant alias resolution", () => {
+    const aliases = ['const request0 = "./module.js";'];
+    for (let index = 1; index < 2_000; index++) {
+      aliases.push(`const request${index} = request${index - 1};`);
+    }
+    aliases.push("import(request1999);");
+
+    const transformed = _transformVeryDynamicRequests(aliases.join("\n"), "/app/page.tsx")?.code;
+    expect(transformed).toContain("Cannot find module as expression is too dynamic");
+  });
+
   it("resolves constant bindings in template interpolations", () => {
     expect(
       _transformVeryDynamicRequests(

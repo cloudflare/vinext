@@ -22,6 +22,7 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
+const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
   /[\\/]node_modules[\\/](?:\.pnpm[\\/][^/\\]+[\\/]node_modules[\\/])?@vitejs[\\/]plugin-rsc[\\/]/;
@@ -119,11 +120,10 @@ function staticStringValue(
     return staticStringValue(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
   }
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return null;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return null;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return null;
     return staticStringValue(binding, scope, nextResolvingBindings);
   }
   return null;
@@ -326,11 +326,10 @@ function staticTruthiness(
   }
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return null;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return null;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return null;
     return staticTruthiness(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
@@ -364,11 +363,10 @@ function staticNullishness(
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return null;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return null;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return null;
     return staticNullishness(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
@@ -393,6 +391,18 @@ function findConstantBinding(scope: Scope, name: string): AstRecord | null {
     return current.constants.get(name) ?? null;
   }
   return null;
+}
+
+function resolvingConstantBinding(
+  resolvingBindings: Set<string>,
+  name: string,
+): Set<string> | null {
+  if (resolvingBindings.size >= MAX_CONSTANT_BINDING_DEPTH || resolvingBindings.has(name)) {
+    return null;
+  }
+  const nextResolvingBindings = new Set(resolvingBindings);
+  nextResolvingBindings.add(name);
+  return nextResolvingBindings;
 }
 
 function stringConcatHasStaticPart(
@@ -431,11 +441,10 @@ function isStaticStringExpression(
   if (!node) return false;
   if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return false;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return false;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return false;
     return isStaticStringExpression(binding, scope, nextResolvingBindings);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -465,11 +474,10 @@ function additionContainsString(
   if (!node) return false;
   if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return false;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return false;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return false;
     return additionContainsString(binding, scope, nextResolvingBindings);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -510,11 +518,10 @@ function requestHasStaticPart(
   if (concatHasStaticPart !== null) return concatHasStaticPart;
   if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
   if (node.type === "Identifier" && typeof node.name === "string") {
-    if (resolvingBindings.has(node.name)) return false;
     const binding = findConstantBinding(scope, node.name);
     if (!binding) return false;
-    const nextResolvingBindings = new Set(resolvingBindings);
-    nextResolvingBindings.add(node.name);
+    const nextResolvingBindings = resolvingConstantBinding(resolvingBindings, node.name);
+    if (!nextResolvingBindings) return false;
     return requestHasStaticPart(binding, scope, nextResolvingBindings);
   }
   if (node.type === "UnaryExpression") {
