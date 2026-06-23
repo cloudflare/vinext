@@ -47,11 +47,17 @@ export function collectDirectScopeBindings(
     if (!declaration) continue;
 
     if (declaration.type === "ImportDeclaration") {
+      if (declaration.importKind === "type") continue;
       for (const specifier of nodeArray(declaration.specifiers)) {
         if (isAstRecord(specifier) && specifier.importKind !== "type") {
           collectBindingNames(specifier.local, scope.bindings);
         }
       }
+    } else if (
+      declaration.type === "TSImportEqualsDeclaration" &&
+      declaration.importKind !== "type"
+    ) {
+      collectBindingNames(declaration.id, scope.bindings);
     } else if (declaration.type === "VariableDeclaration" && declaration.declare !== true) {
       for (const declarator of nodeArray(declaration.declarations)) {
         if (!isAstRecord(declarator)) continue;
@@ -60,6 +66,11 @@ export function collectDirectScopeBindings(
       }
     } else if (
       (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") &&
+      declaration.declare !== true
+    ) {
+      collectBindingNames(declaration.id, scope.bindings);
+    } else if (
+      (declaration.type === "TSEnumDeclaration" || declaration.type === "TSModuleDeclaration") &&
       declaration.declare !== true
     ) {
       collectBindingNames(declaration.id, scope.bindings);

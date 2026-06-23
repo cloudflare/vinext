@@ -364,6 +364,32 @@ class StaticLoader {
     ).toBeNull();
   });
 
+  it("tracks TypeScript value bindings without treating type-only imports as values", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `import type { require as TypeOnlyRequire } from "types";
+import { type require } from "types";
+require(request);
+{
+  enum require { Value }
+  require(request);
+}
+{
+  namespace require {}
+  require(request);
+}
+{
+  import require = require("module");
+  require(request);
+}`,
+      "/app/page.ts",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed).toContain("enum require { Value }\n  require(request)");
+    expect(transformed).toContain("namespace require {}\n  require(request)");
+    expect(transformed).toContain('import require = require("module");\n  require(request)');
+  });
+
   it("contains var bindings within class static blocks", () => {
     const transformed = _transformVeryDynamicRequests(
       `class StaticLoader {
