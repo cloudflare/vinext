@@ -244,6 +244,30 @@ function templateHasStaticPart(
   });
 }
 
+function stringRawTemplateHasStaticPart(
+  node: AstRecord,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): boolean | null {
+  if (node.type !== "TaggedTemplateExpression") return null;
+  const tag = unwrapExpression(node.tag);
+  const object = tag?.type === "MemberExpression" ? unwrapExpression(tag.object) : null;
+  const property = tag?.type === "MemberExpression" ? unwrapExpression(tag.property) : null;
+  if (
+    tag?.type !== "MemberExpression" ||
+    tag.computed === true ||
+    !isIdentifierNamed(object, "String") ||
+    hasAstBinding(scope, "String") ||
+    !isIdentifierNamed(property, "raw")
+  ) {
+    return null;
+  }
+  const quasi = astNode(node.quasi);
+  return quasi?.type === "TemplateLiteral"
+    ? templateHasStaticPart(quasi, scope, resolvingBindings)
+    : null;
+}
+
 function isLiteralExpression(value: unknown): boolean {
   const node = unwrapExpression(value);
   return node?.type === "Literal" || node?.type === "StringLiteral";
@@ -444,6 +468,8 @@ function requestHasStaticPart(
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolvingBindings);
   }
+  const stringRawHasStaticPart = stringRawTemplateHasStaticPart(node, scope, resolvingBindings);
+  if (stringRawHasStaticPart !== null) return stringRawHasStaticPart;
   const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolvingBindings);
   if (concatHasStaticPart !== null) return concatHasStaticPart;
   if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
@@ -509,12 +535,75 @@ function requestHasStaticPart(
   }
   if (node.type === "SequenceExpression") {
     const expressions = nodeArray(node.expressions);
+    if (expressions.length === 0) return false;
     return (
-      expressions.length > 0 && requestHasStaticPart(expressions.at(-1), scope, resolvingBindings)
+      expressions.slice(0, -1).every((expression) => !expressionMayHaveSideEffects(expression)) &&
+      requestHasStaticPart(expressions.at(-1), scope, resolvingBindings)
     );
   }
 
   return false;
+}
+
+function expressionMayHaveSideEffects(value: unknown): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (
+    node.type === "Literal" ||
+    node.type === "StringLiteral" ||
+    node.type === "Identifier" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression"
+  ) {
+    return false;
+  }
+  if (node.type === "TemplateLiteral") {
+    return nodeArray(node.expressions).some(expressionMayHaveSideEffects);
+  }
+  if (node.type === "UnaryExpression") {
+    return node.operator === "delete" || expressionMayHaveSideEffects(node.argument);
+  }
+  if (node.type === "AwaitExpression") {
+    return expressionMayHaveSideEffects(node.argument);
+  }
+  if (node.type === "BinaryExpression" || node.type === "LogicalExpression") {
+    return expressionMayHaveSideEffects(node.left) || expressionMayHaveSideEffects(node.right);
+  }
+  if (node.type === "ConditionalExpression") {
+    return (
+      expressionMayHaveSideEffects(node.test) ||
+      expressionMayHaveSideEffects(node.consequent) ||
+      expressionMayHaveSideEffects(node.alternate)
+    );
+  }
+  if (node.type === "SequenceExpression") {
+    return nodeArray(node.expressions).some(expressionMayHaveSideEffects);
+  }
+  if (node.type === "ArrayExpression") {
+    return nodeArray(node.elements).some((element) => {
+      const elementNode = astNode(element);
+      return elementNode?.type === "SpreadElement" || expressionMayHaveSideEffects(elementNode);
+    });
+  }
+  if (node.type === "ObjectExpression") {
+    return nodeArray(node.properties).some((property) => {
+      const propertyNode = astNode(property);
+      return (
+        (propertyNode?.type === "SpreadElement"
+          ? expressionMayHaveSideEffects(propertyNode.argument)
+          : false) ||
+        expressionMayHaveSideEffects(propertyNode?.computed ? propertyNode.key : null) ||
+        expressionMayHaveSideEffects(propertyNode?.value)
+      );
+    });
+  }
+  if (node.type === "MemberExpression") {
+    return (
+      expressionMayHaveSideEffects(node.object) ||
+      expressionMayHaveSideEffects(node.computed ? node.property : null)
+    );
+  }
+  return true;
 }
 
 function collectConstantBinding(declaration: AstRecord, declarator: AstRecord, scope: Scope): void {

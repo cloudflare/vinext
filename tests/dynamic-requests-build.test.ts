@@ -271,6 +271,30 @@ try { require(void sideEffect()); } catch {}
     ).toBeNull();
   });
 
+  it("preserves bounded String.raw templates", () => {
+    expect(
+      _transformVeryDynamicRequests("require(String.raw`./dir/${request}.js`);", "/app/page.tsx"),
+    ).toBeNull();
+
+    const transformed = _transformVeryDynamicRequests(
+      "require(String.raw`${request}`); import(String.raw`/${request}`); import(String['raw']`./dir/${request}.js`);",
+      "/app/page.tsx",
+    )?.code;
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+  });
+
+  it("treats side-effecting sequence requests as fully dynamic", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `require((0, "./module.js"));
+import((sideEffect(), "./module.js"));`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed).toContain('require((0, "./module.js"))');
+    expect(transformed).not.toContain("sideEffect()");
+  });
+
   it("preserves dynamic requests with statically bounded string concatenation", () => {
     expect(
       _transformVeryDynamicRequests(
@@ -466,6 +490,19 @@ require(request);
     expect(transformed).toContain("enum require { Value }\n  require(request)");
     expect(transformed).toContain("namespace require {}\n  require(request)");
     expect(transformed).toContain('import require = require("module");\n  require(request)');
+  });
+
+  it("preserves require calls shadowed by TypeScript parameter properties", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `class Loader {
+  constructor(private require: (request: string) => unknown) {
+    require(request);
+  }
+}`,
+        "/app/page.ts",
+      ),
+    ).toBeNull();
   });
 
   it("preserves require calls shadowed inside TypeScript namespaces", () => {
