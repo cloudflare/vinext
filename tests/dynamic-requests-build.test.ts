@@ -238,6 +238,8 @@ require(void value);
 import(!0);
 require(!value);
 import(-1);
+require(-0);
+import(-1n);
 require(+1);`,
       "/app/page.tsx",
     )?.code;
@@ -246,6 +248,8 @@ require(+1);`,
     expect(transformed).toContain("import(void 0)");
     expect(transformed).toContain("require(void /pattern/)");
     expect(transformed).toContain("import(!0)");
+    expect(transformed).toContain("import(-1)");
+    expect(transformed).toContain("require(-0)");
   });
 
   it("does not evaluate side effects in void request expressions", () => {

@@ -249,6 +249,13 @@ function isLiteralExpression(value: unknown): boolean {
   return node?.type === "Literal" || node?.type === "StringLiteral";
 }
 
+function isNegativeNumericLiteral(value: unknown): boolean {
+  const node = unwrapExpression(value);
+  if (node?.type !== "UnaryExpression" || node.operator !== "-") return false;
+  const argument = unwrapExpression(node.argument);
+  return argument?.type === "Literal" && typeof argument.value === "number";
+}
+
 function staticTruthiness(
   value: unknown,
   scope: Scope,
@@ -452,6 +459,7 @@ function requestHasStaticPart(
     if (node.operator === "void") {
       return isLiteralExpression(node.argument);
     }
+    if (isNegativeNumericLiteral(node)) return true;
     return staticTruthiness(node, scope, resolvingBindings) !== null;
   }
 
