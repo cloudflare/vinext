@@ -261,8 +261,11 @@ try { require(void sideEffect()); } catch {}
   it("preserves dynamic requests with statically bounded string concatenation", () => {
     expect(
       _transformVeryDynamicRequests(
-        `require("./dir/".concat(request));
+        `const prefix = "./dir/";
+require("./dir/".concat(request));
 import("./dir/".concat(request, ".js"));
+require(prefix.concat(request));
+import(prefix["concat"](request));
 `,
         "/app/page.tsx",
       ),
@@ -272,7 +275,28 @@ import("./dir/".concat(request, ".js"));
       `require("".concat(request)); import("/".concat(request));`,
       "/app/page.tsx",
     )?.code;
-    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed).toContain('require("".concat(request))');
+  });
+
+  it("does not treat numeric addition as a statically bounded request", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const number = 1;
+const prefix = "./dir/";
+require(number + request);
+import(1 + request);
+require((condition ? "./dir/" : 1) + request);
+require(prefix + request);
+import((condition ? "./a/" : "./b/") + request);
+import(1 + prefix + request);
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+    expect(transformed).toContain("require(prefix + request)");
+    expect(transformed).toContain('import((condition ? "./a/" : "./b/") + request)');
+    expect(transformed).toContain("import(1 + prefix + request)");
   });
 
   it("preserves require calls shadowed by loop-header bindings", () => {
@@ -405,6 +429,25 @@ require(request);
     expect(transformed).toContain("enum require { Value }\n  require(request)");
     expect(transformed).toContain("namespace require {}\n  require(request)");
     expect(transformed).toContain('import require = require("module");\n  require(request)');
+  });
+
+  it("preserves require calls shadowed inside TypeScript namespaces", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `namespace Loader {
+  const require = load;
+  require(request);
+}
+module Resolver {
+  if (condition) var require = load;
+  require(request);
+}
+require(request);
+`,
+      "/app/page.ts",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
+    expect(transformed?.match(/require\(request\)/g)).toHaveLength(2);
   });
 
   it("contains var bindings within class static blocks", () => {

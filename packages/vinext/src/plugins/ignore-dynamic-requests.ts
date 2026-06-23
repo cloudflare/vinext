@@ -309,23 +309,77 @@ function stringConcatHasStaticPart(
 ): boolean | null {
   if (node.type !== "CallExpression") return null;
   const callee = unwrapExpression(node.callee);
+  const property = callee?.type === "MemberExpression" ? unwrapExpression(callee.property) : null;
   if (
     callee?.type !== "MemberExpression" ||
-    callee.computed === true ||
-    !isIdentifierNamed(callee.property, "concat")
+    (callee.computed === true
+      ? property === null || stringValue(property) !== "concat"
+      : !isIdentifierNamed(property, "concat"))
   ) {
     return null;
   }
 
   const receiver = unwrapExpression(callee.object);
-  const receiverString = receiver ? stringValue(receiver) : null;
-  if (receiverString === null) return null;
-  if (hasSignificantPathPart(receiverString)) return true;
+  if (!receiver || !isStaticStringExpression(receiver, scope, resolvingBindings)) return null;
+  if (requestHasStaticPart(receiver, scope, resolvingBindings)) return true;
 
   return nodeArray(node.arguments).some((argument) => {
     const argumentNode = unwrapExpression(argument);
     return argumentNode ? requestHasStaticPart(argumentNode, scope, resolvingBindings) : false;
   });
+}
+
+function isStaticStringExpression(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return false;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return false;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return isStaticStringExpression(binding, scope, nextResolvingBindings);
+  }
+  return false;
+}
+
+function additionContainsString(
+  value: unknown,
+  scope: Scope,
+  resolvingBindings: Set<string>,
+): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    if (resolvingBindings.has(node.name)) return false;
+    const binding = findConstantBinding(scope, node.name);
+    if (!binding) return false;
+    const nextResolvingBindings = new Set(resolvingBindings);
+    nextResolvingBindings.add(node.name);
+    return additionContainsString(binding, scope, nextResolvingBindings);
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return (
+      additionContainsString(node.left, scope, resolvingBindings) ||
+      additionContainsString(node.right, scope, resolvingBindings)
+    );
+  }
+  if (node.type === "ConditionalExpression") {
+    return (
+      additionContainsString(node.consequent, scope, resolvingBindings) &&
+      additionContainsString(node.alternate, scope, resolvingBindings)
+    );
+  }
+  if (node.type === "SequenceExpression") {
+    return additionContainsString(nodeArray(node.expressions).at(-1), scope, resolvingBindings);
+  }
+  return stringConcatHasStaticPart(node, scope, resolvingBindings) !== null;
 }
 
 function requestHasStaticPart(
@@ -362,6 +416,7 @@ function requestHasStaticPart(
   }
 
   if (node.type === "BinaryExpression" && node.operator === "+") {
+    if (!additionContainsString(node, scope, resolvingBindings)) return false;
     const left = unwrapExpression(node.left);
     const right = unwrapExpression(node.right);
     const leftString = left ? stringValue(left) : null;
@@ -510,10 +565,16 @@ function transformVeryDynamicRequests(code: string, id: string) {
         }
       }
       return;
-    } else if ((node.type === "BlockStatement" && node !== root) || node.type === "StaticBlock") {
+    } else if (
+      (node.type === "BlockStatement" && node !== root) ||
+      node.type === "StaticBlock" ||
+      node.type === "TSModuleBlock"
+    ) {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
-      if (node.type === "StaticBlock") collectVarScopeBindings(node, scope);
+      if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
+        collectVarScopeBindings(node, scope);
+      }
     } else if (node.type === "CatchClause") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);

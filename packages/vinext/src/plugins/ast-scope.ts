@@ -109,7 +109,12 @@ export function collectSwitchScopeBindings(
 }
 
 export function collectVarScopeBindings(node: AstRecord, scope: AstScope, root = true): void {
-  if (!root && (isFunctionNode(node) || node.type === "StaticBlock")) return;
+  if (
+    !root &&
+    (isFunctionNode(node) || node.type === "StaticBlock" || node.type === "TSModuleBlock")
+  ) {
+    return;
+  }
   if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
     for (const declarator of nodeArray(node.declarations)) {
       if (isAstRecord(declarator)) collectBindingNames(declarator.id, scope.bindings);
