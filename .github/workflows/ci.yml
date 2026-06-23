@@ -291,6 +291,18 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
+      - name: Allow required native dependency builds
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  sharp: true\n  unrs-resolver: true\n";
+            fs.writeFileSync(f, y);
+          '
+
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: vp add "${{ runner.temp }}"/vinext-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
