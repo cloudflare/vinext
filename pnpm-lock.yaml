@@ -1581,6 +1581,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.7(react@19.2.7)
+      shiki:
+        specifier: 'catalog:'
+        version: 4.0.2
       vinext:
         specifier: workspace:*
         version: link:../../../packages/vinext
