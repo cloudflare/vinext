@@ -922,16 +922,7 @@ describe("treeshake config integration", () => {
           },
           { command: "build" },
         ),
-      ).toEqual({
-        build: {
-          rolldownOptions: {
-            output: [
-              { entryFileNames: "first.js", assetFileNames: expect.any(Function) },
-              { chunkFileNames: "second.js", assetFileNames: expect.any(Function) },
-            ],
-          },
-        },
-      });
+      ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

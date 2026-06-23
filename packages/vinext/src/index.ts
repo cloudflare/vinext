@@ -3106,19 +3106,17 @@ export const loadServerActionClient = ${
         }
         if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
         const output = getBuildBundlerOptions(config.build)?.output;
-        const hasAssetFileNames = Array.isArray(output)
-          ? output.some((item) => item.assetFileNames !== undefined)
-          : output?.assetFileNames !== undefined;
-        if (hasAssetFileNames) return null;
+        // Vite concatenates arrays returned from config hooks rather than
+        // merging output entries by index, so an array-shaped user config
+        // cannot be safely augmented here. Preserve it unchanged.
+        if (Array.isArray(output) || output?.assetFileNames !== undefined) return null;
         const assetFileNames = createClientAssetFileNames(
           resolveAssetsDir(nextConfig.assetPrefix ?? ""),
         );
         return {
           build: {
             ...withBuildBundlerOptions(viteMajorVersion, {
-              output: Array.isArray(output)
-                ? output.map((item) => ({ ...item, assetFileNames }))
-                : { assetFileNames },
+              output: { assetFileNames },
             }),
           },
         };
