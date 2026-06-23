@@ -381,6 +381,8 @@ export type ResolvedNextConfig = {
   serverActionsAllowedOrigins: string[];
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
+  /** Packages explicitly requested for server/client transpilation. */
+  transpilePackages: string[];
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
@@ -1294,6 +1296,7 @@ export async function resolveNextConfig(
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
+      transpilePackages: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
@@ -1467,6 +1470,7 @@ export async function resolveNextConfig(
     experimental?.serverComponentsExternalPackages,
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
+  const transpilePackages = readStringArray(config.transpilePackages);
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1612,6 +1616,7 @@ export async function resolveNextConfig(
     allowedDevOrigins,
     serverActionsAllowedOrigins,
     optimizePackageImports,
+    transpilePackages,
     inlineCss,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,

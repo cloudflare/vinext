@@ -6,7 +6,6 @@
  */
 
 import { detectPackageManager, findDir } from "./utils/project.js";
-import { normalizePathSeparators } from "./utils/path.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "node:path";
@@ -823,6 +822,9 @@ function collectConfigKeys(source: string): ConfigKeys {
 
 /**
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`. Only called
+ * from `runCheck`, which normalizes it.
  */
 export function analyzeConfig(root: string): CheckItem[] {
   // Mirror the Next.js-compatible set in shims/constants.ts. Accepts both
@@ -837,7 +839,7 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
   let configPath: string | null = null;
   for (const f of configFiles) {
-    const p = path.join(root, f);
+    const p = path.posix.join(root, f);
     if (fs.existsSync(p)) {
       configPath = p;
       break;
@@ -906,9 +908,12 @@ export function analyzeConfig(root: string): CheckItem[] {
 
 /**
  * Check package.json dependencies for known libraries.
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`. Only called
+ * from `runCheck`, which normalizes it.
  */
 export function checkLibraries(root: string): CheckItem[] {
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
 
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -933,6 +938,10 @@ export function checkLibraries(root: string): CheckItem[] {
 
 /**
  * Check file conventions (pages, app directory, middleware, etc.)
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`, passed to
+ * `findDir`, and used as the base of `path.posix.relative`. Only called from
+ * `runCheck`, which normalizes it.
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
@@ -942,10 +951,11 @@ export function checkConventions(root: string): CheckItem[] {
   const appDirPath = findDir(root, "app", "src/app");
 
   const hasProxy =
-    fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
+    fs.existsSync(path.posix.join(root, "proxy.ts")) ||
+    fs.existsSync(path.posix.join(root, "proxy.js"));
   const hasMiddleware =
-    fs.existsSync(path.join(root, "middleware.ts")) ||
-    fs.existsSync(path.join(root, "middleware.js"));
+    fs.existsSync(path.posix.join(root, "middleware.ts")) ||
+    fs.existsSync(path.posix.join(root, "middleware.js"));
 
   if (pagesDir !== null) {
     const isSrc = pagesDir.includes("src/pages");
@@ -1022,7 +1032,7 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   // Check for "type": "module" in package.json
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
     if (pkg.type !== "module") {
@@ -1047,7 +1057,7 @@ export function checkConventions(root: string): CheckItem[] {
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
-    const rel = normalizePathSeparators(path.relative(root, file));
+    const rel = path.posix.relative(root, file);
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);
@@ -1070,7 +1080,7 @@ export function checkConventions(root: string): CheckItem[] {
   // Check PostCSS config for string-form plugins
   const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
   for (const configFile of postcssConfigs) {
-    const configPath = path.join(root, configFile);
+    const configPath = path.posix.join(root, configFile);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf-8");
       // Detect string-form plugins where the first array element is a bare string

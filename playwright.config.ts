@@ -202,9 +202,11 @@ const projectServers = {
     use: { baseURL: "http://localhost:4182" },
     server: {
       // Build vinext CLI, then build the fixture, then start the standalone
-      // server. The standalone server.js reads PORT from the environment.
+      // server from an isolated temp directory. Moving it outside the repo
+      // prevents Node from resolving missing externals from workspace
+      // node_modules and verifies the standalone package is self-contained.
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
+        'npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && standalone_dir="$(mktemp -d)" && cp -R dist/standalone/. "$standalone_dir" && PORT=4182 node "$standalone_dir/server.js"',
       cwd: "./tests/fixtures/standalone-output",
       port: 4182,
       reuseExistingServer: !process.env.CI,

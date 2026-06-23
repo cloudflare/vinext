@@ -70,6 +70,7 @@ import {
   type NextConfigInput,
   type ResolvedNextConfig,
 } from "./config/next-config.js";
+import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
@@ -1823,6 +1824,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // or `build.ssr` in config). SSR builds must NOT use manualChunks
         // because they use inlineDynamicImports which is incompatible.
         const isSSR = !!config.build?.ssr;
+        const nextServerExternal = mergeServerExternalPackages(
+          nextConfig?.serverExternalPackages,
+          nextConfig?.transpilePackages,
+        );
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -2068,7 +2073,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? { ssr: { external: true as const } }
               : {
                   ssr: {
-                    external: ["react", "react-dom", "react-dom/server", "ipaddr.js"],
+                    external: [
+                      "react",
+                      "react-dom",
+                      "react-dom/server",
+                      "ipaddr.js",
+                      ...(Array.isArray(config.ssr?.external) ? config.ssr.external : []),
+                      ...nextServerExternal,
+                    ],
                     noExternal: true,
                   },
                 }),
@@ -2237,7 +2249,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // only from its `node` condition, not from the universal `default` one).
         // Without externalizing them, Vite's optimizer picks the wrong export
         // condition and the build fails with MISSING_EXPORT errors.
-        const nextServerExternal: string[] = nextConfig?.serverExternalPackages ?? [];
         const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
           ? [...config.ssr.external, ...nextServerExternal]
           : config.ssr?.external === true
@@ -2549,7 +2560,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             ssr: {
               resolve: {
-                external: ["react", "react-dom", "react-dom/server", "ipaddr.js"],
+                external: [
+                  "react",
+                  "react-dom",
+                  "react-dom/server",
+                  "ipaddr.js",
+                  ...nextServerExternal,
+                ],
                 noExternal: true as const,
               },
               optimizeDeps: {

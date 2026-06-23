@@ -200,6 +200,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+      expect(result.environments.ssr.resolve.external).toContain("typescript");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -812,6 +813,7 @@ describe("treeshake config integration", () => {
 
       // treeshake should NOT be set for SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.ssr.external).toContain("typescript");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
