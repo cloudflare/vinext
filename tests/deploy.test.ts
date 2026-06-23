@@ -498,6 +498,14 @@ describe("detectProject", () => {
     expect(info.isPagesRouter).toBe(false);
   });
 
+  it("does not treat app or pages files as router directories", () => {
+    writeFile(tmpDir, "app", "not a directory");
+    writeFile(tmpDir, "pages", "not a directory");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(false);
+    expect(info.isPagesRouter).toBe(false);
+  });
+
   it("detects vite.config.ts", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "vite.config.ts", "export default {}");

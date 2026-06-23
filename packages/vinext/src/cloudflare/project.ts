@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { findInNodeModules, findDir, findViteConfigPath, hasAppDir } from "../utils/project.js";
+import { findInNodeModules, findViteConfigPath } from "../utils/project.js";
 
 export type ProjectInfo = {
   root: string;
@@ -37,9 +37,14 @@ export function hasWranglerConfig(root: string): boolean {
   );
 }
 
+/**
+ * Detect the project structure (router, config, worker entry, package name).
+ *
+ * `root` is an OS-native filesystem path.
+ */
 export function detectProject(root: string): ProjectInfo {
-  const hasApp = hasAppDir(root);
-  const hasPages = findDir(root, "pages", path.join("src", "pages")) !== null;
+  const hasApp = resolveProjectDir(root, "app") !== null;
+  const hasPages = resolveProjectDir(root, "pages") !== null;
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
@@ -157,9 +162,17 @@ const ISR_SCANNABLE_EXTENSION = /\.(ts|tsx|js|jsx)$/;
  */
 function resolveProjectDir(root: string, name: string): string | null {
   const rootDir = path.join(root, name);
-  if (fs.existsSync(rootDir)) return rootDir;
+  try {
+    if (fs.statSync(rootDir).isDirectory()) return rootDir;
+  } catch {
+    // Try the src/ variant.
+  }
   const srcDir = path.join(root, "src", name);
-  if (fs.existsSync(srcDir)) return srcDir;
+  try {
+    if (fs.statSync(srcDir).isDirectory()) return srcDir;
+  } catch {
+    // Not found or not a directory.
+  }
   return null;
 }
 

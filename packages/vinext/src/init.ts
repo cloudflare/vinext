@@ -27,9 +27,7 @@ import {
   detectPackageManagerName,
   findViteConfigPath,
   hasViteConfig,
-  hasAppDir,
 } from "./utils/project.js";
-import { normalizePathSeparators } from "./utils/path.js";
 import {
   generateAppRouterViteConfig,
   generateAppRouterWorkerEntry,
@@ -254,7 +252,7 @@ export function updateGitignore(root: string): boolean {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function init(options: InitOptions): Promise<InitResult> {
-  const root = normalizePathSeparators(path.resolve(options.root));
+  const root = path.resolve(options.root);
   const port = options.port ?? 3001;
   const platform = options.platform ?? "cloudflare";
   const cloudflare = options.cloudflare ?? {
@@ -292,7 +290,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   const viteConfigExists = hasViteConfig(root);
 
-  const isApp = hasAppDir(root);
+  const isApp = detectProject(root).isAppRouter;
   const pmName = detectPackageManagerName(root);
 
   // ── Step 1: Compatibility check ────────────────────────────────────────
