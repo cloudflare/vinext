@@ -2117,6 +2117,11 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
 /**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
+ *
+ * `dir` and `appDir` must be forward-slash. The slot directory is built from
+ * `dir` with `path.posix.join`, and the owner segments and slot key come from
+ * `path.posix.relative(appDir, …)`, which only yields a forward-slash relative
+ * path when both operands already are.
  */
 function discoverParallelSlots(
   dir: string,
@@ -2150,16 +2155,16 @@ function discoverParallelSlots(
     // Only include slots that have at least a page, default, or intercepting route
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
-    const ownerSegments = path
+    const ownerSegments = path.posix
       .relative(appDir, dir)
-      .split(path.sep)
+      .split("/")
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
-      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
+      key: `${slotName}@${path.posix.relative(appDir, slotDir)}`,
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
