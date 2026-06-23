@@ -1,5 +1,43 @@
 # vinext
 
+## 0.1.8
+
+### Bug Fixes
+
+#### App Router
+
+- exclude dev overlay from production client bundle (#2284)
+- match interception route precedence (#2231)
+- preserve global error details (#2249)
+- restore cache and parallel route parity (#2261)
+- canonicalize initial history URL (#2250)
+
+#### Misc
+
+- **Build:** apply default server externals (#2257)
+- **SSR:** ignore runtime renderer import in Vite (#2288)
+- **Router:** ignore stale initial popstate with i18n (#2230)
+- **Middleware:** run on missing build assets (#2242)
+- **Headers:** strip internal dev request ID headers (#2260)
+- **Pages Router:** allow server-only in API routes (#2234)
+- **Config:** make vite-tsconfig-paths an optional peer (#2258)
+
+### Performance
+
+- **App Router:** skip speculative page probes for HTML renders (#2226)
+- **Link:** omit Pages runtime in app-only builds (#2225)
+- **Client:** omit unused server action client (#2222)
+- **App:** omit unused PPR runtime (#2223)
+- **App:** omit unused file metadata runtime (#2224)
+
+### Contributors
+
+- @hyoban
+- @james-elicx
+- @ponharu
+- @southpolesteve
+- @TheAlexLichter
+
 ## 0.1.7
 
 ### Bug Fixes
