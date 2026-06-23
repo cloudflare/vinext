@@ -1,4 +1,4 @@
-export const BENCHMARK_QUERY_PARAM = "benchmark";
+const BENCHMARK_QUERY_PARAM = "benchmark";
 
 export function resolveSelectedBenchmark(
   benchmarkIds: readonly string[],
