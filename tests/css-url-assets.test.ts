@@ -26,15 +26,28 @@ import { build, createBuilder } from "vite";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+import { createIsolatedFixture } from "./helpers.js";
 
 // Dedicated, minimal committed fixtures (not the large app-basic/pages-basic):
 // these build in ~1-2s, so the suite stays fast and these tests don't contend
 // for CPU with the heavyweight fixture builds running in parallel under CI.
 const PAGES_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-pages");
 const APP_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-app");
+const CLOUDFLARE_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
+const CLOUDFLARE_PLUGIN_PATH = path.join(
+  CLOUDFLARE_FIXTURE_DIR,
+  "node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+);
+const WORKER_ENTRY_PATH = path
+  .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
+  .replaceAll("\\", "/");
+
+type CloudflarePluginFactory = (options?: {
+  viteEnvironment?: { name: string; childEnvironments?: string[] };
+}) => import("vite").Plugin;
 
 const MEDIA_SVG_RE = (name: string) =>
   new RegExp(`^/_next/static/media/${name}\\.[A-Za-z0-9_-]+\\.svg$`);
@@ -280,102 +293,130 @@ describe("Pages Router CSS url() asset emission", () => {
   });
 });
 
-// ── Integration (App Router): build the committed app-basic, inspect output ──
+// ── Integration (App Router): inspect plain and Cloudflare build output ──────
 
-describe("App Router CSS url() asset emission", () => {
-  let tmpDir: string;
-  let clientDir: string;
-  let serverDir: string;
+describe.each(["plain", "cloudflare"] as const)(
+  "App Router CSS url() asset emission (%s build)",
+  (buildTarget) => {
+    let tmpDir: string;
+    let clientDir: string;
+    let serverDir: string;
 
-  beforeAll(async () => {
-    // Build an isolated copy so the client output (which vinext writes to
-    // <root>/dist/client) lands in a temp dir instead of the committed fixture.
-    // Borrow app-basic's node_modules for the RSC/React-server deps the App
-    // Router build needs (@vitejs/plugin-rsc, react-server-dom-webpack, …).
-    tmpDir = await createIsolatedFixture(
-      APP_CSS_FIXTURE,
-      "vinext-css-url-app-",
-      undefined,
-      path.join(APP_FIXTURE_DIR, "node_modules"),
-    );
-    const builder = await createBuilder({
-      root: tmpDir,
-      configFile: false,
-      plugins: [vinext({ appDir: tmpDir })],
-      logLevel: "silent",
-      build: { assetsInlineLimit: 0 },
+    beforeAll(async () => {
+      // Build an isolated copy so the client output (which vinext writes to
+      // <root>/dist/client) lands in a temp dir instead of the committed fixture.
+      // Borrow app-basic's node_modules for the RSC/React-server deps the App
+      // Router build needs (@vitejs/plugin-rsc, react-server-dom-webpack, …).
+      tmpDir = await createIsolatedFixture(
+        APP_CSS_FIXTURE,
+        "vinext-css-url-app-",
+        undefined,
+        path.join(CLOUDFLARE_FIXTURE_DIR, "node_modules"),
+      );
+      const plugins: import("vite").PluginOption[] = [vinext({ appDir: tmpDir })];
+      if (buildTarget === "cloudflare") {
+        await fs.mkdir(path.join(tmpDir, "worker"), { recursive: true });
+        await fs.writeFile(
+          path.join(tmpDir, "wrangler.jsonc"),
+          `{
+  "name": "vinext-css-url-assets",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": { "not_found_handling": "none", "binding": "ASSETS" }
+}\n`,
+        );
+        await fs.writeFile(
+          path.join(tmpDir, "worker/index.ts"),
+          `import handler from ${JSON.stringify(WORKER_ENTRY_PATH)};\nexport default handler;\n`,
+        );
+        const { cloudflare } = (await import(pathToFileURL(CLOUDFLARE_PLUGIN_PATH).href)) as {
+          cloudflare: CloudflarePluginFactory;
+        };
+        plugins.push(cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }));
+      }
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins,
+        logLevel: "silent",
+        build: { assetsInlineLimit: 0 },
+      });
+      await builder.buildApp();
+      clientDir = path.join(tmpDir, "dist", "client");
+      serverDir = path.join(tmpDir, "dist", "server");
+    }, 180_000);
+
+    afterAll(async () => {
+      if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     });
-    await builder.buildApp();
-    clientDir = path.join(tmpDir, "dist", "client");
-    serverDir = path.join(tmpDir, "dist", "server");
-  }, 180_000);
 
-  afterAll(async () => {
-    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-  });
+    it("emits both byte-identical page CSS module url() svgs under /_next/static/media/", async () => {
+      const cssFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".css"));
+      const cssTexts = await Promise.all(cssFiles.map((file) => fs.readFile(file, "utf-8")));
+      const routeCss = cssTexts.find((text) => text.includes("redText"));
+      expect(
+        routeCss,
+        "expected emitted client CSS containing the url-assets route class",
+      ).toBeDefined();
 
-  it("emits both byte-identical page CSS module url() svgs under /_next/static/media/", async () => {
-    const cssFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".css"));
-    const cssTexts = await Promise.all(cssFiles.map((file) => fs.readFile(file, "utf-8")));
-    const routeCss = cssTexts.find((text) => text.includes("redText"));
-    expect(
-      routeCss,
-      "expected emitted client CSS containing the url-assets route class",
-    ).toBeDefined();
+      const assetUrls = svgUrls(routeCss ?? "");
+      expect(assetUrls).toEqual([
+        expect.stringMatching(MEDIA_SVG_RE("dark")),
+        expect.stringMatching(MEDIA_SVG_RE("dark2")),
+      ]);
+      expect(new Set(assetUrls).size, "App Router asset URLs should be unique").toBe(
+        assetUrls.length,
+      );
 
-    const assetUrls = svgUrls(routeCss ?? "");
-    expect(assetUrls).toEqual([
-      expect.stringMatching(MEDIA_SVG_RE("dark")),
-      expect.stringMatching(MEDIA_SVG_RE("dark2")),
-    ]);
-    expect(new Set(assetUrls).size, "App Router asset URLs should be unique").toBe(
-      assetUrls.length,
-    );
+      // Marker must not leak into emitted CSS.
+      expect(routeCss).not.toContain("vinext_css_url_asset");
 
-    // Marker must not leak into emitted CSS.
-    expect(routeCss).not.toContain("vinext_css_url_asset");
+      // Each referenced media file must exist on disk in the client output.
+      for (const assetUrl of assetUrls) {
+        const stat = await fs.stat(path.join(clientDir, assetUrl));
+        expect(stat.isFile(), `expected emitted asset ${assetUrl}`).toBe(true);
+      }
+    });
 
-    // Each referenced media file must exist on disk in the client output.
-    for (const assetUrl of assetUrls) {
-      const stat = await fs.stat(path.join(clientDir, assetUrl));
-      expect(stat.isFile(), `expected emitted asset ${assetUrl}`).toBe(true);
-    }
-  });
+    it("uses the same CSS Module class name in server, client JS, and client CSS", async () => {
+      const serverFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".js"));
+      const serverCssFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".css"));
+      const clientFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".js"));
+      const cssFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".css"));
 
-  it("uses the same CSS Module class name in server, client JS, and client CSS", async () => {
-    const serverFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".js"));
-    const serverCssFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".css"));
-    const clientFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".js"));
-    const cssFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".css"));
+      const serverCode = (
+        await Promise.all(serverFiles.map((file) => fs.readFile(file, "utf-8")))
+      ).join("\n");
+      const serverCss = (
+        await Promise.all(serverCssFiles.map((file) => fs.readFile(file, "utf-8")))
+      ).join("\n");
+      const clientCode = (
+        await Promise.all(clientFiles.map((file) => fs.readFile(file, "utf-8")))
+      ).join("\n");
+      const clientCss = (
+        await Promise.all(cssFiles.map((file) => fs.readFile(file, "utf-8")))
+      ).join("\n");
 
-    const serverCode = (
-      await Promise.all(serverFiles.map((file) => fs.readFile(file, "utf-8")))
-    ).join("\n");
-    const serverCss = (
-      await Promise.all(serverCssFiles.map((file) => fs.readFile(file, "utf-8")))
-    ).join("\n");
-    const clientCode = (
-      await Promise.all(clientFiles.map((file) => fs.readFile(file, "utf-8")))
-    ).join("\n");
-    const clientCss = (await Promise.all(cssFiles.map((file) => fs.readFile(file, "utf-8")))).join(
-      "\n",
-    );
+      const serverClassNames = extractRedTextClassNames(serverCode);
+      const clientClassNames = extractRedTextClassNames(clientCode);
+      const cssClassNames = extractRedTextClassNames(clientCss);
 
-    const serverClassNames = extractRedTextClassNames(serverCode);
-    const clientClassNames = extractRedTextClassNames(clientCode);
-    const cssClassNames = extractRedTextClassNames(clientCss);
+      expect(serverClassNames).toHaveLength(1);
+      expect(clientClassNames).toEqual(serverClassNames);
+      expect(cssClassNames).toEqual(serverClassNames);
+      expect(serverCode).not.toContain("vinext_css_url_asset");
+      expect(serverCss).not.toContain("vinext_css_url_asset");
+      expect(clientCode).not.toContain("vinext_css_url_asset");
+      expect(clientCss).not.toContain("vinext_css_url_asset");
 
-    expect(serverClassNames).toHaveLength(1);
-    expect(clientClassNames).toEqual(serverClassNames);
-    expect(cssClassNames).toEqual(serverClassNames);
-    expect(serverCode).not.toContain("vinext_css_url_asset");
-    expect(serverCss).not.toContain("vinext_css_url_asset");
-    expect(clientCode).not.toContain("vinext_css_url_asset");
-    expect(clientCss).not.toContain("vinext_css_url_asset");
-
-    const serverAssetUrls = svgUrls(serverCss);
-    expect(serverAssetUrls).toHaveLength(2);
-    expect(serverAssetUrls[0]).toMatch(/\/dark[.-][A-Za-z0-9_-]+\.svg$/);
-    expect(serverAssetUrls[1]).toMatch(/\/dark2[.-][A-Za-z0-9_-]+\.svg$/);
-  });
-});
+      const serverAssetUrls = svgUrls(serverCss);
+      const clientAssetUrls = svgUrls(clientCss);
+      expect(serverAssetUrls).toEqual(clientAssetUrls);
+      for (const assetUrl of serverAssetUrls) {
+        const stat = await fs.stat(path.join(clientDir, assetUrl));
+        expect(stat.isFile(), `expected SSR CSS asset ${assetUrl} in client output`).toBe(true);
+      }
+    });
+  },
+);

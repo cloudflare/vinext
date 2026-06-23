@@ -40,6 +40,10 @@ type InterceptingRoute = {
   sourcePageSegments?: string[];
   /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
   layoutPaths: string[];
+  /** Normalized branch segments accumulated at each intercept layout. */
+  layoutSegments?: string[][];
+  /** Full normalized interception branch segments through the page. */
+  branchSegments?: string[];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -68,6 +72,10 @@ type ParallelSlot = {
   defaultPath: string | null;
   /** Absolute path to the slot's layout component (wraps slot content) */
   layoutPath: string | null;
+  /** Nested active-branch layouts whose exports contribute route config. */
+  configLayoutPaths?: string[];
+  /** Tree positions of configLayoutPaths relative to the slot root. */
+  configLayoutTreePositions?: number[];
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
@@ -939,8 +947,8 @@ export async function buildAppRouteGraph(
     scanMatcher.extensions,
     excludeDir,
   )) {
-    const dir = path.dirname(file);
-    const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+    const dir = path.posix.dirname(file);
+    const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
     if (discoverParallelSlots(routeDir, appDir, scanMatcher).length === 0) continue;
 
@@ -1071,7 +1079,17 @@ function discoverSlotSubRoutes(
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
-        return { ...slot, pagePath: subPage, routeSegments: rawSegments };
+        const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
+        return {
+          ...slot,
+          pagePath: subPage,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
+          routeSegments: rawSegments,
+        };
       }
       return slot;
     });
@@ -1224,9 +1242,19 @@ function discoverSlotSubRoutes(
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
         const subPage = slotPages.get(slot.key);
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          subPage ?? null,
+          matcher,
+        );
         return {
           ...slot,
           pagePath: subPage || null,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           routeSegments: subPage ? rawSegments : null,
         };
       });
@@ -1330,6 +1358,33 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   return results;
 }
 
+function findSlotConfigLayoutPaths(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): string[] {
+  if (!pagePath) return [];
+
+  const layouts: string[] = [];
+  let dir = path.dirname(pagePath);
+  while (dir !== slotDir && dir.startsWith(`${slotDir}${path.sep}`)) {
+    const layoutPath = findFile(dir, "layout", matcher);
+    if (layoutPath) layouts.unshift(layoutPath);
+    dir = path.dirname(dir);
+  }
+  return layouts;
+}
+
+function findSlotConfigLayoutTreePositions(
+  slotDir: string,
+  layoutPaths: readonly string[],
+): number[] {
+  return layoutPaths.map((layoutPath) => {
+    const relativeDir = path.relative(slotDir, path.dirname(layoutPath));
+    return relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0;
+  });
+}
+
 /**
  * Find a sibling catch-all page directly under `dir`, i.e. a `[...slug]` or
  * `[[...slug]]` directory that contains a `page` file. Returns the absolute
@@ -1396,6 +1451,12 @@ function fileToAppRoute(
   );
 }
 
+/**
+ * `dir` and `appDir` must both be forward-slash. `dir` is split on
+ * `path.posix.sep` and joined onto `appDir` with `path.posix.join`, and `appDir`
+ * is threaded to the layout/slot/boundary discovery below, which build paths the
+ * same way.
+ */
 function directoryToAppRoute(
   dir: string,
   appDir: string,
@@ -1403,7 +1464,7 @@ function directoryToAppRoute(
   pagePath: string | null,
   routePath: string | null,
 ): AppRouteGraphRoute | null {
-  const segments = dir === "." ? [] : dir.split(path.sep);
+  const segments = dir === "." ? [] : dir.split(path.posix.sep);
 
   const params: string[] = [];
   let isDynamic = false;
@@ -1434,8 +1495,8 @@ function directoryToAppRoute(
   const errorPaths = errorEntries.map((entry) => entry.path);
   const errorTreePositions = errorEntries.map((entry) => entry.treePosition);
 
-  // Discover loading, error in the route's directory
-  const routeDir = dir === "." ? appDir : path.join(appDir, dir);
+  // Discover loading, error in the route's directory.
+  const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
   const loadingPath = findFile(routeDir, "loading", matcher);
   const errorPath = findFile(routeDir, "error", matcher);
 
@@ -1771,6 +1832,10 @@ function discoverBoundaryFilePerLayout(
  * Walk from appDir through each segment to the route's directory. At each level
  * that has @slot dirs, collect them. Slots at the route's own directory level
  * use page.tsx; slots at ancestor levels use default.tsx only.
+ *
+ * `appDir` and `routeDir` must be forward-slash — `currentDir` descends from
+ * `appDir` via `path.posix.join`, and the `dir === routeDir` active-level test
+ * below only matches when both share the canonical separator.
  */
 function discoverInheritedParallelSlots(
   segments: string[],
@@ -1792,7 +1857,7 @@ function discoverInheritedParallelSlots(
   dirsToCheck.push({ dir: appDir, layoutIdx, segmentIndex: 0 });
 
   for (let i = 0; i < segments.length; i++) {
-    currentDir = path.join(currentDir, segments[i]);
+    currentDir = path.posix.join(currentDir, segments[i]);
     if (findFile(currentDir, "layout", matcher)) {
       layoutIdx++;
     }
@@ -1834,9 +1899,19 @@ function discoverInheritedParallelSlots(
           slotPatternParts = [...(ownerUrl?.urlSegments ?? []), ...mirror.slotUrlSegments];
           slotParamNames = [...(ownerUrl?.params ?? []), ...mirror.slotParamNames];
         }
+        const configLayoutPaths = findSlotConfigLayoutPaths(
+          slot.ownerDir,
+          mirror?.pagePath ?? null,
+          matcher,
+        );
         const inheritedSlot: AppRouteGraphParallelSlot = {
           ...slot,
           pagePath: mirror?.pagePath ?? null,
+          configLayoutPaths,
+          configLayoutTreePositions: findSlotConfigLayoutTreePositions(
+            slot.ownerDir,
+            configLayoutPaths,
+          ),
           layoutIndex: slotLayoutIdx,
           routeSegments: mirror?.segments ?? null,
           slotPatternParts,
@@ -2011,6 +2086,9 @@ function patternsStructurallyEquivalent(a: readonly string[], b: readonly string
  *
  * Returns the absolute page path, or null if no root-level page is found.
  *
+ * `slotDir` must be forward-slash: the `path.posix.join` descent stays a
+ * canonical id only when the base already is.
+ *
  * Only descends into route-group directories (those whose name starts with `(`
  * and ends with `)`). Dynamic segments, regular named dirs, and `@slot` dirs
  * are not transparent and are therefore not searched.
@@ -2030,7 +2108,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
-    const found = findSlotRootPage(path.join(slotDir, entry.name), matcher);
+    const found = findSlotRootPage(path.posix.join(slotDir, entry.name), matcher);
     if (found) return found;
   }
   return null;
@@ -2060,7 +2138,7 @@ function discoverParallelSlots(
     if (entry.name === "@children") continue;
 
     const slotName = entry.name.slice(1); // "@team" -> "team"
-    const slotDir = path.join(dir, entry.name);
+    const slotDir = path.posix.join(dir, entry.name);
 
     // A slot page may live inside a route-group subdirectory of the slot
     // (e.g. @slot/(group)/page.tsx). Route groups are transparent in the URL,
@@ -2078,6 +2156,7 @@ function discoverParallelSlots(
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
+    const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
@@ -2088,6 +2167,8 @@ function discoverParallelSlots(
       pagePath,
       defaultPath,
       layoutPath: findFile(slotDir, "layout", matcher),
+      configLayoutPaths,
+      configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
       loadingPath: findFile(slotDir, "loading", matcher),
       errorPath: findFile(slotDir, "error", matcher),
       interceptingRoutes,
@@ -2402,8 +2483,18 @@ function collectInterceptingPages(
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
       results.push({
+        branchSegments: [
+          interceptSegment,
+          ...normalizePathSeparators(path.relative(interceptRoot, path.dirname(page)))
+            .split("/")
+            .filter(Boolean),
+        ],
         convention,
         layoutPaths: [...layoutPaths],
+        layoutSegments: layoutPaths.map((layoutPath) => {
+          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+          return [interceptSegment, ...relativeDir.split(path.sep).filter(Boolean)];
+        }),
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

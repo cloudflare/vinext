@@ -149,6 +149,37 @@ describe("app RSC error primitives", () => {
         routeType: "render",
       },
     );
+    expect(error).toMatchObject({ digest: errorDigest("render failedstack") });
+  });
+
+  it("stamps generic development RSC errors with the returned digest", () => {
+    const onError = createRscOnErrorHandler({
+      errorContext: null,
+      nodeEnv: "development",
+      reportRequestError() {},
+      requestInfo: null,
+    });
+    const error = new Error("render failed");
+    error.stack = "stack";
+
+    expect(onError(error)).toBe(errorDigest("render failedstack"));
+    expect(error).toMatchObject({ digest: errorDigest("render failedstack") });
+  });
+
+  it("returns a digest without masking frozen RSC errors", () => {
+    const onError = createRscOnErrorHandler({
+      errorContext: null,
+      nodeEnv: "development",
+      reportRequestError() {},
+      requestInfo: null,
+    });
+    const error = new Error("render failed");
+    error.stack = "stack";
+    Object.freeze(error);
+
+    expect(() => onError(error)).not.toThrow();
+    expect(onError(error)).toBe(errorDigest("render failedstack"));
+    expect(error).not.toHaveProperty("digest");
   });
 
   it("reports non-Error thrown values with the previous String(error) message", () => {

@@ -277,6 +277,119 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("returns HTTP 500 for progressive action execution failures", async () => {
+    const dispatchMatchedPage = vi.fn(async ({ middlewareContext }) =>
+      Promise.resolve(new Response("error page", { status: middlewareContext.status ?? 200 })),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return {
+          kind: "form-state",
+          formState: null,
+          actionError: new Error("boom"),
+          actionFailed: true,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(500);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionFailed: true,
+        middlewareContext: expect.objectContaining({ status: 500 }),
+      }),
+    );
+  });
+
+  it("preserves progressive action HTTP fallback status handling", async () => {
+    const dispatchMatchedPage = vi.fn(async ({ middlewareContext }) =>
+      Promise.resolve(new Response("not found", { status: middlewareContext.status ?? 404 })),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return {
+          kind: "form-state",
+          formState: null,
+          actionError: { digest: "NEXT_NOT_FOUND" },
+          actionFailed: true,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        middlewareContext: expect.objectContaining({ status: null }),
+      }),
+    );
+  });
+
+  it("normalizes progressive forbidden fallbacks to Next.js not-found rendering", async () => {
+    const dispatchMatchedPage = vi.fn(async ({ actionError, middlewareContext }) =>
+      Promise.resolve(
+        new Response(JSON.stringify(actionError), { status: middlewareContext.status ?? 404 }),
+      ),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return {
+          kind: "form-state",
+          formState: null,
+          actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;403" },
+          actionFailed: true,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ digest: "NEXT_NOT_FOUND" });
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionError: { digest: "NEXT_NOT_FOUND" },
+        middlewareContext: expect.objectContaining({ status: null }),
+      }),
+    );
+  });
+
   // Regression for issue #1483 — `cookies().set(...)` / `cookies().delete(...)`
   // and `draftMode().enable()` invoked inside a no-JS server action must flow
   // through to the page rerender response. Before the fix, those Set-Cookie

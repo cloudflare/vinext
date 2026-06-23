@@ -1,5 +1,79 @@
 # vinext
 
+## 0.1.8
+
+### Bug Fixes
+
+#### App Router
+
+- exclude dev overlay from production client bundle (#2284)
+- match interception route precedence (#2231)
+- preserve global error details (#2249)
+- restore cache and parallel route parity (#2261)
+- canonicalize initial history URL (#2250)
+
+#### Misc
+
+- **Build:** apply default server externals (#2257)
+- **SSR:** ignore runtime renderer import in Vite (#2288)
+- **Router:** ignore stale initial popstate with i18n (#2230)
+- **Middleware:** run on missing build assets (#2242)
+- **Headers:** strip internal dev request ID headers (#2260)
+- **Pages Router:** allow server-only in API routes (#2234)
+- **Config:** make vite-tsconfig-paths an optional peer (#2258)
+
+### Performance
+
+- **App Router:** skip speculative page probes for HTML renders (#2226)
+- **Link:** omit Pages runtime in app-only builds (#2225)
+- **Client:** omit unused server action client (#2222)
+- **App:** omit unused PPR runtime (#2223)
+- **App:** omit unused file metadata runtime (#2224)
+
+### Contributors
+
+- @hyoban
+- @james-elicx
+- @ponharu
+- @southpolesteve
+- @TheAlexLichter
+
+## 0.1.7
+
+### Bug Fixes
+
+- **Image:** emit hoisted var for local image import binding to avoid TDZ (#2067)
+- **Dynamic:** render ssr:false loading with pastDelay:true to match client (#1967) (#2064)
+- **Actions:** dedupe Set-Cookie on no-JS non-redirect action responses (#1976) (#2063)
+- **RSC:** only short-circuit well-known signal digests so real errors reach onRequestError (#2066)
+
+### Performance
+
+#### App
+
+- omit unused server action runtime (#2206)
+- omit unused metadata route runtime (#2196)
+- omit unused middleware runtime (#2194)
+
+#### Misc
+
+- **Server:** skip duplicate App RSC vary merge (#2177)
+- **Server:** reuse App SSR bfcache metadata (#2182)
+- **Client:** preserve additional route-owned shims (#2205)
+- **Dev:** externalize SSR React runtime (#2191)
+- **App Router:** isolate action request detection (#2188)
+- **Client:** preserve App Router route chunk boundaries (#2189)
+- **OG:** use MagicString positional overwrites instead of repeated replaceAll (#2202)
+- **Dev Server:** memoize the Pages SSR handler across dev requests (#2201)
+- **Mdx:** gate the MDX transform handler behind a native id filter (#2200)
+
+### Contributors
+
+- @Divkix
+- @NathanDrake2406
+- @shulaoda
+- @TheAlexLichter
+
 ## 0.1.6
 
 ### Bug Fixes

@@ -58,6 +58,7 @@ import { notFoundResponse } from "./http-error-responses.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { parseNextHttpErrorDigest } from "./next-error-digest.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -265,7 +266,6 @@ type NavigationContextValue = {
 type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   basePath: string;
   buildId: string | null;
-  cacheComponents?: boolean;
   clearRequestContext: () => void;
   configHeaders: NextHeader[];
   configRedirects: NextRedirect[];
@@ -297,6 +297,10 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleProgressiveActionRequestOptions,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  createPprFallbackShells?: (
+    route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
+    params: AppPageParams,
+  ) => AppPagePprFallbackCacheShell[];
   handleServerActionRequest?: (
     options: HandleServerActionRequestOptions,
   ) => Promise<Response | null>;
@@ -746,6 +750,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : null;
   const actionFailed = failedProgressiveActionResult !== null;
   const actionError = failedProgressiveActionResult?.actionError;
+  const actionErrorDigest =
+    actionError && typeof actionError === "object" && "digest" in actionError
+      ? String(actionError.digest)
+      : null;
+  const actionHttpFallbackStatus = actionErrorDigest
+    ? (parseNextHttpErrorDigest(actionErrorDigest)?.status ?? null)
+    : null;
+  const normalizedProgressiveActionError =
+    actionHttpFallbackStatus === null || actionHttpFallbackStatus === 404
+      ? actionError
+      : { digest: "NEXT_NOT_FOUND" };
+  if (actionFailed && middlewareContext.status === null && actionHttpFallbackStatus === null) {
+    middlewareContext.status = 500;
+  }
 
   const serverActionResponse =
     isPostRequest && actionId && options.handleServerActionRequest
@@ -938,14 +956,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const resolvedSearchParams = getResolvedSearchParams();
   let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
   if (
-    options.cacheComponents === true &&
+    options.createPprFallbackShells &&
     request.method === "GET" &&
     !isRscRequest &&
     !isPrerenderFallbackShell &&
     route.params
   ) {
-    const { createAppPprFallbackShells } = await import("./app-ppr-fallback-shell.js");
-    runtimeFallbackShells = createAppPprFallbackShells(
+    runtimeFallbackShells = options.createPprFallbackShells(
       {
         params: route.params,
         pattern: route.pattern,
@@ -1000,7 +1017,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathname,
     displayPathname: canonicalPathname,
     formState,
-    actionError,
+    actionError: normalizedProgressiveActionError,
     actionFailed,
     handlerStart,
     interceptionContext: interceptionContextHeader,

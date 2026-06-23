@@ -64,6 +64,11 @@ const appPageRouteWiringPath = resolveEntryPath(
 );
 const appPageProbePath = resolveEntryPath("../server/app-page-probe.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
+const appPagePprRuntimePath = resolveEntryPath(
+  "../server/app-page-ppr-runtime.js",
+  import.meta.url,
+);
+const fileBasedMetadataPath = resolveEntryPath("../server/file-based-metadata.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
 const appRscRouteMatchingPath = resolveEntryPath(
@@ -315,6 +320,15 @@ ${
     ? `const __loadMetadataRouteResponse = () => import(${JSON.stringify(metadataRouteResponsePath)});`
     : ""
 }
+${
+  (metadataRoutes?.length ?? 0) > 0
+    ? `const __loadFileBasedMetadata = () => import(${JSON.stringify(fileBasedMetadataPath)});
+async function __applyFileBasedMetadata(...args) {
+  const { applyFileBasedMetadata } = await __loadFileBasedMetadata();
+  return applyFileBasedMetadata(...args);
+}`
+    : ""
+}
 import {
   sanitizeErrorForClient as __sanitizeErrorForClient,
 } from ${JSON.stringify(appRscErrorsPath)};
@@ -338,6 +352,14 @@ import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appP
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
+${
+  cacheComponents
+    ? `import {
+  appPagePprRuntime as __appPagePprRuntime,
+  createAppPprFallbackShells as __createAppPprFallbackShells,
+} from ${JSON.stringify(appPagePprRuntimePath)};`
+    : ""
+}
 import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
@@ -424,6 +446,11 @@ function __resolveRouteFetchCacheMode(route) {
   return __resolveAppPageFetchCacheMode({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      ...(slot.configLayouts ?? []),
+      slot.page ?? slot.default,
+    ]),
   });
 }
 
@@ -431,6 +458,11 @@ function __resolveRouteDynamicConfig(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      ...(slot.configLayouts ?? []),
+      slot.page ?? slot.default,
+    ]),
   }).dynamicConfig ?? null;
 }
 
@@ -438,6 +470,11 @@ function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      ...(slot.configLayouts ?? []),
+      slot.page ?? slot.default,
+    ]),
   }).runtime ?? null;
 }
 
@@ -513,6 +550,7 @@ const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
 
 const __fallbackRenderer = __createAppFallbackRenderer({
+  ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
   basePath: __basePath,
   trailingSlash: __trailingSlash,
   rootBoundaries: {
@@ -562,6 +600,7 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
+    ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
     route,
     params,
     routePath,
@@ -597,7 +636,6 @@ export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
 export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
-const __cacheComponents = ${JSON.stringify(cacheComponents)};
 
 export async function seedMemoryCacheFromPrerender(serverDir) {
   const { seedMemoryCacheFromPrerender: __seedMemoryCacheFromPrerender } =
@@ -652,7 +690,13 @@ export default createAppRscHandler({
   },
   registerCacheAdapters: __registerConfiguredCacheAdapters,
   configHeaders: __configHeaders,
-  cacheComponents: __cacheComponents,
+  ${
+    cacheComponents
+      ? `createPprFallbackShells(route, params) {
+    return __createAppPprFallbackShells(route, params);
+  },`
+      : ""
+  }
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
   imageConfig: __imageConfig,
@@ -688,7 +732,12 @@ export default createAppRscHandler({
     const __segmentConfig = __resolveAppPageSegmentConfig({
       layouts: route.layouts,
       page: route.page,
-      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page),
+      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+      parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+        slot.layout,
+        ...(slot.configLayouts ?? []),
+        slot.page ?? slot.default,
+      ]),
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
@@ -702,7 +751,7 @@ export default createAppRscHandler({
       ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       reactMaxHeadersLength: __reactMaxHeadersLength,
-      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
+      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess, buildOptions) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
           searchParams: targetSearchParams,
@@ -710,6 +759,8 @@ export default createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
+          observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
@@ -766,6 +817,7 @@ export default createAppRscHandler({
       params,
       pprFallbackCacheShells,
       pprFallbackShell,
+      pprRuntime: ${cacheComponents ? "__appPagePprRuntime" : "undefined"},
       renderedConcreteUrlPaths,
       skipStaticParamsValidation,
       staticParamsValidationParams,
@@ -779,7 +831,7 @@ export default createAppRscHandler({
           route,
         });
       },
-      async probePage() {
+      async probePage(probeSearchParams = searchParams) {
         const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
@@ -794,21 +846,21 @@ export default createAppRscHandler({
           route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
-          searchParams,
+          searchParams: probeSearchParams,
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
           makeThenableParams,
         }));
       },
-      renderErrorBoundaryPage(renderErr) {
+      renderErrorBoundaryPage(renderErr, errorOrigin) {
         const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
-        });
+        }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
         const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
@@ -964,7 +1016,7 @@ export default createAppRscHandler({
     const __actionMatch = matchRoute(cleanPathname);
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
-      ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
+      ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
       : false;
     return __handleServerActionRscRequest({
       actionId,
@@ -982,6 +1034,8 @@ export default createAppRscHandler({
         request: actionRequest,
         mountedSlotsHeader: actionMountedSlotsHeader,
         renderMode: actionRenderMode,
+        observeMetadataSearchParamsAccess,
+        observePageSearchParamsAccess,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
           opts: interceptOpts,
@@ -990,6 +1044,8 @@ export default createAppRscHandler({
           request: actionRequest,
           mountedSlotsHeader: actionMountedSlotsHeader,
           renderMode: actionRenderMode,
+          observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: observePageSearchParamsAccess === true,
         });
       },
       cleanPathname,
@@ -1015,6 +1071,7 @@ export default createAppRscHandler({
       },
       createTemporaryReferenceSet,
       decodeReply,
+      draftModeSecret: __draftModeSecret,
       findIntercept(pathnameToMatch) {
         return findIntercept(pathnameToMatch, interceptionContext);
       },
@@ -1058,6 +1115,8 @@ export default createAppRscHandler({
         return {
           interceptionContext,
           interceptLayouts: intercept.interceptLayouts,
+          interceptLayoutSegments: intercept.interceptLayoutSegments,
+          interceptBranchSegments: intercept.interceptBranchSegments,
           interceptSlotId: intercept.slotId,
           interceptSlotKey: intercept.slotKey,
           interceptSourceMatchedUrl: interceptionContext,
@@ -1107,7 +1166,7 @@ export default createAppRscHandler({
   }
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
-    const __isEdge = route ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: route.layouts, page: route.page }).runtime) : false;
+    const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route)) : false;
     return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdge });
   },
   ${

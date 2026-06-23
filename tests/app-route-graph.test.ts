@@ -476,6 +476,7 @@ describe("App Router route graph builder", () => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "@slot/foo/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "@slot/[...catchAll]/page.tsx", EMPTY_PAGE);
@@ -498,6 +499,7 @@ describe("App Router route graph builder", () => {
         // slot's catch-all.
         const slot = baz.parallelSlots.find((s) => s.name === "slot");
         expect(slot?.pagePath).toBe(path.join(appDir, "@slot/baz/page.tsx"));
+        expect(slot?.configLayoutPaths).toEqual([path.join(appDir, "@slot/baz/layout.tsx")]);
 
         // The top-level catch-all is still present for fully-unmatched paths.
         expect(patterns).toContain("/:catchAll+");
@@ -601,6 +603,26 @@ describe("App Router route graph builder", () => {
         pagePath: path.join(appDir, "group-depth/@slot/page.tsx"),
         layoutPath: path.join(appDir, "group-depth/@slot/layout.tsx"),
         routeSegments: [],
+      });
+    });
+  });
+
+  it("records nested active slot layouts for segment config reduction", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@slot/dashboard/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "@slot/dashboard/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/dashboard");
+      const slot = route.parallelSlots.find((candidate) => candidate.name === "slot");
+
+      expect(slot).toMatchObject({
+        pagePath: path.join(appDir, "@slot/dashboard/page.tsx"),
+        configLayoutPaths: [path.join(appDir, "@slot/dashboard/layout.tsx")],
+        configLayoutTreePositions: [1],
       });
     });
   });
@@ -1039,6 +1061,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "about/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "@breadcrumbs/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@breadcrumbs/about/layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "@breadcrumbs/about/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
@@ -1048,6 +1071,7 @@ describe("App Router route graph builder", () => {
         name: "breadcrumbs",
         pagePath: path.join(appDir, "@breadcrumbs/about/page.tsx"),
         defaultPath: path.join(appDir, "@breadcrumbs/default.tsx"),
+        configLayoutPaths: [path.join(appDir, "@breadcrumbs/about/layout.tsx")],
         routeSegments: ["about"],
       });
     });
@@ -1255,6 +1279,8 @@ describe("App Router route graph builder", () => {
         targetPattern: string;
         sourceMatchPattern: string;
         sourcePageSegments?: string[];
+        layoutSegments?: string[][];
+        branchSegments?: string[];
         convention: string;
         params: string[];
       }> = [];
@@ -1267,6 +1293,8 @@ describe("App Router route graph builder", () => {
               targetPattern: ir.targetPattern,
               sourceMatchPattern: ir.sourceMatchPattern,
               sourcePageSegments: ir.sourcePageSegments,
+              layoutSegments: ir.layoutSegments,
+              branchSegments: ir.branchSegments,
               convention: ir.convention,
               params: ir.params,
             });
@@ -1282,6 +1310,8 @@ describe("App Router route graph builder", () => {
         targetPattern: string;
         sourceMatchPattern: string;
         sourcePageSegments?: string[];
+        layoutSegments?: string[][];
+        branchSegments?: string[];
         convention: string;
         params: string[];
       }> = [];
@@ -1292,6 +1322,8 @@ describe("App Router route graph builder", () => {
             targetPattern: ir.targetPattern,
             sourceMatchPattern: ir.sourceMatchPattern,
             sourcePageSegments: ir.sourcePageSegments,
+            layoutSegments: ir.layoutSegments,
+            branchSegments: ir.branchSegments,
             convention: ir.convention,
             params: ir.params,
           });
@@ -1364,6 +1396,7 @@ describe("App Router route graph builder", () => {
         await writeAppFile(appDir, "[locale]/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "[locale]/photos/[id]/page.tsx", EMPTY_PAGE);
         await writeAppFile(appDir, "[locale]/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/@modal/(.)photos/[id]/layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "[locale]/@modal/(.)photos/[id]/page.tsx", EMPTY_PAGE);
 
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
@@ -1373,6 +1406,8 @@ describe("App Router route graph builder", () => {
           expect.objectContaining({
             targetPattern: "/:locale/photos/:id",
             params: ["locale", "id"],
+            layoutSegments: [["photos", "[id]"]],
+            branchSegments: ["photos", "[id]"],
             convention: ".",
           }),
         );

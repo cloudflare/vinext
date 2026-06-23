@@ -8,6 +8,7 @@ import {
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
@@ -136,6 +138,10 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
+  return React.createElement("p", { "data-boundary": "global-error" }, error.stack);
+}
+
 type TestModule = {
   default: React.ComponentType<any>;
   metadata?: { description?: string; title?: string };
@@ -167,6 +173,10 @@ const routeErrorModule = {
 
 const globalErrorModule = {
   default: GlobalErrorBoundary,
+} satisfies TestModule;
+
+const globalErrorModuleWithStack = {
+  default: GlobalErrorBoundaryWithStack,
 } satisfies TestModule;
 
 function ThrowingGlobalErrorBoundary(): React.ReactNode {
@@ -518,6 +528,57 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("does not serialize production SSR stacks into the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const common = createCommonOptions();
+    const error = new Error("client page error");
+    error.stack = "/private/deployment/server.js:42";
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "ssr",
+        globalErrorModule,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("client page error");
+      expect(html).not.toContain("/private/deployment/server.js:42");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves development RSC stacks in the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const common = createCommonOptions();
+    const error = Object.assign(new Error("server page error"), {
+      digest: "12345",
+      stack: "/app/rsc/page.tsx:2",
+    });
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "rsc",
+        globalErrorModule: globalErrorModuleWithStack,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("/app/rsc/page.tsx:2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("preserves middleware headers on error boundary responses", async () => {

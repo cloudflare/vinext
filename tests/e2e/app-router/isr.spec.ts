@@ -79,6 +79,16 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
+  test("queryless client page keeps ISR cache headers", async ({ request }) => {
+    const res = await request.get(`${BASE}/client-isr-test`);
+    const cc = res.headers()["cache-control"];
+
+    expect(res.status()).toBe(200);
+    expect(await res.text()).toContain("Client ISR page");
+    expect(cc).toContain("s-maxage=1");
+    expect(cc).toContain("stale-while-revalidate");
+  });
+
   test("non-ISR page does not have ISR cache headers", async ({ request }) => {
     const res = await request.get(`${BASE}/about`);
 
