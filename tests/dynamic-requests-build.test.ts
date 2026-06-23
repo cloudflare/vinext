@@ -6,7 +6,10 @@ import vm from "node:vm";
 import { createBuilder, createServer } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
+import {
+  _transformVeryDynamicRequests,
+  createIgnoreDynamicRequestsPlugin,
+} from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -118,6 +121,25 @@ function dynamic() {
 }
 
 describe("App Router dynamic requests", () => {
+  it("matches Next.js environment scoping", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const runTransform = (consumer: "client" | "server", id: string) =>
+      transform.handler.call(
+        { environment: { config: { consumer } } } as never,
+        "import(request)",
+        id,
+      );
+
+    expect(runTransform("server", "/app/page.tsx")).toBeTruthy();
+    expect(runTransform("client", "/app/page.tsx")).toBeNull();
+    expect(
+      runTransform("client", "/app/node_modules/dynamic-request-dependency/index.js"),
+    ).toBeTruthy();
+  });
+
   it("only rewrites fully dynamic unbound requests", () => {
     expect(
       _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),
@@ -282,6 +304,20 @@ require(${"/* unrelated */".repeat(10_000)} /* webpackIgnore: true */ request);
     expect(transformed).toContain("require(/* webpackIgnore: true */ request)");
     expect(transformed).toContain("import(/* turbopackIgnore: true */ request)");
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(3);
+  });
+
+  it("preserves Vite-ignored dynamic imports", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const request = getRequest();
+import(/* @vite-ignore */ request);
+require(/* @vite-ignore */ request);
+`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed).toContain("import(/* @vite-ignore */ request)");
+    expect(transformed).not.toContain("require(/* @vite-ignore */ request)");
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
   });
 
   it("honors the last explicit dynamic request ignore value at runtime", () => {

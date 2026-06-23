@@ -156,6 +156,16 @@ switch (value) {
     expect(result?.code).toContain("var window");
   });
 
+  it("preserves window bindings declared in loop headers", () => {
+    const result = replaceTypeofWindow(
+      `for (const window of windows) console.log(typeof window)
+for (let window; condition; ) console.log(typeof window)`,
+      "undefined",
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("preserves selected conditional expression precedence", () => {
     const result = replaceTypeofWindow(
       `const value = typeof window === "undefined" ? (serverValue, fallbackValue) : browserValue`,

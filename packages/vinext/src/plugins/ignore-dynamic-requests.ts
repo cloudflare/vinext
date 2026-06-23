@@ -11,6 +11,15 @@ import {
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
+import {
+  collectDirectScopeBindings,
+  collectLoopScopeBindings,
+  collectSwitchScopeBindings,
+  collectVarScopeBindings,
+  hasAstBinding,
+  isFunctionNode,
+  type AstScope,
+} from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,8 +47,14 @@ const TRANSPARENT_EXPRESSIONS = new Set([
 
 type Scope = {
   parent: Scope | null;
-  bindings: Set<string>;
+  bindings: AstScope["bindings"];
   constants: Map<string, AstRecord>;
+};
+
+type EnvironmentLike = {
+  config: {
+    consumer: "client" | "server";
+  };
 };
 
 function astNode(value: unknown): AstRecord | null {
@@ -127,6 +142,10 @@ function hasDynamicRequestIgnoreDirective(
   let ignore: boolean | undefined;
   for (const comment of comments) {
     const text = comment.trim();
+    if (text === "@vite-ignore" && requestNode.type === "ImportExpression") {
+      ignore = true;
+      continue;
+    }
     const separator = text.indexOf(":");
     if (separator === -1) continue;
     const directive = text.slice(0, separator).trim();
@@ -181,7 +200,7 @@ function isStaticSafeExpression(
   const node = unwrapExpression(value);
   if (!node) return false;
   if (node.type === "Literal" || node.type === "StringLiteral") return true;
-  if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return true;
+  if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return false;
     const binding = findConstantBinding(scope, node.name);
@@ -209,7 +228,7 @@ function staticTruthiness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
-  if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return false;
+  if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return null;
     const binding = findConstantBinding(scope, node.name);
@@ -247,7 +266,7 @@ function staticNullishness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
-  if (isIdentifierNamed(node, "undefined") && !hasBinding(scope, "undefined")) return true;
+  if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return null;
     const binding = findConstantBinding(scope, node.name);
@@ -297,7 +316,7 @@ function requestHasStaticPart(
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolvingBindings);
   }
-  if (isIdentifierNamed(node, "undefined")) return !hasBinding(scope, "undefined");
+  if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
   if (node.type === "Identifier" && typeof node.name === "string") {
     if (resolvingBindings.has(node.name)) return false;
     const binding = findConstantBinding(scope, node.name);
@@ -328,7 +347,7 @@ function requestHasStaticPart(
   }
 
   if (node.type === "ConditionalExpression") {
-    const truthiness = staticTruthiness(node.test, scope);
+    const truthiness = staticTruthiness(node.test, scope, resolvingBindings);
     return truthiness === null
       ? requestHasStaticPart(node.consequent, scope, resolvingBindings) ||
           requestHasStaticPart(node.alternate, scope, resolvingBindings)
@@ -339,7 +358,7 @@ function requestHasStaticPart(
         );
   }
   if (node.type === "LogicalExpression") {
-    const truthiness = staticTruthiness(node.left, scope);
+    const truthiness = staticTruthiness(node.left, scope, resolvingBindings);
     if (node.operator === "&&" && truthiness !== null) {
       return requestHasStaticPart(truthiness ? node.right : node.left, scope, resolvingBindings);
     }
@@ -347,7 +366,7 @@ function requestHasStaticPart(
       return requestHasStaticPart(truthiness ? node.left : node.right, scope, resolvingBindings);
     }
     if (node.operator === "??") {
-      const nullishness = staticNullishness(node.left, scope);
+      const nullishness = staticNullishness(node.left, scope, resolvingBindings);
       if (nullishness !== null) {
         return requestHasStaticPart(nullishness ? node.right : node.left, scope, resolvingBindings);
       }
@@ -367,99 +386,29 @@ function requestHasStaticPart(
   return false;
 }
 
-function isFunction(node: AstRecord): boolean {
-  return (
-    node.type === "FunctionDeclaration" ||
-    node.type === "FunctionExpression" ||
-    node.type === "ArrowFunctionExpression"
-  );
+function collectConstantBinding(declaration: AstRecord, declarator: AstRecord, scope: Scope): void {
+  const identifier = astNode(declarator.id);
+  const initializer = astNode(declarator.init);
+  if (
+    declaration.kind === "const" &&
+    identifier?.type === "Identifier" &&
+    typeof identifier.name === "string" &&
+    initializer
+  ) {
+    scope.constants.set(identifier.name, initializer);
+  }
 }
 
 function collectDirectBindings(node: AstRecord, scope: Scope): void {
-  for (const statementValue of nodeArray(node.body)) {
-    const statement = astNode(statementValue);
-    if (!statement) continue;
-    const declaration =
-      statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
-        ? astNode(statement.declaration)
-        : statement;
-    if (!declaration) continue;
+  collectDirectScopeBindings(node, scope, (declaration, declarator) =>
+    collectConstantBinding(declaration, declarator, scope),
+  );
 
-    if (declaration.type === "ImportDeclaration") {
-      for (const specifier of nodeArray(declaration.specifiers)) {
-        const specifierNode = astNode(specifier);
-        if (specifierNode?.importKind !== "type")
-          collectBindingNames(specifierNode?.local, scope.bindings);
-      }
-    } else if (declaration.type === "VariableDeclaration" && declaration.declare !== true) {
-      for (const declarator of nodeArray(declaration.declarations)) {
-        const declaratorNode = astNode(declarator);
-        collectBindingNames(declaratorNode?.id, scope.bindings);
-        const identifier = astNode(declaratorNode?.id);
-        const initializer = astNode(declaratorNode?.init);
-        if (
-          declaration.kind === "const" &&
-          identifier?.type === "Identifier" &&
-          typeof identifier.name === "string" &&
-          initializer
-        ) {
-          scope.constants.set(identifier.name, initializer);
-        }
-      }
-    } else if (
-      (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") &&
-      declaration.declare !== true
-    ) {
-      collectBindingNames(declaration.id, scope.bindings);
-    }
-  }
-}
-
-function collectLoopBindings(node: AstRecord, scope: Scope): void {
-  const declaration = astNode(node.type === "ForStatement" ? node.init : node.left);
-  if (declaration?.type !== "VariableDeclaration" || declaration.declare === true) return;
-  for (const declarator of nodeArray(declaration.declarations)) {
-    const declaratorNode = astNode(declarator);
-    collectBindingNames(declaratorNode?.id, scope.bindings);
-    const identifier = astNode(declaratorNode?.id);
-    const initializer = astNode(declaratorNode?.init);
-    if (
-      declaration.kind === "const" &&
-      identifier?.type === "Identifier" &&
-      typeof identifier.name === "string" &&
-      initializer
-    ) {
-      scope.constants.set(identifier.name, initializer);
-    }
-  }
-}
-
-function collectSwitchBindings(node: AstRecord, scope: Scope): void {
-  for (const caseValue of nodeArray(node.cases)) {
-    const switchCase = astNode(caseValue);
-    if (!switchCase) continue;
-    collectDirectBindings(
-      { type: "BlockStatement", body: nodeArray(switchCase.consequent) },
-      scope,
+  if (node.type === "SwitchStatement") {
+    collectSwitchScopeBindings(node, scope, (declaration, declarator) =>
+      collectConstantBinding(declaration, declarator, scope),
     );
   }
-}
-
-function collectVarBindings(node: AstRecord, scope: Scope, root = true): void {
-  if (!root && (isFunction(node) || node.type === "StaticBlock")) return;
-  if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
-    for (const declarator of nodeArray(node.declarations)) {
-      collectBindingNames(astNode(declarator)?.id, scope.bindings);
-    }
-  }
-  forEachAstChild(node, (child) => collectVarBindings(child, scope, false));
-}
-
-function hasBinding(scope: Scope, name: string): boolean {
-  for (let current: Scope | null = scope; current; current = current.parent) {
-    if (current.bindings.has(name)) return true;
-  }
-  return false;
 }
 
 function dynamicRequireReplacement(): string {
@@ -495,11 +444,11 @@ function transformVeryDynamicRequests(code: string, id: string) {
   if (!root) return null;
   const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
   collectDirectBindings(root, rootScope);
-  collectVarBindings(root, rootScope);
+  collectVarScopeBindings(root, rootScope);
 
   function visit(node: AstRecord, parentScope: Scope): void {
     let scope = parentScope;
-    if (isFunction(node)) {
+    if (isFunctionNode(node)) {
       const parameterScope: Scope = {
         parent: parentScope,
         bindings: new Set(),
@@ -522,7 +471,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
           constants: new Map(),
         };
         collectDirectBindings(body, bodyScope);
-        collectVarBindings(body, bodyScope);
+        collectVarScopeBindings(body, bodyScope);
         if (body.type === "BlockStatement") {
           for (const statement of nodeArray(body.body)) {
             const statementNode = astNode(statement);
@@ -536,20 +485,22 @@ function transformVeryDynamicRequests(code: string, id: string) {
     } else if ((node.type === "BlockStatement" && node !== root) || node.type === "StaticBlock") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectDirectBindings(node, scope);
-      if (node.type === "StaticBlock") collectVarBindings(node, scope);
+      if (node.type === "StaticBlock") collectVarScopeBindings(node, scope);
     } else if (node.type === "CatchClause") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.param, scope.bindings);
     } else if (node.type === "SwitchStatement") {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
-      collectSwitchBindings(node, scope);
+      collectDirectBindings(node, scope);
     } else if (
       node.type === "ForStatement" ||
       node.type === "ForInStatement" ||
       node.type === "ForOfStatement"
     ) {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
-      collectLoopBindings(node, scope);
+      collectLoopScopeBindings(node, scope, (declaration, declarator) =>
+        collectConstantBinding(declaration, declarator, scope),
+      );
     } else if (node.type === "ClassExpression" && node.id) {
       scope = { parent: parentScope, bindings: new Set(), constants: new Map() };
       collectBindingNames(node.id, scope.bindings);
@@ -560,7 +511,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
       const argumentsList = nodeArray(node.arguments);
       if (
         isIdentifierNamed(callee, "require") &&
-        !hasBinding(scope, "require") &&
+        !hasAstBinding(scope, "require") &&
         argumentsList.length === 1 &&
         astNode(argumentsList[0])?.type !== "SpreadElement" &&
         !hasDynamicRequestIgnoreDirective(code, node, argumentsList[0] as AstRecord) &&
@@ -604,12 +555,15 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
     transform: {
       filter: {
         id: {
-          include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
         },
       },
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];
         if (!TRANSFORMABLE_EXTENSIONS.has(path.extname(cleanId))) return null;
+        if (!shouldTransformVeryDynamicRequests(this.environment as EnvironmentLike, cleanId)) {
+          return null;
+        }
         const absoluteId = path.resolve(cleanId);
         if (
           absoluteId === VINEXT_SOURCE_ROOT ||
@@ -622,6 +576,10 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
       },
     },
   };
+}
+
+function shouldTransformVeryDynamicRequests(environment: EnvironmentLike, id: string): boolean {
+  return environment.config.consumer === "server" || /[\\/]node_modules[\\/]/.test(id);
 }
 
 export const _transformVeryDynamicRequests = transformVeryDynamicRequests;
