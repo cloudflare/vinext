@@ -864,6 +864,13 @@ function createRouteManifestGraphVersion(segmentGraph: StaticSegmentGraph): Grap
   return `graph:${createHash("sha256").update(JSON.stringify(stableShape)).digest("hex")}`;
 }
 
+/**
+ * Build the App Router route graph by scanning `appDir`.
+ *
+ * `appDir` must be forward-slash. Every path in the graph is derived from it
+ * with `path.posix.*` and `findFile`, so a native appDir would produce mixed
+ * separators on Windows. Production callers normalize it at their entry.
+ */
 export async function buildAppRouteGraph(
   appDir: string,
   matcher: ValidFileMatcher,
