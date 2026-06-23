@@ -58,6 +58,24 @@ describe("App Router Production build", () => {
     // directory.
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    const clientJs = readAllJs(path.join(outDir, "client"));
+
+    // Ported from Next.js:
+    // test/production/app-dir/browser-chunks/browser-chunks.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/browser-chunks/browser-chunks.test.ts
+    //
+    // Dev overlay and HMR plumbing must not create a production client chunk
+    // edge. Keep this list focused on symbols/module ids that only belong to
+    // vinext's App Router dev overlay path.
+    for (const devOnlyNeedle of [
+      "dev-error-overlay",
+      "vinext-dev-error-overlay",
+      "installDevErrorOverlay",
+      "installViteHmrErrorHandler",
+      "rsc:update",
+    ]) {
+      expect(clientJs).not.toContain(devOnlyNeedle);
+    }
 
     // Ported from the client-reference chunk ownership covered by Next.js:
     // test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
@@ -77,8 +95,13 @@ describe("App Router Production build", () => {
       const source = entry?.src?.replaceAll("\\", "/") ?? key.replaceAll("\\", "/");
       return entry?.name === "link" || /\/shims\/link\.(?:js|tsx)$/.test(source);
     });
+    const serverActionClientKey = Object.keys(clientManifest).find((key) => {
+      const source = clientManifest[key]?.src?.replaceAll("\\", "/") ?? key.replaceAll("\\", "/");
+      return source.includes("/server/app-browser-server-action-client.");
+    });
     expect(browserEntryKey).toBeDefined();
     expect(linkEntryKey).toBeDefined();
+    expect(serverActionClientKey).toBeDefined();
 
     const eagerKeys = new Set<string>();
     const visitEagerImports = (key: string): void => {
@@ -107,6 +130,48 @@ describe("App Router Production build", () => {
     const buildIdPath = path.join(outDir, "server", "BUILD_ID");
     expect(fs.existsSync(buildIdPath)).toBe(true);
     expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("omits the browser server-action client when the app has no server actions", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-action-free-client-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>action-free</p>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const manifest = fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8");
+      expect(manifest).not.toContain("app-browser-server-action-client");
+      expect(readAllJs(clientDir)).not.toContain("UnrecognizedActionError");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }, 30000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
@@ -279,6 +344,91 @@ export default function proxy(request: NextRequest) {
         expect(logSpy).toHaveBeenCalledWith(fs.realpathSync.native(path.join(tmpDir, "proxy.ts")));
       } finally {
         logSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  it("serves TypeScript language service from a production route handler", async () => {
+    // Ported from Next.js: test/e2e/twoslash/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/twoslash/index.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-twoslash-typescript-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "route.ts"),
+        `import ts from "typescript";
+
+const code = "type X = Promise<number>;\\n'hello'.toUpperCase()";
+
+export function GET(request) {
+  const compilerOptions = request.nextUrl.searchParams.has("esnext")
+    ? { target: ts.ScriptTarget.ESNext, lib: ["lib.esnext.d.ts", "lib.dom.d.ts"] }
+    : {};
+  const fileName = "input.ts";
+  const host = {
+    getCompilationSettings: () => compilerOptions,
+    getScriptFileNames: () => [fileName],
+    getScriptVersion: () => "0",
+    getScriptSnapshot: (name) => {
+      if (name === fileName) return ts.ScriptSnapshot.fromString(code);
+      if (!ts.sys.fileExists(name)) return undefined;
+      return ts.ScriptSnapshot.fromString(ts.sys.readFile(name));
+    },
+    getCurrentDirectory: () => process.cwd(),
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+  };
+  const service = ts.createLanguageService(host);
+  const promise = service.getQuickInfoAtPosition(fileName, 9);
+  const upper = service.getQuickInfoAtPosition(fileName, 34);
+  return Response.json({
+    defaultLib: ts.getDefaultLibFilePath(compilerOptions),
+    promise: promise && ts.displayPartsToString(promise.displayParts),
+    upper: upper && ts.displayPartsToString(upper.displayParts),
+  });
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const externals = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, "dist", "server", "vinext-externals.json"), "utf-8"),
+      ) as string[];
+      expect(externals).toContain("typescript");
+
+      const built: { default?: unknown } = await import(
+        `${pathToFileURL(path.join(tmpDir, "dist", "server", "index.js")).href}?t=${Date.now()}`
+      );
+      expect(isBuiltAppHandler(built.default)).toBe(true);
+      if (!isBuiltAppHandler(built.default)) return;
+
+      for (const mode of ["default", "esnext"]) {
+        const response = await built.default(new Request(`http://localhost/?${mode}`));
+        expect(response).toBeInstanceOf(Response);
+        if (!(response instanceof Response)) return;
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          promise: "interface Promise<T>",
+          upper: "(method) String.toUpperCase(): string",
+        });
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
 import { escapeRegExp } from "../utils/regex.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -163,6 +164,11 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
 
 /**
  * Use function-form exclude for Node < 22.14 compatibility.
+ *
+ * Yields forward-slash relative paths: node's glob emits native (backslash)
+ * separators on Windows, so each match is normalized — this is the entry point
+ * that lets downstream consumers treat the scanned paths as canonical
+ * forward-slash ids.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -175,6 +181,6 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield file;
+    yield normalizePathSeparators(file);
   }
 }

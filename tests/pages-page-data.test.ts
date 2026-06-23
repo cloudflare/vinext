@@ -227,6 +227,116 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["false", false],
+    ["empty array", []],
+  ])("accepts optional catch-all %s at the route root", async (_label, slug) => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug } }],
+            };
+          },
+          async getStaticProps() {
+            return { props: { slug: [] } };
+          },
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: true },
+        routePattern: "/catchall-optional/[[...slug]]",
+        routeUrl: "/catchall-optional",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { slug: [] },
+    });
+  });
+
+  it("requires every dynamic key for mixed required and optional catch-all routes", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: [] } }],
+            };
+          },
+        },
+        params: { category: "guides" },
+        query: { category: "guides" },
+        route: { isDynamic: true },
+        routePattern: "/[category]/[[...slug]]",
+        routeUrl: "/guides",
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
+  it("accepts mixed required and empty optional catch-all params", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { category: "guides", slug: false } }],
+            };
+          },
+          async getStaticProps() {
+            return { props: { category: "guides", slug: [] } };
+          },
+        },
+        params: { category: "guides" },
+        query: { category: "guides" },
+        route: { isDynamic: true },
+        routePattern: "/[category]/[[...slug]]",
+        routeUrl: "/guides",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { category: "guides", slug: [] },
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["false", false],
+    ["empty array", []],
+  ])("rejects required catch-all %s", async (_label, slug) => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug } }],
+            };
+          },
+        },
+        params: { slug: ["guide"] },
+        query: { slug: ["guide"] },
+        route: { isDynamic: true },
+        routePattern: "/docs/[...slug]",
+        routeUrl: "/docs/guide",
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
   it("runs page getInitialProps with the original request URL and asPath", async () => {
     const result = await resolvePagesPageData(
       createOptions({

@@ -153,11 +153,20 @@ describe("ensureAppRouteModulesLoaded", () => {
   it("hydrates parallel-slot modules onto each slot", async () => {
     const slotPage = { default: () => null };
     const slotLayout = { default: () => null };
+    const nestedSlotLayout = { default: () => null, revalidate: 30 };
     const __loadPage = vi.fn(async () => slotPage);
     const __loadLayout = vi.fn(async () => slotLayout);
+    const __loadConfigLayout = vi.fn(async () => nestedSlotLayout);
     const route: LazyLoadableRoute = {
       slots: {
-        "@modal": { page: null, layout: null, __loadPage, __loadLayout },
+        "@modal": {
+          page: null,
+          layout: null,
+          configLayouts: [null],
+          __loadPage,
+          __loadLayout,
+          __loadConfigLayouts: [__loadConfigLayout],
+        },
       },
     };
 
@@ -165,6 +174,7 @@ describe("ensureAppRouteModulesLoaded", () => {
 
     expect(route.slots?.["@modal"].page).toBe(slotPage);
     expect(route.slots?.["@modal"].layout).toBe(slotLayout);
+    expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
   });
 });
 

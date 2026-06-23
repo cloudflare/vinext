@@ -381,6 +381,8 @@ export type ResolvedNextConfig = {
   serverActionsAllowedOrigins: string[];
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
+  /** Packages explicitly requested for server/client transpilation. */
+  transpilePackages: string[];
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
@@ -815,6 +817,53 @@ export function findNextConfigPath(root: string): string | null {
     if (fs.existsSync(configPath)) return configPath;
   }
   return null;
+}
+
+function hasConfigProperty(config: NextConfig, propertyPath: string): boolean {
+  let current: unknown = config;
+  for (const property of propertyPath.split(".")) {
+    if (!isUnknownRecord(current) || current[property] === undefined) return false;
+    current = current[property];
+  }
+  return true;
+}
+
+const emittedConfigWarnings = new Set<string>();
+
+function warnConfigOnce(message: string): void {
+  if (emittedConfigWarnings.has(message)) return;
+  emittedConfigWarnings.add(message);
+  console.warn(message);
+}
+
+function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
+  const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
+  const warnings = [
+    [
+      "experimental.middlewarePrefetch",
+      `\`experimental.middlewarePrefetch\` is deprecated. Please use \`experimental.proxyPrefetch\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.middlewareClientMaxBodySize",
+      `\`experimental.middlewareClientMaxBodySize\` is deprecated. Please use \`experimental.proxyClientMaxBodySize\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.externalMiddlewareRewritesResolve",
+      `\`experimental.externalMiddlewareRewritesResolve\` is deprecated. Please use \`experimental.externalProxyRewritesResolve\` instead in ${configFileName}.`,
+    ],
+    [
+      "skipMiddlewareUrlNormalize",
+      `\`skipMiddlewareUrlNormalize\` is deprecated. Please use \`skipProxyUrlNormalize\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.instrumentationHook",
+      `\`experimental.instrumentationHook\` is no longer needed, because \`instrumentation.js\` is available by default. You can remove it from ${configFileName}.`,
+    ],
+  ] as const;
+
+  for (const [propertyPath, warning] of warnings) {
+    if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
+  }
 }
 
 export async function resolveNextConfigInput(
@@ -1294,6 +1343,7 @@ export async function resolveNextConfig(
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
+      transpilePackages: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
@@ -1323,6 +1373,8 @@ export async function resolveNextConfig(
     detectNextIntlConfig(root, resolved);
     return resolved;
   }
+
+  warnDeprecatedConfigOptions(config, root);
 
   // Resolve redirects
   let redirects: NextRedirect[] = [];
@@ -1467,6 +1519,7 @@ export async function resolveNextConfig(
     experimental?.serverComponentsExternalPackages,
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
+  const transpilePackages = readStringArray(config.transpilePackages);
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1612,6 +1665,7 @@ export async function resolveNextConfig(
     allowedDevOrigins,
     serverActionsAllowedOrigins,
     optimizePackageImports,
+    transpilePackages,
     inlineCss,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,

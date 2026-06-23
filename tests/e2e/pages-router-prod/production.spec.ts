@@ -60,6 +60,25 @@ test.describe("Pages Router Production Build", () => {
     expect(content).toContain("hello-world");
   });
 
+  test("navigates to a seeded optional catch-all root", async ({ page }) => {
+    // Ported from Next.js: test/e2e/prerender.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() => {
+      (window as typeof window & { didTransition?: number }).didTransition = 1;
+    });
+
+    await page.locator("#optional-root").click();
+
+    await expect(page.locator("#home")).toBeVisible();
+    await expect(page.locator("#catchall")).toHaveText("Catch all: []");
+    expect(
+      await page.evaluate(
+        () => (window as typeof window & { didTransition?: number }).didTransition,
+      ),
+    ).toBe(1);
+  });
+
   test("import.meta.url uses source file URLs on the server and browser", async ({
     page,
     request,

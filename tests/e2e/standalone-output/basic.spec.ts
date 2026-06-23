@@ -53,6 +53,17 @@ test.describe("Standalone Output", () => {
     expect(data).toEqual({ message: "Hello from standalone API!" });
   });
 
+  test("externalized Shiki runs from isolated standalone output", async ({ request }) => {
+    // Ported from Next.js: test/e2e/twoslash/standalone.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/twoslash/standalone.test.ts
+    const response = await request.get(`${BASE}/api/highlight`);
+    expect(response.status()).toBe(200);
+    const data = (await response.json()) as { html: string };
+    expect(data.html).toContain('class="shiki github-dark-default"');
+    expect(data.html).toContain("const");
+    expect(data.html).toContain("answer");
+  });
+
   test("404 page for non-existent route", async ({ page }) => {
     const response = await page.goto(`${BASE}/nonexistent`);
     expect(response?.status()).toBe(404);

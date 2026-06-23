@@ -238,7 +238,7 @@ export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(request, buildId);
 }
-const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
+export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -360,7 +360,7 @@ const _renderPage = __createPagesPageHandler({
     disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
   },
   buildId,
-  hasMiddleware: __hasMiddleware,
+  hasMiddleware,
   appAssetPath: _appAssetPath,
   hasRewrites:
     vinextConfig.rewrites.beforeFiles.length > 0 ||

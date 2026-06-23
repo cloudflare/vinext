@@ -42,6 +42,22 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("keeps ancestor force-dynamic sticky across child dynamic overrides", () => {
+    // Next.js create-component-tree.tsx sets workStore.forceDynamic and never
+    // clears it when a deeper segment selects auto/error/force-static.
+    for (const childDynamic of ["auto", "error", "force-static"] as const) {
+      expect(
+        resolveAppPageSegmentConfig({
+          layouts: [{ dynamic: "force-dynamic" }],
+          page: { dynamic: childDynamic },
+        }),
+      ).toEqual({
+        dynamicConfig: "force-dynamic",
+        revalidateSeconds: 0,
+      });
+    }
+  });
+
   it("derives fetchCache from static-only dynamic modes", () => {
     expect(
       resolveAppPageSegmentConfig({
@@ -250,6 +266,95 @@ describe("resolveAppPageSegmentConfig", () => {
       dynamicStaleTimeSeconds: 15,
       revalidateSeconds: null,
     });
+  });
+
+  it("includes active parallel route segments in effective route config", () => {
+    // Ported from Next.js: packages/next/src/build/segment-config/app/app-segments.ts
+    // collectAppPageSegments() breadth-first traverses every parallel route before reduceAppConfig().
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ revalidate: 300 }],
+        page: { dynamic: "auto", runtime: "nodejs" },
+        parallelSegments: [
+          { fetchCache: "only-cache", revalidate: 60, runtime: "edge" },
+          { dynamic: "force-dynamic", revalidate: 120 },
+        ],
+      }),
+    ).toEqual({
+      dynamicConfig: "force-dynamic",
+      fetchCache: "only-cache",
+      revalidateSeconds: 0,
+      runtime: "nodejs",
+    });
+  });
+
+  it("uses slot-only route config values", () => {
+    // Next.js collectAppPageSegments() includes parallel route layouts/pages
+    // before reduceAppConfig() selects the route-level config.
+    expect(
+      resolveAppPageSegmentConfig({
+        parallelSegments: [
+          {
+            dynamic: "error",
+            dynamicParams: false,
+            fetchCache: "default-cache",
+            runtime: "edge",
+          },
+        ],
+      }),
+    ).toEqual({
+      dynamicConfig: "error",
+      dynamicParamsConfig: false,
+      fetchCache: "default-cache",
+      revalidateSeconds: null,
+      runtime: "edge",
+    });
+  });
+
+  it("does not invent last-wins ordering for ambiguous parallel branch configs", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { dynamic: "error", runtime: "nodejs" },
+        parallelSegments: [{ dynamic: "force-static", runtime: "edge" }],
+      }),
+    ).toEqual({
+      dynamicConfig: "error",
+      dynamicParamsConfig: false,
+      fetchCache: "only-cache",
+      revalidateSeconds: null,
+      runtime: "nodejs",
+    });
+
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "default-cache" },
+        parallelSegments: [{ fetchCache: "default-no-store" }],
+      }).fetchCache,
+    ).toBe("default-cache");
+  });
+
+  it("rejects fetchCache conflicts from active parallel route segments", () => {
+    expect(() =>
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "only-cache" },
+        parallelSegments: [{ fetchCache: "only-no-store" }],
+      }),
+    ).toThrow(/incompatible fetchCache/);
+  });
+
+  it("lets force fetchCache modes override opposing only modes", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ fetchCache: "only-cache" }],
+        page: { fetchCache: "force-no-store" },
+      }).fetchCache,
+    ).toBe("force-no-store");
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { fetchCache: "only-no-store" },
+        parallelSegments: [{ fetchCache: "force-cache" }],
+      }).fetchCache,
+    ).toBe("force-cache");
   });
 
   it("resolves just the fetchCache mode for route-specific render scopes", () => {

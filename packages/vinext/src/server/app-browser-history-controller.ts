@@ -62,6 +62,11 @@ type CommitNavigationHistoryOptions = {
   stageClientParams: () => void;
 };
 
+export function createCanonicalBrowserHistoryHref(href: string): string {
+  const url = new URL(href);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 function stripVinextScrollState(state: unknown): unknown {
   if (!state || typeof state !== "object") {
     return state;
@@ -346,7 +351,7 @@ export class AppBrowserHistoryController {
         previousNextUrl: null,
         traversalIndex: this.#currentHistoryTraversalIndex,
       }),
-      this.#readCurrentHref(),
+      createCanonicalBrowserHistoryHref(this.#readCurrentHref()),
     );
   }
 

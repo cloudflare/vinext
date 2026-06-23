@@ -17,6 +17,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
+  if (pathname === "/_next/static/middleware-rewrite.js") {
+    return new Response("rewritten missing asset", {
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
@@ -376,6 +384,7 @@ export const config = {
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",
+    "/_next/static/middleware-rewrite.js",
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

@@ -22,11 +22,20 @@ import "./server-globals.js";
 import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
+  __imageAllowedWidths as __rscImageAllowedWidths,
+  __imageConfig as __rscImageConfig,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
-import { resolveStaticAssetSignal } from "./worker-utils.js";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
+import {
+  getImageOptimizer,
+  handleConfiguredImageOptimization,
+  isImageOptimizationPath,
+} from "./image-optimization.js";
+import { finalizeMissingStaticAssetResponse, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -75,8 +84,20 @@ async function handleRequest(
 ): Promise<Response> {
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+  registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
   const url = new URL(request.url);
+
+  if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
+    const assetFetcher = env.ASSETS;
+    return handleConfiguredImageOptimization(
+      request,
+      (assetPath) =>
+        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+      __rscImageAllowedWidths,
+      __rscImageConfig,
+    );
+  }
 
   // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
   // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
@@ -96,14 +117,15 @@ async function handleRequest(
     return badRequestResponse();
   }
 
-  // Invalid `_next/static/*` paths short-circuit with a plain-text 404
-  // instead of falling through to the RSC handler (which would render the
-  // full HTML 404 page). Valid assets are served by Cloudflare's ASSETS
-  // binding BEFORE the worker is invoked; only misses reach this code.
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  if (isNextStaticPath(url.pathname, __workerBasePath, __workerAssetPathPrefix)) {
-    return notFoundStaticAssetResponse();
-  }
+  // Valid assets are served by Cloudflare's ASSETS binding before the worker
+  // is invoked. Missing asset-shaped requests still need to reach middleware
+  // so it can rewrite or respond; a final 404 is converted back to Next.js's
+  // canonical plain-text static-file response below.
+  const missingBuildAsset = isNextStaticPath(
+    url.pathname,
+    __workerBasePath,
+    __workerAssetPathPrefix,
+  );
 
   // Strip internal headers from inbound requests before any handler or
   // middleware sees them. Must happen before the RSC handler runs.
@@ -133,19 +155,20 @@ async function handleRequest(
   const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
   if (result instanceof Response) {
+    let response = result;
     if (env?.ASSETS) {
       const assetFetcher = env.ASSETS;
-      const assetResponse = await resolveStaticAssetSignal(result, {
+      const assetResponse = await resolveStaticAssetSignal(response, {
         fetchAsset: (path) =>
           Promise.resolve(assetFetcher.fetch(new Request(new URL(path, request.url)))),
       });
-      if (assetResponse) return assetResponse;
+      if (assetResponse) response = assetResponse;
     }
-    return result;
+    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
   }
 
   if (result === null || result === undefined) {
-    return notFoundResponse();
+    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
   }
 
   return new Response(String(result), { status: 200 });

@@ -52,8 +52,11 @@ type BuildAppPageElementResult<TElement> = {
 
 type AppPageInterceptMatch<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   __pageLoader?: (() => Promise<TPage>) | null;
   __loadState?: {
@@ -120,6 +123,10 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    buildOptions?: {
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+    },
   ) => Promise<TElement>;
   cleanPathname: string;
   currentRoute: TRoute;
@@ -135,6 +142,10 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
   renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  resolveSearchParams?: (
+    route: TRoute,
+    searchParams: URLSearchParams,
+  ) => Awaitable<URLSearchParams>;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
     params: AppPageParams;
@@ -329,7 +340,7 @@ export async function resolveAppPageInterceptMatch<TRoute, TPage, TInterceptOpts
     interceptOpts: options.toInterceptOpts(interceptState.intercept),
     matchedParams: interceptState.intercept.matchedParams,
     sourceParams: pickRouteParams(
-      interceptState.intercept.matchedParams,
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     ),
     sourceRoute: interceptState.sourceRoute,
@@ -400,11 +411,16 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
   });
 
   if (interceptState.kind === "source-route") {
+    const sourceMatchedParams =
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     return {
       interceptOpts: options.toInterceptOpts(interceptState.intercept),
-      navigationParams: interceptState.intercept.matchedParams,
+      navigationParams: {
+        ...sourceMatchedParams,
+        ...interceptState.intercept.matchedParams,
+      },
       params: pickRouteParams(
-        interceptState.intercept.matchedParams,
+        sourceMatchedParams,
         options.getRouteParamNames(interceptState.sourceRoute),
       ),
       route: interceptState.sourceRoute,
@@ -444,26 +460,35 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
     const interceptOpts = options.toInterceptOpts(interceptState.intercept);
+    const sourceMatchedParams =
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
+    const navigationParams = {
+      ...sourceMatchedParams,
+      ...interceptState.intercept.matchedParams,
+    };
+    const renderSearchParams = options.resolveSearchParams
+      ? await options.resolveSearchParams(renderRoute, options.searchParams)
+      : options.searchParams;
     const renderParams = pickRouteParams(
-      interceptState.intercept.matchedParams,
+      sourceMatchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
     options.setNavigationContext({
       params: options.resolveNavigationParams(
         renderRoute,
-        interceptState.intercept.matchedParams,
+        navigationParams,
         options.cleanPathname,
         interceptOpts,
       ),
       pathname: options.cleanPathname,
-      searchParams: options.searchParams,
+      searchParams: renderSearchParams,
     });
     const interceptElement = await options.buildPageElement(
       renderRoute,
       renderParams,
       interceptOpts,
-      options.searchParams,
+      renderSearchParams,
       options.layoutParamAccess,
     );
 

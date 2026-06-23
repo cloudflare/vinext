@@ -410,6 +410,7 @@ describe("app page render lifecycle", () => {
 
     const response = await renderAppPageLifecycle({
       ...common.options,
+      isRscRequest: true,
       probePage() {
         throw { digest: "NEXT_NOT_FOUND" };
       },
@@ -419,6 +420,105 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("page:404");
     expect(common.renderToReadableStream).not.toHaveBeenCalled();
     expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run the page probe before normal HTML rendering", async () => {
+    const common = createCommonOptions();
+    const probePage = vi.fn(() => {
+      throw new Error("page probe should not execute for HTML");
+    });
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: false,
+      probePage,
+    });
+
+    expect(probePage).not.toHaveBeenCalled();
+    expect(common.renderToReadableStream).toHaveBeenCalledTimes(1);
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("streams lazy HTML while pending dynamic usage determines the cache write", async () => {
+    const common = createCommonOptions();
+    const streamGate = createDeferred();
+    let dynamicUsed = false;
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      omitPendingDynamicCacheState: true,
+      consumeDynamicUsage() {
+        const value = dynamicUsed;
+        dynamicUsed = false;
+        return value;
+      },
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              await streamGate.promise;
+              dynamicUsed = true;
+              controller.enqueue(new TextEncoder().encode("<html>dynamic</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const timeout = Symbol("timeout");
+    const response = await Promise.race([
+      responsePromise,
+      new Promise<typeof timeout>((resolve) => setTimeout(() => resolve(timeout), 50)),
+    ]);
+    expect(response).not.toBe(timeout);
+    expect(response).toBeInstanceOf(Response);
+    if (!(response instanceof Response)) {
+      throw new Error("Expected renderAppPageLifecycle to return a Response before stream pull");
+    }
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    streamGate.resolve();
+    await expect(response.text()).resolves.toBe("<html>dynamic</html>");
+    await Promise.all(common.waitUntilPromises.splice(0));
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("recovers HTML page special errors from the real render when the page probe is skipped", async () => {
+    const common = createCommonOptions();
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      hasLoadingBoundary: false,
+      isRscRequest: false,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          capturedOnError?.(notFoundError, null, null);
+          return createStream(["<html>fallback</html>"]);
+        },
+      }),
+      probePage() {
+        throw new Error("page probe should not execute for HTML");
+      },
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["flight-data"]);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
   });
 
   it("returns RSC responses and schedules an ISR cache write through waitUntil", async () => {
@@ -606,8 +706,27 @@ describe("app page render lifecycle", () => {
       },
     });
 
-    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(rscError);
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(rscError, "rsc");
     await expect(response.text()).resolves.toBe("boundary:rsc-original");
+  });
+
+  it("marks uncaptured SSR errors as SSR-origin boundary failures", async () => {
+    const common = createCommonOptions();
+    const ssrError = new Error("ssr-decoder");
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw ssrError;
+          },
+        };
+      },
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(ssrError, "ssr");
+    await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

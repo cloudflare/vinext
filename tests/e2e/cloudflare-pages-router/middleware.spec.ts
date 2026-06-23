@@ -41,4 +41,17 @@ test.describe("middleware.ts on Pages Router Cloudflare Workers (prod build)", (
     expect(html).toContain("Server-Side Rendered on Workers");
     expect(html).toContain("Cloudflare-Workers");
   });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  test("middleware can handle a missing build asset", async ({ request }) => {
+    const rewritten = await request.get(`${BASE}/_next/static/middleware-rewrite.js`);
+    expect(rewritten.status()).toBe(200);
+    expect(await rewritten.text()).toBe("rewritten missing asset");
+
+    const unhandled = await request.get(`${BASE}/_next/static/missing.js`);
+    expect(unhandled.status()).toBe(404);
+    expect(unhandled.headers()["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(await unhandled.text()).toBe("Not Found");
+  });
 });

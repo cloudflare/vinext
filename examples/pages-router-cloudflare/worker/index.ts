@@ -20,13 +20,19 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "vinext/config/config-matchers";
-import { mergeHeaders } from "vinext/server/worker-utils";
+import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
+import {
+  finalizeMissingStaticAssetResponse,
+  mergeHeaders,
+} from "vinext/server/worker-utils";
+import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
+const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
@@ -38,6 +44,7 @@ export default {
       const url = new URL(request.url);
       let pathname = url.pathname;
       let urlWithQuery = pathname + url.search;
+      const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
 
       // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
       // Normalize backslashes: browsers treat /\ as // in URL context.
@@ -109,7 +116,7 @@ export default {
             });
           }
           if (result.response) {
-            return result.response;
+            return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
           }
         }
 
@@ -238,10 +245,15 @@ export default {
       }
 
       if (!response) {
-        return new Response("404 - Not found", { status: 404 });
+        return missingBuildAsset
+          ? notFoundStaticAssetResponse()
+          : new Response("404 - Not found", { status: 404 });
       }
 
-      return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
+      return finalizeMissingStaticAssetResponse(
+        mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus),
+        missingBuildAsset,
+      );
     } catch (error) {
       console.error("[vinext] Worker error:", error);
       return new Response("Internal Server Error", { status: 500 });
