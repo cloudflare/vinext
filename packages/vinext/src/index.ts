@@ -3097,12 +3097,30 @@ export const loadServerActionClient = ${
       },
     },
     {
-      name: "vinext:client-css-url-assets-defaults",
+      name: "vinext:css-url-assets-defaults",
       apply: "build",
 
-      configEnvironment(name) {
-        if (name !== "client") return null;
-        return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+      configEnvironment(name, config) {
+        if (name === "client") {
+          return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+        }
+        if (!hasAppDir || (name !== "rsc" && name !== "ssr")) return null;
+        const output = getBuildBundlerOptions(config.build)?.output;
+        const hasAssetFileNames = Array.isArray(output)
+          ? output.some((item) => item.assetFileNames !== undefined)
+          : output?.assetFileNames !== undefined;
+        if (hasAssetFileNames) return null;
+        return {
+          build: {
+            ...withBuildBundlerOptions(viteMajorVersion, {
+              output: {
+                assetFileNames: createClientAssetFileNames(
+                  resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+                ),
+              },
+            }),
+          },
+        };
       },
     },
     {

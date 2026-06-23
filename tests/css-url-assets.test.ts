@@ -26,15 +26,28 @@ import { build, createBuilder } from "vite";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+import { createIsolatedFixture } from "./helpers.js";
 
 // Dedicated, minimal committed fixtures (not the large app-basic/pages-basic):
 // these build in ~1-2s, so the suite stays fast and these tests don't contend
 // for CPU with the heavyweight fixture builds running in parallel under CI.
 const PAGES_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-pages");
 const APP_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-app");
+const CLOUDFLARE_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
+const CLOUDFLARE_PLUGIN_PATH = path.join(
+  CLOUDFLARE_FIXTURE_DIR,
+  "node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+);
+const WORKER_ENTRY_PATH = path
+  .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
+  .replaceAll("\\", "/");
+
+type CloudflarePluginFactory = (options?: {
+  viteEnvironment?: { name: string; childEnvironments?: string[] };
+}) => import("vite").Plugin;
 
 const MEDIA_SVG_RE = (name: string) =>
   new RegExp(`^/_next/static/media/${name}\\.[A-Za-z0-9_-]+\\.svg$`);
@@ -280,7 +293,7 @@ describe("Pages Router CSS url() asset emission", () => {
   });
 });
 
-// ── Integration (App Router): build the committed app-basic, inspect output ──
+// ── Integration (App Router): build through Cloudflare, inspect output ───────
 
 describe("App Router CSS url() asset emission", () => {
   let tmpDir: string;
@@ -296,12 +309,33 @@ describe("App Router CSS url() asset emission", () => {
       APP_CSS_FIXTURE,
       "vinext-css-url-app-",
       undefined,
-      path.join(APP_FIXTURE_DIR, "node_modules"),
+      path.join(CLOUDFLARE_FIXTURE_DIR, "node_modules"),
     );
+    await fs.mkdir(path.join(tmpDir, "worker"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "wrangler.jsonc"),
+      `{
+  "name": "vinext-css-url-assets",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": { "not_found_handling": "none", "binding": "ASSETS" }
+}\n`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "worker/index.ts"),
+      `import handler from ${JSON.stringify(WORKER_ENTRY_PATH)};\nexport default handler;\n`,
+    );
+    const { cloudflare } = (await import(pathToFileURL(CLOUDFLARE_PLUGIN_PATH).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
     const builder = await createBuilder({
       root: tmpDir,
       configFile: false,
-      plugins: [vinext({ appDir: tmpDir })],
+      plugins: [
+        vinext({ appDir: tmpDir }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
       logLevel: "silent",
       build: { assetsInlineLimit: 0 },
     });
@@ -374,8 +408,11 @@ describe("App Router CSS url() asset emission", () => {
     expect(clientCss).not.toContain("vinext_css_url_asset");
 
     const serverAssetUrls = svgUrls(serverCss);
-    expect(serverAssetUrls).toHaveLength(2);
-    expect(serverAssetUrls[0]).toMatch(/\/dark[.-][A-Za-z0-9_-]+\.svg$/);
-    expect(serverAssetUrls[1]).toMatch(/\/dark2[.-][A-Za-z0-9_-]+\.svg$/);
+    const clientAssetUrls = svgUrls(clientCss);
+    expect(serverAssetUrls).toEqual(clientAssetUrls);
+    for (const assetUrl of serverAssetUrls) {
+      const stat = await fs.stat(path.join(clientDir, assetUrl));
+      expect(stat.isFile(), `expected SSR CSS asset ${assetUrl} in client output`).toBe(true);
+    }
   });
 });
