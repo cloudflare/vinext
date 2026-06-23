@@ -2210,6 +2210,10 @@ function isInterceptionMarkerDir(name: string): boolean {
  * Intercepting routes use conventions like (.)photo, (..)feed, (...), etc.
  * They intercept navigation to another route and render within the slot instead.
  *
+ * `slotDir`, `routeDir`, and `appDir` must be forward-slash. They are passed
+ * down to `path.posix.join` and `path.posix.relative` when building the
+ * intercept page paths and target patterns.
+ *
  * @param slotDir - The parallel slot directory (e.g. app/feed/@modal)
  * @param routeDir - The directory of the route that owns this slot (e.g. app/feed)
  * @param appDir - The root app directory
