@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rollingMedian } from "../apps/web/app/benchmarks/components/trend";
+import { hasRollingMedian, rollingMedian } from "../apps/web/app/benchmarks/components/trend";
 
 describe("benchmark chart rolling median", () => {
   it("starts after a complete observation window", () => {
@@ -25,5 +25,10 @@ describe("benchmark chart rolling median", () => {
 
   it("rejects invalid window sizes", () => {
     expect(() => rollingMedian([1], 0)).toThrow("Rolling median window must be a positive integer");
+  });
+
+  it("only offers a trend view after enough actual observations", () => {
+    expect(hasRollingMedian([1, null, 2, 3], 4)).toBe(false);
+    expect(hasRollingMedian([1, null, 2, 3, 4], 4)).toBe(true);
   });
 });

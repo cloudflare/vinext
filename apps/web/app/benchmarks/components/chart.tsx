@@ -1,8 +1,13 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  individualRunsVisibilityUrl,
+  resolveIndividualRunsVisibilityFromSearch,
+} from "./benchmark-url-state";
 import { visibleMarkerMask } from "./chart-points";
-import { rollingMedian } from "./trend";
+import { hasRollingMedian, rollingMedian } from "./trend";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,6 +45,9 @@ export function TrendChart({
   formatY = (v) => String(v),
   height = 300,
 }: TrendChartProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const svgRef = useRef<SVGSVGElement>(null);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
   const [showIndividualRuns, setShowIndividualRuns] = useState(true);
@@ -49,6 +57,24 @@ export function TrendChart({
     content: string;
     pointId: string;
   } | null>(null);
+  const hasTrend = series.some((item) => hasRollingMedian(item.values, TREND_WINDOW));
+
+  useEffect(() => {
+    const requestedVisibility = resolveIndividualRunsVisibilityFromSearch(window.location.search);
+    setShowIndividualRuns(hasTrend ? requestedVisibility : true);
+
+    if (!hasTrend && !requestedVisibility) {
+      router.replace(
+        individualRunsVisibilityUrl(
+          pathname,
+          new URLSearchParams(window.location.search),
+          true,
+          window.location.hash,
+        ),
+        { scroll: false },
+      );
+    }
+  }, [hasTrend, pathname, router, searchParams]);
 
   // Collect all non-null values to determine y-axis bounds
   const allValues = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
@@ -171,7 +197,7 @@ export function TrendChart({
           );
         })}
 
-        {/* Raw series lines + dots */}
+        {/* Individual run lines + dots */}
         {series.map((s, seriesIndex) => {
           if (hiddenSeries.has(s.name)) return null;
           const pathD = buildPath(s.values);
@@ -285,22 +311,36 @@ export function TrendChart({
             {s.name}
           </button>
         ))}
-        <button
-          type="button"
-          aria-pressed={showIndividualRuns}
-          className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-gray-100 aria-pressed:text-gray-700 aria-pressed:[&>span]:opacity-100"
-          onClick={() => {
-            setTooltip(null);
-            setShowIndividualRuns((visible) => !visible);
-          }}
-        >
-          <span className="inline-block w-4 border-t-2 border-gray-500 opacity-30" />
-          Individual runs
-        </button>
+        {hasTrend && (
+          <button
+            type="button"
+            aria-pressed={showIndividualRuns}
+            className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-gray-100 aria-pressed:text-gray-700 aria-pressed:[&>span]:opacity-100"
+            onClick={() => {
+              setTooltip(null);
+              const visible = !showIndividualRuns;
+              setShowIndividualRuns(visible);
+              router.replace(
+                individualRunsVisibilityUrl(
+                  pathname,
+                  new URLSearchParams(window.location.search),
+                  visible,
+                  window.location.hash,
+                ),
+                { scroll: false },
+              );
+            }}
+          >
+            <span className="inline-block w-4 border-t-2 border-gray-500 opacity-30" />
+            Individual runs
+          </button>
+        )}
       </div>
-      <div className="mt-1 text-center text-[11px] text-gray-400">
-        Dashed lines show the {TREND_WINDOW}-run rolling median · Select controls to show or hide
-      </div>
+      {hasTrend && (
+        <div className="mt-1 text-center text-[11px] text-gray-400">
+          Dashed lines show the {TREND_WINDOW}-run rolling median · Select controls to show or hide
+        </div>
+      )}
 
       {/* Tooltip */}
       {tooltip && (

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   benchmarkSelectionUrl,
+  individualRunsVisibilityUrl,
+  resolveIndividualRunsVisibilityFromSearch,
   resolveSelectedBenchmark,
   resolveSelectedBenchmarkFromSearch,
 } from "../apps/web/app/benchmarks/components/benchmark-url-state";
@@ -38,5 +40,31 @@ describe("benchmark URL state", () => {
         "#trends",
       ),
     ).toBe("/benchmarks?view=compact&benchmark=production-build#trends");
+  });
+
+  it("resolves individual run visibility from URL state", () => {
+    expect(resolveIndividualRunsVisibilityFromSearch("?benchmark=client-size")).toBe(true);
+    expect(resolveIndividualRunsVisibilityFromSearch("?benchmark=client-size&runs=hidden")).toBe(
+      false,
+    );
+  });
+
+  it("only persists the non-default hidden individual runs state", () => {
+    expect(
+      individualRunsVisibilityUrl(
+        "/benchmarks",
+        new URLSearchParams("benchmark=client-size"),
+        false,
+        "#trends",
+      ),
+    ).toBe("/benchmarks?benchmark=client-size&runs=hidden#trends");
+    expect(
+      individualRunsVisibilityUrl(
+        "/benchmarks",
+        new URLSearchParams("benchmark=client-size&runs=hidden"),
+        true,
+        "#trends",
+      ),
+    ).toBe("/benchmarks?benchmark=client-size#trends");
   });
 });

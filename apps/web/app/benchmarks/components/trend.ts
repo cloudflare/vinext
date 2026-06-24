@@ -2,9 +2,7 @@ export function rollingMedian(
   values: readonly (number | null)[],
   windowSize: number,
 ): (number | null)[] {
-  if (!Number.isInteger(windowSize) || windowSize < 1) {
-    throw new Error("Rolling median window must be a positive integer");
-  }
+  assertWindowSize(windowSize);
 
   const observations: number[] = [];
   return values.map((value) => {
@@ -16,4 +14,15 @@ export function rollingMedian(
     const middle = Math.floor(window.length / 2);
     return window.length % 2 === 0 ? (window[middle - 1] + window[middle]) / 2 : window[middle];
   });
+}
+
+export function hasRollingMedian(values: readonly (number | null)[], windowSize: number): boolean {
+  assertWindowSize(windowSize);
+  return values.filter((value) => value !== null).length >= windowSize;
+}
+
+function assertWindowSize(windowSize: number): void {
+  if (!Number.isInteger(windowSize) || windowSize < 1) {
+    throw new Error("Rolling median window must be a positive integer");
+  }
 }
