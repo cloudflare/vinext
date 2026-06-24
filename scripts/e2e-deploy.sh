@@ -618,7 +618,14 @@ ensure_python_command_for_native_builds
 # (ERR_PNPM_IGNORED_BUILDS). The install still completes — packages are
 # written to node_modules — but the exit code is 1. Tolerate this by
 # verifying that the vinext local package was linked into node_modules.
-run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile >> "${BUILD_LOG}" 2>&1 || true
+INSTALL_LOG="$(mktemp)"
+run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile > "${INSTALL_LOG}" 2>&1 || true
+# Dependency-manager deprecation summaries describe the deploy harness's own
+# transitive dependencies, not the application under test. Keep the rest of
+# the install output available for diagnostics without polluting cliOutput
+# assertions that specifically inspect application deprecation warnings.
+"${VINEXT_DIR}/scripts/filter-e2e-install-log.sh" < "${INSTALL_LOG}" >> "${BUILD_LOG}"
+rm -f "${INSTALL_LOG}"
 if [ ! -d "node_modules/vinext" ]; then
   echo "pnpm install failed: node_modules/vinext not found" >&2
   exit 1

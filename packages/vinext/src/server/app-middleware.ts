@@ -21,9 +21,8 @@ export type ApplyAppMiddlewareOptions = {
   context: AppMiddlewareContext;
   i18nConfig?: NextI18nConfig | null;
   /**
-   * Whether the inbound request was a `_next/data` fetch. Captured from the
-   * raw incoming headers by the caller, because `x-nextjs-data` is in
-   * INTERNAL_HEADERS and is stripped before this function runs.
+   * Whether the inbound request was recognized as a `_next/data` fetch from
+   * trusted URL normalization before internal headers were stripped.
    */
   isDataRequest?: boolean;
   filePath?: string;

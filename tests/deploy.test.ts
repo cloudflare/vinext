@@ -27,10 +27,12 @@ import {
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
   viteConfigHasCacheAdapter,
+  viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
   hasWranglerConfig,
   formatMissingCloudflarePluginError,
   formatMissingCacheAdapterError,
+  formatImageOptimizationHint,
   injectPregeneratedConcretePaths,
 } from "../packages/vinext/src/deploy.js";
 import {
@@ -48,6 +50,7 @@ import {
 } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
+  finalizeMissingStaticAssetResponse,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
@@ -298,7 +301,7 @@ describe("resolveWranglerBin", () => {
   });
 
   it("returns a clear fallback path when Wrangler is missing", () => {
-    expect(resolveWranglerBin(tmpDir)).toBe(
+    expect(resolveWranglerBin(tmpDir, () => null)).toBe(
       path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
   });
@@ -663,45 +666,23 @@ describe("generateAppRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain("fetch(request: Request, env: Env, ctx: ExecutionContext)");
     expect(content).toContain("Promise<Response>");
   });
 
-  it("includes image optimization handler", () => {
+  it("delegates image optimization to the configured built-in handler", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
+    expect(content).toContain("handler.fetch(request, env, ctx)");
+    expect(content).not.toContain("handleImageOptimization");
+    expect(content).not.toContain("env.IMAGES");
   });
 
-  it("threads configured image widths and qualities into the App Router worker", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
-    expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
-    expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
-  });
-
-  it("declares Env interface with IMAGES binding", () => {
+  it("declares the asset and execution-context types needed for delegation", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
-  });
-
-  it("declares ExecutionContext interface", () => {
-    const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface ExecutionContext");
     expect(content).toContain("waitUntil");
-  });
-
-  it("passes image handlers inline to handleImageOptimization", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
-    expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
   });
 
   it("never wires a cache handler into the Worker entry", () => {
@@ -714,9 +695,9 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
-  it("points users to the declarative cache config", () => {
+  it("points users to declarative adapter config", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("vinext({ cache })");
+    expect(content).toContain("Cache and image backends are configured declaratively");
   });
 });
 
@@ -772,6 +753,52 @@ describe("viteConfigHasCacheAdapter", () => {
 
   it("returns true (does not block) when there is no Vite config to inspect", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+});
+
+describe("viteConfigHasImageAdapter", () => {
+  it("detects an optimizer field assigned an adapter builder", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+       export default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a hand-written descriptor object on the optimizer field", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default {
+         plugins: [vinext({ images: { optimizer: { adapter: "./x.js", options: {} } } })],
+       };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
+  });
+
+  it("returns false when the images object is empty", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext({ images: {} })] };`);
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when the optimizer is explicitly undefined", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ images: { optimizer: undefined } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when there is no images config at all", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns true when there is no Vite config to inspect", () => {
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
   });
 });
 
@@ -840,6 +867,21 @@ describe("formatMissingCacheAdapterError", () => {
   });
 });
 
+describe("formatImageOptimizationHint", () => {
+  it("names the imageAdapter builder and the vinext({ images }) option", () => {
+    const msg = formatImageOptimizationHint();
+    expect(msg).toContain("served unoptimized");
+    expect(msg).toContain('from "@vinext/cloudflare/images/images-optimizer"');
+    expect(msg).toContain("vinext({ images: { optimizer: imageAdapter() } })");
+  });
+
+  it("reads as a hint, not an error", () => {
+    const msg = formatImageOptimizationHint();
+    expect(msg).not.toMatch(/error/i);
+    expect(msg).toContain("The IMAGES binding is already in wrangler.jsonc.");
+  });
+});
+
 describe("scanPublicFileRoutes", () => {
   it("rescans public files on each call instead of returning stale cached results", () => {
     mkdir(tmpDir, "public");
@@ -887,6 +929,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
     expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
     expect(content).toContain("isDataRequest: isDataReq");
+    expect(content).toContain("hasMiddleware,");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1013,14 +1056,15 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("includes image optimization handler", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
+    expect(content).toContain("handleConfiguredImageOptimization");
+    expect(content).toContain("registerConfiguredImageOptimizer(env)");
   });
 
-  it("declares Env interface with IMAGES binding", () => {
+  it("declares Env interface with the ASSETS binding", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
+    expect(content).not.toContain("env.IMAGES");
   });
 
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
@@ -1030,12 +1074,10 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
-  it("passes image handlers inline to handleImageOptimization", () => {
+  it("passes the ASSETS reader to the configured image optimizer", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
-    expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
+    expect(content).toContain("handleConfiguredImageOptimization(");
+    expect(content).toContain("env.ASSETS.fetch(new Request(new URL(assetPath, request.url)))");
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
@@ -1065,7 +1107,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -1217,7 +1259,36 @@ describe("generatePagesRouterWorkerEntry", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain(
+      "return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
+  });
+
+  it("finalizes only missing build-asset 404 responses", async () => {
+    let canceled = false;
+    const routed404 = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("rendered 404"));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      { status: 404, headers: { "content-type": "text/html" } },
+    );
+
+    const finalized = finalizeMissingStaticAssetResponse(routed404, true);
+    expect(finalized.status).toBe(404);
+    expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(await finalized.text()).toBe("Not Found");
+    await vi.waitFor(() => expect(canceled).toBe(true));
+
+    const middlewareResponse = new Response("rewritten missing asset", { status: 200 });
+    expect(finalizeMissingStaticAssetResponse(middlewareResponse, true)).toBe(middlewareResponse);
+
+    const regular404 = new Response("rendered 404", { status: 404 });
+    expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -1309,7 +1380,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
+    expect(content).toContain("allowedWidths,");
+    expect(content).toContain("imageConfig,");
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
@@ -1321,11 +1393,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
-  // Regression for #1337: invalid `_next/static/*` paths must short-circuit
-  // with a plain-text 404 instead of falling through to renderPage (which
-  // would render the full HTML 404 page with bootstrap scripts + CSS).
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  it("short-circuits invalid `_next/static/*` paths with plain-text 404", () => {
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("runs middleware before finalizing missing `_next/static/*` responses", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain(
       'import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses"',
@@ -1334,15 +1404,23 @@ describe("generatePagesRouterWorkerEntry", () => {
       'import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix"',
     );
     expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
-    expect(content).toContain("isNextStaticPath(pathname, basePath, assetPathPrefix)");
-    expect(content).toContain("return notFoundStaticAssetResponse();");
+    expect(content).toContain(
+      "const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix)",
+    );
+    expect(content).toContain(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
 
-    // The short-circuit must fire BEFORE runPagesRequest (which invokes renderPage)
-    // so the rich HTML 404 is never rendered for asset misses.
+    // Detection happens before routing, but the response is finalized only
+    // after runPagesRequest has given middleware a chance to handle the miss.
     const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
     const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
+    const finalizePos = content.indexOf(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
     expect(staticPos).toBeGreaterThan(-1);
     expect(pipelinePos).toBeGreaterThan(staticPos);
+    expect(finalizePos).toBeGreaterThan(pipelinePos);
   });
 });
 
@@ -1417,7 +1495,8 @@ describe("generateAppRouterViteConfig", () => {
     const content = generateAppRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain("vinext()");
+    expect(content).toContain('from "@vinext/cloudflare/images/images-optimizer"');
+    expect(content).toContain("vinext({ images: { optimizer: imageAdapter() } })");
     expect(content).toContain("cloudflare(");
   });
 
@@ -1485,6 +1564,17 @@ describe("getMissingDeps", () => {
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
+  });
+
+  it("reports missing @vinext/cloudflare for generated App Router image config", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    const missing = getMissingDeps(info, (_root, pkg) => pkg !== "@vinext/cloudflare");
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@vinext/cloudflare" }));
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {
@@ -1664,7 +1754,7 @@ describe("getFilesToGenerate", () => {
 
     const viteFile = files.find((f) => f.description === "vite.config.ts");
     expect(viteFile).toBeDefined();
-    expect(viteFile!.content).toContain("vinext()");
+    expect(viteFile!.content).toContain("vinext({ images: { optimizer: imageAdapter() } })");
     expect(viteFile!.content).toContain("childEnvironments");
   });
 
@@ -2180,7 +2270,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     const config = generateAppRouterViteConfig(info);
     // MDX is now handled by the vinext plugin's auto-injection at runtime,
     // not by a separate mdx() call in the generated config.
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
     expect(config).toContain("auto-injects @mdx-js/rollup");
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
   });
@@ -2194,7 +2284,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
     expect(config).not.toContain("remarkCodeHike");
     expect(config).not.toContain("recmaCodeHike");
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
   });
 
   it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
@@ -2226,7 +2316,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generateAppRouterViteConfig();
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({ images: { optimizer: imageAdapter() } })");
     expect(config).toContain("cloudflare(");
     // Generated config no longer includes a separate mdx() import/call
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');

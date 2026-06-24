@@ -527,6 +527,42 @@ describe("analyzeConfig", () => {
     expect(item?.detail).toContain("not applicable");
   });
 
+  it("detects unrecognized middleware and proxy config options as unsupported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        skipMiddlewareUrlNormalize: true,
+        skipProxyUrlNormalize: true,
+        experimental: {
+          middlewarePrefetch: "strict",
+          proxyPrefetch: "strict",
+          middlewareClientMaxBodySize: "5mb",
+          proxyClientMaxBodySize: "5mb",
+          externalMiddlewareRewritesResolve: true,
+          externalProxyRewritesResolve: true,
+          instrumentationHook: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const unsupportedNames = items
+      .filter((item) => item.status === "unsupported")
+      .map((item) => item.name);
+
+    expect(unsupportedNames).toEqual([
+      "skipMiddlewareUrlNormalize",
+      "skipProxyUrlNormalize",
+      "experimental.middlewarePrefetch",
+      "experimental.proxyPrefetch",
+      "experimental.middlewareClientMaxBodySize",
+      "experimental.proxyClientMaxBodySize",
+      "experimental.externalMiddlewareRewritesResolve",
+      "experimental.externalProxyRewritesResolve",
+      "experimental.instrumentationHook",
+    ]);
+  });
+
   it("detects allowedDevOrigins as supported", () => {
     writeFile(
       "next.config.mjs",

@@ -152,6 +152,13 @@ export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResu
   );
 }
 
+/**
+ * Statically generate routes and return the prerender result.
+ *
+ * `options.root` must be forward-slash — it is passed to `findDir` and flows
+ * into the route model. The caller (the `vinext build` entry in cli.ts)
+ * normalizes it.
+ */
 export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
   const { root } = options;
 

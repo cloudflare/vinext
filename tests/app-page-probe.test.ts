@@ -518,6 +518,37 @@ describe("app page probe helpers", () => {
     expect(renderPageSpecialError).not.toHaveBeenCalled();
     expect(result.response).toBeNull();
   });
+
+  it("skips the page probe when disabled for document rendering", async () => {
+    const probePage = vi.fn(() => {
+      throw new Error("page probe should not execute");
+    });
+    const renderPageSpecialError = vi.fn();
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: false,
+      probePageBeforeRender: false,
+      layoutCount: 0,
+      probeLayoutAt() {
+        throw new Error("should not probe layouts");
+      },
+      probePage,
+      renderLayoutSpecialError() {
+        throw new Error("should not render a layout special error");
+      },
+      renderPageSpecialError,
+      resolveSpecialError() {
+        throw new Error("should not be reached when the page probe is skipped");
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(probePage).not.toHaveBeenCalled();
+    expect(renderPageSpecialError).not.toHaveBeenCalled();
+    expect(result.response).toBeNull();
+  });
 });
 
 // Regression coverage for https://github.com/cloudflare/vinext/issues/1235.

@@ -8,7 +8,12 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
+import {
+  FLIGHT_HEADERS,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  NEXT_HTML_REQUEST_ID_HEADER,
+  NEXT_REQUEST_ID_HEADER,
+} from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -33,6 +38,7 @@ export type HeadersContext = {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
+  draftModeEnabled?: boolean;
   forceStatic?: boolean;
   mutableCookies?: RequestCookies;
   readonlyCookies?: RequestCookies;
@@ -204,6 +210,13 @@ export function markDynamicUsage(): void {
 
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   _getState().renderRequestApiUsage.add(kind);
+}
+
+export function throwIfStaticGenerationAccessError(): void {
+  const accessError = _getState().headersContext?.accessError;
+  if (accessError) {
+    throw accessError;
+  }
 }
 
 export async function runWithConnectionProbe<T>(
@@ -737,7 +750,13 @@ function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
 
 function _getReadonlyHeaders(ctx: HeadersContext): Headers {
   if (!ctx.readonlyHeaders) {
-    ctx.readonlyHeaders = _sealHeaders(ctx.headers);
+    const cleaned = new Headers(ctx.headers);
+    for (const header of FLIGHT_HEADERS) {
+      cleaned.delete(header);
+    }
+    cleaned.delete(NEXT_REQUEST_ID_HEADER);
+    cleaned.delete(NEXT_HTML_REQUEST_ID_HEADER);
+    ctx.readonlyHeaders = _sealHeaders(cleaned);
   }
 
   return ctx.readonlyHeaders;
@@ -1033,9 +1052,6 @@ export async function draftMode(): Promise<DraftModeResult> {
   if (!context) {
     throw createDraftModeScopeError("draftMode()");
   }
-  if (context.accessError) {
-    throw context.accessError;
-  }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and
@@ -1045,7 +1061,7 @@ export async function draftMode(): Promise<DraftModeResult> {
 
   return {
     get isEnabled(): boolean {
-      return context.cookies.get(DRAFT_MODE_COOKIE) === secret;
+      return context.draftModeEnabled ?? context.cookies.get(DRAFT_MODE_COOKIE) === secret;
     },
     enable(): void {
       // Mutating draft mode inside a cache scope would freeze a Set-Cookie
@@ -1053,6 +1069,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().enable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().enable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = true;
       activeContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
@@ -1060,6 +1077,7 @@ export async function draftMode(): Promise<DraftModeResult> {
       throwIfInsideCacheScope("draftMode().disable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().disable()");
       markDynamicUsage();
+      activeContext.draftModeEnabled = false;
       activeContext.cookies.delete(DRAFT_MODE_COOKIE);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; ${draftModeCookieAttributes()}; Expires=${DRAFT_MODE_EXPIRED_DATE}`;
     },

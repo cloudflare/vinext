@@ -72,7 +72,7 @@ describe("Next.js compat: global-error", () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/route-group-error/child");
     expect(res.status).toBe(200);
     expect(html).toContain("Route group error boundary");
-    expect(html).not.toContain("global-error");
+    expect(html).not.toContain('data-testid="global-error"');
   });
 
   // ── Server component error (RSC throw -> global-error) ─────
@@ -310,14 +310,16 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).toContain("global-error");
     expect(html).toContain("The specific message is omitted in production builds");
     expect(html).not.toContain("server page error");
+    expect(html).toMatch(/data-testid="global-error-digest"[^>]*>\w+</);
   });
 
   it("client component SSR throw without local error.tsx renders global-error with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
     expect(res.status).toBe(500);
     expect(html).toContain("global-error");
-    expect(html).toContain("The specific message is omitted in production builds");
-    expect(html).not.toContain("client page error");
+    expect(html).toContain("client page error");
+    expect(html).not.toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain('data-testid="global-error-digest"');
   });
 
   it("server component throw with local error.tsx renders that boundary with 200", async () => {
