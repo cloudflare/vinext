@@ -42,7 +42,7 @@ export function TrendChart({
 }: TrendChartProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
-  const [showMeasurements, setShowMeasurements] = useState(true);
+  const [showIndividualRuns, setShowIndividualRuns] = useState(true);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
@@ -186,7 +186,7 @@ export function TrendChart({
                 fill="none"
                 stroke={s.color}
                 strokeWidth="2"
-                opacity={showMeasurements ? 1 : 0}
+                opacity={showIndividualRuns ? 1 : 0}
                 pointerEvents="none"
               />
               {/* Every point remains interactive; repeated plateau markers stay hidden. */}
@@ -203,7 +203,7 @@ export function TrendChart({
                       stroke="white"
                       strokeWidth="1.5"
                       opacity={
-                        (showMeasurements && visibleMarkers[i]) || tooltip?.pointId === pointId
+                        (showIndividualRuns && visibleMarkers[i]) || tooltip?.pointId === pointId
                           ? 1
                           : 0
                       }
@@ -287,15 +287,15 @@ export function TrendChart({
         ))}
         <button
           type="button"
-          aria-pressed={showMeasurements}
+          aria-pressed={showIndividualRuns}
           className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-gray-100 aria-pressed:text-gray-700 aria-pressed:[&>span]:opacity-100"
           onClick={() => {
             setTooltip(null);
-            setShowMeasurements((visible) => !visible);
+            setShowIndividualRuns((visible) => !visible);
           }}
         >
           <span className="inline-block w-4 border-t-2 border-gray-500 opacity-30" />
-          Measurements
+          Individual runs
         </button>
       </div>
       <div className="mt-1 text-center text-[11px] text-gray-400">
