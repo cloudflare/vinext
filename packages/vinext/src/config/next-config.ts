@@ -396,6 +396,8 @@ export type ResolvedNextConfig = {
   reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
+  /** Packages treated as application code instead of foreign client dependencies. */
+  transpilePackages: string[];
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
@@ -540,6 +542,7 @@ const CONFIG_FILES = [
   "next.config.cjs",
 ];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+const DEFAULT_TRANSPILED_PACKAGES = ["geist"];
 
 /**
  * Default cap for the App Router preload `Link` header length, matching the
@@ -1300,6 +1303,7 @@ export async function resolveNextConfig(
       expireTime: DEFAULT_EXPIRE_TIME,
       reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
+      transpilePackages: [...DEFAULT_TRANSPILED_PACKAGES],
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -1467,6 +1471,10 @@ export async function resolveNextConfig(
     experimental?.serverComponentsExternalPackages,
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
+  const transpilePackages = [
+    ...readStringArray(config.transpilePackages),
+    ...DEFAULT_TRANSPILED_PACKAGES,
+  ];
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1621,6 +1629,7 @@ export async function resolveNextConfig(
         ? config.reactMaxHeadersLength
         : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
+    transpilePackages,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,

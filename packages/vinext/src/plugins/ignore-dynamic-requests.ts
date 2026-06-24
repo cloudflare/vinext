@@ -88,6 +88,14 @@ function stringValue(node: AstRecord): string | null {
   return null;
 }
 
+function unboundNumericGlobalValue(node: AstRecord, scope: Scope): number | null {
+  if (node.type !== "Identifier" || typeof node.name !== "string") return null;
+  if (hasAstBinding(scope, node.name)) return null;
+  if (isIdentifierNamed(node, "NaN")) return Number.NaN;
+  if (isIdentifierNamed(node, "Infinity")) return Number.POSITIVE_INFINITY;
+  return null;
+}
+
 function staticStringValue(
   value: unknown,
   scope: Scope,
@@ -313,6 +321,8 @@ function staticTruthiness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
+  const numericGlobal = unboundNumericGlobalValue(node, scope);
+  if (numericGlobal !== null) return Boolean(numericGlobal);
   if (node.type === "TemplateLiteral") {
     return templateTruthiness(node, scope, resolution);
   }
@@ -359,6 +369,7 @@ function staticNullishness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
+  if (unboundNumericGlobalValue(node, scope) !== null) return false;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     return resolveConstantBinding(scope, node.name, resolution, null, staticNullishness);
@@ -511,6 +522,7 @@ function requestHasStaticPart(
   const constantString = stringValue(node);
   if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
+  if (unboundNumericGlobalValue(node, scope) !== null) return true;
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolution);
   }
@@ -518,7 +530,7 @@ function requestHasStaticPart(
   if (stringRawHasStaticPart !== null) return stringRawHasStaticPart;
   const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolution);
   if (concatHasStaticPart !== null) return concatHasStaticPart;
-  if (isIdentifierNamed(node, "undefined")) return !hasAstBinding(scope, "undefined");
+  if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     return resolveConstantBinding(scope, node.name, resolution, false, requestHasStaticPart);
   }
@@ -853,7 +865,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
   };
 }
 
-export function createIgnoreDynamicRequestsPlugin(): Plugin {
+export function createIgnoreDynamicRequestsPlugin(
+  getTranspiledPackages: () => readonly string[] = () => [],
+): Plugin {
   return {
     name: "vinext:ignore-dynamic-requests",
     enforce: "pre",
@@ -866,7 +880,13 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];
         if (!TRANSFORMABLE_EXTENSIONS.has(path.extname(cleanId))) return null;
-        if (!shouldTransformVeryDynamicRequests(this.environment as EnvironmentLike, cleanId)) {
+        if (
+          !shouldTransformVeryDynamicRequests(
+            this.environment as EnvironmentLike,
+            cleanId,
+            getTranspiledPackages(),
+          )
+        ) {
           return null;
         }
         const absoluteId = path.resolve(cleanId);
@@ -883,8 +903,17 @@ export function createIgnoreDynamicRequestsPlugin(): Plugin {
   };
 }
 
-function shouldTransformVeryDynamicRequests(environment: EnvironmentLike, id: string): boolean {
-  return environment.config.consumer === "server" || /[\\/]node_modules[\\/]/.test(id);
+function shouldTransformVeryDynamicRequests(
+  environment: EnvironmentLike,
+  id: string,
+  transpiledPackages: readonly string[],
+): boolean {
+  if (environment.config.consumer === "server") return true;
+  const normalizedId = id.replaceAll("\\", "/");
+  if (!normalizedId.includes("/node_modules/")) return false;
+  return !transpiledPackages.some((packageName) =>
+    normalizedId.includes(`/node_modules/${packageName}/`),
+  );
 }
 
 export const _transformVeryDynamicRequests = transformVeryDynamicRequests;

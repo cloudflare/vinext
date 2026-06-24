@@ -122,7 +122,10 @@ function dynamic() {
 
 describe("App Router dynamic requests", () => {
   it("matches Next.js environment scoping", () => {
-    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    const transform = createIgnoreDynamicRequestsPlugin(() => [
+      "transpiled",
+      "@scope/pkg",
+    ]).transform;
     if (!transform || typeof transform === "function") {
       throw new Error("dynamic request transform hook not found");
     }
@@ -138,6 +141,9 @@ describe("App Router dynamic requests", () => {
     expect(
       runTransform("client", "/app/node_modules/dynamic-request-dependency/index.js"),
     ).toBeTruthy();
+    expect(runTransform("client", "/app/node_modules/transpiled/index.js")).toBeNull();
+    expect(runTransform("client", "/app/node_modules/@scope/pkg/index.js")).toBeNull();
+    expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
   });
 
   it("only rewrites fully dynamic unbound requests", () => {
@@ -277,6 +283,42 @@ require(missing ?? request);
     )?.code;
 
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("matches Turbopack constants for unshadowed numeric globals", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `const notANumber = NaN;
+const infinity = Infinity;
+import(NaN);
+require(infinity);
+import(\`./module-\${notANumber}\`);
+require(NaN ? "./fallback" : request);
+import(Infinity ? request : "./fallback");
+function shadowed(NaN, Infinity) {
+  require(NaN);
+  import(Infinity);
+}`,
+      "/app/page.tsx",
+    )?.code;
+
+    expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(4);
+    expect(transformed).toContain("import(NaN)");
+    expect(transformed).toContain("require(infinity)");
+    expect(transformed).toContain("import(`./module-${notANumber}`)");
+  });
+
+  it("resolves constant bindings that shadow global constants", () => {
+    expect(
+      _transformVeryDynamicRequests(
+        `const undefined = "./undefined";
+const NaN = "./nan";
+const Infinity = "./infinity";
+require(undefined);
+import(NaN);
+require(Infinity);`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
   });
 
   it("resolves constant string predicates", () => {

@@ -1372,6 +1372,20 @@ describe("resolveNextConfig serverExternalPackages", () => {
   });
 });
 
+describe("resolveNextConfig transpilePackages", () => {
+  it("includes Next.js default transpiled packages", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.transpilePackages).toEqual(["geist"]);
+  });
+
+  it("includes configured packages before Next.js defaults", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package", "@scope/pkg"],
+    });
+    expect(resolved.transpilePackages).toEqual(["custom-package", "@scope/pkg", "geist"]);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -1862,6 +1876,7 @@ describe("detectNextIntlConfig", () => {
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
+      transpilePackages: ["geist"],
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,

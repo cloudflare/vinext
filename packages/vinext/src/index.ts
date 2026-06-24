@@ -1133,7 +1133,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
-    createIgnoreDynamicRequestsPlugin(),
+    createIgnoreDynamicRequestsPlugin(() => nextConfig?.transpilePackages ?? []),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
