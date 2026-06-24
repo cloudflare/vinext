@@ -88,12 +88,13 @@ function stringValue(node: AstRecord): string | null {
   return null;
 }
 
-function unboundNumericGlobalValue(node: AstRecord, scope: Scope): number | null {
-  if (node.type !== "Identifier" || typeof node.name !== "string") return null;
-  if (hasAstBinding(scope, node.name)) return null;
-  if (isIdentifierNamed(node, "NaN")) return Number.NaN;
-  if (isIdentifierNamed(node, "Infinity")) return Number.POSITIVE_INFINITY;
-  return null;
+function isUnboundNumericGlobal(node: AstRecord, scope: Scope): boolean {
+  return (
+    node.type === "Identifier" &&
+    typeof node.name === "string" &&
+    !hasAstBinding(scope, node.name) &&
+    (isIdentifierNamed(node, "NaN") || isIdentifierNamed(node, "Infinity"))
+  );
 }
 
 function staticStringValue(
@@ -321,8 +322,7 @@ function staticTruthiness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
-  const numericGlobal = unboundNumericGlobalValue(node, scope);
-  if (numericGlobal !== null) return Boolean(numericGlobal);
+  if (isUnboundNumericGlobal(node, scope)) return true;
   if (node.type === "TemplateLiteral") {
     return templateTruthiness(node, scope, resolution);
   }
@@ -369,7 +369,7 @@ function staticNullishness(
   const node = unwrapExpression(value);
   if (!node) return null;
   if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
-  if (unboundNumericGlobalValue(node, scope) !== null) return false;
+  if (isUnboundNumericGlobal(node, scope)) return false;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     return resolveConstantBinding(scope, node.name, resolution, null, staticNullishness);
@@ -522,7 +522,7 @@ function requestHasStaticPart(
   const constantString = stringValue(node);
   if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
-  if (unboundNumericGlobalValue(node, scope) !== null) return true;
+  if (isUnboundNumericGlobal(node, scope)) return true;
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolution);
   }

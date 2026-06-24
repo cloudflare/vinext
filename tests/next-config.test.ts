@@ -1384,6 +1384,18 @@ describe("resolveNextConfig transpilePackages", () => {
     });
     expect(resolved.transpilePackages).toEqual(["custom-package", "@scope/pkg", "geist"]);
   });
+
+  it("preserves Next.js duplicate package semantics", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["geist", "custom-package", "custom-package"],
+    });
+    expect(resolved.transpilePackages).toEqual([
+      "geist",
+      "custom-package",
+      "custom-package",
+      "geist",
+    ]);
+  });
 });
 
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {

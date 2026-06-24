@@ -143,6 +143,21 @@ describe("App Router dynamic requests", () => {
     ).toBeTruthy();
     expect(runTransform("client", "/app/node_modules/transpiled/index.js")).toBeNull();
     expect(runTransform("client", "/app/node_modules/@scope/pkg/index.js")).toBeNull();
+    expect(
+      runTransform(
+        "client",
+        "/app/node_modules/.pnpm/transpiled@1.0.0/node_modules/transpiled/index.js",
+      ),
+    ).toBeNull();
+    expect(
+      runTransform(
+        "client",
+        "/app/node_modules/.pnpm/@scope+pkg@1.0.0/node_modules/@scope/pkg/index.js",
+      ),
+    ).toBeNull();
+    expect(runTransform("client", String.raw`C:\app\node_modules\transpiled\index.js`)).toBeNull();
+    expect(runTransform("client", "/app/node_modules/transpiled-extra/index.js")).toBeTruthy();
+    expect(runTransform("client", "/app/node_modules/@scope/pkg-extra/index.js")).toBeTruthy();
     expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
   });
 
@@ -294,6 +309,8 @@ require(infinity);
 import(\`./module-\${notANumber}\`);
 require(NaN ? "./fallback" : request);
 import(Infinity ? request : "./fallback");
+require(NaN && request);
+import(NaN || request);
 function shadowed(NaN, Infinity) {
   require(NaN);
   import(Infinity);
@@ -305,6 +322,9 @@ function shadowed(NaN, Infinity) {
     expect(transformed).toContain("import(NaN)");
     expect(transformed).toContain("require(infinity)");
     expect(transformed).toContain("import(`./module-${notANumber}`)");
+    expect(transformed).toContain('require(NaN ? "./fallback" : request)');
+    expect(transformed).toContain("import(NaN || request)");
+    expect(transformed).not.toContain("require(NaN && request)");
   });
 
   it("resolves constant bindings that shadow global constants", () => {
