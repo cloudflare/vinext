@@ -2132,9 +2132,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
  *
  * `dir` and `appDir` must be forward-slash. The slot directory is built from
- * `dir` with `path.posix.join`, and the owner segments and slot key come from
- * `path.posix.relative(appDir, …)`, which only yields a forward-slash relative
- * path when both operands already are.
+ * `dir` with `path.posix.join`.
  */
 function discoverParallelSlots(
   dir: string,
@@ -2168,16 +2166,16 @@ function discoverParallelSlots(
     // Only include slots that have at least a page, default, or intercepting route
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
-    const ownerSegments = path.posix
+    const ownerSegments = path
       .relative(appDir, dir)
-      .split("/")
+      .split(path.sep)
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
-      key: `${slotName}@${path.posix.relative(appDir, slotDir)}`,
+      key: `${slotName}@${normalizePathSeparators(path.relative(appDir, slotDir))}`,
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
@@ -2229,8 +2227,7 @@ function isInterceptionMarkerDir(name: string): boolean {
  * They intercept navigation to another route and render within the slot instead.
  *
  * `slotDir`, `routeDir`, and `appDir` must be forward-slash. They are passed
- * down to `path.posix.join` and `path.posix.relative` when building the
- * intercept page paths and target patterns.
+ * down to `path.posix.join` when building the intercept page paths.
  *
  * @param slotDir - The parallel slot directory (e.g. app/feed/@modal)
  * @param routeDir - The directory of the route that owns this slot (e.g. app/feed)
@@ -2399,8 +2396,7 @@ export function findOwnerRouteForDir(
  * intercepting route directories.
  *
  * `currentDir`, `routeDir`, and `appDir` must be forward-slash. `currentDir`
- * descends with `path.posix.join` and all three reach the `path.posix.join` /
- * `path.posix.relative` calls that build the intercept page paths and patterns.
+ * descends with `path.posix.join` when building the intercept page paths.
  */
 function scanForInterceptingPages(
   currentDir: string,
