@@ -31,7 +31,7 @@ import {
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
-import { resolveCloudflareInitOptions, resolveInitPlatform } from "./init-platform.js";
+import { INIT_PLATFORMS, resolveInitPlatform } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -810,8 +810,7 @@ async function initCommand() {
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
   const platform = await resolveInitPlatform(rawArgs);
-  const cloudflare =
-    platform === "cloudflare" ? await resolveCloudflareInitOptions(rawArgs) : undefined;
+  const platformOptions = await INIT_PLATFORMS[platform].options(rawArgs);
 
   await runInit({
     root: process.cwd(),
@@ -819,7 +818,7 @@ async function initCommand() {
     skipCheck,
     force,
     platform,
-    cloudflare,
+    cloudflare: platform === "cloudflare" ? platformOptions : undefined,
   });
 }
 
@@ -963,7 +962,7 @@ function printHelp(cmd?: string) {
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
-    --cdn-cache <type>   Cloudflare CDN/page cache: workers, kv, or none (default: workers)
+    --cdn-cache <type>   Cloudflare CDN/page cache: kv (default), workers-cache (private beta), or none
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
@@ -971,7 +970,7 @@ function printHelp(cmd?: string) {
   Examples:
     vinext init                   Prompt for a deployment platform
     vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
-    vinext init --platform=cloudflare --data-cache=kv --cdn-cache=workers
+    vinext init --platform=cloudflare --data-cache=kv --cdn-cache=kv
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images

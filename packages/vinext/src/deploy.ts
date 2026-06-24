@@ -318,7 +318,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const missingScaffolding = [
     !info.hasViteConfig && "Vite config",
     !info.hasWranglerConfig && "Wrangler config",
-    !info.hasWorkerEntry && "Worker entry",
+    info.isPagesRouter && !info.hasWorkerEntry && "Worker entry",
   ].filter((value): value is string => Boolean(value));
   if (missingScaffolding.length > 0) {
     throw new Error(

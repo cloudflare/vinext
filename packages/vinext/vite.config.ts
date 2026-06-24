@@ -20,22 +20,17 @@ export default defineConfig({
     entry: ["src/**/*.ts", "src/**/*.tsx", "!src/**/*.d.ts"],
     clean: true,
     deps: {
-      // Keep externalizing node_modules (and rewriting vinext's own
-      // `vinext/shims/*` tsconfig-path self-imports to relative). This must stay
-      // untouched: replacing it with a custom external predicate breaks the
-      // self-import rewrite and duplicates shim modules across Vite's separate
-      // RSC/SSR/client dev graphs (e.g. `instanceof ReadonlyURLSearchParams`).
-      skipNodeModulesBundle: true,
+      // Agent detection is a CLI implementation detail, so inline it rather
+      // than requiring vinext consumers to install it.
+      alwaysBundle: ["am-i-vibing", "process-ancestry"],
+      neverBundle: (id) =>
+        id.includes("node_modules") &&
+        !id.includes("am-i-vibing") &&
+        !id.includes("process-ancestry"),
     },
     // Bundle `@vinext/cloudflare` in by aliasing its `cache/*` subpath to source.
-    // `skipNodeModulesBundle` externalizes bare package specifiers before
-    // tsconfig paths apply, so the alias rewrites the import to a file path up
-    // front — tsdown then treats it as local source and bundles it. The
-    // bundled code's own `vinext/shims/*` imports still resolve to vinext's
-    // relative output (single module instance). `@vinext/cloudflare` remains a
-    // published package: user `vite.config` files import its `cdnAdapter()` /
-    // `kvDataAdapter()` builders, and the generated worker resolves its
-    // `*.runtime.js` factories by absolute path.
+    // The alias rewrites imports to local source so the small runtime helper
+    // surface remains bundled without creating a package dependency cycle.
     inputOptions: {
       resolve: {
         alias: {

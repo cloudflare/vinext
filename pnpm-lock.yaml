@@ -1000,6 +1000,9 @@ importers:
         specifier: 'catalog:'
         version: 4.2.4
     devDependencies:
+      am-i-vibing:
+        specifier: 0.5.0
+        version: 0.5.0
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.2
@@ -1648,6 +1651,12 @@ importers:
         version: 0.2.1(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.9(vitest@4.1.9))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)
 
 packages:
+
+  am-i-vibing@0.5.0:
+    resolution: {integrity: sha512-KLcsDhqf1XRrJmJr+9I/C0EX2K+sGrAGZFgkmd84c8TJO9zJBu+/kFInjazu1KfJWFhWDKdRWkpBzEs7s35DVA==}
+
+  process-ancestry@0.1.0:
+    resolution: {integrity: sha512-tGqJW/UnclpYASFcM6Xh8D8l/BMtaQ9+CSG0vlJSJTcdMM4lDRv4c6H0Pdcsfted+bVczdYSfk2fdukg2gQkZg==}
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -7387,6 +7396,12 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  am-i-vibing@0.5.0:
+    dependencies:
+      process-ancestry: 0.1.0
+
+  process-ancestry@0.1.0: {}
 
   '@alloc/quick-lru@5.2.0': {}
 

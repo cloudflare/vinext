@@ -23,20 +23,12 @@ import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js"
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
-import { kvCdnAdapter } from "../packages/cloudflare/src/cache/kv-cdn-adapter.js";
-import { noCdnCacheAdapter } from "../packages/cloudflare/src/cache/no-cdn-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
 import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import createKvCdnCacheAdapter, {
-  KvCdnCacheAdapter,
-} from "../packages/cloudflare/src/cache/kv-cdn-adapter.runtime.js";
-import createNoCdnCacheAdapter, {
-  NoCdnCacheAdapter,
-} from "../packages/cloudflare/src/cache/no-cdn-adapter.runtime.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -120,33 +112,6 @@ describe("kvDataAdapter builder", () => {
   it("validates the binding option at config time", () => {
     // @ts-expect-error — binding must be a string
     expect(() => kvDataAdapter({ binding: 123 })).toThrow(/binding/);
-  });
-});
-
-describe("kvCdnAdapter builder", () => {
-  it("returns a serializable runtime descriptor", () => {
-    const descriptor = kvCdnAdapter({ binding: "MY_KV", ttlSeconds: 60 });
-    expect(descriptor.options).toEqual({ binding: "MY_KV", ttlSeconds: 60 });
-    expect(descriptor.adapter.endsWith("kv-cdn-adapter.runtime.js")).toBe(true);
-  });
-});
-
-describe("KV CDN cache adapter", () => {
-  it("uses the configured KV namespace for page artifacts", async () => {
-    const entries = new Map<string, string>();
-    const namespace = {
-      get: async (key: string) => entries.get(key) ?? null,
-      put: async (key: string, value: string) => void entries.set(key, value),
-      delete: async (key: string) => void entries.delete(key),
-      list: async () => ({ keys: [], list_complete: true }),
-    };
-    const adapter = createKvCdnCacheAdapter({
-      env: { PAGE_KV: namespace },
-      options: { binding: "PAGE_KV" },
-    });
-    expect(adapter).toBeInstanceOf(KvCdnCacheAdapter);
-    await adapter.set("page", { kind: "REDIRECT", props: { url: "/target", status: 307 } });
-    expect(await adapter.get("page")).toMatchObject({ value: { kind: "REDIRECT" } });
   });
 });
 
@@ -262,27 +227,5 @@ describe("cdnAdapter builder + factory", () => {
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
     // Edge adapter does not own in-process background regeneration.
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
-  });
-});
-
-describe("noCdnCacheAdapter builder + factory", () => {
-  it("builder resolves the runtime factory to an absolute path", () => {
-    const descriptor = noCdnCacheAdapter();
-    expect(path.isAbsolute(descriptor.adapter)).toBe(true);
-    expect(descriptor.adapter.endsWith("no-cdn-adapter.runtime.js")).toBe(true);
-  });
-
-  it("disables storage and cacheable response headers", async () => {
-    const adapter = createNoCdnCacheAdapter();
-    expect(adapter).toBeInstanceOf(NoCdnCacheAdapter);
-    expect(await adapter.get("page")).toBeNull();
-    await expect(adapter.set("page", null)).resolves.toBeUndefined();
-    expect(
-      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" }),
-    ).toEqual({
-      "Cache-Control": "no-store",
-      "CDN-Cache-Control": null,
-      "Cache-Tag": null,
-    });
   });
 });

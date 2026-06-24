@@ -34,15 +34,7 @@ describe("injectPregeneratedConcretePaths", () => {
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "build-a",
-        routes: [
-          {
-            route: "/blog/:slug",
-            status: "rendered",
-            router: "app",
-            path: "/blog/post-a",
-            revalidate: 60,
-          },
-        ],
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
       }),
     );
     injectPregeneratedConcretePaths(tmpDir);
@@ -51,15 +43,7 @@ describe("injectPregeneratedConcretePaths", () => {
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "build-b",
-        routes: [
-          {
-            route: "/blog/:slug",
-            status: "rendered",
-            router: "app",
-            path: "/blog/post-b",
-            revalidate: 60,
-          },
-        ],
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-b"]]],
       }),
     );
     injectPregeneratedConcretePaths(tmpDir);
@@ -89,7 +73,7 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(output).toContain('import { handler } from "vinext/server/app-router-entry"');
   });
 
-  it("excludes fallback-shell placeholder paths", () => {
+  it("uses the concrete-path table stored in the prerender manifest", () => {
     writeFile(
       "dist/server/index.js",
       'export default { fetch() { return new Response("ok"); } };\n',
@@ -98,23 +82,7 @@ describe("injectPregeneratedConcretePaths", () => {
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "test",
-        routes: [
-          {
-            route: "/blog/:slug",
-            status: "rendered",
-            router: "app",
-            path: "/blog/post-a",
-            revalidate: 60,
-          },
-          {
-            route: "/blog/:slug",
-            status: "rendered",
-            router: "app",
-            path: "/blog/[slug]",
-            revalidate: 60,
-            fallback: true,
-          },
-        ],
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
       }),
     );
 
@@ -144,15 +112,7 @@ describe("injectPregeneratedConcretePaths", () => {
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "test",
-        routes: [
-          {
-            route: "/blog/:slug",
-            status: "rendered",
-            router: "app",
-            path: "/blog/post-a",
-            revalidate: 60,
-          },
-        ],
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
       }),
     );
 

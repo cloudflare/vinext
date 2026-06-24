@@ -31,7 +31,6 @@ import {
 } from "../packages/vinext/src/cloudflare/deploy-config.js";
 import {
   generateWranglerConfig,
-  generateAppRouterWorkerEntry,
   generatePagesRouterWorkerEntry,
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
@@ -197,6 +196,19 @@ describe("deploy environment validation", () => {
     expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
+  });
+
+  it("does not require a custom Worker entry for App Router deployments", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"app"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(tmpDir, "vite.config.ts", "export default {};\n");
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    );
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.not.toThrow("Worker entry");
   });
 });
 
@@ -540,6 +552,12 @@ describe("detectProject", () => {
     expect(info.hasWranglerConfig).toBe(true);
   });
 
+  it("detects cloudflare.config.ts", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(detectProject(tmpDir).hasWranglerConfig).toBe(true);
+  });
+
   it("detects worker/index.ts", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "worker/index.ts", "export default {}");
@@ -600,11 +618,21 @@ describe("detectProject", () => {
     expect(info.hasISR).toBe(false);
   });
 
-  it("does not detect ISR for Pages Router", () => {
+  it("detects ISR for Pages Router getStaticProps", () => {
     mkdir(tmpDir, "pages");
-    writeFile(tmpDir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "pages/index.tsx",
+      "export async function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+    );
     const info = detectProject(tmpDir);
-    expect(info.hasISR).toBe(false);
+    expect(info.hasISR).toBe(true);
+  });
+
+  it("detects caching from cacheComponents", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
+    expect(detectProject(tmpDir).hasISR).toBe(true);
   });
 });
 
@@ -619,7 +647,7 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
-    expect(parsed.main).toBe("./worker/index.ts");
+    expect(parsed.main).toBe("vinext/server/app-router-entry");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
       not_found_handling: "none",
@@ -659,7 +687,7 @@ describe("generateWranglerConfig", () => {
     const info = detectProject(tmpDir);
     const config = generateWranglerConfig(info, {
       dataCache: "none",
-      cdnCache: "workers",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
     const parsed = JSON.parse(config);
@@ -686,52 +714,6 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.images).toBeDefined();
     expect(parsed.images.binding).toBe("IMAGES");
-  });
-});
-
-// ─── Worker Entry Generation ─────────────────────────────────────────────────
-
-describe("generateAppRouterWorkerEntry", () => {
-  it("generates valid TypeScript", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("export default");
-    expect(content).toContain("fetch(request: Request, env: Env, ctx: ExecutionContext)");
-    expect(content).toContain("Promise<Response>");
-  });
-
-  it("keeps image optimization out of the Worker", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).not.toContain("isImageOptimizationPath");
-    expect(content).not.toContain("handleImageOptimization");
-    expect(content).toContain("handler.fetch(request, env, ctx)");
-  });
-
-  it("does not declare an Images binding in the Worker", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("interface Env");
-    expect(content).not.toContain("IMAGES");
-    expect(content).toContain("ASSETS");
-  });
-
-  it("declares ExecutionContext interface", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("interface ExecutionContext");
-    expect(content).toContain("waitUntil");
-  });
-
-  it("never wires a cache handler into the Worker entry", () => {
-    // Cache backends are configured declaratively via vinext({ cache }) in
-    // vite.config; the Worker entry must not scaffold setDataCacheHandler.
-    const content = generateAppRouterWorkerEntry();
-    expect(content).not.toContain("KVCacheHandler");
-    expect(content).not.toContain("setDataCacheHandler");
-    expect(content).not.toContain("setCdnCacheAdapter");
-    expect(content).not.toContain("VINEXT_KV_CACHE");
-  });
-
-  it("points users to declarative cache and image config", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("Cache and image backends are configured declaratively");
   });
 });
 
@@ -1096,10 +1078,7 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("exports every vinext subpath imported by generated worker entries", () => {
     const exportsMap = readVinextPackageExports();
-    const generatedImports = [
-      ...extractVinextImportSubpaths(generateAppRouterWorkerEntry()),
-      ...extractVinextImportSubpaths(generatePagesRouterWorkerEntry()),
-    ];
+    const generatedImports = extractVinextImportSubpaths(generatePagesRouterWorkerEntry());
     const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
 
     expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
@@ -1807,6 +1786,11 @@ describe("hasWranglerConfig", () => {
 
   it("returns true when wrangler.toml exists", () => {
     writeFile(tmpDir, "wrangler.toml", "");
+    expect(hasWranglerConfig(tmpDir)).toBe(true);
+  });
+
+  it("returns true when cloudflare.config.ts exists", () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
     expect(hasWranglerConfig(tmpDir)).toBe(true);
   });
 

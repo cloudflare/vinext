@@ -10,10 +10,11 @@ type PrerenderManifestRoute = {
   fallback?: boolean;
 };
 
-type PrerenderManifest = {
+export type PrerenderManifest = {
   buildId?: string;
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
+  pregeneratedConcretePaths?: Array<[string, string[]]>;
 };
 
 export function readPrerenderManifest(manifestPath: string): PrerenderManifest | null {

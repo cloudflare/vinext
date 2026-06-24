@@ -29,20 +29,20 @@ describe("Cloudflare init choices", () => {
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
-  it("defaults to KV data, Workers Cache, and Cloudflare Images", async () => {
+  it("defaults to KV data, KV CDN cache, and Cloudflare Images", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "workers",
+      cdnCache: "kv",
       imageOptimization: "cloudflare-images",
     });
   });
 
   it("tells agents to ask and rerun with all Cloudflare flags", async () => {
-    await expect(resolveCloudflareInitOptions([], { env: { CODEX_CI: "1" } })).rejects.toThrow(
-      "--data-cache=..., --cdn-cache=..., and --image-optimization=...",
-    );
+    await expect(
+      resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" } }),
+    ).rejects.toThrow("--data-cache=..., --cdn-cache=..., and --image-optimization=...");
   });
 
   it("prompts for each missing Cloudflare choice", async () => {
@@ -53,26 +53,30 @@ describe("Cloudflare init choices", () => {
         isInteractive: true,
         question: async () => answers.shift() ?? "",
       }),
-    ).resolves.toEqual({ dataCache: "none", cdnCache: "kv", imageOptimization: "none" });
+    ).resolves.toEqual({
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "none",
+    });
   });
 });
 
 describe("isAgentEnvironment", () => {
-  it("detects the AI_AGENT standard and Codex", () => {
-    expect(isAgentEnvironment({ AI_AGENT: "custom-agent" })).toBe(true);
-    expect(isAgentEnvironment({ CODEX_CI: "1" })).toBe(true);
+  it("detects agents supported by am-i-vibing", () => {
+    expect(isAgentEnvironment({ CODEX_THREAD_ID: "test" })).toBe(true);
+    expect(isAgentEnvironment({ CLAUDECODE: "1" })).toBe(true);
   });
 });
 
 describe("resolveInitPlatform", () => {
   it("uses an explicit platform in agent environments", async () => {
     await expect(
-      resolveInitPlatform(["--platform=node"], { env: { CODEX_CI: "1" } }),
+      resolveInitPlatform(["--platform=node"], { env: { CODEX_THREAD_ID: "test" } }),
     ).resolves.toBe("node");
   });
 
   it("tells agents to ask the user and re-run with a flag", async () => {
-    await expect(resolveInitPlatform([], { env: { CODEX_CI: "1" } })).rejects.toThrow(
+    await expect(resolveInitPlatform([], { env: { CODEX_THREAD_ID: "test" } })).rejects.toThrow(
       "Ask the user whether they want Cloudflare or Node, then re-run the command with --platform=cloudflare or --platform=node.",
     );
   });

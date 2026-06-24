@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { parseSync } from "vite";
 import {
-  generateAppRouterWorkerEntry,
   generateAppRouterViteConfig,
   generatePagesRouterWorkerEntry,
   getWranglerImagesBinding,
   updateViteConfigForCloudflare,
   updateWranglerConfigForCloudflare,
-  updateWranglerTomlForCloudflare,
 } from "../packages/vinext/src/init-cloudflare.js";
 
 function expectValidConfig(output: string): void {
@@ -219,7 +217,7 @@ export default { plugins: [vinext()] };
         nativeModulesToStub: [],
         cache: {
           dataCache: "kv",
-          cdnCache: "workers",
+          cdnCache: "workers-cache",
           imageOptimization: "cloudflare-images",
         },
       },
@@ -238,7 +236,7 @@ export default { plugins: [vinext()] };
         nativeModulesToStub: [],
         cache: {
           dataCache: "none",
-          cdnCache: "workers",
+          cdnCache: "workers-cache",
           imageOptimization: "cloudflare-images",
         },
       },
@@ -257,7 +255,7 @@ export default { plugins: [vinext()] };
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
-          cdnCache: "workers",
+          cdnCache: "workers-cache",
           imageOptimization: "cloudflare-images",
         },
       },
@@ -276,7 +274,7 @@ export default { plugins: [vinext()] };
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
-          cdnCache: "workers",
+          cdnCache: "workers-cache",
           imageOptimization: "cloudflare-images",
         },
       },
@@ -317,7 +315,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
       nativeModulesToStub: [],
-      cache: { dataCache: "kv", cdnCache: "workers", imageOptimization: "cloudflare-images" },
+      cache: { dataCache: "kv", cdnCache: "workers-cache", imageOptimization: "cloudflare-images" },
     });
     expectValidConfig(output);
     expect(output).toContain("data: existingData()");
@@ -332,13 +330,13 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
       cache: { dataCache: "none", cdnCache: "kv", imageOptimization: "none" },
     });
     expectValidConfig(output);
-    expect(output).toContain("cdn: kvCdnAdapter()");
+    expect(output).toContain("data: kvDataAdapter()");
+    expect(output).not.toContain("cdn:");
     expect(output).not.toContain("imageAdapter");
     expect(output).not.toContain("images:");
-    expect(output).not.toContain("kvDataAdapter");
   });
 
-  it("configures an explicit no-op CDN adapter without replacing existing image config", () => {
+  it("omits a CDN adapter without replacing existing image config", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext({ imageOptimization: true })] };
 `;
@@ -348,10 +346,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cache: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
     });
     expectValidConfig(output);
-    expect(output).toContain(
-      'import { noCdnCacheAdapter } from "@vinext/cloudflare/cache/no-cdn-adapter"',
-    );
-    expect(output).toContain("cdn: noCdnCacheAdapter()");
+    expect(output).not.toContain("cdn:");
     expect(output).toContain("imageOptimization: true");
     expect(output).not.toContain("imageAdapter");
   });
@@ -364,7 +359,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
 }\n`;
     const output = updateWranglerConfigForCloudflare(input, {
       dataCache: "kv",
-      cdnCache: "workers",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain("// keep this comment");
@@ -374,77 +369,47 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(
       updateWranglerConfigForCloudflare(output, {
         dataCache: "kv",
-        cdnCache: "workers",
+        cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
       }),
     ).toBe(output);
+  });
+
+  it("enables an existing disabled Workers Cache config", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": false } }\n`, {
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "none",
+    });
+    expect(JSON.parse(output)).toEqual({ cache: { enabled: true } });
   });
 
   it("preserves a custom Wrangler Images binding for the Vite adapter", () => {
     const options = {
       dataCache: "kv" as const,
-      cdnCache: "workers" as const,
+      cdnCache: "workers-cache" as const,
       imageOptimization: "cloudflare-images" as const,
     };
     const input = `{ "images": { "binding": "CUSTOM_IMAGES" } }\n`;
     const output = updateWranglerConfigForCloudflare(input, {
       dataCache: "none",
-      cdnCache: "workers",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
-    expect(output).toBe(input);
-    expect(getWranglerImagesBinding(output, "json")).toBe("CUSTOM_IMAGES");
+    expect(output).toContain('"images": { "binding": "CUSTOM_IMAGES" }');
+    expect(output).toContain('"cache": { "enabled": true }');
+    expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
     expect(vite).toContain('imageAdapter({ binding: "CUSTOM_IMAGES" })');
-    expect(generateAppRouterWorkerEntry()).not.toContain("CUSTOM_IMAGES");
   });
 
   it("repairs an unusable Wrangler Images binding", () => {
     const output = updateWranglerConfigForCloudflare(`{ "images": null }\n`, {
       dataCache: "none",
-      cdnCache: "workers",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain('"images": { "binding": "IMAGES" }');
-  });
-
-  it("additively updates Wrangler TOML", () => {
-    const input = `name = "existing"\n\n[vars]\nKEEP = "yes"\n`;
-    const output = updateWranglerTomlForCloudflare(input, {
-      dataCache: "kv",
-      cdnCache: "workers",
-      imageOptimization: "cloudflare-images",
-    });
-    expect(output).toContain('[vars]\nKEEP = "yes"');
-    expect(output).toContain('images = { binding = "IMAGES" }');
-    expect(output).toContain('[[kv_namespaces]]\nbinding = "VINEXT_KV_CACHE"');
-    expect(
-      updateWranglerTomlForCloudflare(output, {
-        dataCache: "kv",
-        cdnCache: "workers",
-        imageOptimization: "cloudflare-images",
-      }),
-    ).toBe(output);
-  });
-
-  it("does not confuse unrelated TOML bindings with KV namespaces", () => {
-    const output = updateWranglerTomlForCloudflare(`[vars]\nbinding = "VINEXT_KV_CACHE"\n`, {
-      dataCache: "kv",
-      cdnCache: "workers",
-      imageOptimization: "none",
-    });
-    expect(output).toContain('[[kv_namespaces]]\nbinding = "VINEXT_KV_CACHE"');
-  });
-
-  it("recognizes an existing TOML KV namespace binding", () => {
-    const input = `[[kv_namespaces]]\nbinding = "VINEXT_KV_CACHE"\nid = "existing"\n`;
-    expect(
-      updateWranglerTomlForCloudflare(input, {
-        dataCache: "kv",
-        cdnCache: "workers",
-        imageOptimization: "none",
-      }),
-    ).toBe(input);
   });
 
   it("handles JSONC comments inside Wrangler property values", () => {
@@ -457,61 +422,11 @@ export default { plugins: [vinext({ imageOptimization: true })] };
 }\n`;
     const output = updateWranglerConfigForCloudflare(input, {
       dataCache: "kv",
-      cdnCache: "workers",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain('"binding": "CUSTOM_IMAGES"');
     expect(output).toContain('"binding": "VINEXT_KV_CACHE"');
-  });
-
-  it("reads a custom Images binding from Wrangler TOML", () => {
-    expect(getWranglerImagesBinding('images = { binding = "CUSTOM_IMAGES" }\n', "toml")).toBe(
-      "CUSTOM_IMAGES",
-    );
-  });
-
-  it("preserves an Images TOML table and reads its binding", () => {
-    const input = `[images]\nbinding = "CUSTOM_IMAGES"\n`;
-    expect(
-      updateWranglerTomlForCloudflare(input, {
-        dataCache: "none",
-        cdnCache: "workers",
-        imageOptimization: "cloudflare-images",
-      }),
-    ).toBe(input);
-    expect(getWranglerImagesBinding(input, "toml")).toBe("CUSTOM_IMAGES");
-  });
-
-  it("preserves a dotted Images TOML binding", () => {
-    const input = `images.binding = "CUSTOM_IMAGES"\n`;
-    expect(
-      updateWranglerTomlForCloudflare(input, {
-        dataCache: "none",
-        cdnCache: "workers",
-        imageOptimization: "cloudflare-images",
-      }),
-    ).toBe(input);
-    expect(getWranglerImagesBinding(input, "toml")).toBe("CUSTOM_IMAGES");
-  });
-
-  it("preserves inline TOML KV namespace arrays", () => {
-    const input = `kv_namespaces = [
-  { binding = "VINEXT_KV_CACHE", id = "existing" }
-]\n`;
-    expect(
-      updateWranglerTomlForCloudflare(input, {
-        dataCache: "kv",
-        cdnCache: "workers",
-        imageOptimization: "none",
-      }),
-    ).toBe(input);
-  });
-
-  it("generates a direct App Router worker when images are disabled", () => {
-    const output = generateAppRouterWorkerEntry("none");
-    expect(output).toContain('import handler from "vinext/server/app-router-entry"');
-    expect(output).not.toContain("IMAGES");
-    expect(output).not.toContain("image-optimization");
   });
 
   it("keeps Pages Router adapter plumbing independent of the selected backend", () => {

@@ -2,24 +2,44 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-export function getReactUpgradeDeps(root: string): string[] {
-  try {
-    const req = createRequire(path.join(root, "package.json"));
-    const resolved = req.resolve("react");
-    const version = findPackageVersion(resolved, "react");
-    if (!version) return [];
+type DependencyUpgradeRecommendation = {
+  minimumVersion: [major: number, minor: number, patch: number];
+  upgrades: string[];
+};
 
-    const parts = version.split(".");
-    const major = parseInt(parts[0], 10);
-    const minor = parseInt(parts[1], 10);
-    const patch = parseInt(parts[2], 10);
-    if (major < 19 || (major === 19 && minor < 2) || (major === 19 && minor === 2 && patch < 6)) {
-      return ["react@latest", "react-dom@latest"];
+export function getDependencyUpgradeDeps(
+  root: string,
+  recommendations: Record<string, DependencyUpgradeRecommendation>,
+): string[] {
+  const req = createRequire(path.join(root, "package.json"));
+  for (const [dependency, recommendation] of Object.entries(recommendations)) {
+    try {
+      const version = findPackageVersion(req.resolve(dependency), dependency);
+      if (version && isVersionBelow(version, recommendation.minimumVersion)) {
+        return recommendation.upgrades;
+      }
+    } catch {
+      continue;
     }
-    return [];
-  } catch {
-    return [];
   }
+  return [];
+}
+
+export function getReactUpgradeDeps(root: string): string[] {
+  return getDependencyUpgradeDeps(root, {
+    react: {
+      minimumVersion: [19, 2, 6],
+      upgrades: ["react@latest", "react-dom@latest"],
+    },
+  });
+}
+
+function isVersionBelow(version: string, minimum: [number, number, number]): boolean {
+  const current = version.split(".").map((part) => parseInt(part, 10));
+  for (let index = 0; index < minimum.length; index++) {
+    if ((current[index] ?? 0) !== minimum[index]) return (current[index] ?? 0) < minimum[index];
+  }
+  return false;
 }
 
 /** Walk up from a resolved module entry to find its package version. */

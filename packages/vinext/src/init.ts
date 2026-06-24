@@ -30,13 +30,11 @@ import {
 } from "./utils/project.js";
 import {
   generateAppRouterViteConfig,
-  generateAppRouterWorkerEntry,
   generatePagesRouterViteConfig,
   generatePagesRouterWorkerEntry,
   generateWranglerConfig,
   getWranglerImagesBinding,
   updateWranglerConfigForCloudflare,
-  updateWranglerTomlForCloudflare,
   updateViteConfigForCloudflare,
   usesCommonJsViteConfig,
 } from "./init-cloudflare.js";
@@ -147,7 +145,7 @@ export function addScripts(root: string, port: number): string[] {
 
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
-export function getInitDeps(isAppRouter: boolean, platform: InitPlatform = "cloudflare"): string[] {
+export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
   const deps = ["vinext", "vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
@@ -249,17 +247,140 @@ export function updateGitignore(root: string): boolean {
   return true;
 }
 
+type PlatformSetupContext = {
+  root: string;
+  isAppRouter: boolean;
+  existingViteConfigPath?: string;
+  viteConfigExists: boolean;
+  force: boolean;
+  today?: string;
+};
+
+type PlatformSetupResult = {
+  generatedViteConfig: boolean;
+  skippedViteConfig: boolean;
+  generatedPlatformFiles: string[];
+  nextSteps: string[];
+};
+
+function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
+  if (context.viteConfigExists && !context.force) {
+    return {
+      generatedViteConfig: false,
+      skippedViteConfig: true,
+      generatedPlatformFiles: [],
+      nextSteps: [],
+    };
+  }
+
+  fs.writeFileSync(
+    context.existingViteConfigPath ?? path.join(context.root, "vite.config.ts"),
+    generateViteConfig(context.isAppRouter),
+    "utf-8",
+  );
+  return {
+    generatedViteConfig: true,
+    skippedViteConfig: false,
+    generatedPlatformFiles: [],
+    nextSteps: [],
+  };
+}
+
+function setupCloudflarePlatform(
+  context: PlatformSetupContext,
+  cloudflare: CloudflareInitOptions,
+): PlatformSetupResult {
+  const tomlPath = path.join(context.root, "wrangler.toml");
+  if (fs.existsSync(tomlPath)) {
+    throw new Error(
+      "wrangler.toml is not supported by vinext init. Convert it to wrangler.jsonc and rerun.",
+    );
+  }
+
+  const projectInfo = detectProject(context.root);
+  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
+    .map((fileName) => path.join(context.root, fileName))
+    .find((candidate) => fs.existsSync(candidate));
+  const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
+  const imagesBinding = wranglerCode ? getWranglerImagesBinding(wranglerCode) : "IMAGES";
+
+  let generatedViteConfig = false;
+  let skippedViteConfig = false;
+  if (context.existingViteConfigPath) {
+    const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+    const updatedConfig = updateViteConfigForCloudflare(
+      context.existingViteConfigPath,
+      currentConfig,
+      {
+        isAppRouter: context.isAppRouter,
+        nativeModulesToStub: projectInfo.nativeModulesToStub,
+        cache: cloudflare,
+        imagesBinding,
+      },
+    );
+    if (updatedConfig !== currentConfig) {
+      fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
+      generatedViteConfig = true;
+    } else {
+      skippedViteConfig = true;
+    }
+  } else {
+    const configContent = context.isAppRouter
+      ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
+      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding);
+    fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
+    generatedViteConfig = true;
+  }
+
+  const generatedPlatformFiles: string[] = [];
+  if (!wranglerPath) {
+    fs.writeFileSync(
+      path.join(context.root, "wrangler.jsonc"),
+      generateWranglerConfig(projectInfo, cloudflare, context.today),
+      "utf-8",
+    );
+    generatedPlatformFiles.push("wrangler.jsonc");
+  } else if (wranglerPath && wranglerCode) {
+    const updatedConfig = updateWranglerConfigForCloudflare(wranglerCode, cloudflare);
+    if (updatedConfig !== wranglerCode) {
+      fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
+      generatedPlatformFiles.push(path.basename(wranglerPath));
+    }
+  }
+
+  if (!context.isAppRouter && !projectInfo.hasWorkerEntry) {
+    fs.mkdirSync(path.join(context.root, "worker"), { recursive: true });
+    fs.writeFileSync(
+      path.join(context.root, "worker", "index.ts"),
+      generatePagesRouterWorkerEntry(),
+      "utf-8",
+    );
+    generatedPlatformFiles.push("worker/index.ts");
+  }
+
+  return {
+    generatedViteConfig,
+    skippedViteConfig,
+    generatedPlatformFiles,
+    nextSteps:
+      cloudflare.dataCache === "kv" || cloudflare.cdnCache === "kv"
+        ? ["npx wrangler kv namespace create VINEXT_KV_CACHE"]
+        : [],
+  };
+}
+
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
   const port = options.port ?? 3001;
-  const platform = options.platform ?? "cloudflare";
-  const cloudflare = options.cloudflare ?? {
-    dataCache: "kv",
-    cdnCache: "workers",
-    imageOptimization: "cloudflare-images",
-  };
+  if (!options.platform) {
+    throw new Error("A deployment platform must be selected before running vinext init.");
+  }
+  const platform = options.platform;
+  if (platform === "cloudflare" && !options.cloudflare) {
+    throw new Error("Cloudflare init options must be resolved before running vinext init.");
+  }
   const exec =
     options._exec ??
     ((cmd: string, opts: { cwd: string; stdio: string }) => {
@@ -350,85 +471,19 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 5: Generate vite.config.ts ────────────────────────────────────
 
-  const projectInfo = platform === "cloudflare" ? detectProject(root) : undefined;
-  const wranglerPath =
+  const setupContext: PlatformSetupContext = {
+    root,
+    isAppRouter: isApp,
+    existingViteConfigPath,
+    viteConfigExists,
+    force: options.force ?? false,
+    today: options._today,
+  };
+  const platformSetup =
     platform === "cloudflare"
-      ? ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
-          .map((fileName) => path.join(root, fileName))
-          .find((candidate) => fs.existsSync(candidate))
-      : undefined;
-  const wranglerIsToml = wranglerPath?.endsWith(".toml") ?? false;
-  const imagesBinding = wranglerPath
-    ? getWranglerImagesBinding(
-        fs.readFileSync(wranglerPath, "utf-8"),
-        wranglerIsToml ? "toml" : "json",
-      )
-    : "IMAGES";
-  let generatedViteConfig = false;
-  let skippedViteConfig = false;
-  if (platform === "cloudflare" && existingViteConfigPath) {
-    const currentConfig = fs.readFileSync(existingViteConfigPath, "utf-8");
-    const updatedConfig = updateViteConfigForCloudflare(existingViteConfigPath, currentConfig, {
-      isAppRouter: isApp,
-      nativeModulesToStub: projectInfo!.nativeModulesToStub,
-      cache: cloudflare,
-      imagesBinding,
-    });
-    if (updatedConfig !== currentConfig) {
-      fs.writeFileSync(existingViteConfigPath, updatedConfig, "utf-8");
-      generatedViteConfig = true;
-    } else {
-      skippedViteConfig = true;
-    }
-  } else if (viteConfigExists && !options.force) {
-    skippedViteConfig = true;
-  } else {
-    const configContent =
-      platform === "cloudflare"
-        ? isApp
-          ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
-          : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding)
-        : generateViteConfig(isApp);
-    fs.writeFileSync(
-      existingViteConfigPath ?? path.join(root, "vite.config.ts"),
-      configContent,
-      "utf-8",
-    );
-    generatedViteConfig = true;
-  }
-
-  const generatedPlatformFiles: string[] = [];
-  if (platform === "cloudflare") {
-    const info = projectInfo!;
-    if (!info.hasWranglerConfig) {
-      fs.writeFileSync(
-        path.join(root, "wrangler.jsonc"),
-        generateWranglerConfig(info, cloudflare, options._today),
-        "utf-8",
-      );
-      generatedPlatformFiles.push("wrangler.jsonc");
-    } else {
-      if (wranglerPath) {
-        const currentConfig = fs.readFileSync(wranglerPath, "utf-8");
-        const updatedConfig = wranglerIsToml
-          ? updateWranglerTomlForCloudflare(currentConfig, cloudflare)
-          : updateWranglerConfigForCloudflare(currentConfig, cloudflare);
-        if (updatedConfig !== currentConfig) {
-          fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
-          generatedPlatformFiles.push(path.basename(wranglerPath));
-        }
-      }
-    }
-    if (!info.hasWorkerEntry) {
-      fs.mkdirSync(path.join(root, "worker"), { recursive: true });
-      fs.writeFileSync(
-        path.join(root, "worker", "index.ts"),
-        isApp ? generateAppRouterWorkerEntry() : generatePagesRouterWorkerEntry(),
-        "utf-8",
-      );
-      generatedPlatformFiles.push("worker/index.ts");
-    }
-  }
+      ? setupCloudflarePlatform(setupContext, options.cloudflare!)
+      : setupNodePlatform(setupContext);
+  const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
 
   // ── Step 6: Update .gitignore ───────────────────────────────────────
 
@@ -465,6 +520,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`
   Next steps:
+${platformSetup.nextSteps.map((step) => `    ${step}`).join("\n")}${platformSetup.nextSteps.length > 0 ? "\n" : ""}
     ${pmName} run dev:vinext    Start the vinext dev server
     ${pmName} run build:vinext  Build production output
     ${pmName} run start:vinext  Start vinext production server

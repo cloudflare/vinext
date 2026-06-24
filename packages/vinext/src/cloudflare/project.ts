@@ -33,7 +33,8 @@ export function hasWranglerConfig(root: string): boolean {
   return (
     fs.existsSync(path.join(root, "wrangler.jsonc")) ||
     fs.existsSync(path.join(root, "wrangler.json")) ||
-    fs.existsSync(path.join(root, "wrangler.toml"))
+    fs.existsSync(path.join(root, "wrangler.toml")) ||
+    fs.existsSync(path.join(root, "cloudflare.config.ts"))
   );
 }
 
@@ -63,7 +64,9 @@ export function detectProject(root: string): ProjectInfo {
   // even when node_modules lives at the workspace root rather than app root.
   const hasCloudflarePlugin = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
   const hasRscPlugin = findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
-  const hasWrangler = findInNodeModules(root, ".bin/wrangler") !== null;
+  const hasWrangler =
+    findInNodeModules(root, ".bin/wrangler") !== null ||
+    findInNodeModules(root, ".bin/cf") !== null;
 
   // Parse package.json once for all fields that need it
   const pkgPath = path.join(root, "package.json");
@@ -91,7 +94,7 @@ export function detectProject(root: string): ProjectInfo {
   // Detect "type": "module" in package.json
   const hasTypeModule = pkg?.type === "module";
 
-  // Detect ISR (`export const revalidate`) and MDX usage. Both scan the same
+  // Detect ISR and MDX usage. Both scan the same
   // app/ tree, so they share a single recursive walk per directory instead of
   // walking it twice. ISR is App-Router-only (Pages Router ISR isn't detected
   // here — see note below); MDX may also be declared in next.config.
@@ -99,11 +102,6 @@ export function detectProject(root: string): ProjectInfo {
   let hasMDX = detectMDXFromConfig(root);
 
   if (isAppRouter) {
-    // ISR detection is only implemented for App Router (scans for
-    // `export const revalidate`). Pages Router ISR (getStaticProps + revalidate)
-    // is not detected here — wrangler.jsonc will not include the KV namespace
-    // binding for Pages Router projects even if they use ISR. This is a known
-    // gap; KV must be configured manually for Pages Router ISR.
     const appDir = resolveProjectDir(root, "app");
     if (appDir) {
       const found = scanTreeForDetection(appDir, { isr: true, mdx: !hasMDX });
@@ -112,12 +110,16 @@ export function detectProject(root: string): ProjectInfo {
     }
   }
 
-  if (hasPages && !hasMDX) {
+  if (hasPages) {
     const pagesDir = resolveProjectDir(root, "pages");
     if (pagesDir) {
-      hasMDX = scanTreeForDetection(pagesDir, { isr: false, mdx: true }).mdx;
+      const found = scanTreeForDetection(pagesDir, { isr: !hasISR, mdx: !hasMDX });
+      hasISR = hasISR || found.isr;
+      hasMDX = hasMDX || found.mdx;
     }
   }
+
+  hasISR = hasISR || detectCacheComponents(root);
 
   // Detect CodeHike dependency
   const allDeps = {
@@ -149,8 +151,9 @@ export function detectProject(root: string): ProjectInfo {
   };
 }
 
-/** Matches `export const revalidate = …` (ISR opt-in) in App Router source. */
-const ISR_REVALIDATE_PATTERN = /export\s+const\s+revalidate\s*=/;
+/** Matches App Router revalidation or Pages Router static generation exports. */
+const ISR_PATTERN =
+  /export\s+(?:const\s+revalidate\s*=|(?:async\s+)?function\s+getStaticProps\b|const\s+getStaticProps\s*=|\{[^}]*\bgetStaticProps\b[^}]*\})/;
 
 /** Source extensions whose contents are scanned for the ISR pattern. */
 const ISR_SCANNABLE_EXTENSION = /\.(ts|tsx|js|jsx)$/;
@@ -215,7 +218,7 @@ function scanTreeForDetection(
         }
         if (want.isr && !found.isr && ISR_SCANNABLE_EXTENSION.test(entry.name)) {
           try {
-            if (ISR_REVALIDATE_PATTERN.test(fs.readFileSync(fullPath, "utf-8"))) {
+            if (ISR_PATTERN.test(fs.readFileSync(fullPath, "utf-8"))) {
               found.isr = true;
             }
           } catch {
@@ -256,6 +259,28 @@ function detectMDXFromConfig(root: string): boolean {
       } catch {
         // ignore
       }
+    }
+  }
+  return false;
+}
+
+function detectCacheComponents(root: string): boolean {
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
+  for (const fileName of configFiles) {
+    const configPath = path.join(root, fileName);
+    if (!fs.existsSync(configPath)) continue;
+    try {
+      if (/\bcacheComponents\s*:\s*true\b/.test(fs.readFileSync(configPath, "utf-8"))) {
+        return true;
+      }
+    } catch {
+      // ignore unreadable config files
     }
   }
   return false;
