@@ -1397,7 +1397,7 @@ describe("resolveNextConfig transpilePackages", () => {
     ]);
   });
 
-  it("includes optimized packages once after configured packages and defaults", async () => {
+  it("does not treat optimized packages as Turbopack-transpiled packages", async () => {
     const resolved = await resolveNextConfig({
       transpilePackages: ["custom-package"],
       experimental: {
@@ -1405,7 +1405,12 @@ describe("resolveNextConfig transpilePackages", () => {
       },
     });
 
-    expect(resolved.transpilePackages).toEqual(["custom-package", "geist", "optimized-package"]);
+    expect(resolved.optimizePackageImports).toEqual([
+      "optimized-package",
+      "geist",
+      "custom-package",
+    ]);
+    expect(resolved.transpilePackages).toEqual(["custom-package", "geist"]);
   });
 });
 
