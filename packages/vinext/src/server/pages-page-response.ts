@@ -559,7 +559,7 @@ export async function renderPagesPageResponse(
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the
-  // allow-list is unset (the common case) or OTel is not installed,
+  // allow-list is unset (the common case) or OTel is not registered,
   // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
   // verbatim — keeping the no-op path zero-overhead.
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);

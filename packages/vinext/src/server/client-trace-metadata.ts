@@ -10,10 +10,10 @@
  *  - packages/next/src/server/lib/trace/utils.ts (getTracedMetadata)
  *  - packages/next/src/server/app-render/make-get-server-inserted-html.tsx (traceMetaTags)
  *
- * OpenTelemetry is an optional peer — we resolve `@opentelemetry/api` at
- * runtime and silently no-op when it is not installed. This matches user
- * expectations: apps that don't configure OTel get no meta tags, and apps
- * that do get the filtered subset they asked for in `clientTraceMetadata`.
+ * OpenTelemetry is optional. We read the API's registered global delegates
+ * directly and silently no-op when no compatible context manager or propagator
+ * has been registered. This avoids requiring the optional package from ESM
+ * runtimes while still observing the same delegates as `@opentelemetry/api`.
  */
 import { escapeHtmlAttr } from "./html.js";
 
@@ -35,40 +35,53 @@ const carrierSetter: TextMapSetter = {
 
 /**
  * Pull entries off the active OpenTelemetry context via the registered
- * propagator. Returns an empty array when `@opentelemetry/api` is not
- * installed or when no propagator has been registered.
+ * propagator. Returns an empty array when no OpenTelemetry context manager or
+ * propagator has been registered.
  *
  * The implementation mirrors Next.js's `NextTracerImpl.getTracePropagationData`:
  * we call `propagation.inject(activeContext, entries, setter)` and let the
  * setter push entries into our carrier array.
  */
-type OpenTelemetryApi = {
-  context: { active(): unknown };
-  propagation: {
+type OpenTelemetryGlobalRegistry = {
+  version: string;
+  context?: { active(): unknown };
+  propagation?: {
     inject(context: unknown, carrier: ClientTraceDataEntry[], setter: TextMapSetter): void;
   };
 };
 
+const OPEN_TELEMETRY_API_GLOBAL = Symbol.for("opentelemetry.js.api.1");
+const OPEN_TELEMETRY_API_VERSION = /^1\.\d+\.\d+$/;
+const ROOT_NOOP_CONTEXT = {
+  getValue(): undefined {
+    return undefined;
+  },
+  setValue() {
+    return this;
+  },
+  deleteValue() {
+    return this;
+  },
+};
+
+function getOpenTelemetryRegistry(): OpenTelemetryGlobalRegistry | undefined {
+  const registry = Reflect.get(globalThis, OPEN_TELEMETRY_API_GLOBAL) as
+    | Partial<OpenTelemetryGlobalRegistry>
+    | undefined;
+  if (typeof registry?.version !== "string") return undefined;
+  if (!OPEN_TELEMETRY_API_VERSION.test(registry.version)) return undefined;
+  if (typeof registry.propagation?.inject !== "function") return undefined;
+  return registry as OpenTelemetryGlobalRegistry;
+}
+
 function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {
-  let api: OpenTelemetryApi | undefined;
-  try {
-    // Use require() at runtime so `@opentelemetry/api` is an optional peer.
-    // Bundlers (Vite/esbuild) leave the `require` reference alone, so apps
-    // that don't install the package never hit this branch.
-    const req = (globalThis as { require?: (id: string) => unknown }).require;
-    if (typeof req === "function") {
-      api = req("@opentelemetry/api") as OpenTelemetryApi;
-    }
-  } catch {
-    return [];
-  }
-
-  if (!api) return [];
+  const registry = getOpenTelemetryRegistry();
+  if (!registry?.propagation) return [];
 
   try {
-    const activeContext = api.context.active();
+    const activeContext = registry.context?.active() ?? ROOT_NOOP_CONTEXT;
     const entries: ClientTraceDataEntry[] = [];
-    api.propagation.inject(activeContext, entries, carrierSetter);
+    registry.propagation.inject(activeContext, entries, carrierSetter);
     return entries;
   } catch {
     return [];

@@ -263,6 +263,9 @@ importers:
       '@mswjs/interceptors':
         specifier: 'catalog:'
         version: 0.41.9
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.60.0

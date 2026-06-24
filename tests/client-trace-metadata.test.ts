@@ -5,6 +5,15 @@
  * Source: packages/next/src/server/lib/trace/utils.ts (getTracedMetadata)
  *         packages/next/src/server/app-render/make-get-server-inserted-html.tsx
  */
+import {
+  ROOT_CONTEXT,
+  context,
+  propagation,
+  trace,
+  type Context,
+  type ContextManager,
+  type TextMapPropagator,
+} from "@opentelemetry/api";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   filterClientTraceMetadata,
@@ -79,12 +88,9 @@ describe("client trace metadata: renderClientTraceMetadataTags", () => {
 });
 
 describe("client trace metadata: getClientTraceMetadataHTML", () => {
-  // The default global has no `require`, so any optional OTel resolution
-  // returns no entries.
-  type WithRequire = { require?: (id: string) => unknown };
-
   afterEach(() => {
-    delete (globalThis as WithRequire).require;
+    context.disable();
+    propagation.disable();
   });
 
   it("returns empty string when the allow-list is unset", () => {
@@ -92,38 +98,73 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     expect(getClientTraceMetadataHTML([])).toBe("");
   });
 
-  it("returns empty string when @opentelemetry/api is not installed", () => {
-    (globalThis as WithRequire).require = (id: string) => {
-      const err = new Error(`Cannot find module '${id}'`) as Error & { code?: string };
-      err.code = "MODULE_NOT_FOUND";
-      throw err;
-    };
+  it("returns empty string when OpenTelemetry delegates are not registered", () => {
     expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe("");
   });
 
-  it("renders <meta> tags for keys in the allow-list when an OTel propagator is registered", () => {
-    const propagator = {
-      inject(
-        _ctx: unknown,
-        carrier: ClientTraceDataEntry[],
-        setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
-      ) {
+  it("injects with a root context when only an OTel propagator is registered", () => {
+    const propagator: TextMapPropagator = {
+      inject(activeContext, carrier, setter) {
+        expect(activeContext.getValue(Symbol("missing"))).toBeUndefined();
         setter.set(carrier, "my-test-key-1", "my-test-value-1");
-        setter.set(carrier, "my-test-key-2", "my-test-value-2");
-        setter.set(carrier, "non-metadata-key-3", "non-metadata-key-3");
-        setter.set(carrier, "my-parent-span-id", "abc123def4567890");
+      },
+      extract(activeContext) {
+        return activeContext;
+      },
+      fields() {
+        return ["my-test-key-1"];
       },
     };
 
-    const fakeApi = {
-      context: { active: () => ({}) },
-      propagation: propagator,
+    expect(propagation.setGlobalPropagator(propagator)).toBe(true);
+    expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe(
+      '<meta name="my-test-key-1" content="my-test-value-1"/>',
+    );
+  });
+
+  it("renders <meta> tags for keys in the allow-list when an OTel propagator is registered", () => {
+    const activeContext = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "1234567890abcdef1234567890abcdef",
+      spanId: "abc123def4567890",
+      traceFlags: 1,
+    });
+    const contextManager: ContextManager = {
+      active: () => activeContext,
+      with<A extends unknown[], F extends (...args: A) => ReturnType<F>>(
+        _activeContext: Context,
+        fn: F,
+        thisArg?: ThisParameterType<F>,
+        ...args: A
+      ): ReturnType<F> {
+        return fn.apply(thisArg, args);
+      },
+      bind<T>(_activeContext: Context, target: T): T {
+        return target;
+      },
+      enable() {
+        return this;
+      },
+      disable() {
+        return this;
+      },
+    };
+    const propagator: TextMapPropagator = {
+      inject(ctx, carrier, setter) {
+        setter.set(carrier, "my-test-key-1", "my-test-value-1");
+        setter.set(carrier, "my-test-key-2", "my-test-value-2");
+        setter.set(carrier, "non-metadata-key-3", "non-metadata-key-3");
+        setter.set(carrier, "my-parent-span-id", trace.getSpanContext(ctx)?.spanId ?? "");
+      },
+      extract(ctx) {
+        return ctx;
+      },
+      fields() {
+        return [];
+      },
     };
 
-    (globalThis as WithRequire).require = (id: string) => {
-      if (id === "@opentelemetry/api") return fakeApi;
-      throw new Error(`Cannot find module '${id}'`);
-    };
+    expect(context.setGlobalContextManager(contextManager)).toBe(true);
+    expect(propagation.setGlobalPropagator(propagator)).toBe(true);
 
     const html = getClientTraceMetadataHTML([
       "my-test-key-1",
