@@ -396,7 +396,7 @@ export type ResolvedNextConfig = {
   reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
-  /** Packages treated as application code instead of foreign client dependencies. */
+  /** Final packages treated as application code instead of foreign dependencies. */
   transpilePackages: string[];
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
@@ -1475,6 +1475,9 @@ export async function resolveNextConfig(
     ...readStringArray(config.transpilePackages),
     ...DEFAULT_TRANSPILED_PACKAGES,
   ];
+  for (const packageName of optimizePackageImports) {
+    if (!transpilePackages.includes(packageName)) transpilePackages.push(packageName);
+  }
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.

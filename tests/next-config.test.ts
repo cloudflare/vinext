@@ -1396,6 +1396,17 @@ describe("resolveNextConfig transpilePackages", () => {
       "geist",
     ]);
   });
+
+  it("includes optimized packages once after configured packages and defaults", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package"],
+      experimental: {
+        optimizePackageImports: ["optimized-package", "geist", "custom-package"],
+      },
+    });
+
+    expect(resolved.transpilePackages).toEqual(["custom-package", "geist", "optimized-package"]);
+  });
 });
 
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
