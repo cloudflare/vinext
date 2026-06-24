@@ -2464,6 +2464,12 @@ function matchInterceptConvention(name: string): { prefix: string; convention: s
 /**
  * Collect page.tsx files inside an intercepting route directory tree
  * and compute their target URL patterns.
+ *
+ * `currentDir`, `interceptRoot`, `routeDir`, `appDir`, and `interceptParentDir`
+ * must all be forward-slash. `currentDir` descends with `path.posix.join` and
+ * its `findFile` results become the stored layout/page paths. The others are
+ * relativized against `appDir` (and each other) to derive the intercept page
+ * segments and URL patterns.
  */
 function collectInterceptingPages(
   currentDir: string,
@@ -2505,9 +2511,7 @@ function collectInterceptingPages(
       results.push({
         branchSegments: [
           interceptSegment,
-          ...normalizePathSeparators(path.relative(interceptRoot, path.dirname(page)))
-            .split("/")
-            .filter(Boolean),
+          ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
         ],
         convention,
         layoutPaths: [...layoutPaths],
@@ -2534,7 +2538,7 @@ function collectInterceptingPages(
     // Skip private folders (prefixed with _)
     if (entry.name.startsWith("_")) continue;
     collectInterceptingPages(
-      path.join(currentDir, entry.name),
+      path.posix.join(currentDir, entry.name),
       interceptRoot,
       convention,
       interceptSegment,
