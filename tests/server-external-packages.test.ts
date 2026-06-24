@@ -19,6 +19,12 @@ describe("mergeServerExternalPackages", () => {
     expect(packages).not.toContain("typescript");
   });
 
+  it("lets default and optimized transpile packages override externals", () => {
+    const packages = mergeServerExternalPackages([], ["geist", "shiki"]);
+
+    expect(packages).not.toContain("shiki");
+  });
+
   it("rejects conflicts between explicit externals and transpiled packages", () => {
     expect(() => mergeServerExternalPackages(["typescript"], ["typescript"])).toThrow(
       "The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': typescript",
