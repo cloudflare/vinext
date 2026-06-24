@@ -637,6 +637,42 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(tags).not.toContain("_N_T_/blog/hello/page");
   });
 
+  it("seeds the root route with _N_T_/index tag (routeSegments: [])", async () => {
+    const writes: { metadata: { tags?: string[] } }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "issue-1984-root-route",
+        routes: [
+          {
+            route: "/",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            routeSegments: [],
+          },
+        ],
+      },
+      {
+        "index.html": "<html>Home</html>",
+        "index.rsc": "RSC home",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(_key, _data, metadata): Promise<void> {
+        writes.push({ metadata });
+      },
+    });
+
+    const tags = writes[0]?.metadata.tags ?? [];
+    // buildAppPageTags('/', [], []) emits _N_T_/index; the concrete fallback
+    // (buildAppPageCacheTags) misses it — this test catches a regression.
+    expect(tags).toContain("_N_T_/index");
+    expect(tags).toContain("_N_T_/");
+  });
+
   it("falls back to concrete-path tags when routeSegments is absent (legacy manifest)", async () => {
     const writes: { metadata: { tags?: string[] } }[] = [];
 

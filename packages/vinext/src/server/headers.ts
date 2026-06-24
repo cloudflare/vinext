@@ -62,10 +62,22 @@ export const VINEXT_IMPLICIT_TAGS_HEADER = "x-vinext-implicit-tags";
 
 /**
  * User-Agent the TPR pre-render client sends when driving the local prod server.
- * Used to gate internal-only response signals such as
- * {@link VINEXT_IMPLICIT_TAGS_HEADER}.
+ * Kept for identification/debugging; the security gate uses
+ * {@link VINEXT_TPR_SECRET_HEADER} instead.
  */
 export const VINEXT_TPR_USER_AGENT = "vinext-tpr/1.0";
+
+/**
+ * Per-build secret token header sent by the TPR pre-render client to gate
+ * {@link VINEXT_IMPLICIT_TAGS_HEADER} emission. A random UUID is generated at
+ * the start of each TPR run, passed to the local prod-server subprocess via the
+ * `VINEXT_TPR_SECRET` env var, and sent as this header in every pre-render
+ * request. The server rejects (silently omits the response header) when the
+ * header is absent or does not match `process.env.VINEXT_TPR_SECRET`, which is
+ * always unset in the deployed Worker — so the response header never leaks to
+ * public clients even if the UA is spoofed.
+ */
+export const VINEXT_TPR_SECRET_HEADER = "x-vinext-tpr-secret";
 
 /** Marker on cached ISR entries indicating RSC payload (value "1"). */
 export const VINEXT_RSC_MARKER_HEADER = "x-vinext-rsc";
@@ -239,4 +251,6 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   // Response-only signal; listed here so a forged inbound value is stripped.
   VINEXT_IMPLICIT_TAGS_HEADER,
+  // Internal auth token; stripped so it cannot be forwarded through rewrites.
+  VINEXT_TPR_SECRET_HEADER,
 ];

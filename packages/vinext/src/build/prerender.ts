@@ -1599,8 +1599,10 @@ export async function prerenderApp({
           ...(isFallback ? { fallback: true } : {}),
           // #1984: record the route's filesystem segments so cache seeding can
           // derive the same bracketed implicit tags the live render emits.
-          // Omitted when empty (root route) — seed-cache falls back correctly.
-          ...(routeSegments.length > 0 ? { routeSegments } : {}),
+          // Always present (even [] for the root route) so seed-cache uses
+          // buildAppPageTags for all app routes, including the root, which
+          // emits the _N_T_/index tag the concrete-path fallback misses.
+          routeSegments,
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
@@ -1800,9 +1802,8 @@ export function writePrerenderIndex(
         ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
-        ...(r.routeSegments && r.routeSegments.length > 0
-          ? { routeSegments: r.routeSegments }
-          : {}),
+        // Preserve [] for the root route so seed-cache uses buildAppPageTags.
+        ...(r.routeSegments !== undefined ? { routeSegments: r.routeSegments } : {}),
       };
     }
     if (r.status === "skipped") {

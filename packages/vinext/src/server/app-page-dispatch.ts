@@ -85,7 +85,7 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
-import { VINEXT_IMPLICIT_TAGS_HEADER, VINEXT_TPR_USER_AGENT } from "./headers.js";
+import { VINEXT_IMPLICIT_TAGS_HEADER, VINEXT_TPR_SECRET_HEADER } from "./headers.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
@@ -595,16 +595,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   // #1984: TPR drives this prod server over HTTP to pre-render popular pages for
   // KV. So its uploaded entries are reachable by the same tag-based invalidation
-  // as live ISR, surface the page's implicit tag set (the exact set the live
-  // render emits — including bracketed `_N_T_/posts/[slug]/page` pattern tags)
-  // as an internal-only response header the TPR uploader reads back verbatim.
-  // Gated strictly to the TPR User-Agent so it never reaches real clients, and
-  // applied to BOTH the cache-HIT and fresh-render responses below (a HIT of a
-  // build-seeded entry carries no tags on the response otherwise). On a HIT no
-  // fetches run so getCollectedFetchTags() is empty, matching the seeded entry's
-  // own path/route tag set.
+  // as live ISR, surface the page's implicit tag set (including bracketed
+  // `_N_T_/posts/[slug]/page` pattern tags) as an internal-only response header
+  // the TPR uploader reads back verbatim. Applied to BOTH cache-HIT and
+  // fresh-render responses (a HIT of a build-seeded entry carries no tags on
+  // the response otherwise). On a HIT no fetches run so getCollectedFetchTags()
+  // is empty, matching the seeded entry's own path/route tag set. On a fresh
+  // render, tags are captured before the stream drains, so streaming-collected
+  // fetch tags may be missing from the header on that path (rare for TPR, which
+  // is mostly HITs; the path/layout/page implicit tags are always present).
+  // Gated on a per-build secret token (VINEXT_TPR_SECRET env var) so it never
+  // reaches public clients — the env var is only set in the TPR subprocess and
+  // is always absent in the deployed Worker.
   const decorateInternalImplicitTags = (response: Response): Response => {
-    if (options.request.headers.get("user-agent") !== VINEXT_TPR_USER_AGENT) {
+    const secret = process.env.VINEXT_TPR_SECRET;
+    if (!secret || options.request.headers.get(VINEXT_TPR_SECRET_HEADER) !== secret) {
       return response;
     }
     const tags = buildAppPageTags(

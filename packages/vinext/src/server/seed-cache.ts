@@ -132,11 +132,11 @@ export async function seedMemoryCacheFromPrerender(
     // seeded entry tagged `_N_T_/posts/hello/page` so a typed
     // revalidatePath('/posts/[slug]','layout') can never reach it.
     //
-    // Fallback: legacy/partial manifests may omit `routeSegments` (and the root
-    // route legitimately has none). `buildAppPageTags(cachePathname, [], [])`
-    // would emit a wrong `_N_T_/page`, so we fall back to the pre-#1984
-    // concrete-path builder — byte-identical for static routes and a safe
-    // (non-crashing) degrade for dynamic ones.
+    // Fallback: legacy manifests (produced before #1984) may omit `routeSegments`.
+    // Current builds always include it (even [] for the root route), so this
+    // branch only fires for pre-#1984 bundles. `buildAppPageTags(cachePathname,
+    // [], [])` would emit a wrong `_N_T_/page`, so we fall back to the
+    // concrete-path builder — safe degrade, no crash.
     const tags = route.routeSegments
       ? buildAppPageTags(cachePathname, [], route.routeSegments)
       : buildAppPageCacheTags(cachePathname, []);
