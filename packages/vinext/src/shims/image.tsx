@@ -15,6 +15,7 @@
 import React, { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as ReactDOM from "react-dom";
 import { Image as UnpicImage } from "@unpic/react";
+import { getDeploymentId } from "../utils/deployment-id.js";
 import { hasRemoteMatch, isPrivateIp, type RemotePattern } from "./image-config.js";
 import { useMergedRef } from "./use-merged-ref.js";
 
@@ -52,6 +53,13 @@ const __imageDeviceSizes: number[] = (() => {
     );
   } catch {
     return [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+  }
+})();
+const __imageSizes: number[] = (() => {
+  try {
+    return JSON.parse(process.env.__VINEXT_IMAGE_SIZES ?? "[16,32,48,64,96,128,256,384]");
+  } catch {
+    return [16, 32, 48, 64, 96, 128, 256, 384];
   }
 })();
 /**
@@ -269,7 +277,30 @@ function resolveImageSource(v: {
  * These are the breakpoints used for srcSet generation.
  * Configurable via `images.deviceSizes` in next.config.js.
  */
-const RESPONSIVE_WIDTHS = __imageDeviceSizes;
+const RESPONSIVE_WIDTHS = [...__imageDeviceSizes].sort((left, right) => left - right);
+const ALL_IMAGE_WIDTHS = [...RESPONSIVE_WIDTHS, ...__imageSizes].sort(
+  (left, right) => left - right,
+);
+
+function extractLocalDeploymentId(src: string): { src: string; deploymentId?: string } {
+  let deploymentId = getDeploymentId();
+  if (!src.startsWith("/") || src.startsWith("//")) return { src, deploymentId };
+
+  const queryIndex = src.indexOf("?");
+  if (queryIndex === -1) return { src, deploymentId };
+
+  const params = new URLSearchParams(src.slice(queryIndex + 1));
+  const sourceDeploymentId = params.get("dpl");
+  if (!sourceDeploymentId) return { src, deploymentId };
+
+  deploymentId = sourceDeploymentId;
+  params.delete("dpl");
+  const remainingQuery = params.toString();
+  return {
+    src: src.slice(0, queryIndex) + (remainingQuery ? `?${remainingQuery}` : ""),
+    deploymentId,
+  };
+}
 
 /**
  * Build a `/_next/image` optimization URL.
@@ -279,7 +310,10 @@ const RESPONSIVE_WIDTHS = __imageDeviceSizes;
  * server handles it as a passthrough (serves the original file).
  */
 export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
-  return `/_next/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
+  const source = extractLocalDeploymentId(src);
+  const deploymentQuery =
+    source.src.startsWith("/") && source.deploymentId ? `&dpl=${source.deploymentId}` : "";
+  return `/_next/image?url=${encodeURIComponent(source.src)}&w=${width}&q=${quality}${deploymentQuery}`;
 }
 
 function preloadImageResource(input: {
@@ -306,11 +340,48 @@ function preloadImageResource(input: {
  * server can resize and transcode the image. Only includes widths that are
  * <= 2x the original image width to avoid pointless upscaling.
  */
-function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
-  const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
-  if (widths.length === 0)
-    return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
-  return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
+function getImageWidths(width: number): number[] {
+  return [
+    ...new Set(
+      [width, width * 2].map(
+        (targetWidth) =>
+          ALL_IMAGE_WIDTHS.find((configuredWidth) => configuredWidth >= targetWidth) ??
+          ALL_IMAGE_WIDTHS[ALL_IMAGE_WIDTHS.length - 1],
+      ),
+    ),
+  ];
+}
+
+function generateImageAttributes(
+  src: string,
+  width: number,
+  quality: number = 75,
+  sizes?: string,
+): { src: string; srcSet: string } {
+  if (sizes) {
+    const widths = RESPONSIVE_WIDTHS.filter((candidateWidth) => candidateWidth <= width * 2);
+    const candidates = widths.length > 0 ? widths : [width];
+    return {
+      src: imageOptimizationUrl(src, width, quality),
+      srcSet: candidates
+        .map(
+          (candidateWidth) =>
+            `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
+        )
+        .join(", "),
+    };
+  }
+
+  const widths = getImageWidths(width);
+  return {
+    src: imageOptimizationUrl(src, widths[widths.length - 1], quality),
+    srcSet: widths
+      .map(
+        (candidateWidth, index) =>
+          `${imageOptimizationUrl(src, candidateWidth, quality)} ${index + 1}x`,
+      )
+      .join(", "),
+  };
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
@@ -649,21 +720,24 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_next/image with the appropriate width.
-  const srcSet =
+  const optimizedAttributes =
     imgWidth && !fill && !skipOptimization
-      ? generateSrcSet(src, imgWidth, imgQuality)
-      : imgWidth && !fill
-        ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2)
-            .map((w) => `${src} ${w}w`)
-            .join(", ") || `${src} ${imgWidth}w`
-        : undefined;
+      ? generateImageAttributes(src, imgWidth, imgQuality, sizes)
+      : undefined;
+  const srcSet = optimizedAttributes
+    ? optimizedAttributes.srcSet
+    : imgWidth && !fill
+      ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2)
+          .map((w) => `${src} ${w}w`)
+          .join(", ") || `${src} ${imgWidth}w`
+      : undefined;
 
   // The main `src` also goes through the optimization endpoint. Use the
   // declared width (or the first responsive width as fallback).
   const optimizedSrc = skipOptimization
     ? src
-    : imgWidth
-      ? imageOptimizationUrl(src, imgWidth, imgQuality)
+    : optimizedAttributes
+      ? optimizedAttributes.src
       : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Blur placeholder: show a low-quality background while the image loads.
@@ -809,17 +883,18 @@ export function getImageProps(props: ImageProps): {
   const isSvg = isSvgUrl(resolvedSrc);
   const skipOpt =
     (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  const optimizedAttributes =
+    imgWidth && !fill && !skipOpt
+      ? generateImageAttributes(resolvedSrc, imgWidth, imgQuality, sizes)
+      : null;
   const optimizedSrc = skipOpt
     ? resolvedSrc
-    : imgWidth
-      ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
+    : optimizedAttributes
+      ? optimizedAttributes.src
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Build srcSet for local images — each width points to /_next/image
-  const srcSet =
-    imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
-      ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
-      : undefined;
+  const srcSet = optimizedAttributes?.srcSet;
 
   // Blur placeholder styles — sanitize to prevent CSS injection
   const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;

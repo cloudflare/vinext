@@ -158,5 +158,21 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
   });
 }
 
+describe("image deployment query parity", () => {
+  it("accepts Next.js deployment IDs without including them in the source path", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const requestUrl = new URL(
+      "http://vinext.test/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Ftest.hash.png&w=828&q=85&dpl=deploy-1",
+    );
+
+    expect(parseImageParams(requestUrl)).toEqual({
+      imageUrl: "/_next/static/media/test.hash.png",
+      width: 828,
+      quality: 85,
+    });
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
