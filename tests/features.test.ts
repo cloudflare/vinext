@@ -2805,6 +2805,27 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('media="(prefers-color-scheme: dark)"');
   });
 
+  it("does not serialize event handlers from icon descriptors", () => {
+    const html = renderMetadataToHtml(
+      {
+        icons: {
+          icon: {
+            url: "/icon.png",
+            onLoad: "alert('unsafe')",
+          } as never,
+        },
+      },
+      "/products",
+      { streamedIconKey: "metadata-icons" },
+    );
+
+    expect(html).toBe(
+      '<link data-vinext-streamed-icon="metadata-icons:0" rel="icon" href="/icon.png">',
+    );
+    expect(html).not.toContain("onLoad");
+    expect(html).not.toContain("onload");
+  });
+
   it("renders single descriptor icon objects", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {

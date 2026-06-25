@@ -268,8 +268,14 @@ type SocialImageDescriptor = {
   type?: string;
 };
 
-type IconDescriptor = Omit<React.LinkHTMLAttributes<HTMLLinkElement>, "href"> & {
+type IconDescriptor = {
   url: string | URL;
+  type?: string;
+  sizes?: string;
+  color?: string;
+  rel?: string;
+  media?: string;
+  fetchPriority?: "high" | "low" | "auto";
 };
 
 type IconInput = string | URL | IconDescriptor;
@@ -819,26 +825,6 @@ function renderMetadataAttributes(props: object, names: readonly string[]): stri
   return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
 }
 
-function renderLinkAttributes(props: object): string {
-  const attributes: string[] = [];
-  for (const [name, value] of Object.entries(props)) {
-    if (
-      name === "children" ||
-      name === "dangerouslySetInnerHTML" ||
-      value === null ||
-      value === undefined ||
-      typeof value === "boolean" ||
-      typeof value === "function" ||
-      typeof value === "object"
-    ) {
-      continue;
-    }
-    const htmlName = name === "className" ? "class" : name.toLowerCase();
-    attributes.push(`${htmlName}="${escapeHtmlAttribute(String(value))}"`);
-  }
-  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
-}
-
 function renderMetadataElementToHtml(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (Array.isArray(node)) return node.map(renderMetadataElementToHtml).join("");
@@ -856,7 +842,17 @@ function renderMetadataElementToHtml(node: unknown): string {
     case "meta":
       return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
     case "link":
-      return `<link${renderLinkAttributes(props)}>`;
+      return `<link${renderMetadataAttributes(props, [
+        "data-vinext-streamed-icon",
+        "rel",
+        "href",
+        "hrefLang",
+        "type",
+        "sizes",
+        "color",
+        "media",
+        "fetchPriority",
+      ])}>`;
     default:
       return "";
   }
@@ -1181,15 +1177,20 @@ export function MetadataHead({
 
     let streamedIconOrder = 0;
     const appendIcons = (entries: IconDescriptor[], defaultRel: string) => {
-      for (const { url, rel, ...props } of entries) {
+      for (const { url, rel, type, sizes, color, media, fetchPriority } of entries) {
         elements.push(
           <link
             key={key++}
-            {...props}
-            data-vinext-streamed-icon={streamedIconKey}
-            data-vinext-streamed-icon-order={streamedIconKey ? streamedIconOrder++ : undefined}
+            data-vinext-streamed-icon={
+              streamedIconKey ? `${streamedIconKey}:${streamedIconOrder++}` : undefined
+            }
             rel={rel || defaultRel}
             href={stringifyUrl(url)}
+            type={type}
+            sizes={sizes}
+            color={color}
+            media={media}
+            fetchPriority={fetchPriority}
           />,
         );
       }
