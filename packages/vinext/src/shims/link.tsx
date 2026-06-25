@@ -506,28 +506,36 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
                   shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
                 }
                 const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-                const shellResponse = await fetch(shellRscUrl, {
-                  headers: shellHeaders,
-                  credentials: "include",
-                  priority,
-                  // @ts-expect-error — purpose is a valid fetch option in some browsers
-                  purpose: "prefetch",
-                });
-                if (!shellResponse.ok) {
-                  return shellResponse;
-                }
-                prefetchRscResponse(
+                const shellCacheKey = AppElementsWire.encodeCacheKey(
                   shellRscUrl,
-                  Promise.resolve(shellResponse.clone()),
                   interceptionContext,
-                  mountedSlotsHeader,
-                  undefined,
-                  {
-                    cacheForNavigation: false,
-                    optimisticRouteShell: true,
-                  },
                 );
-                await shellResponse.arrayBuffer().catch(() => {});
+                const shellCache = getPrefetchCache();
+                let shellEntry = shellCache.get(shellCacheKey);
+                if (shellEntry === undefined) {
+                  getPrefetchedUrls().add(shellCacheKey);
+                  prefetchRscResponse(
+                    shellRscUrl,
+                    Promise.resolve().then(() =>
+                      fetch(shellRscUrl, {
+                        headers: shellHeaders,
+                        credentials: "include",
+                        priority,
+                        // @ts-expect-error — purpose is a valid fetch option in some browsers
+                        purpose: "prefetch",
+                      }),
+                    ),
+                    interceptionContext,
+                    mountedSlotsHeader,
+                    undefined,
+                    {
+                      cacheForNavigation: false,
+                      optimisticRouteShell: true,
+                    },
+                  );
+                  shellEntry = shellCache.get(shellCacheKey);
+                }
+                await shellEntry?.pending?.catch(() => {});
                 return fetch(rscUrl, {
                   headers,
                   credentials: "include",

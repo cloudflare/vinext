@@ -1664,7 +1664,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("gates an explicit full prefetch payload behind a loading-shell request", async () => {
+  it("awaits an automatic loading-shell prefetch before upgrading to a full payload", async () => {
     const observer = stubIntersectionObserver();
     let resolveShell: ((response: Response) => void) | undefined;
     let releaseShellBody: (() => void) | undefined;
@@ -1679,9 +1679,9 @@ describe("Link prefetch scheduling", () => {
       },
     });
     const result = await renderIsolatedLink({
-      href: "/intent-prefetch-target",
+      href: "/blog/hello",
       nodeEnv: "production",
-      props: { prefetch: true },
+      props: { unstable_dynamicOnHover: true },
     });
     const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
 
@@ -1702,7 +1702,7 @@ describe("Link prefetch scheduling", () => {
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
 
-      pingVisibleLinksFromRuntime();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -1731,6 +1731,11 @@ describe("Link prefetch scheduling", () => {
           (entry) => entry.cacheForNavigation === false && entry.optimisticRouteShell === true,
         ),
       ).toBe(true);
+      await Promise.all(
+        [...getPrefetchCache().values()].flatMap((entry) =>
+          entry.pending === undefined ? [] : [entry.pending.catch(() => {})],
+        ),
+      );
     } finally {
       result.restoreNodeEnv();
     }
@@ -1806,11 +1811,12 @@ describe("Link prefetch scheduling", () => {
       ).toBe(true);
 
       invalidatePrefetchCache();
-      await waitForFetchCalls(result.fetch, 3);
+      await waitForFetchCalls(result.fetch, 4);
+      await flushPrefetchTasks();
 
-      expect(result.fetch).toHaveBeenCalledTimes(3);
+      expect(result.fetch).toHaveBeenCalledTimes(4);
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[2],
+        result.fetch.mock.calls[3],
         "/blog/hello",
         expect.objectContaining({
           credentials: "include",
