@@ -1,22 +1,46 @@
 "use client";
 
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 
 export const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
 
-export function reinsertStreamedIcons(): void {
-  const streamedIcons = document.querySelectorAll(
-    'body link[rel="icon"], body link[rel="apple-touch-icon"]',
-  );
-  if (streamedIcons.length === 0) return;
+const STREAMED_ICON_ATTRIBUTE = "data-vinext-streamed-icon";
 
+export function reconcileStreamedIcons(metadataKey: string): void {
   document
-    .querySelectorAll('head link[rel="icon"], head link[rel="apple-touch-icon"]')
-    .forEach((element) => element.remove());
-  streamedIcons.forEach((element) => document.head.appendChild(element));
+    .querySelectorAll<HTMLLinkElement>('body link[rel="icon"], body link[rel="apple-touch-icon"]')
+    .forEach((icon) => document.head.appendChild(icon));
+
+  const ownedIcons = [
+    ...document.querySelectorAll<HTMLLinkElement>(`head link[${STREAMED_ICON_ATTRIBUTE}]`),
+  ];
+  const retainedKeys = new Set<string>();
+
+  for (let index = ownedIcons.length - 1; index >= 0; index--) {
+    const icon = ownedIcons[index];
+    if (icon.getAttribute(STREAMED_ICON_ATTRIBUTE) !== metadataKey) {
+      icon.remove();
+      continue;
+    }
+
+    const iconKey = `${icon.rel}\n${icon.href}`;
+    if (retainedKeys.has(iconKey)) {
+      icon.remove();
+      continue;
+    }
+    retainedKeys.add(iconKey);
+  }
 }
 
-export function StreamedIconsInsertion({ metadataKey }: { metadataKey: string }) {
-  useEffect(reinsertStreamedIcons, [metadataKey]);
-  return <script dangerouslySetInnerHTML={{ __html: REINSERT_STREAMED_ICONS_SCRIPT }} />;
+export function StreamedIconsInsertion({
+  metadataKey,
+  nonce,
+}: {
+  metadataKey: string;
+  nonce?: string;
+}) {
+  useLayoutEffect(() => reconcileStreamedIcons(metadataKey), [metadataKey]);
+  return (
+    <script nonce={nonce} dangerouslySetInnerHTML={{ __html: REINSERT_STREAMED_ICONS_SCRIPT }} />
+  );
 }

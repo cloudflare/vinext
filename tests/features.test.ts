@@ -3327,18 +3327,35 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     );
     const html = renderToStaticMarkup(node as React.ReactElement);
 
-    expect(html).toContain('<link rel="icon" href="/favicon.ico">');
-    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png">');
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="icon" href="\/favicon\.ico">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon" href="\/apple-touch-icon\.png">/,
+    );
     expect(html).toContain(
       `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
     );
   });
 
-  it("body placement: omits the icon insertion script without streamed icons", () => {
+  it("body placement: includes icon cleanup reconciliation without streamed icons", () => {
     const node = createAppPageRouteBodyMetadata({ title: "Streamed title" }, "/metadata", "body");
     const html = renderToStaticMarkup(node as React.ReactElement);
 
-    expect(html).not.toContain("document.querySelectorAll('body link");
+    expect(html).toContain("document.querySelectorAll('body link");
+  });
+
+  it("body placement: applies the request nonce to the parser-time icon script", () => {
+    const node = createAppPageRouteBodyMetadata(
+      { icons: { icon: "/favicon.ico" } },
+      "/icons",
+      "body",
+      false,
+      "test-nonce",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toContain('<script nonce="test-nonce">');
   });
 });
 

@@ -197,6 +197,7 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  scriptNonce?: string;
   trailingSlash?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -527,14 +528,31 @@ function hasStreamedIcons(metadata: Metadata): boolean {
   return Boolean(icons.shortcut || icons.icon || icons.apple || icons.other);
 }
 
+function createStreamedIconKey(pathname: string, metadataHtml: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < metadataHtml.length; index++) {
+    hash ^= metadataHtml.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${pathname}:${(hash >>> 0).toString(36)}`;
+}
+
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
+  scriptNonce?: string,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
-  const metadataHtml = renderMetadataToHtml(metadata, pathname, { trailingSlash });
+  const renderedMetadataHtml = renderMetadataToHtml(metadata, pathname, { trailingSlash });
+  const metadataKey = hasStreamedIcons(metadata)
+    ? createStreamedIconKey(pathname, renderedMetadataHtml)
+    : "";
+  const metadataHtml = renderedMetadataHtml.replace(
+    /<link(?=[^>]*\srel="(?:icon|apple-touch-icon)")/g,
+    `<link data-vinext-streamed-icon="${metadataKey}"`,
+  );
   return (
     <>
       <div
@@ -543,7 +561,7 @@ export function createAppPageRouteBodyMetadata(
           __html: metadataHtml,
         }}
       />
-      {hasStreamedIcons(metadata) ? <StreamedIconsInsertion metadataKey={metadataHtml} /> : null}
+      <StreamedIconsInsertion metadataKey={metadataKey} nonce={scriptNonce} />
     </>
   );
 }
@@ -1158,6 +1176,7 @@ export function buildAppPageElements<
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
         options.trailingSlash,
+        options.scriptNonce,
       )}
     </>
   );
