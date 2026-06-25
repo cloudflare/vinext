@@ -78,6 +78,7 @@ export async function renderAppPageCacheArtifacts(
   });
   const rscCapture = teeAppPageRscStreamForCapture(rscStream, options.captureRscData);
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
+  const fontPreloads = options.getFontPreloads();
   const ssrHandler = await options.loadSsrHandler();
   const htmlResult = await ssrHandler.handleSsr(
     rscCapture.ssrStream,
@@ -85,7 +86,7 @@ export async function renderAppPageCacheArtifacts(
     {
       links: options.getFontLinks(),
       styles: options.getFontStyles(),
-      preloads: options.getFontPreloads(),
+      preloads: fontPreloads,
     },
     {
       basePath: options.basePath,
@@ -105,7 +106,7 @@ export async function renderAppPageCacheArtifacts(
   const reactLinkHeader = isAppSsrRenderResult(htmlResult) ? htmlResult.linkHeader : undefined;
   const linkHeader = buildAppPageLinkHeader(
     reactLinkHeader,
-    buildAppPageFontLinkHeader(options.getFontPreloads()),
+    buildAppPageFontLinkHeader(fontPreloads),
     options.reactMaxHeadersLength,
   );
   const html = await readStreamAsText(htmlStream);
