@@ -591,6 +591,7 @@ async function renderNavigationPayload(
   reuseCurrentBfcacheIds: boolean = true,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   onCommittedState?: (state: AppRouterState) => void,
+  navigationCommitKind?: "authoritative" | "detached",
 ): Promise<NavigationPayloadOutcome> {
   syncServerActionHttpFallbackHead(null);
   return browserNavigationController.renderNavigationPayload({
@@ -610,6 +611,7 @@ async function renderNavigationPayload(
     targetHistoryIndex: traversalIntent === null ? undefined : traversalIntent.targetHistoryIndex,
     targetHref,
     navId,
+    navigationCommitKind,
     visibleCommitMode,
     onCommittedState,
   });
@@ -1939,6 +1941,8 @@ function bootstrapHydration(
                 restoredBfcacheIds,
                 reuseCurrentBfcacheIds,
                 visibleCommitMode,
+                undefined,
+                "detached",
               ).catch((error) => {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
@@ -2084,6 +2088,7 @@ function bootstrapHydration(
           (state) => {
             committedState = state;
           },
+          detachedNavigationCommits ? "authoritative" : undefined,
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during

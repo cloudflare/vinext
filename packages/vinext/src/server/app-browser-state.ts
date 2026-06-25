@@ -68,6 +68,8 @@ export type { OperationLane } from "./navigation-planner.js";
 type OperationRecordBase = {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 };
 
@@ -170,11 +172,17 @@ type PendingNavigationCommitDispositionDecision =
 function createOperationRecord(options: {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 }): PendingOperationRecord {
   return {
     id: options.id,
     lane: options.lane,
+    ...(options.navigationCommitKind !== undefined
+      ? { navigationCommitKind: options.navigationCommitKind }
+      : {}),
+    ...(options.navigationId !== undefined ? { navigationId: options.navigationId } : {}),
     startedVisibleCommitVersion: options.startedVisibleCommitVersion,
     state: "pending",
   };
@@ -298,13 +306,35 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     targetSnapshot,
   });
 
+  if (
+    options.pending.action.operation.navigationCommitKind === "detached" &&
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "authoritative"
+  ) {
+    return {
+      disposition: "skip",
+      preserveElementIds: [],
+      trace: createNavigationTrace(NavigationTraceReasonCodes.staleOperation, traceFields),
+    };
+  }
+
   // OperationToken is the single eligibility authority for commit approval: a
   // result may enter commit approval only if its token proves it belongs to the
   // active navigation and the visible commit version it started from is still
   // current. The token verifies; ApprovedVisibleCommit (downstream) mutates.
+  // A detached/optimistic payload and the authoritative payload that follows
+  // are two renders in one navigation lifecycle. The first visible commit may
+  // advance the version, but it does not supersede its own authoritative data.
+  const isAuthoritativeSameNavigationHandoff =
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "detached" &&
+    options.pending.action.operation.navigationCommitKind === "authoritative";
+  const visibleCommitVersion = isAuthoritativeSameNavigationHandoff
+    ? options.pending.action.operation.startedVisibleCommitVersion
+    : options.currentState.visibleCommitVersion;
   const verdict = verifyOperationTokenForCommit(token, {
     activeNavigationId: options.activeNavigationId,
-    visibleCommitVersion: options.currentState.visibleCommitVersion,
+    visibleCommitVersion,
   });
   if (!verdict.authorized) {
     // staleOperation — the navigation that created `pending` was superseded, or
@@ -600,6 +630,8 @@ function mergeSkippedLayoutSlotPreservation(options: {
 
 export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
@@ -647,6 +679,8 @@ export async function createPendingNavigationCommit(options: {
       operation: createOperationRecord({
         id: options.renderId,
         lane: options.operationLane,
+        navigationCommitKind: options.navigationCommitKind,
+        navigationId: options.navigationId,
         startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
       }),
       previousNextUrl,

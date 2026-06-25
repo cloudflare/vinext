@@ -128,6 +128,7 @@ type BrowserNavigationController = {
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
+    navigationCommitKind?: "authoritative" | "detached";
     visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
     onCommittedState?: (state: AppRouterState) => void;
   }): Promise<NavigationPayloadOutcome>;
@@ -699,6 +700,7 @@ export function createAppBrowserNavigationController(
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
+    navigationCommitKind?: "authoritative" | "detached";
     visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
     onCommittedState?: (state: AppRouterState) => void;
   }): Promise<NavigationPayloadOutcome> {
@@ -722,6 +724,8 @@ export function createAppBrowserNavigationController(
       const startedState = getBrowserRouterState();
       const pending = await createPendingNavigationCommit({
         currentState: startedState,
+        navigationCommitKind: options.navigationCommitKind,
+        navigationId: options.navId,
         nextElements: options.nextElements,
         navigationSnapshot: options.navigationSnapshot,
         operationLane: options.operationLane,
