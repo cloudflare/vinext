@@ -20,7 +20,7 @@ test.describe("app dir - front redirect issue", () => {
     expect(page.url()).toBe(`${BASE}/vercel-user`);
     await expect(page.locator("#visible-url")).toHaveText("/vercel-user");
 
-    const bootstrapScripts = page.locator('script[type="module"][src]');
+    const bootstrapScripts = page.locator('body script#_R_[type="module"][src]');
     await expect(bootstrapScripts).toHaveCount(1);
     const bootstrapSrc = await bootstrapScripts.first().getAttribute("src");
     expect(bootstrapSrc).toBeTruthy();
