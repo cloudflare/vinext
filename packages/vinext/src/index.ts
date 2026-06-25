@@ -3296,6 +3296,7 @@ export const loadServerActionClient = ${
         },
       },
     },
+    createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
     // that exist in Next.js's bundled React canary but not in stable React 19.
     // Provides graceful no-op fallbacks so projects using these APIs degrade

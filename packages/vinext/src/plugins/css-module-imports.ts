@@ -3,18 +3,23 @@ import { parseAst } from "vite";
 import MagicString from "magic-string";
 
 const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)$/i;
+const CSS_MODULE_HINT_RE = /\.module\.(?:css|scss|sass)/i;
 const SCRIPT_RE = /\.(?:[cm]?[jt]sx?)(?:[?#].*)?$/i;
+const MDX_RE = /\.mdx$/i;
 
 type AstImportSpecifier = {
   type?: string;
   start?: number;
   end?: number;
+  local?: { name?: unknown };
 };
 
 type AstImportDeclaration = {
   type?: string;
+  importKind?: string;
   source?: { value?: unknown };
   specifiers?: AstImportSpecifier[];
+  attributes?: unknown[];
 };
 
 type ScriptLanguage = "js" | "jsx" | "ts" | "tsx";
@@ -43,21 +48,20 @@ export function rewriteCssModuleNamespaceImports(
   let output: MagicString | null = null;
   for (const statement of ast.body as AstImportDeclaration[]) {
     if (statement.type !== "ImportDeclaration") continue;
+    if (statement.importKind === "type") continue;
     if (typeof statement.source?.value !== "string") continue;
     if (!CSS_MODULE_RE.test(statement.source.value)) continue;
+    if (statement.attributes && statement.attributes.length > 0) continue;
     if (statement.specifiers?.length !== 1) continue;
 
     const specifier = statement.specifiers[0];
     if (specifier.type !== "ImportNamespaceSpecifier") continue;
     if (typeof specifier.start !== "number" || typeof specifier.end !== "number") continue;
 
-    const namespaceBinding = code
-      .slice(specifier.start, specifier.end)
-      .match(/^\*\s+as\s+(.+)$/s)?.[1];
-    if (!namespaceBinding) continue;
+    if (typeof specifier.local?.name !== "string") continue;
 
     output ??= new MagicString(code);
-    output.overwrite(specifier.start, specifier.end, namespaceBinding);
+    output.overwrite(specifier.start, specifier.end, specifier.local.name);
   }
 
   if (!output) return null;
@@ -67,13 +71,23 @@ export function rewriteCssModuleNamespaceImports(
   };
 }
 
-export function createCssModuleImportCompatibilityPlugin(): Plugin {
+export function createCssModuleImportCompatibilityPlugin(
+  options: { compiledMdx?: boolean } = {},
+): Plugin {
+  const idFilter = options.compiledMdx ? MDX_RE : SCRIPT_RE;
   return {
-    name: "vinext:css-module-import-compatibility",
+    name: options.compiledMdx
+      ? "vinext:css-module-import-compatibility-mdx"
+      : "vinext:css-module-import-compatibility",
     enforce: "pre",
-    transform(code, id) {
-      if (!SCRIPT_RE.test(id) || !code.includes(".module.")) return null;
-      return rewriteCssModuleNamespaceImports(code, scriptLanguage(id));
+    transform: {
+      filter: { id: idFilter, code: CSS_MODULE_HINT_RE },
+      handler(code, id) {
+        return rewriteCssModuleNamespaceImports(
+          code,
+          options.compiledMdx ? "jsx" : scriptLanguage(id),
+        );
+      },
     },
   };
 }
