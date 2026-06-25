@@ -1310,6 +1310,53 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("starts viewport prefetches without waiting for an idle callback", async () => {
+    const observer = stubIntersectionObserver();
+    const requestIdleCallback = vi.fn(() => 1);
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({ priority: "low" }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not prefetch links for bot user agents", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        navigator: {
+          userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 
