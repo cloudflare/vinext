@@ -247,6 +247,72 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each(["afterFiles", "fallback"] as const)(
+    "allows out-of-basePath Server Actions through %s rewrites",
+    async (phase) => {
+      const handleServerActionRequest = vi.fn(async () => new Response("action"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles:
+            phase === "afterFiles"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+          fallback:
+            phase === "fallback"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+        },
+        handleServerActionRequest,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/outside", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("action");
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ cleanPathname: "/about" }),
+      );
+    },
+  );
+
+  it.each(["afterFiles", "fallback"] as const)(
+    "validates out-of-basePath RSC requests claimed by %s rewrites",
+    async (phase) => {
+      const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      const expectedHash = await computeRscCacheBustingSearchParam(headers);
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles:
+            phase === "afterFiles"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+          fallback:
+            phase === "fallback"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+        },
+      });
+
+      const response = await handler(
+        new Request("https://example.test/outside.rsc?tab=latest", { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(307);
+      expect(response.headers.get("location")).toBe(`/outside.rsc?tab=latest&_rsc=${expectedHash}`);
+    },
+  );
+
   it("does not expose App routes directly outside basePath", async () => {
     const renderNotFound = vi.fn(async () => new Response("rendered not found", { status: 404 }));
     const handler = createHandler({ configHeaders: [], renderNotFound });
