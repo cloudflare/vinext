@@ -2122,9 +2122,15 @@ async function navigateClient(
         browserUrl = redirectedUrl;
         htmlFetchUrl = redirectedUrl;
       } else if (middlewareEffect) {
+        // A masked navigation probes middleware using the browser-visible URL but must fetch page
+        // data using the route URL. Without a rewrite header those are different requests, so do
+        // not reuse the probe response even though that means one extra request for this rare path.
         if (middlewareEffect.rewriteTarget || routeUrl === url) {
           middlewareDataResponse = middlewareEffect.response;
         }
+        // App Router rewrite targets intentionally have no Pages data target. Keep the original
+        // source target so navigateClientData sees the rewrite header, fails target resolution,
+        // and schedules a hard navigation that boots the App Router at the visible URL.
         if (!dataTarget && middlewareEffect.rewriteTarget) {
           dataTarget = resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
         }
