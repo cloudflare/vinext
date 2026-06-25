@@ -79,12 +79,24 @@ describe("client trace metadata: renderClientTraceMetadataTags", () => {
 });
 
 describe("client trace metadata: getClientTraceMetadataHTML", () => {
-  // The default global has no `require`, so any optional OTel resolution
-  // returns no entries.
   type WithRequire = { require?: (id: string) => unknown };
+  const apiSymbol = Symbol.for("opentelemetry.js.api.1");
+  const spanSymbol = Symbol.for("OpenTelemetry Context Key SPAN");
+  const originalApiRegistry = (globalThis as Record<symbol, unknown>)[apiSymbol];
+  const originalPrerender = process.env.VINEXT_PRERENDER;
 
   afterEach(() => {
     delete (globalThis as WithRequire).require;
+    if (originalApiRegistry === undefined) {
+      delete (globalThis as Record<symbol, unknown>)[apiSymbol];
+    } else {
+      (globalThis as Record<symbol, unknown>)[apiSymbol] = originalApiRegistry;
+    }
+    if (originalPrerender === undefined) {
+      delete process.env.VINEXT_PRERENDER;
+    } else {
+      process.env.VINEXT_PRERENDER = originalPrerender;
+    }
   });
 
   it("returns empty string when the allow-list is unset", () => {
@@ -136,5 +148,74 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     expect(html).toMatch(/<meta name="my-parent-span-id" content="[a-f0-9]{16}"\/>/);
     // Keys not on the allow-list MUST NOT appear in the head.
     expect(html).not.toContain("non-metadata-key-3");
+  });
+
+  it("reads the ESM OpenTelemetry global registry and creates a request span when needed", () => {
+    const rootContext = {
+      values: new Map<symbol, unknown>(),
+      getValue(key: symbol) {
+        return this.values.get(key);
+      },
+      setValue(key: symbol, value: unknown) {
+        const values = new Map(this.values);
+        values.set(key, value);
+        return { ...this, values };
+      },
+    };
+    let currentContext = rootContext;
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      version: "1.9.0",
+      context: {
+        active: () => currentContext,
+        with<T>(context: typeof rootContext, fn: () => T): T {
+          const previous = currentContext;
+          currentContext = context;
+          try {
+            return fn();
+          } finally {
+            currentContext = previous;
+          }
+        },
+      },
+      propagation: {
+        inject(
+          context: typeof rootContext,
+          carrier: ClientTraceDataEntry[],
+          setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
+        ) {
+          setter.set(carrier, "my-test-key-1", "my-test-value-1");
+          const span = context.getValue(spanSymbol) as { spanContext(): { spanId: string } };
+          setter.set(carrier, "my-parent-span-id", span.spanContext().spanId);
+        },
+      },
+    };
+
+    const first = getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"]);
+    const second = getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"]);
+
+    expect(first).toContain('<meta name="my-test-key-1" content="my-test-value-1"/>');
+    const firstSpanId = first.match(/my-parent-span-id" content="([a-f0-9]{16})"/)?.[1];
+    const secondSpanId = second.match(/my-parent-span-id" content="([a-f0-9]{16})"/)?.[1];
+    expect(firstSpanId).toMatch(/^[a-f0-9]{16}$/);
+    expect(secondSpanId).toMatch(/^[a-f0-9]{16}$/);
+    expect(secondSpanId).not.toBe(firstSpanId);
+  });
+
+  it("does not emit trace metadata while prerendering", () => {
+    process.env.VINEXT_PRERENDER = "1";
+    (globalThis as WithRequire).require = () => ({
+      context: { active: () => ({}) },
+      propagation: {
+        inject(
+          _context: unknown,
+          carrier: ClientTraceDataEntry[],
+          setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
+        ) {
+          setter.set(carrier, "my-test-key-1", "my-test-value-1");
+        },
+      },
+    });
+
+    expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe("");
   });
 });

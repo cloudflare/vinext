@@ -49,7 +49,64 @@ type OpenTelemetryApi = {
   };
 };
 
+type OpenTelemetryContext = {
+  getValue(key: symbol): unknown;
+  setValue(key: symbol, value: unknown): OpenTelemetryContext;
+};
+
+type OpenTelemetryGlobal = {
+  context?: {
+    active(): OpenTelemetryContext;
+    with<T>(context: OpenTelemetryContext, fn: () => T): T;
+  };
+  propagation?: {
+    inject(
+      context: OpenTelemetryContext,
+      carrier: ClientTraceDataEntry[],
+      setter: TextMapSetter,
+    ): void;
+  };
+};
+
+const OPEN_TELEMETRY_API_SYMBOL = Symbol.for("opentelemetry.js.api.1");
+const OPEN_TELEMETRY_SPAN_SYMBOL = Symbol.for("OpenTelemetry Context Key SPAN");
+
+function randomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
+  const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
+    | OpenTelemetryGlobal
+    | undefined;
+  if (!registry?.context || !registry.propagation) return null;
+
+  const activeContext = registry.context.active();
+  const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
+  const context = hasActiveSpan
+    ? activeContext
+    : activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, {
+        spanContext() {
+          return {
+            traceId: randomHex(16),
+            spanId: randomHex(8),
+            traceFlags: 1,
+          };
+        },
+      });
+  const entries: ClientTraceDataEntry[] = [];
+  registry.context.with(context, () => {
+    registry.propagation!.inject(context, entries, carrierSetter);
+  });
+  return entries;
+}
+
 function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {
+  const registeredEntries = getRegisteredOpenTelemetryTraceData();
+  if (registeredEntries) return registeredEntries;
+
   let api: OpenTelemetryApi | undefined;
   try {
     // Use require() at runtime so `@opentelemetry/api` is an optional peer.
@@ -117,6 +174,7 @@ export function renderClientTraceMetadataTags(
  */
 export function getClientTraceMetadataHTML(allowList: readonly string[] | undefined): string {
   if (!allowList || allowList.length === 0) return "";
+  if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") return "";
   const entries = getOpenTelemetryTraceData();
   const filtered = filterClientTraceMetadata(entries, allowList);
   return renderClientTraceMetadataTags(filtered);
