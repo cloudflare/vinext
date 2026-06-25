@@ -36,6 +36,14 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
 }
 
 describe("styled-jsx compatibility plugin", () => {
+  it("detects supported styled-jsx syntax variants", () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const transformFilter = (plugin.transform as { filter: { code: RegExp } }).filter.code;
+
+    expect(transformFilter.test("export default <style global jsx>{styles}</style>")).toBe(true);
+    expect(transformFilter.test('const css = require ("styled-jsx/css")')).toBe(true);
+  });
+
   it("resolves styled-jsx subpaths from Next's dependency graph", () => {
     const { root, styledJsxRoot } = createPnpmStyleFixture();
     const plugin = createStyledJsxPlugin(root);
@@ -144,6 +152,20 @@ describe("styled-jsx compatibility plugin", () => {
     expect(result.code).toContain('from "styled-jsx/style"');
     expect(result.code).toContain("button.jsx-");
     expect(result.code).not.toContain("styled-jsx/css");
+  });
+
+  it("transforms global style tags", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<{ code: string }>;
+    };
+
+    const globalStyle = await transformHook.handler(
+      "export default <style global jsx>{`body{color:hotpink}`}</style>",
+      "/app/global.js",
+    );
+
+    expect(globalStyle.code).toContain('from "styled-jsx/style"');
   });
 
   it("keeps real dev transforms safe for server environments", async () => {
