@@ -30,6 +30,8 @@ export type NormalizedRscRequest = {
   url: URL;
   /** Normalized pathname with basePath stripped. Used for all internal routing. */
   pathname: string;
+  /** Whether the inbound pathname was under the configured basePath. */
+  hadBasePath: boolean;
   /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
   /** True when the request targets a canonical `.rsc` payload URL. */
@@ -77,6 +79,7 @@ export type NormalizedRscRequest = {
 export function normalizeRscRequest(
   request: Request,
   basePath: string,
+  allowOutsideBasePath = false,
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
@@ -103,11 +106,12 @@ export function normalizeRscRequest(
   // Skipped when basePath is empty (no basePath configured).
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
   // that must be reachable regardless of basePath configuration.
+  const hadBasePath = !basePath || hasBasePath(pathname, basePath);
   if (basePath) {
-    if (!hasBasePath(pathname, basePath) && !pathname.startsWith("/__vinext/")) {
+    if (!hadBasePath && !allowOutsideBasePath && !pathname.startsWith("/__vinext/")) {
       return notFoundResponse();
     }
-    pathname = stripBasePath(pathname, basePath);
+    if (hadBasePath) pathname = stripBasePath(pathname, basePath);
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
@@ -143,6 +147,7 @@ export function normalizeRscRequest(
     clientReuseManifest,
     url,
     pathname,
+    hadBasePath,
     cleanPathname,
     isRscRequest,
     interceptionContextHeader,

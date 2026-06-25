@@ -350,8 +350,17 @@ function createMissingServerActionResponse(
 // `normalizeRscRequest` — it 404s out-of-basePath requests before they
 // reach this code), pass `hadBasePath` here and skip the prefix when
 // false, mirroring the same guard in `prod-server.ts` and `deploy.ts`.
-function redirectDestinationWithBasePath(destination: string, basePath: string): string {
-  if (!basePath || isExternalUrl(destination) || hasBasePath(destination, basePath)) {
+function redirectDestinationWithBasePath(
+  destination: string,
+  basePathState: BasePathMatchState,
+): string {
+  const { basePath, hadBasePath } = basePathState;
+  if (
+    !basePath ||
+    !hadBasePath ||
+    isExternalUrl(destination) ||
+    hasBasePath(destination, basePath)
+  ) {
     return destination;
   }
   return basePath + destination;
@@ -482,7 +491,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (originBlock) return originBlock;
   }
 
-  const normalized = normalizeRscRequest(request, options.basePath);
+  const normalized = normalizeRscRequest(request, options.basePath, true);
   if (normalized instanceof Response) return normalized;
 
   const {
@@ -492,6 +501,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
+    hadBasePath,
   } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
@@ -511,7 +521,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Router does not yet support `basePath: false` rules — they would need a
   // pre-strip hook in normalizeRscRequest to fire. Tracked as follow-up to
   // issue #1333.
-  const basePathState = { basePath: options.basePath, hadBasePath: true };
+  const basePathState = { basePath: options.basePath, hadBasePath };
 
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
@@ -530,12 +540,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }
 
-  const trailingSlashRedirect = normalizeTrailingSlash(
-    pathname,
-    options.basePath,
-    options.trailingSlash,
-    url.search,
-  );
+  const trailingSlashRedirect = hadBasePath
+    ? normalizeTrailingSlash(pathname, options.basePath, options.trailingSlash, url.search)
+    : null;
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
   // Default-locale path normalisation (issue #1336, item 4). Next.js
@@ -559,7 +566,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (redirect) {
     const destination = sanitizeDestination(
-      redirectDestinationWithBasePath(redirect.destination, options.basePath),
+      redirectDestinationWithBasePath(redirect.destination, basePathState),
     );
     // For RSC navigations `createRscRedirectLocation` recomputes the
     // cache-busting `_rsc` param onto the Location. For plain (document)
@@ -715,7 +722,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // page renders, so there is no stale-value risk for ordinary page renders.
   // For action requests we intentionally do not re-run rewrites — actions
   // are always processed against the cleanPathname they were posted to.
-  const preActionMatch = options.matchRoute(cleanPathname);
+  const outOfBasePathRequestClaimed =
+    hadBasePath || didMiddlewareRewrite || resolvedUrl !== originalResolvedUrl;
+  const preActionMatch = outOfBasePathRequestClaimed ? options.matchRoute(cleanPathname) : null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
@@ -788,6 +797,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
+    if (!outOfBasePathRequestClaimed) return null;
     const response =
       match === null || match.route.isDynamic
         ? ((await options.renderPagesFallback?.({

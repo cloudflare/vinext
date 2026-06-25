@@ -141,6 +141,32 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
+  it("applies basePath: false rewrites outside the App Router basePath", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page");
+  });
+
+  it("does not expose App routes directly outside basePath", async () => {
+    const handler = createHandler({ configHeaders: [] });
+
+    const response = await handler(new Request("https://example.test/about"), null);
+
+    expect(response.status).toBe(404);
+  });
+
   it.each([
     "url=%2Fimg.jpg&w=640junk&q=75",
     "url=%2Fimg.jpg&w=640&q=75&extra=1",
