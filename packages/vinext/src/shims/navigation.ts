@@ -1931,6 +1931,10 @@ const _appRouter: AppRouterInstance = {
         interceptionContext,
         mountedSlotsHeader,
         options,
+        {
+          cacheForNavigation: false,
+          optimisticRouteShell: true,
+        },
       );
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);

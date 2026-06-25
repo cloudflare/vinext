@@ -361,7 +361,7 @@ describe("prefetch cache eviction", () => {
     await expect(restored.text()).resolves.toBe("flight");
   });
 
-  it("settles router.prefetch as a consumable cache-seeded response without visible navigation", async () => {
+  it("settles router.prefetch as a learning-only protocol response without visible navigation", async () => {
     let resolveResponse!: (response: Response) => void;
     const fetchPromise = new Promise<Response>((resolve) => {
       resolveResponse = resolve;
@@ -410,11 +410,13 @@ describe("prefetch cache eviction", () => {
     const entry = getPrefetchCache().get(cacheKey);
     expect(entry?.outcome).toBe("cache-seeded");
     expect(entry?.pending).toBeUndefined();
+    expect(entry?.cacheForNavigation).toBe(false);
+    expect(entry?.optimisticRouteShell).toBe(true);
 
     const consumed = consumePrefetchResponse(rscUrl, null, null);
-    expect(consumed?.mountedSlotsHeader).toBeNull();
-    expect(getPrefetchCache().has(cacheKey)).toBe(false);
-    expect(getPrefetchedUrls().has(cacheKey)).toBe(false);
+    expect(consumed).toBeNull();
+    expect(getPrefetchCache().has(cacheKey)).toBe(true);
+    expect(getPrefetchedUrls().has(cacheKey)).toBe(true);
     expect(navigate).not.toHaveBeenCalled();
   });
 
