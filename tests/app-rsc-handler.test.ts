@@ -248,11 +248,13 @@ describe("createAppRscHandler", () => {
   );
 
   it("does not expose App routes directly outside basePath", async () => {
-    const handler = createHandler({ configHeaders: [] });
+    const renderNotFound = vi.fn(async () => new Response("rendered not found", { status: 404 }));
+    const handler = createHandler({ configHeaders: [], renderNotFound });
 
     const response = await handler(new Request("https://example.test/about"), null);
 
     expect(response.status).toBe(404);
+    expect(renderNotFound).not.toHaveBeenCalled();
   });
 
   it("does not dispatch server actions directly outside basePath", async () => {

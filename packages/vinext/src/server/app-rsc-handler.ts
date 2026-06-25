@@ -930,6 +930,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return buildNextDataNotFoundResponse();
   }
 
+  if (!outOfBasePathRequestClaimed) {
+    options.clearRequestContext();
+    return notFoundResponse();
+  }
+
   if (!match) {
     // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
     // every page load. Don't compile/render the not-found page for it.
