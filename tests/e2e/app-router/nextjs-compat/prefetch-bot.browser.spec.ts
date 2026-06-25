@@ -42,7 +42,9 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
 async function writePrefetchBotFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const targetDir = path.join(appDir, "target");
+  const formTargetDir = path.join(appDir, "form-target");
   await fs.mkdir(targetDir, { recursive: true });
+  await fs.mkdir(formTargetDir, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
@@ -60,10 +62,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   );
   await fs.writeFile(
     path.join(appDir, "page.tsx"),
-    `import Link from "next/link";
+    `import Form from "next/form";
+import Link from "next/link";
 
 export default function Page() {
-  return <Link href="/target" id="target-link">Target</Link>;
+  return <>
+    <Link href="/target" id="target-link">Target</Link>
+    <Form action="/form-target" id="target-form">
+      <input name="q" defaultValue="vinext" />
+      <button type="submit">Submit form</button>
+    </Form>
+  </>;
 }
 `,
   );
@@ -71,6 +80,14 @@ export default function Page() {
     path.join(targetDir, "page.tsx"),
     `export default function TargetPage() {
   return <p id="target-page">Target page</p>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(formTargetDir, "page.tsx"),
+    `export default async function FormTargetPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+  const { q } = await searchParams;
+  return <p id="form-target-page">Form target: {q}</p>;
 }
 `,
   );
@@ -128,7 +145,9 @@ test.describe("Next.js compat: bot prefetching in production", () => {
   // Ported from Next.js:
   // test/e2e/app-dir/app-prefetch/prefetching.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch/prefetching.test.ts
-  test("does not prefetch links but still navigates for a bot user agent", async ({ page }) => {
+  test("does not prefetch links or forms but still navigates for a bot user agent", async ({
+    page,
+  }) => {
     const app = await buildAndServePrefetchBotFixture();
 
     try {
@@ -140,10 +159,14 @@ test.describe("Next.js compat: bot prefetching in production", () => {
       }, GOOGLEBOT_USER_AGENT);
 
       const targetRequests: string[] = [];
+      const formTargetRequests: string[] = [];
       page.on("request", (request) => {
         const url = new URL(request.url());
         if (url.pathname === "/target" && request.headers().rsc === "1") {
           targetRequests.push(request.url());
+        }
+        if (url.pathname === "/form-target" && request.headers().rsc === "1") {
+          formTargetRequests.push(request.url());
         }
       });
 
@@ -153,10 +176,21 @@ test.describe("Next.js compat: bot prefetching in production", () => {
       await page.waitForTimeout(1_000);
 
       expect(targetRequests).toEqual([]);
+      expect(formTargetRequests).toEqual([]);
 
       await page.locator("#target-link").click();
       await expect(page.locator("#target-page")).toHaveText("Target page");
       expect(targetRequests).toHaveLength(1);
+
+      await page.goBack();
+      await expect(page.locator("#target-form")).toBeVisible();
+      await page.waitForTimeout(1_000);
+      expect(formTargetRequests).toEqual([]);
+
+      await page.getByRole("button", { name: "Submit form" }).click();
+      await expect(page.locator("#form-target-page")).toHaveText("Form target: vinext");
+      await expect(page).toHaveURL(`${app.baseUrl}/form-target?q=vinext`);
+      expect(formTargetRequests).toHaveLength(1);
     } finally {
       await page.close();
       await closeServer(app.server);
