@@ -93,4 +93,32 @@ describe("styled-jsx compatibility plugin", () => {
       }),
     );
   });
+
+  it("preserves React development refresh transforms in dev", async () => {
+    const transform = vi.fn(async () => ({ code: "export default null;" }));
+    const plugin = createStyledJsxPlugin(process.cwd(), {
+      importModule: async () => ({ loadBindings: async () => undefined, transform }),
+    });
+    const configResolved = plugin.configResolved as (config: {
+      root: string;
+      command: "serve";
+    }) => void;
+    configResolved({ root: process.cwd(), command: "serve" });
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<unknown>;
+    };
+
+    await transformHook.handler("export default <style jsx>{`p{color:red}`}</style>", "/app/a.js");
+
+    expect(transform).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        jsc: expect.objectContaining({
+          transform: expect.objectContaining({
+            react: expect.objectContaining({ development: true, refresh: true }),
+          }),
+        }),
+      }),
+    );
+  });
 });

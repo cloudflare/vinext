@@ -45,6 +45,7 @@ export function createStyledJsxPlugin(
   options: StyledJsxPluginOptions = {},
 ): Plugin {
   let projectRoot = initialProjectRoot;
+  let development = false;
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
   const importModule = options.importModule ?? ((url: string) => import(url));
@@ -75,6 +76,7 @@ export function createStyledJsxPlugin(
     name: "vinext:styled-jsx",
     enforce: "pre",
     configResolved(config) {
+      development = config.command === "serve";
       if (config.root !== projectRoot) {
         projectRoot = config.root;
         nextRequire = undefined;
@@ -112,7 +114,8 @@ export function createStyledJsxPlugin(
             transform: {
               react: {
                 runtime: "automatic",
-                development: false,
+                development,
+                refresh: development,
                 useBuiltins: true,
               },
               optimizer: { simplify: false },
