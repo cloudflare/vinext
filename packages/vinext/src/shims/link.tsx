@@ -83,7 +83,7 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
-import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { shouldPrefetchForUserAgent } from "./internal/prefetch-user-agent.js";
 
 type NavigateEvent = {
   url: URL;
@@ -412,8 +412,7 @@ function prefetchUrl(
   priority: "low" | "high" = "low",
   scheduling: "idle" | "immediate" = priority === "high" ? "immediate" : "idle",
 ): void {
-  if (typeof window === "undefined") return;
-  if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
+  if (!shouldPrefetchForUserAgent()) return;
 
   const prefetchHref = getLinkPrefetchHref({
     href,

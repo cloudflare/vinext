@@ -42,6 +42,7 @@ import { toSameOriginPath, withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
+import { shouldPrefetchForUserAgent } from "./internal/prefetch-user-agent.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -317,7 +318,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (!hasAppNavigationRuntime()) return;
     const node = formRef.current;
     if (!node) return;
-    if (typeof IntersectionObserver === "undefined") return;
+    if (typeof IntersectionObserver === "undefined" || !shouldPrefetchForUserAgent()) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
