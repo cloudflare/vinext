@@ -469,6 +469,32 @@ function toViteAliasReplacement(absolutePath: string, projectRoot: string): stri
   return normalizedPath;
 }
 
+function resolveSwcHelpersAlias(root: string): string | undefined {
+  const rootRequire = createRequire(path.join(root, "package.json"));
+  const resolvers: NodeRequire[] = [];
+
+  try {
+    const nextPackageJson = rootRequire.resolve("next/package.json");
+    const realNextPackageJson = tryRealpathSync(nextPackageJson) ?? nextPackageJson;
+    resolvers.push(createRequire(realNextPackageJson));
+  } catch {
+    // Apps can use vinext without keeping next installed at runtime.
+  }
+
+  resolvers.push(rootRequire, createRequire(import.meta.url));
+
+  for (const resolver of resolvers) {
+    try {
+      const packageJsonPath = resolver.resolve("@swc/helpers/package.json");
+      return normalizePathSeparators(path.join(path.dirname(packageJsonPath), "_"));
+    } catch {
+      // Try the next package-resolution context.
+    }
+  }
+
+  return undefined;
+}
+
 function loadTsconfigPathAliases(
   configPath: string,
   projectRoot: string,
@@ -1296,6 +1322,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
         const tsconfigPathAliases = resolveTsconfigAliases(root);
+        const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2115,6 +2142,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
             alias: {
+              ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
               ...tsconfigPathAliases,
               ...nextConfig.aliases,
               ...nextShimMap,
