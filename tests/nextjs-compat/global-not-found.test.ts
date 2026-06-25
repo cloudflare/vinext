@@ -173,6 +173,7 @@ describe("Next.js compat: global-not-found (not present)", () => {
     expect(html).toContain("404");
     expect(html).toContain("This page could not be found.");
     expect(html).not.toContain("not-found.js");
+    expect(html).not.toContain('lang="en"');
   });
 
   it("keeps the root not-found boundary for explicit notFound()", async () => {

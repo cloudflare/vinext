@@ -714,6 +714,7 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     const html = await response?.text();
     expect(html).toContain("This page could not be found.");
     expect(html).not.toContain('data-boundary="not-found"');
+    expect(html).not.toContain('lang="en"');
   });
 
   it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {
