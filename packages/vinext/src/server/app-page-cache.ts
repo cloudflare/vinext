@@ -60,6 +60,7 @@ type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
   html: string;
   htmlRenderObservation?: RenderObservation;
+  linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation?: RenderObservation;
   tags: string[];
@@ -432,6 +433,7 @@ export async function readAppPageCacheResponse(
                 undefined,
                 200,
                 revalidatedPage.htmlRenderObservation,
+                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
               revalidateSeconds,
               revalidatedPage.tags,
