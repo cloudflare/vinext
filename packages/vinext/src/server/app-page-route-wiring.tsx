@@ -28,6 +28,7 @@ import {
   type Viewport,
 } from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
+import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
@@ -516,6 +517,16 @@ function createAppPageRouteHead(
   );
 }
 
+function hasStreamedIcons(metadata: Metadata): boolean {
+  const icons = metadata.icons;
+  if (!icons) return false;
+  if (typeof icons === "string" || icons instanceof URL || Array.isArray(icons)) {
+    return !Array.isArray(icons) || icons.length > 0;
+  }
+  if ("url" in icons) return true;
+  return Boolean(icons.shortcut || icons.icon || icons.apple || icons.other);
+}
+
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
@@ -523,13 +534,17 @@ export function createAppPageRouteBodyMetadata(
   trailingSlash?: boolean,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
+  const metadataHtml = renderMetadataToHtml(metadata, pathname, { trailingSlash });
   return (
-    <div
-      hidden
-      dangerouslySetInnerHTML={{
-        __html: renderMetadataToHtml(metadata, pathname, { trailingSlash }),
-      }}
-    />
+    <>
+      <div
+        hidden
+        dangerouslySetInnerHTML={{
+          __html: metadataHtml,
+        }}
+      />
+      {hasStreamedIcons(metadata) ? <StreamedIconsInsertion metadataKey={metadataHtml} /> : null}
+    </>
   );
 }
 

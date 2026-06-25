@@ -3313,6 +3313,33 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
   it("body placement: returns null when metadata is null", () => {
     expect(createAppPageRouteBodyMetadata(null, "/a", "body", true)).toBeNull();
   });
+
+  it("body placement: re-inserts streamed icons into the document head", () => {
+    const node = createAppPageRouteBodyMetadata(
+      {
+        icons: {
+          icon: "/favicon.ico",
+          apple: "/apple-touch-icon.png",
+        },
+      },
+      "/icons",
+      "body",
+    );
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).toContain('<link rel="icon" href="/favicon.ico">');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png">');
+    expect(html).toContain(
+      `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
+    );
+  });
+
+  it("body placement: omits the icon insertion script without streamed icons", () => {
+    const node = createAppPageRouteBodyMetadata({ title: "Streamed title" }, "/metadata", "body");
+    const html = renderToStaticMarkup(node as React.ReactElement);
+
+    expect(html).not.toContain("document.querySelectorAll('body link");
+  });
 });
 
 // ---------------------------------------------------------------------------
