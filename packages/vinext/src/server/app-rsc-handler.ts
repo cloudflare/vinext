@@ -100,6 +100,7 @@ type AppRscMiddlewareContext = AppMiddlewareContext;
 type RunAppMiddlewareOptions = {
   cleanPathname: string;
   context: AppRscMiddlewareContext;
+  hadBasePath: boolean;
   isDataRequest: boolean;
   request: Request;
 };
@@ -604,6 +605,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const middlewareResult = await options.runMiddleware({
       cleanPathname,
       context: middlewareContext,
+      hadBasePath,
       isDataRequest: isMiddlewareDataRequest,
       request: userlandRequest,
     });
@@ -656,7 +658,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  if (isImageOptimizationPath(cleanPathname)) {
+  const outOfBasePathRequestClaimed =
+    hadBasePath || didMiddlewareRewrite || resolvedUrl !== originalResolvedUrl;
+
+  if (outOfBasePathRequestClaimed && isImageOptimizationPath(cleanPathname)) {
     const imageRedirect = resolveDevImageRedirect(
       url,
       [
@@ -671,7 +676,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
-  if (options.handleMetadataRouteRequest) {
+  if (outOfBasePathRequestClaimed && options.handleMetadataRouteRequest) {
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
     if (metadataRouteResponse) {
       applyConfigHeadersToResponse(metadataRouteResponse.headers, {
@@ -685,13 +690,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  const publicFileResponse = resolvePublicFileRoute({
-    cleanPathname,
-    middlewareContext,
-    pathname,
-    publicFiles: options.publicFiles,
-    request,
-  });
+  const publicFileResponse = outOfBasePathRequestClaimed
+    ? resolvePublicFileRoute({
+        cleanPathname,
+        middlewareContext,
+        pathname,
+        publicFiles: options.publicFiles,
+        request,
+      })
+    : null;
   if (publicFileResponse) {
     options.clearRequestContext();
     return publicFileResponse;
@@ -722,8 +729,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // page renders, so there is no stale-value risk for ordinary page renders.
   // For action requests we intentionally do not re-run rewrites — actions
   // are always processed against the cleanPathname they were posted to.
-  const outOfBasePathRequestClaimed =
-    hadBasePath || didMiddlewareRewrite || resolvedUrl !== originalResolvedUrl;
   const preActionMatch = outOfBasePathRequestClaimed ? options.matchRoute(cleanPathname) : null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
@@ -734,6 +739,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const contentType = request.headers.get("content-type") || "";
 
   const isPostRequest = request.method.toUpperCase() === "POST";
+  if (!outOfBasePathRequestClaimed && isPostRequest) {
+    options.clearRequestContext();
+    return notFoundResponse();
+  }
   let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
   if (isPostRequest && contentType.startsWith("multipart/form-data") && !actionId) {
     if (options.handleProgressiveActionRequest) {

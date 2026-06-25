@@ -16,6 +16,7 @@ import {
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
   type MetadataRuntimeRoute,
@@ -165,6 +166,39 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/about"), null);
 
     expect(response.status).toBe(404);
+  });
+
+  it("does not dispatch server actions directly outside basePath", async () => {
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({ configHeaders: [], handleServerActionRequest });
+
+    const response = await handler(
+      new Request("https://example.test/about", {
+        method: "POST",
+        headers: { "next-action": "action-id", "content-type": "text/plain" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(handleServerActionRequest).not.toHaveBeenCalled();
+  });
+
+  it("passes out-of-basePath state to App middleware", async () => {
+    let capturedMiddlewareRequest: NextRequest | null = null;
+    const middleware = vi.fn((request: NextRequest) => {
+      capturedMiddlewareRequest = request;
+      return new Response(null, { headers: { "x-middleware-next": "1" } });
+    });
+    const handler = createHandler({ configHeaders: [], middlewareModule: { default: middleware } });
+
+    await handler(new Request("https://example.test/outside"), null);
+
+    expect(middleware).toHaveBeenCalledOnce();
+    const middlewareRequest = capturedMiddlewareRequest as NextRequest | null;
+    expect(middlewareRequest).not.toBeNull();
+    expect(middlewareRequest!.nextUrl.basePath).toBe("");
+    expect(middlewareRequest!.nextUrl.pathname).toBe("/outside");
   });
 
   it.each([

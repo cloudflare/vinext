@@ -834,7 +834,10 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain(
+      "runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request })",
+    );
+    expect(withMiddleware).toContain("hadBasePath,");
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
   });
 
