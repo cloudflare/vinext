@@ -751,7 +751,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (options.skipStaticParamsValidation !== true) {
     const dynamicParamsResponse = await validateAppPageDynamicParams({
       clearRequestContext: options.clearRequestContext,
-      enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+      enforceStaticParamsOnly:
+        options.dynamicParamsConfig === false ||
+        (options.dynamicConfig === "error" && options.hasGenerateStaticParams),
       generateStaticParams: options.generateStaticParams,
       isDynamicRoute: route.isDynamic,
       params: options.staticParamsValidationParams ?? options.params,

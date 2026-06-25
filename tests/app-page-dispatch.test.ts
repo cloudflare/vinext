@@ -1872,6 +1872,38 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
+  it('renders dynamic = "error" routes without generateStaticParams', async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      dynamicConfig: "error",
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalled();
+  });
+
+  it('returns not found for unknown generated params under dynamic = "error"', async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      dynamicConfig: "error",
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("This page could not be found");
+  });
+
   it("serves intercepted RSC source-route payloads with middleware response state", async () => {
     const sourceRoute = createRoute({
       params: [],
