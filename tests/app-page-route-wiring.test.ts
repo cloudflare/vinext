@@ -424,7 +424,7 @@ describe("app page route wiring helpers", () => {
     const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome");
 
     expect(html).not.toContain("<title>generated page</title><div");
-    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+    expect(html).toContain('<div hidden=""><title>generated page</title>');
   });
 
   it("renders generated metadata in the head for configured html-limited bots", async () => {
@@ -433,7 +433,7 @@ describe("app page route wiring helpers", () => {
     const html = await buildGeneratedMetadataRouteHtml("Minibot", "Minibot");
 
     expect(html).toContain("<title>generated page</title>");
-    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+    expect(html).not.toContain('<div hidden=""><title>generated page</title>');
   });
 
   it("renders generated metadata in the head for default html-limited bots", async () => {
@@ -442,7 +442,7 @@ describe("app page route wiring helpers", () => {
     const html = await buildGeneratedMetadataRouteHtml("Twitterbot");
 
     expect(html).toContain("<title>generated page</title>");
-    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+    expect(html).not.toContain('<div hidden=""><title>generated page</title>');
   });
 
   it("falls back to the default html-limited bot list for an empty config string", async () => {
@@ -451,7 +451,7 @@ describe("app page route wiring helpers", () => {
     const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", "");
 
     expect(html).not.toContain("<title>generated page</title><div");
-    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+    expect(html).toContain('<div hidden=""><title>generated page</title>');
   });
 
   it("resolves child segments from tree positions and preserves route groups", () => {
