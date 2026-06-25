@@ -22,10 +22,14 @@ type GenerateStaticParamsSource = {
   parentParamNames: readonly string[];
 };
 
-type ParallelGenerateStaticParamsModule = {
+type ParallelGenerateStaticParamsBranch = {
+  configLayouts?: readonly (GenerateStaticParamsModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
+  layout?: GenerateStaticParamsModule | null;
   page?: GenerateStaticParamsModule | null;
   paramNames?: readonly string[] | null;
   patternParts?: readonly string[] | null;
+  routeSegments?: readonly string[] | null;
 };
 
 export type ValidateAppPageDynamicParamsOptions = {
@@ -44,7 +48,7 @@ type ResolveAppPageGenerateStaticParamsSourcesOptions = {
   layouts?: readonly (GenerateStaticParamsModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: GenerateStaticParamsModule | null;
-  parallelPages?: readonly (ParallelGenerateStaticParamsModule | null | undefined)[];
+  parallelBranches?: readonly (ParallelGenerateStaticParamsBranch | null | undefined)[];
   routePatternParts?: readonly string[];
   routeSegments: readonly string[];
 };
@@ -252,6 +256,23 @@ function getLayoutGenerateStaticParamsBoundary(layoutTreePosition: number | unde
   return (layoutTreePosition ?? 0) - 1;
 }
 
+function getParallelParentParamNames(
+  routeParamNames: readonly string[],
+  branch: ParallelGenerateStaticParamsBranch,
+  boundaryPosition: number,
+): string[] {
+  const slotParamNames = branch.paramNames ?? routeParamNames;
+  const branchParamNames = collectParentParamNames(branch.routeSegments ?? [], boundaryPosition);
+  const branchParamNameSet = new Set(
+    (branch.routeSegments ?? []).flatMap((segment) => {
+      const name = getAppPageSegmentParamName(segment);
+      return name ? [name] : [];
+    }),
+  );
+  const ownerParamNames = slotParamNames.filter((name) => !branchParamNameSet.has(name));
+  return [...new Set([...ownerParamNames, ...branchParamNames])];
+}
+
 export function resolveAppPageGenerateStaticParamsSources(
   options: ResolveAppPageGenerateStaticParamsSourcesOptions,
 ): GenerateStaticParamsSource[] {
@@ -283,17 +304,9 @@ export function resolveAppPageGenerateStaticParamsSources(
     const name = getAppPageSegmentParamName(segment);
     return name ? [name] : [];
   });
-  for (const parallelPage of options.parallelPages ?? []) {
-    if (!parallelPage) continue;
-    const page = parallelPage.page;
-    if (typeof page?.generateStaticParams !== "function") continue;
-
-    const slotParamNames = parallelPage.paramNames ?? routeParamNames;
-    const lastSlotPatternPart = parallelPage.patternParts?.at(-1);
-    const parentParamNames =
-      lastSlotPatternPart === undefined || lastSlotPatternPart.startsWith(":")
-        ? slotParamNames.slice(0, -1)
-        : slotParamNames;
+  for (const parallelBranch of options.parallelBranches ?? []) {
+    if (!parallelBranch) continue;
+    const slotParamNames = parallelBranch.paramNames ?? routeParamNames;
     const paramAliases = Object.fromEntries(
       routeParamNames.flatMap((routeParamName, index) => {
         const slotParamName = slotParamNames[index];
@@ -302,14 +315,35 @@ export function resolveAppPageGenerateStaticParamsSources(
           : [];
       }),
     );
+    const addParallelSource = (
+      module: GenerateStaticParamsModule | null | undefined,
+      boundaryPosition: number,
+    ) => {
+      if (typeof module?.generateStaticParams !== "function") return;
+      sources.push({
+        generateStaticParams: module.generateStaticParams,
+        ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
+        ...(parallelBranch.patternParts ? { paramPatternParts: parallelBranch.patternParts } : {}),
+        ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
+        parentParamNames: getParallelParentParamNames(
+          routeParamNames,
+          parallelBranch,
+          boundaryPosition,
+        ),
+      });
+    };
 
-    sources.push({
-      generateStaticParams: page.generateStaticParams,
-      ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
-      ...(parallelPage.patternParts ? { paramPatternParts: parallelPage.patternParts } : {}),
-      ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
-      parentParamNames,
+    addParallelSource(parallelBranch.layout, -1);
+    parallelBranch.configLayouts?.forEach((layout, index) => {
+      addParallelSource(
+        layout,
+        getLayoutGenerateStaticParamsBoundary(parallelBranch.configLayoutTreePositions?.[index]),
+      );
     });
+    addParallelSource(
+      parallelBranch.page,
+      Math.max(0, (parallelBranch.routeSegments?.length ?? 0) - 1),
+    );
   }
 
   return sources;

@@ -135,7 +135,9 @@ function resolveDynamicParamsConfig(
   if (typeof options.page?.generateStaticParams === "function") {
     lastDynamicSegmentHasStaticParams = true;
   }
-  if (options.parallelPages?.some((page) => typeof page?.generateStaticParams === "function")) {
+  if (
+    options.parallelSegments?.some((segment) => typeof segment?.generateStaticParams === "function")
+  ) {
     lastDynamicSegmentHasStaticParams = true;
   }
 

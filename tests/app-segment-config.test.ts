@@ -310,6 +310,17 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("keeps dynamicParams=false active when a parallel layout generates the leaf param", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+        layoutTreePositions: [1],
+        parallelSegments: [{ generateStaticParams: () => [{ slug: "static-123" }] }],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
   it("uses slot-only route config values", () => {
     // Next.js collectAppPageSegments() includes parallel route layouts/pages
     // before reduceAppConfig() selects the route-level config.

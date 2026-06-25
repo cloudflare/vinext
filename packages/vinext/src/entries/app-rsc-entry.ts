@@ -759,10 +759,14 @@ export default createAppRscHandler({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
-      parallelPages: Object.values(route.slots ?? {}).map((slot) => ({
+      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+        layout: slot.layout,
+        configLayouts: slot.configLayouts,
+        configLayoutTreePositions: slot.configLayoutTreePositions,
         page: slot.page ?? slot.default,
         paramNames: slot.slotParamNames,
         patternParts: slot.slotPatternParts,
+        routeSegments: slot.routeSegments,
       })),
       routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,

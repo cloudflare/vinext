@@ -28,11 +28,12 @@ test.describe("parallel routes under a static root param", () => {
     );
   });
 
-  test("enforces generated child params when the child has generateStaticParams", async ({
-    page,
-  }) => {
+  test("enforces generated child params from a parallel layout", async ({ page }) => {
     expect((await page.goto("/parallel-root-param/en/gsp/stories/static-123"))?.status()).toBe(200);
     await expect(page.getByTestId("parallel-root-story")).toHaveText("Story: en/static-123");
+    await expect(page.getByTestId("parallel-root-breadcrumb")).toHaveText(
+      "Breadcrumb: en/static-123",
+    );
 
     expect((await page.goto("/parallel-root-param/en/gsp/stories/dynamic-123"))?.status()).toBe(
       404,

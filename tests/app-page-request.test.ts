@@ -114,11 +114,12 @@ describe("app page request helpers", () => {
       clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
-        parallelPages: [
+        parallelBranches: [
           {
             page: { generateStaticParams: () => [{ slug: "static-123" }] },
             paramNames: ["locale", "slug"],
             patternParts: [":locale", "gsp", "stories", ":slug"],
+            routeSegments: ["stories", "[slug]"],
           },
         ],
         routePatternParts: [":locale", "gsp", "stories", ":slug"],
@@ -137,11 +138,12 @@ describe("app page request helpers", () => {
       clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
-        parallelPages: [
+        parallelBranches: [
           {
             page: { generateStaticParams },
             paramNames: ["name"],
             patternParts: [":name"],
+            routeSegments: ["[name]"],
           },
         ],
         routePatternParts: [":id"],
@@ -153,6 +155,38 @@ describe("app page request helpers", () => {
 
     expect(response).toBeNull();
     expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("collects generateStaticParams from active parallel layouts", async () => {
+    const rootLayoutGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const nestedLayoutGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      parallelBranches: [
+        {
+          layout: { generateStaticParams: rootLayoutGenerateStaticParams },
+          configLayouts: [null, { generateStaticParams: nestedLayoutGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("static-123")).resolves.toBeNull();
+    await expect(validate("dynamic-123")).resolves.toMatchObject({ status: 404 });
+    expect(rootLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(nestedLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
   });
 
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
