@@ -69,6 +69,7 @@ function parseChoiceArg<T extends string>(
   args: string[],
   flag: string,
   choices: readonly T[],
+  displayedChoices: readonly string[] = choices,
 ): T | undefined {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -76,15 +77,17 @@ function parseChoiceArg<T extends string>(
     if (arg === flag) {
       value = args[index + 1];
       if (!value || value.startsWith("-")) {
-        throw new Error(`${flag} requires a value (${choices.join(" or ")}).`);
+        throw new Error(`${flag} requires a value (${displayedChoices.join(" or ")}).`);
       }
     } else if (arg.startsWith(`${flag}=`)) {
       value = arg.slice(flag.length + 1);
-      if (!value) throw new Error(`${flag} requires a value (${choices.join(" or ")}).`);
+      if (!value) throw new Error(`${flag} requires a value (${displayedChoices.join(" or ")}).`);
     }
     if (value) {
       if (choices.includes(value as T)) return value as T;
-      throw new Error(`Unsupported ${flag} value "${value}". Expected ${choices.join(" or ")}.`);
+      throw new Error(
+        `Unsupported ${flag} value "${value}". Expected ${displayedChoices.join(" or ")}.`,
+      );
     }
   }
   return undefined;
@@ -95,7 +98,7 @@ export function parseDataCacheArg(args: string[]): InitDataCache | undefined {
 }
 
 export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
-  return parseChoiceArg(args, "--cdn-cache", ["data-cache", "workers-cache"]);
+  return parseChoiceArg(args, "--cdn-cache", ["data-cache", "workers-cache"], ["data-cache"]);
 }
 
 export function parseImageOptimizationArg(args: string[]): InitImageOptimization | undefined {
@@ -165,7 +168,7 @@ export async function resolveCloudflareInitOptions(
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user which data cache (kv or none), CDN cache (data-cache or workers-cache), and image optimization (cloudflare-images or none) they want. Then re-run with --data-cache=... and --image-optimization=..., adding --cdn-cache=workers-cache only if they chose Workers Cache.",
+      "vinext init needs Cloudflare cache and image choices. Ask the user which data cache (kv or none) and image optimization (cloudflare-images or none) they want, then re-run with --data-cache=... and --image-optimization=....",
     );
   }
 
@@ -208,20 +211,7 @@ export async function resolveCloudflareInitOptions(
       "kv",
       "Please choose Cloudflare KV (1) or None (2).",
     );
-    const cdnCache = await promptChoice(
-      explicitCdnCache,
-      "  Choose a CDN/page cache:\n\n    1. Use the data cache (default)\n    2. Workers Cache (private beta)\n\n  CDN cache [1]: ",
-      {
-        "1": "data-cache",
-        data: "data-cache",
-        "data-cache": "data-cache",
-        "2": "workers-cache",
-        workers: "workers-cache",
-        "workers-cache": "workers-cache",
-      },
-      "data-cache",
-      "Please choose the data cache (1) or Workers Cache private beta (2).",
-    );
+    const cdnCache = explicitCdnCache ?? "data-cache";
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
       "  Choose image optimization:\n\n    1. Cloudflare Images (default)\n    2. None\n\n  Image optimization [1]: ",

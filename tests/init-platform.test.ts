@@ -26,6 +26,7 @@ describe("Cloudflare init choices", () => {
   it("parses cache and image flags", () => {
     expect(parseDataCacheArg(["--data-cache=none"])).toBe("none");
     expect(parseCdnCacheArg(["--cdn-cache", "data-cache"])).toBe("data-cache");
+    expect(parseCdnCacheArg(["--cdn-cache=workers-cache"])).toBe("workers-cache");
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
@@ -39,10 +40,10 @@ describe("Cloudflare init choices", () => {
     });
   });
 
-  it("tells agents to ask and rerun with all Cloudflare flags", async () => {
+  it("tells agents to ask and rerun with public Cloudflare flags", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" } }),
-    ).rejects.toThrow("adding --cdn-cache=workers-cache only if they chose Workers Cache");
+    ).rejects.toThrow("--data-cache=... and --image-optimization=...");
   });
 
   it("lets agents omit the default CDN cache flag", async () => {
@@ -58,18 +59,36 @@ describe("Cloudflare init choices", () => {
   });
 
   it("rejects legacy CDN cache choices", () => {
-    expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow(
-      "Expected data-cache or workers-cache",
-    );
-    expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow(
-      "Expected data-cache or workers-cache",
-    );
+    expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow("Expected data-cache");
+    expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow("Expected data-cache");
   });
 
-  it("prompts for each missing Cloudflare choice", async () => {
-    const answers = ["2", "2", "2"];
+  it("prompts only for public Cloudflare choices", async () => {
+    const prompts: string[] = [];
+    const answers = ["2", "2"];
     await expect(
       resolveCloudflareInitOptions([], {
+        env: {},
+        isInteractive: true,
+        question: async (prompt) => {
+          prompts.push(prompt);
+          return answers.shift() ?? "";
+        },
+      }),
+    ).resolves.toEqual({
+      dataCache: "none",
+      cdnCache: "data-cache",
+      imageOptimization: "none",
+    });
+    expect(prompts).toHaveLength(2);
+    expect(prompts.join("\n")).not.toContain("Workers Cache");
+    expect(prompts.join("\n")).not.toContain("CDN");
+  });
+
+  it("preserves the hidden Workers Cache flag during interactive setup", async () => {
+    const answers = ["2", "2"];
+    await expect(
+      resolveCloudflareInitOptions(["--cdn-cache=workers-cache"], {
         env: {},
         isInteractive: true,
         question: async () => answers.shift() ?? "",

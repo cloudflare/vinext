@@ -962,7 +962,6 @@ function printHelp(cmd?: string) {
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
-    --cdn-cache <type>   Cloudflare CDN/page cache: data-cache (default) or workers-cache (private beta)
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
