@@ -40,7 +40,10 @@ const carrierSetter: TextMapSetter = {
  *
  * The implementation mirrors Next.js's `NextTracerImpl.getTracePropagationData`:
  * we call `propagation.inject(activeContext, entries, setter)` and let the
- * setter push entries into our carrier array.
+ * setter push entries into our carrier array. When the registered API has a
+ * tracer provider but no active span, vinext creates and ends a short-lived
+ * span so request-time metadata has the same parent data Next.js exposes;
+ * optional OpenTelemetry failures always degrade to no metadata.
  */
 type OpenTelemetryApi = {
   context: { active(): unknown };
