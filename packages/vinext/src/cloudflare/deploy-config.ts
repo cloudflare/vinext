@@ -104,26 +104,19 @@ function cacheFieldAssigned(cacheBlock: string, field: "cdn" | "data"): boolean 
  * blocked on a false negative.
  */
 export function viteConfigHasCacheAdapter(root: string): boolean {
-  const candidates = [
-    path.join(root, "vite.config.ts"),
-    path.join(root, "vite.config.js"),
-    path.join(root, "vite.config.mjs"),
-  ];
-  for (const candidate of candidates) {
-    if (!fs.existsSync(candidate)) continue;
-    let content: string;
-    try {
-      content = fs.readFileSync(candidate, "utf-8");
-    } catch {
-      // unreadable — assume it might be fine
-      return true;
-    }
-    const block = extractCacheBlock(content);
-    if (!block) return false; // no cache config at all
-    return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
+  const configPath = findViteConfigPath(root);
+  if (!configPath) return true;
+
+  let content: string;
+  try {
+    content = fs.readFileSync(configPath, "utf-8");
+  } catch {
+    // unreadable — assume it might be fine
+    return true;
   }
-  // No Vite config on disk — nothing to inspect; don't block here.
-  return true;
+  const block = extractCacheBlock(content);
+  if (!block) return false; // no cache config at all
+  return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
 }
 
 export function viteConfigHasImageAdapter(root: string): boolean {

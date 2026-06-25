@@ -35,10 +35,10 @@ export type CloudflarePlatformSetupResult = {
   nextSteps: string[];
 };
 
-export function setupCloudflarePlatform(
+export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
-): CloudflarePlatformSetupResult {
+): void {
   const tomlPath = path.join(context.root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     throw new Error(
@@ -46,6 +46,36 @@ export function setupCloudflarePlatform(
     );
   }
 
+  const projectInfo = detectProject(context.root);
+  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
+    .map((fileName) => path.join(context.root, fileName))
+    .find((candidate) => fs.existsSync(candidate));
+  const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
+  const updatedWranglerCode = wranglerCode
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare)
+    : undefined;
+  const imagesBinding = updatedWranglerCode
+    ? getWranglerImagesBinding(updatedWranglerCode)
+    : "IMAGES";
+
+  if (context.existingViteConfigPath) {
+    updateViteConfigForCloudflare(
+      context.existingViteConfigPath,
+      fs.readFileSync(context.existingViteConfigPath, "utf-8"),
+      {
+        isAppRouter: context.isAppRouter,
+        nativeModulesToStub: projectInfo.nativeModulesToStub,
+        cache: cloudflare,
+        imagesBinding,
+      },
+    );
+  }
+}
+
+export function setupCloudflarePlatform(
+  context: CloudflarePlatformSetupContext,
+  cloudflare: CloudflareInitOptions,
+): CloudflarePlatformSetupResult {
   const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))

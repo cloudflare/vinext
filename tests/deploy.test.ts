@@ -1730,6 +1730,23 @@ module.exports = { plugins: [cloudflare()] };
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
+  it.each(["cjs", "mts", "cts"])("detects a cache adapter in vite.config.%s", (extension) => {
+    writeFile(
+      tmpDir,
+      `vite.config.${extension}`,
+      `export default { plugins: [vinext({ cache: { data: kvDataAdapter() } })] };\n`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it.each(["cjs", "mts", "cts"])(
+    "detects a missing cache adapter in vite.config.%s",
+    (extension) => {
+      writeFile(tmpDir, `vite.config.${extension}`, `export default { plugins: [vinext()] };\n`);
+      expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+    },
+  );
+
   it("returns false when cloudflare() only appears in a comment", () => {
     writeFile(
       tmpDir,

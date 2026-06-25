@@ -574,8 +574,36 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       "wrangler.toml",
       'name = "existing"\nimages = { binding = "CUSTOM_IMAGES" }\n',
     );
+    const before = snapshotProject(tmpDir);
 
     await expect(runInit(tmpDir)).rejects.toThrow("wrangler.toml is not supported");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects malformed Wrangler JSONC before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.jsonc", `{ "name": "broken",\n`);
+    const before = snapshotProject(tmpDir);
+    const exec = vi.fn();
+
+    await expect(runInit(tmpDir, { _exec: exec })).rejects.toThrow(
+      "Could not parse the existing Wrangler JSON/JSONC config",
+    );
+    expect(exec).not.toHaveBeenCalled();
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects unsupported Vite config structures before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.ts", `const config = getConfig(); export default config;\n`);
+    const before = snapshotProject(tmpDir);
+    const exec = vi.fn();
+
+    await expect(runInit(tmpDir, { _exec: exec })).rejects.toThrow(
+      "Could not find a static Vite config object",
+    );
+    expect(exec).not.toHaveBeenCalled();
+    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {

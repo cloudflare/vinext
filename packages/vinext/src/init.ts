@@ -28,7 +28,11 @@ import {
   findViteConfigPath,
   hasViteConfig,
 } from "./utils/project.js";
-import { setupCloudflarePlatform, usesCommonJsViteConfig } from "./init-cloudflare.js";
+import {
+  setupCloudflarePlatform,
+  usesCommonJsViteConfig,
+  validateCloudflarePlatformSetup,
+} from "./init-cloudflare.js";
 import { detectProject } from "./cloudflare/project.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -321,6 +325,18 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const isApp = detectProject(root).isAppRouter;
   const pmName = detectPackageManagerName(root);
+
+  if (platform === "cloudflare") {
+    validateCloudflarePlatformSetup(
+      {
+        root,
+        isAppRouter: isApp,
+        existingViteConfigPath,
+        today: options._today,
+      },
+      options.cloudflare!,
+    );
+  }
 
   // ── Step 1: Compatibility check ────────────────────────────────────────
 
