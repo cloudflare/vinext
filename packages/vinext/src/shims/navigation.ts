@@ -625,6 +625,18 @@ export function seedPrefetchResponseSnapshot(
   schedulePrefetchInvalidation(cacheKey, entry);
 }
 
+export function deletePrefetchResponseSnapshot(
+  rscUrl: string,
+  snapshot: CachedRscResponse,
+  interceptionContext: string | null = null,
+): void {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry?.snapshot !== snapshot) return;
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+}
+
 /**
  * Store a prefetched RSC response in the cache by snapshotting it to an
  * ArrayBuffer.  The snapshot completes asynchronously; during that window

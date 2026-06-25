@@ -119,6 +119,17 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/1`)).toEqual([]);
   });
 
+  test("hovering prefetch={false} emits zero requests", async ({ page }) => {
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    requests.length = 0;
+
+    await page.hover("#client-cache-none");
+    await page.waitForTimeout(250);
+
+    expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
+  });
+
   test("auto cache expires after 30s and renews its TTL after revalidation", async ({ page }) => {
     const requests = trackRscRequests(page);
     await openHome(page);
@@ -138,11 +149,12 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/1`)).toEqual([]);
   });
 
-  test("full Link prefetch is wired separately and remains reusable across parallel slots", async ({
+  test("parallel-slot state changes independently and the full payload remains reusable", async ({
     page,
   }) => {
     const requests = trackRscRequests(page);
     await openHome(page);
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText("Root Breadcrumb");
     await page.hover("#client-cache-full");
 
     await expect
@@ -152,12 +164,14 @@ test.describe("Next.js compat: client cache", () => {
 
     requests.length = 0;
     const initial = await navigateTo(page, "#client-cache-full", "0");
-    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText("Client cache breadcrumbs");
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"0"}');
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
 
     await navigateHome(page);
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText("Root Breadcrumb");
     requests.length = 0;
     const reused = await navigateTo(page, "#client-cache-full", "0");
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"0"}');
     expect(reused).toBe(initial);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
   });

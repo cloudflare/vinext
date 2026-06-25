@@ -26,6 +26,7 @@ import {
   consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
+  deletePrefetchResponseSnapshot,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -144,6 +145,10 @@ import {
   createProdOnCaughtError,
   prodOnRecoverableError,
 } from "./app-browser-error.js";
+import {
+  createHydrationCachePublication,
+  type HydrationCachePublication,
+} from "./app-hydration-cache-publication.js";
 import {
   clearAppNavigationFailureTarget,
   installAppNavigationFailureListeners,
@@ -728,22 +733,20 @@ function storeVisitedResponseSnapshot(
   prefetchFallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
   requestMountedSlotsHeader: string | null = snapshot.mountedSlotsHeader ?? null,
   elements?: AppElements,
-): void {
+): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
-  visitedResponseCache.set(
-    cacheKey,
-    createVisitedResponseCacheEntry({
-      fallbackTtlMs: prefetchFallbackTtlMs,
-      elements,
-      now,
-      mountedSlotsHeader: requestMountedSlotsHeader,
-      params,
-      response: snapshot,
-    }),
-  );
+  const entry = createVisitedResponseCacheEntry({
+    fallbackTtlMs: prefetchFallbackTtlMs,
+    elements,
+    now,
+    mountedSlotsHeader: requestMountedSlotsHeader,
+    params,
+    response: snapshot,
+  });
+  visitedResponseCache.set(cacheKey, entry);
   seedPrefetchResponseSnapshot(
     rscUrl,
     snapshot,
@@ -751,6 +754,12 @@ function storeVisitedResponseSnapshot(
     requestMountedSlotsHeader,
     prefetchFallbackTtlMs,
   );
+  return () => {
+    if (visitedResponseCache.get(cacheKey) === entry) {
+      visitedResponseCache.delete(cacheKey);
+    }
+    deletePrefetchResponseSnapshot(rscUrl, snapshot, interceptionContext);
+  };
 }
 
 // Build the absolute current-document href the early-intent planner compares
@@ -944,9 +953,11 @@ function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<Ap
 }
 
 function BrowserRoot({
+  hydrationCachePublication,
   initialElements,
   initialNavigationSnapshot,
 }: {
+  hydrationCachePublication: HydrationCachePublication;
   initialElements: Promise<AppElements>;
   initialNavigationSnapshot: ClientNavigationRenderSnapshot;
 }) {
@@ -1013,24 +1024,27 @@ function BrowserRoot({
       },
     });
     browserRouterStateHasEverCommitted = true;
+    hydrationCachePublication.commit();
     return () => {
+      hydrationCachePublication.invalidate();
       registerNavigationRuntimeFunctions({ navigateExternal: undefined });
       detach();
       setMountedSlotsHeader(null);
     };
-  }, [setTreeStateValue]);
+  }, [hydrationCachePublication, setTreeStateValue]);
 
   // Next.js publishes its deploy-test hydration marker from a passive effect in
   // app-index's Root wrapper. Keep the same timing: route client effects have
   // committed, so callers that mutate the document after __NEXT_HYDRATED_CB
   // cannot race the initial hydration pass.
   useEffect(() => {
+    hydrationCachePublication.complete();
     const hydratedAt = performance.now();
     window.__VINEXT_HYDRATED_AT = hydratedAt;
     window.__NEXT_HYDRATED = true;
     window.__NEXT_HYDRATED_AT = hydratedAt;
     window.__NEXT_HYDRATED_CB?.();
-  }, []);
+  }, [hydrationCachePublication]);
 
   // This effect snapshots treeState against the controller's current traversal
   // index but only depends on [treeState]. The ordering works because the
@@ -1440,6 +1454,7 @@ function bootstrapHydration(
   devErrorOverlay: DevErrorOverlayModule | null,
   initialRscBootstrap: NavigationRuntimeRscBootstrap | undefined,
 ): void {
+  const hydrationCachePublication = createHydrationCachePublication();
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
@@ -1474,16 +1489,18 @@ function bootstrapHydration(
         initialRscBootstrap?.initialCacheKind === "static"
           ? PREFETCH_CACHE_TTL
           : DYNAMIC_NAVIGATION_CACHE_TTL;
-      if (isCacheRestorableAppPayloadMetadata(metadata)) {
-        storeVisitedResponseSnapshot(
-          rscUrl,
-          metadata.interceptionContext,
-          snapshot,
-          initialParams,
-          fallbackTtlMs,
-          mountedSlotsHeader,
-        );
-      } else {
+      hydrationCachePublication.publish(() => {
+        if (cacheGeneration !== clientNavigationCacheGeneration) return () => {};
+        if (isCacheRestorableAppPayloadMetadata(metadata)) {
+          return storeVisitedResponseSnapshot(
+            rscUrl,
+            metadata.interceptionContext,
+            snapshot,
+            initialParams,
+            fallbackTtlMs,
+            mountedSlotsHeader,
+          );
+        }
         seedPrefetchResponseSnapshot(
           rscUrl,
           snapshot,
@@ -1491,27 +1508,44 @@ function bootstrapHydration(
           mountedSlotsHeader,
           fallbackTtlMs,
         );
-      }
+        return () => deletePrefetchResponseSnapshot(rscUrl, snapshot, metadata.interceptionContext);
+      });
     })
     .catch(() => {});
   historyController.writeBootstrapHistoryMetadata();
 
-  const onUncaughtError = createOnUncaughtError();
+  const reportUncaughtError = createOnUncaughtError();
+  const onUncaughtError = (...args: Parameters<typeof reportUncaughtError>) => {
+    hydrationCachePublication.fail();
+    reportUncaughtError(...args);
+  };
+  const onRecoverableError = (...args: Parameters<typeof prodOnRecoverableError>) => {
+    hydrationCachePublication.fail();
+    prodOnRecoverableError(...args);
+  };
+  const invalidateOnCaughtError = <T extends (...args: never[]) => void>(handler: T): T =>
+    ((...args: Parameters<T>) => {
+      hydrationCachePublication.fail();
+      handler(...args);
+    }) as T;
   const formState = consumeInitialFormState(getVinextBrowserGlobal());
   const hydrateRootOptions =
     import.meta.env.DEV && devErrorOverlay
       ? createVinextHydrateRootOptions({
           formState,
-          onCaughtError: createDevOnCaughtError(devErrorOverlay.devOnCaughtError, onUncaughtError),
+          onCaughtError: invalidateOnCaughtError(
+            createDevOnCaughtError(devErrorOverlay.devOnCaughtError, onUncaughtError),
+          ),
           onUncaughtError,
         })
       : createVinextHydrateRootOptions({
           formState,
-          onCaughtError: createProdOnCaughtError(onUncaughtError),
-          onRecoverableError: prodOnRecoverableError,
+          onCaughtError: invalidateOnCaughtError(createProdOnCaughtError(onUncaughtError)),
+          onRecoverableError,
           onUncaughtError,
         });
   const children = createElement(BrowserRoot, {
+    hydrationCachePublication,
     initialElements: root,
     initialNavigationSnapshot,
   });

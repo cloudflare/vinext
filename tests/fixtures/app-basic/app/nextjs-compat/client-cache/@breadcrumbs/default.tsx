@@ -1,3 +1,3 @@
 export default function ClientCacheBreadcrumbs() {
-  return <span>Client cache breadcrumbs</span>;
+  return <span>Default client cache breadcrumb</span>;
 }
