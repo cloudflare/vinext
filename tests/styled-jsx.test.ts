@@ -121,4 +121,20 @@ describe("styled-jsx compatibility plugin", () => {
       }),
     );
   });
+
+  it("transforms styled-jsx with the installed Next compiler", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<{ code: string }>;
+    };
+
+    const result = await transformHook.handler(
+      'import css from "styled-jsx/css"; const styles = css`button { color: hotpink; }`; export default function Page() { return <style jsx>{styles}</style>; }',
+      "/app/page.js",
+    );
+
+    expect(result.code).toContain('from "styled-jsx/style"');
+    expect(result.code).toContain("button.jsx-");
+    expect(result.code).not.toContain("styled-jsx/css");
+  });
 });
