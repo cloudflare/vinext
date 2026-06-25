@@ -66,16 +66,21 @@ type OpenTelemetryGlobal = {
       setter: TextMapSetter,
     ): void;
   };
+  trace?: {
+    getTracer(name: string): {
+      startSpan(
+        name: string,
+        options: undefined,
+        context: OpenTelemetryContext,
+      ): {
+        end(): void;
+      };
+    };
+  };
 };
 
 const OPEN_TELEMETRY_API_SYMBOL = Symbol.for("opentelemetry.js.api.1");
 const OPEN_TELEMETRY_SPAN_SYMBOL = Symbol.for("OpenTelemetry Context Key SPAN");
-
-function randomHex(bytes: number): string {
-  const values = new Uint8Array(bytes);
-  crypto.getRandomValues(values);
-  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
-}
 
 function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
   const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
@@ -85,21 +90,23 @@ function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
 
   const activeContext = registry.context.active();
   const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
-  const context = hasActiveSpan
-    ? activeContext
-    : activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, {
-        spanContext() {
-          return {
-            traceId: randomHex(16),
-            spanId: randomHex(8),
-            traceFlags: 1,
-          };
-        },
-      });
+  const metadataSpan = hasActiveSpan
+    ? null
+    : registry.trace
+        ?.getTracer("vinext")
+        .startSpan("vinext.clientTraceMetadata", undefined, activeContext);
+  if (!hasActiveSpan && !metadataSpan) return [];
+  const context = metadataSpan
+    ? activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, metadataSpan)
+    : activeContext;
   const entries: ClientTraceDataEntry[] = [];
-  registry.context.with(context, () => {
-    registry.propagation!.inject(context, entries, carrierSetter);
-  });
+  try {
+    registry.context.with(context, () => {
+      registry.propagation!.inject(context, entries, carrierSetter);
+    });
+  } finally {
+    metadataSpan?.end();
+  }
   return entries;
 }
 

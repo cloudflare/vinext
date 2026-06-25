@@ -163,6 +163,7 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
       },
     };
     let currentContext = rootContext;
+    const endedSpans: string[] = [];
     (globalThis as Record<symbol, unknown>)[apiSymbol] = {
       version: "1.9.0",
       context: {
@@ -188,6 +189,17 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
           setter.set(carrier, "my-parent-span-id", span.spanContext().spanId);
         },
       },
+      trace: {
+        getTracer: () => ({
+          startSpan: () => {
+            const spanId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+            return {
+              spanContext: () => ({ spanId }),
+              end: () => endedSpans.push(spanId),
+            };
+          },
+        }),
+      },
     };
 
     const first = getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"]);
@@ -199,6 +211,55 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     expect(firstSpanId).toMatch(/^[a-f0-9]{16}$/);
     expect(secondSpanId).toMatch(/^[a-f0-9]{16}$/);
     expect(secondSpanId).not.toBe(firstSpanId);
+    expect(endedSpans).toEqual([firstSpanId, secondSpanId]);
+  });
+
+  it("preserves an existing active span instead of starting another one", () => {
+    const activeSpan = { spanContext: () => ({ spanId: "0123456789abcdef" }) };
+    const activeContext = {
+      getValue: (key: symbol) => (key === spanSymbol ? activeSpan : undefined),
+      setValue: () => activeContext,
+    };
+    const startSpan = vi.fn();
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      version: "1.9.0",
+      context: {
+        active: () => activeContext,
+        with: (_context: unknown, fn: () => unknown) => fn(),
+      },
+      propagation: {
+        inject(
+          context: typeof activeContext,
+          carrier: ClientTraceDataEntry[],
+          setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
+        ) {
+          const span = context.getValue(spanSymbol) as typeof activeSpan;
+          setter.set(carrier, "my-parent-span-id", span.spanContext().spanId);
+        },
+      },
+      trace: { getTracer: () => ({ startSpan }) },
+    };
+
+    expect(getClientTraceMetadataHTML(["my-parent-span-id"])).toContain("0123456789abcdef");
+    expect(startSpan).not.toHaveBeenCalled();
+  });
+
+  it("does not fabricate span-derived metadata without a registered tracer provider", () => {
+    const rootContext = {
+      getValue: () => undefined,
+      setValue: () => rootContext,
+    };
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      version: "1.9.0",
+      context: { active: () => rootContext, with: (_context: unknown, fn: () => unknown) => fn() },
+      propagation: {
+        inject() {
+          throw new Error("propagation should not run without a span");
+        },
+      },
+    };
+
+    expect(getClientTraceMetadataHTML(["my-parent-span-id"])).toBe("");
   });
 
   it("does not emit trace metadata while prerendering", () => {
