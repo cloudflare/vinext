@@ -459,6 +459,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
           fetchPriority: priority,
+          prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : undefined,
@@ -471,11 +472,13 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const rscUrl = await createRscRequestUrl(fullHref, headers);
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
+        if (autoPrefetch.cacheForNavigation) {
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+        }
         if (prefetched.has(cacheKey)) {
           if (!autoPrefetch.cacheForNavigation) {
             return;
           }
-          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact

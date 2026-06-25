@@ -109,6 +109,18 @@ describe("App Router RSC cache-busting", () => {
     );
   });
 
+  it("keeps router state but omits the prefetch header for a full prefetch", () => {
+    const headers = createRscRequestHeaders({
+      nextUrl: "/current",
+      includePrefetchHeader: false,
+      prefetchRouterState: { pathAndSearch: "/current", routeId: "route:/current" },
+    });
+
+    expect(headers.get("next-router-prefetch")).toBeNull();
+    expect(headers.get("next-router-state-tree")).toBeTruthy();
+    expect(headers.get("next-url")).toBe("/current");
+  });
+
   it("keeps server action POSTs on the visible route URL", () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts

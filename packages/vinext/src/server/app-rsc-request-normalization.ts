@@ -56,6 +56,16 @@ function parsePrefetchRouterState(value: string | null): PrefetchRouterState | n
   }
 }
 
+function normalizeComparablePathAndSearch(value: string, basePath: string, baseUrl: URL): string {
+  const parsed = new URL(value, baseUrl);
+  const pathname =
+    basePath && hasBasePath(parsed.pathname, basePath)
+      ? stripBasePath(parsed.pathname, basePath)
+      : parsed.pathname;
+  const search = parsed.searchParams.toString();
+  return `${pathname}${search ? `?${search}` : ""}`;
+}
+
 export type NormalizedRscRequest = {
   /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
   url: URL;
@@ -180,11 +190,19 @@ export function normalizeRscRequest(
       const targetUrl = new URL(url);
       targetUrl.pathname = cleanPathname;
       targetUrl.searchParams.delete(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
-      const nextPathAndSearch = `${nextRequestUrl.pathname}${nextRequestUrl.search}`;
-      const targetPathAndSearch = `${targetUrl.pathname}${targetUrl.search}`;
+      const routerPathAndSearch = normalizeComparablePathAndSearch(
+        routerState.pathAndSearch,
+        basePath,
+        url,
+      );
+      const nextPathAndSearch = normalizeComparablePathAndSearch(
+        nextRequestUrl.href,
+        basePath,
+        url,
+      );
+      const targetPathAndSearch = normalizeComparablePathAndSearch(targetUrl.href, basePath, url);
       renderMode =
-        routerState.pathAndSearch === nextPathAndSearch &&
-        routerState.pathAndSearch === targetPathAndSearch
+        routerPathAndSearch === nextPathAndSearch && routerPathAndSearch === targetPathAndSearch
           ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
           : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
     }

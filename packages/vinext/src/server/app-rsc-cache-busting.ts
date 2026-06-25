@@ -49,6 +49,7 @@ type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
   fetchPriority?: "auto" | "high" | "low";
   nextUrl?: string | null;
@@ -289,7 +290,9 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   applyDeploymentIdHeader(headers);
 
   if (options.prefetchRouterState) {
-    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    if (options.includePrefetchHeader !== false) {
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    }
     headers.set(
       NEXT_ROUTER_STATE_TREE_HEADER,
       encodeURIComponent(JSON.stringify(options.prefetchRouterState)),

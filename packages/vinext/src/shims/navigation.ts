@@ -292,12 +292,14 @@ export function createAppPrefetchRequestHeaders(options: {
   fetchPriority: "auto" | "high" | "low";
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  prefetchKind?: "auto" | "full";
   renderMode?: AppRscRenderMode;
 }): Headers {
   const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return createRscRequestHeaders({
     ...options,
     nextUrl: getCurrentNextUrl(),
+    includePrefetchHeader: options.prefetchKind !== "full",
     prefetchRouterState,
   });
 }
@@ -560,13 +562,22 @@ export function discardLearningOnlyPrefetchCacheEntry(
   rscUrl: string,
   interceptionContext: string | null = null,
 ): boolean {
-  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
-  const entry = cache.get(cacheKey);
-  if (entry?.cacheForNavigation !== false) return false;
+  const prefetched = getPrefetchedUrls();
+  const normalizedTarget = normalizeRscCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return false;
 
-  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
-  return true;
+  let discarded = false;
+  for (const [cacheKey, entry] of cache) {
+    if (entry.cacheForNavigation !== false) continue;
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
+    discarded = true;
+  }
+  return discarded;
 }
 
 function invalidatePrefetchCacheEntry(cacheKey: string): void {

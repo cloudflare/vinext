@@ -505,6 +505,41 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
   });
 
+  it("infers the current tree under basePath after stripping the prefix", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/docs/dashboard?tab=current&${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader("/dashboard?tab=current"),
+          [NEXT_URL_HEADER]: "/docs/dashboard?tab=current",
+        }),
+        "/docs",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
+  });
+
+  it.each([
+    ["encoded spaces", "term=%20", "term=+"],
+    ["valueless params", "preview", "preview="],
+  ])("normalizes equivalent %s before current-tree comparison", (_, rawQuery, stateQuery) => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/dashboard?${rawQuery}&${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader(`/dashboard?${stateQuery}`),
+          [NEXT_URL_HEADER]: `/dashboard?${rawQuery}`,
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
+  });
+
   it("maps a Next prefetch from another dynamic segment to a loading shell", () => {
     const result = normalized(
       normalizeRscRequest(

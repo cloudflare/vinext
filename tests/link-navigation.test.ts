@@ -1511,6 +1511,10 @@ describe("Link prefetch scheduling", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/instant-navigation-testing-api/instant-navigation-testing-api.test.ts
       expect(result.fetch).toHaveBeenCalledTimes(1);
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get("next-router-prefetch")).toBeNull();
+      expect(
+        (fetchInit?.headers as Headers | undefined)?.get("next-router-state-tree"),
+      ).toBeTruthy();
       expect(
         (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
@@ -1865,12 +1869,9 @@ describe("Link prefetch scheduling", () => {
       ).toBeNull();
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entries = Array.from(getPrefetchCache().values());
-      expect(entries.some((entry) => entry.optimisticRouteShell === true)).toBe(true);
-      expect(
-        entries.some(
-          (entry) => entry.cacheForNavigation === true && entry.optimisticRouteShell !== true,
-        ),
-      ).toBe(true);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.cacheForNavigation).toBe(true);
+      expect(entries[0]?.optimisticRouteShell).toBe(false);
 
       invalidatePrefetchCache();
       await waitForFetchCalls(result.fetch, 3);
