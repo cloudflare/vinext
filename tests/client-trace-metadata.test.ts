@@ -5,7 +5,7 @@
  * Source: packages/next/src/server/lib/trace/utils.ts (getTracedMetadata)
  *         packages/next/src/server/app-render/make-get-server-inserted-html.tsx
  */
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   filterClientTraceMetadata,
   getClientTraceMetadataHTML,
