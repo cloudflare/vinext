@@ -32,6 +32,20 @@ describe("CSS Module import compatibility", () => {
     );
   });
 
+  it("selects the TypeScript parser for uppercase extensions", () => {
+    const plugin = createCssModuleImportCompatibilityPlugin();
+    const transform =
+      typeof plugin.transform === "function" ? plugin.transform : plugin.transform?.handler;
+    const source = [
+      'import * as classes from "example/index.module.scss";',
+      'export default function Page(): React.ReactNode { return <div className={classes["red-text"]} />; }',
+    ].join("\n");
+
+    expect(transform?.call({} as never, source, "/project/Page.TSX")).toMatchObject({
+      code: expect.stringContaining('import classes from "example/index.module.scss";'),
+    });
+  });
+
   it("parses imports from .js modules containing JSX", () => {
     const source = [
       'import * as classes from "example/index.module.scss";',
@@ -66,6 +80,7 @@ describe("CSS Module import compatibility", () => {
     expect(compiled).toBeTruthy();
 
     const compatibilityPlugin = createCssModuleImportCompatibilityPlugin({ compiledMdx: true });
+    expect(compatibilityPlugin.enforce).toBe("post");
     const compatibilityTransform =
       typeof compatibilityPlugin.transform === "function"
         ? compatibilityPlugin.transform

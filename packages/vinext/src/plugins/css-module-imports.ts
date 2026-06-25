@@ -25,7 +25,7 @@ type AstImportDeclaration = {
 type ScriptLanguage = "js" | "jsx" | "ts" | "tsx";
 
 function scriptLanguage(id: string): ScriptLanguage {
-  const cleanId = id.split("?", 1)[0];
+  const cleanId = id.split("?", 1)[0].toLowerCase();
   if (cleanId.endsWith(".tsx")) return "tsx";
   if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) return "ts";
   return "jsx";
@@ -79,7 +79,7 @@ export function createCssModuleImportCompatibilityPlugin(
     name: options.compiledMdx
       ? "vinext:css-module-import-compatibility-mdx"
       : "vinext:css-module-import-compatibility",
-    enforce: "pre",
+    enforce: options.compiledMdx ? "post" : "pre",
     transform: {
       filter: { id: idFilter, code: CSS_MODULE_HINT_RE },
       handler(code, id) {
