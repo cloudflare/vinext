@@ -162,6 +162,45 @@ describe("createSassCssUrlAssetImporter", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("preserves the default namespace for @use and supports explicit @use/@forward", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-use-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    const partialPath = path.join(tmpDir, "_card.scss");
+    await fsp.writeFile(partialPath, `$fg: red;\n.card { background-image: url('./card.svg'); }`);
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const defaultUse = importer.rewriteImports(
+        `@use "./card";\n.test { color: card.$fg; }`,
+        entryPath,
+      );
+      expect(defaultUse).toContain(" as card;");
+      expect(
+        sass.compileString(defaultUse, {
+          importers: [importer],
+          syntax: "scss",
+        }).css,
+      ).toContain("vinext_css_url_asset=card.svg");
+
+      const explicitUse = importer.rewriteImports(
+        `@use "./card" as c;\n.test { color: c.$fg; }`,
+        entryPath,
+      );
+      expect(explicitUse).not.toContain(" as card as c");
+      expect(() =>
+        sass.compileString(explicitUse, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+
+      const forwarded = importer.rewriteImports(`@forward "./card";`, entryPath);
+      expect(() =>
+        sass.compileString(forwarded, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createSassTildeImporter", () => {

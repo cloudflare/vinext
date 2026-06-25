@@ -154,6 +154,17 @@ function sassStylesheetCandidates(importPath: string): string[] {
   return candidates;
 }
 
+function deriveSassNamespace(importUrl: string): string {
+  const normalized = importUrl.replaceAll("\\", "/").replace(/\/$/, "");
+  const parts = normalized.split("/");
+  let basename = parts.pop() ?? "stylesheet";
+  basename = basename.replace(/^_/, "").replace(/\.(?:scss|sass|css)$/i, "");
+  if (basename === "index" && parts.length > 0) {
+    basename = (parts.pop() ?? basename).replace(/^_/, "");
+  }
+  return basename.replaceAll("_", "-");
+}
+
 /**
  * Preserve source-asset provenance for `url()` references inside imported Sass
  * partials. Vite's transform hook only sees the entry stylesheet after Sass has
@@ -191,8 +202,15 @@ export function createSassCssUrlAssetImporter(): {
     entryDirectory = path.dirname(filename),
   ): string =>
     source.replace(
-      /(@(?:import|use|forward)\s+)(["'])(\.[^"']+)\2/g,
-      (match, prefix: string, quote: string, importUrl: string) => {
+      /(@(import|use|forward)\s+)(["'])(\.[^"']+)\3([^;]*;?)/g,
+      (
+        match,
+        prefix: string,
+        rule: "import" | "use" | "forward",
+        quote: string,
+        importUrl: string,
+        suffix: string,
+      ) => {
         const importPath = path.resolve(path.dirname(filename), importUrl);
         for (const candidate of sassStylesheetCandidates(importPath)) {
           if (!fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
@@ -200,7 +218,11 @@ export function createSassCssUrlAssetImporter(): {
           if (prepared === null) return match;
           const canonicalUrl = pathToFileURL(candidate);
           markedStylesheets.set(canonicalUrl.href, prepared);
-          return `${prefix}${quote}${importUrlPrefix}${encodeURIComponent(candidate)}${quote}`;
+          const namespace =
+            rule === "use" && !/\bas\s+(?:\*|[-\w]+)/.test(suffix)
+              ? ` as ${deriveSassNamespace(importUrl)}`
+              : "";
+          return `${prefix}${quote}${importUrlPrefix}${encodeURIComponent(candidate)}${quote}${namespace}${suffix}`;
         }
         return match;
       },
