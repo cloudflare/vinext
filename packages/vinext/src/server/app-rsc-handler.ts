@@ -516,12 +516,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
 
-  // The request reached this point so it was either under basePath (stripped
-  // by normalizeRscRequest) or basePath is empty. In both cases the matcher
-  // gating below treats default (basePath: true) rules as eligible. The App
-  // Router does not yet support `basePath: false` rules — they would need a
-  // pre-strip hook in normalizeRscRequest to fire. Tracked as follow-up to
-  // issue #1333.
+  // Preserve whether the request arrived under basePath so config matchers can
+  // distinguish default rules from explicit `basePath: false` rules.
   const basePathState = { basePath: options.basePath, hadBasePath };
 
   if (

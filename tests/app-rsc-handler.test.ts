@@ -2093,6 +2093,43 @@ describe("createAppRscHandler", () => {
     expect(matchRoute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      name: "public files",
+      path: "/logo.svg",
+      overrides: { publicFiles: new Set(["/logo.svg"]) },
+    },
+    {
+      name: "image optimization",
+      path: "/_next/image?url=%2Fimg.jpg&w=640&q=75",
+      overrides: {},
+    },
+    {
+      name: "metadata routes",
+      path: "/favicon.ico",
+      overrides: {
+        metadataRoutes: [
+          {
+            type: "favicon" as const,
+            isDynamic: false,
+            filePath: "/tmp/app/favicon.ico",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/favicon.ico",
+            contentType: "image/x-icon",
+            fileDataBase64: btoa("icon-bytes"),
+          },
+        ],
+      },
+    },
+  ])("does not expose $name directly outside basePath", async ({ path, overrides }) => {
+    const handler = createHandler({ configHeaders: [], matchRoute: () => null, ...overrides });
+
+    const response = await handler(new Request(`https://example.test${path}`), null);
+
+    expect(response.status).toBe(404);
+  });
+
   it("lets middleware Cache-Control override static metadata route defaults", async () => {
     // Ported from Next.js: test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
