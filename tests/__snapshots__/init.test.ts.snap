@@ -148,9 +148,9 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
   plugins: [custom(), vinext({
-  cache: { data: kvDataAdapter() },
-  images: { optimizer: imageAdapter() },
-}),
+      cache: { data: kvDataAdapter() },
+      images: { optimizer: imageAdapter() },
+    }),
     cloudflare({
       viteEnvironment: {
         name: "rsc",

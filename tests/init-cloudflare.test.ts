@@ -223,8 +223,9 @@ export default { plugins: [vinext()] };
       },
     );
     expectValidConfig(output);
-    expect(output).toContain("vinext({\n  cache: { data: kvDataAdapter(), cdn: cdnAdapter() },");
-    expect(output).toContain("images: { optimizer: imageAdapter() }");
+    expect(output).toContain(
+      "vinext({\n    cache: { data: kvDataAdapter(), cdn: cdnAdapter() },\n    images: { optimizer: imageAdapter() },\n  })",
+    );
   });
 
   it.each(["undefined", "null"])("replaces an unusable %s image optimizer", (value) => {
@@ -430,7 +431,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
   });
 
   it("keeps Pages Router adapter plumbing independent of the selected backend", () => {
-    const output = generatePagesRouterWorkerEntry("none");
+    const output = generatePagesRouterWorkerEntry();
     expect(output).not.toContain("IMAGES");
     expect(output).not.toContain("handleImageOptimization");
     expect(output).toContain("handleConfiguredImageOptimization");
