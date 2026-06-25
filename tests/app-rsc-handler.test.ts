@@ -257,6 +257,40 @@ describe("createAppRscHandler", () => {
     expect(renderNotFound).not.toHaveBeenCalled();
   });
 
+  it("does not redirect invalid RSC requests that remain outside basePath", async () => {
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const handler = createHandler({ configHeaders: [] });
+
+    const response = await handler(
+      new Request("https://example.test/about.rsc?tab=latest", { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("preserves middleware response headers on unclaimed out-of-basePath 404s", async () => {
+    const middleware = vi.fn(
+      () =>
+        new Response(null, {
+          headers: {
+            "x-middleware-next": "1",
+            "x-response-header": "preserved",
+          },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-response-header")).toBe("preserved");
+  });
+
   it("does not dispatch server actions directly outside basePath", async () => {
     const handleServerActionRequest = vi.fn(async () => new Response("action"));
     const handler = createHandler({ configHeaders: [], handleServerActionRequest });

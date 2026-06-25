@@ -575,10 +575,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
-  const rscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
-    isRscRequest,
-    request,
-  });
+  const rscCacheBustingRedirect = hadBasePath
+    ? await resolveInvalidRscCacheBustingRequest({ isRscRequest, request })
+    : null;
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
   // Keep cache-busting validation on the real request above, then hide the
@@ -651,6 +650,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
     }
+  }
+
+  if (!hadBasePath && outOfBasePathRequestClaimed) {
+    const claimedRscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest,
+      request,
+    });
+    if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
   }
 
   if (outOfBasePathRequestClaimed && isImageOptimizationPath(cleanPathname)) {
@@ -932,7 +939,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (!outOfBasePathRequestClaimed) {
     options.clearRequestContext();
-    return notFoundResponse();
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    return notFoundResponse({ headers });
   }
 
   if (!match) {
