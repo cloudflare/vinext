@@ -132,11 +132,11 @@ export function createStyledJsxPlugin(
       filter: { id: STYLED_JSX_IMPORT_RE },
       handler(source) {
         try {
-          return createProjectRequire(projectRoot).resolve(source);
+          return getNextRequire()?.resolve(source) ?? null;
         } catch {}
 
         try {
-          return getNextRequire()?.resolve(source) ?? null;
+          return createProjectRequire(projectRoot).resolve(source);
         } catch {
           return null;
         }
