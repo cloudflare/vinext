@@ -42,6 +42,10 @@ describe("styled-jsx compatibility plugin", () => {
 
     expect(transformFilter.test("export default <style global jsx>{styles}</style>")).toBe(true);
     expect(transformFilter.test('const css = require ("styled-jsx/css")')).toBe(true);
+    expect(transformFilter.test('export default <style data-language="jsx">{styles}</style>')).toBe(
+      false,
+    );
+    expect(transformFilter.test("export default <style jsx-global>{styles}</style>")).toBe(false);
   });
 
   it("resolves styled-jsx subpaths from Next's dependency graph", () => {

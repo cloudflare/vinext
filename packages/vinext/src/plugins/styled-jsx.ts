@@ -17,7 +17,7 @@ type StyledJsxPluginOptions = {
 
 const STYLED_JSX_IMPORT_RE = /^styled-jsx(?:\/.*)?$/;
 const STYLED_JSX_SOURCE_RE =
-  /(?:<style\b[^>]*\bjsx\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
+  /(?:<style\b(?:(?:\s+[A-Za-z_:][\w:.-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|\{[^{}]*\}))?)|\s+\{[^{}]*\})*\s+jsx(?=\s|=|\/?\s*>|\/)|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 
 function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
