@@ -957,9 +957,9 @@ export async function buildAppRouteGraph(
     const dir = path.posix.dirname(file);
     const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
-    if (discoverParallelSlots(routeDir, appDir, scanMatcher).length === 0) continue;
+    if (discoverParallelSlots(routeDir, appDir, scanMatcher, true).length === 0) continue;
 
-    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null);
+    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null, true);
     if (!route) continue;
     if (routePatterns.has(route.pattern)) {
       ghostParentRoutes.push(route);
@@ -1476,6 +1476,7 @@ function directoryToAppRoute(
   matcher: ValidFileMatcher,
   pagePath: string | null,
   routePath: string | null,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphRoute | null {
   const segments = dir === "." ? [] : dir.split("/");
 
@@ -1528,7 +1529,13 @@ function directoryToAppRoute(
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
-  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir, matcher);
+  const parallelSlots = discoverInheritedParallelSlots(
+    segments,
+    appDir,
+    routeDir,
+    matcher,
+    includeNestedOnlySlots,
+  );
 
   return {
     ids: createAppRouteSemanticIds({
@@ -1855,6 +1862,7 @@ function discoverInheritedParallelSlots(
   appDir: string,
   routeDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
   const slotMap = new Map<string, AppRouteGraphParallelSlot>();
 
@@ -1886,9 +1894,14 @@ function discoverInheritedParallelSlots(
     if (lvlLayoutIdx < 0 && routeHasLayout) continue;
 
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
-    const slotsAtLevel = discoverParallelSlots(dir, appDir, matcher);
     const segmentsBelow = segments.slice(segmentIndex);
     const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
+    const slotsAtLevel = discoverParallelSlots(
+      dir,
+      appDir,
+      matcher,
+      includeNestedOnlySlots && isActiveUrlLevel,
+    );
 
     for (const slot of slotsAtLevel) {
       if (isActiveUrlLevel) {
@@ -2141,6 +2154,7 @@ function discoverParallelSlots(
   dir: string,
   appDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
   if (!fs.existsSync(dir)) return [];
 
@@ -2165,7 +2179,7 @@ function discoverParallelSlots(
     const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
-    const hasNestedPages = findSlotSubPages(slotDir, matcher).length > 0;
+    const hasNestedPages = includeNestedOnlySlots && findSlotSubPages(slotDir, matcher).length > 0;
 
     // A slot with only nested pages still owns URL sub-routes. Keeping it in
     // the graph lets discoverSlotSubRoutes materialize shapes such as
