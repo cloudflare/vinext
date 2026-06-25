@@ -153,7 +153,7 @@ describe("SCSS CSS-module composes (production build)", () => {
     const tmpDir = await makeFixture({
       "app/layout.tsx":
         "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
-      "pages/index.tsx": [
+      "pages/index.js": [
         'import * as classes from "example/index.module.scss";',
         "export default function Home() {",
         '  return <div className={classes["red-text"]}>node module</div>;',

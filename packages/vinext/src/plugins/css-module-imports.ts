@@ -23,8 +23,7 @@ function scriptLanguage(id: string): ScriptLanguage {
   const cleanId = id.split("?", 1)[0];
   if (cleanId.endsWith(".tsx")) return "tsx";
   if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) return "ts";
-  if (cleanId.endsWith(".jsx")) return "jsx";
-  return "js";
+  return "jsx";
 }
 
 export function rewriteCssModuleNamespaceImports(

@@ -29,6 +29,17 @@ describe("CSS Module import compatibility", () => {
     );
   });
 
+  it("parses imports from .js modules containing JSX", () => {
+    const source = [
+      'import * as classes from "example/index.module.scss";',
+      'export default function Page() { return <div className={classes["red-text"]} />; }',
+    ].join("\n");
+
+    expect(rewriteCssModuleNamespaceImports(source, "jsx")?.code).toContain(
+      'import classes from "example/index.module.scss";',
+    );
+  });
+
   it("leaves existing default, named, dynamic, and non-module imports unchanged", () => {
     const source = [
       'import styles from "./styles.module.scss";',
