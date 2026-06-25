@@ -2,7 +2,7 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 
-const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)(?:[?#].*)?$/i;
+const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)$/i;
 const SCRIPT_RE = /\.(?:[cm]?[jt]sx?)(?:[?#].*)?$/i;
 
 type AstImportSpecifier = {
