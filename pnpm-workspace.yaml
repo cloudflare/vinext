@@ -10,6 +10,7 @@ packages:
   - packages/*
   - examples/*
   - tests/fixtures/*
+  - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
 
