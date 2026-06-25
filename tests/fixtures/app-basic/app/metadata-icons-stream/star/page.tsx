@@ -5,7 +5,21 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "Star icon",
     icons: {
-      icon: "/star.png",
+      icon: [
+        {
+          url: "/star.png",
+          sizes: "16x16",
+          type: "image/png",
+          media: "(prefers-color-scheme: light)",
+        },
+        {
+          url: "/star.png",
+          sizes: "32x32",
+          type: "image/png",
+          media: "(prefers-color-scheme: dark)",
+        },
+        { url: "/star.png", sizes: "any", type: "image/svg+xml" },
+      ],
       apple: "/star-apple.png",
       shortcut: "/star-shortcut.png",
       other: [
