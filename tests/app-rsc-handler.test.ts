@@ -1073,6 +1073,60 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("applies basePath false rewrites before rejecting outside-basePath requests", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("outside-base-path upstream");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/outsideBasePath",
+              destination: `http://127.0.0.1:${address.port}/`,
+              basePath: false,
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        matchRoute: () => null,
+      });
+
+      const response = await handler(new Request("https://example.test/outsideBasePath"), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("outside-base-path upstream");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not expose direct App routes outside basePath when an opt-out rule exists", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/only-this-path", destination: "/about", basePath: false }],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(new Request("https://example.test/about"), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("preserves Node route handler RSC URLs while hiding internal parsed params", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/front-redirect-issue/front-redirect-issue.test.ts
