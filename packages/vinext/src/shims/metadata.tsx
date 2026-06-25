@@ -268,32 +268,20 @@ type SocialImageDescriptor = {
   type?: string;
 };
 
-type IconDescriptor = {
+type IconDescriptor = Omit<React.LinkHTMLAttributes<HTMLLinkElement>, "href"> & {
   url: string | URL;
-  sizes?: string;
-  type?: string;
-  media?: string;
-};
-
-type AppleIconDescriptor = {
-  url: string | URL;
-  sizes?: string;
-  type?: string;
 };
 
 type IconInput = string | URL | IconDescriptor;
-type AppleIconInput = string | URL | AppleIconDescriptor;
-
-type OtherIconDescriptor = { rel: string; url: string | URL; sizes?: string; type?: string };
 
 type IconsMap = {
   icon?: IconInput | IconInput[];
-  shortcut?: string | URL | Array<string | URL>;
-  apple?: AppleIconInput | AppleIconInput[];
+  shortcut?: IconInput | IconInput[];
+  apple?: IconInput | IconInput[];
   // Next.js accepts a single descriptor or an array (see resolveIcons in
   // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts —
   // values pass through resolveAsArrayOrUndefined before iteration).
-  other?: OtherIconDescriptor | OtherIconDescriptor[];
+  other?: IconDescriptor | IconDescriptor[];
 };
 
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
@@ -831,6 +819,26 @@ function renderMetadataAttributes(props: object, names: readonly string[]): stri
   return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
 }
 
+function renderLinkAttributes(props: object): string {
+  const attributes: string[] = [];
+  for (const [name, value] of Object.entries(props)) {
+    if (
+      name === "children" ||
+      name === "dangerouslySetInnerHTML" ||
+      value === null ||
+      value === undefined ||
+      typeof value === "boolean" ||
+      typeof value === "function" ||
+      typeof value === "object"
+    ) {
+      continue;
+    }
+    const htmlName = name === "className" ? "class" : name.toLowerCase();
+    attributes.push(`${htmlName}="${escapeHtmlAttribute(String(value))}"`);
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+
 function renderMetadataElementToHtml(node: unknown): string {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (Array.isArray(node)) return node.map(renderMetadataElementToHtml).join("");
@@ -848,15 +856,7 @@ function renderMetadataElementToHtml(node: unknown): string {
     case "meta":
       return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
     case "link":
-      return `<link${renderMetadataAttributes(props, [
-        "data-vinext-streamed-icon",
-        "rel",
-        "href",
-        "hrefLang",
-        "media",
-        "type",
-        "sizes",
-      ])}>`;
+      return `<link${renderLinkAttributes(props)}>`;
     default:
       return "";
   }
@@ -1179,74 +1179,47 @@ export function MetadataHead({
       ? normalizeUrlDescriptorEntries(metadata.icons.icon, (url): IconDescriptor => ({ url }))
       : normalizeUrlDescriptorEntries(metadata.icons, (url): IconDescriptor => ({ url }));
 
-    // Shortcut icon
-    if (isIconsMap(metadata.icons) && metadata.icons.shortcut) {
-      const shortcuts = Array.isArray(metadata.icons.shortcut)
-        ? metadata.icons.shortcut
-        : [metadata.icons.shortcut];
-      for (const s of shortcuts) {
+    let streamedIconOrder = 0;
+    const appendIcons = (entries: IconDescriptor[], defaultRel: string) => {
+      for (const { url, rel, ...props } of entries) {
         elements.push(
           <link
             key={key++}
+            {...props}
             data-vinext-streamed-icon={streamedIconKey}
-            rel="shortcut icon"
-            href={stringifyUrl(s)}
+            data-vinext-streamed-icon-order={streamedIconKey ? streamedIconOrder++ : undefined}
+            rel={rel || defaultRel}
+            href={stringifyUrl(url)}
           />,
         );
       }
+    };
+
+    // Shortcut icon
+    if (isIconsMap(metadata.icons) && metadata.icons.shortcut) {
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.shortcut, (url): IconDescriptor => ({ url })),
+        "shortcut icon",
+      );
     }
     // Icon
     if (iconEntries.length > 0) {
-      for (const i of iconEntries) {
-        elements.push(
-          <link
-            key={key++}
-            data-vinext-streamed-icon={streamedIconKey}
-            rel="icon"
-            href={stringifyUrl(i.url)}
-            {...(i.sizes ? { sizes: i.sizes } : {})}
-            {...(i.type ? { type: i.type } : {})}
-            {...(i.media ? { media: i.media } : {})}
-          />,
-        );
-      }
+      appendIcons(iconEntries, "icon");
     }
     // Apple touch icon
     if (isIconsMap(metadata.icons) && metadata.icons.apple) {
-      for (const a of normalizeUrlDescriptorEntries(
-        metadata.icons.apple,
-        (url): AppleIconDescriptor => ({ url }),
-      )) {
-        elements.push(
-          <link
-            key={key++}
-            data-vinext-streamed-icon={streamedIconKey}
-            rel="apple-touch-icon"
-            href={stringifyUrl(a.url)}
-            {...(a.sizes ? { sizes: a.sizes } : {})}
-            {...(a.type ? { type: a.type } : {})}
-          />,
-        );
-      }
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.apple, (url): IconDescriptor => ({ url })),
+        "apple-touch-icon",
+      );
     }
     // Other custom icon relations. Next.js accepts a single descriptor or an
     // array; normalize before iterating.
     if (isIconsMap(metadata.icons) && metadata.icons.other) {
-      const others = Array.isArray(metadata.icons.other)
-        ? metadata.icons.other
-        : [metadata.icons.other];
-      for (const o of others) {
-        elements.push(
-          <link
-            key={key++}
-            data-vinext-streamed-icon={streamedIconKey}
-            rel={o.rel}
-            href={stringifyUrl(o.url)}
-            {...(o.sizes ? { sizes: o.sizes } : {})}
-            {...(o.type ? { type: o.type } : {})}
-          />,
-        );
-      }
+      appendIcons(
+        normalizeUrlDescriptorEntries(metadata.icons.other, (url): IconDescriptor => ({ url })),
+        "icon",
+      );
     }
   }
 

@@ -6,6 +6,10 @@ export async function generateMetadata(): Promise<Metadata> {
     title: "Star icon",
     icons: {
       icon: [
+        { url: "/star-shared.png" },
+        { url: "/star-shared.png", type: "image/png" },
+        { url: "/star-duplicate.png", sizes: "24x24", type: "image/png" },
+        { url: "/star-duplicate.png", sizes: "24x24", type: "image/png" },
         {
           url: "/star.png",
           sizes: "16x16",
@@ -20,8 +24,21 @@ export async function generateMetadata(): Promise<Metadata> {
         },
         { url: "/star.png", sizes: "any", type: "image/svg+xml" },
       ],
-      apple: "/star-apple.png",
-      shortcut: "/star-shortcut.png",
+      apple: {
+        url: "/star-apple.png",
+        media: "screen",
+        color: "#123456",
+        fetchPriority: "low",
+      },
+      shortcut: {
+        url: "/star-shortcut.png",
+        rel: "shortcut icon",
+        sizes: "48x48",
+        type: "image/png",
+        media: "screen",
+        color: "#654321",
+        fetchPriority: "high",
+      },
       other: [
         { rel: "apple-touch-icon-precomposed", url: "/star-precomposed.png" },
         { rel: "mask-icon", url: "/star-mask.svg" },

@@ -3,14 +3,7 @@
 import { useLayoutEffect } from "react";
 
 const STREAMED_ICON_ATTRIBUTE = "data-vinext-streamed-icon";
-
-function getIconDescriptorKey(icon: HTMLLinkElement): string {
-  return [...icon.attributes]
-    .filter((attribute) => attribute.name !== STREAMED_ICON_ATTRIBUTE)
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((attribute) => `${attribute.name}=${attribute.value}`)
-    .join("\n");
-}
+const STREAMED_ICON_ORDER_ATTRIBUTE = "data-vinext-streamed-icon-order";
 
 export function reconcileStreamedIcons(metadataKey: string): void {
   document
@@ -20,21 +13,29 @@ export function reconcileStreamedIcons(metadataKey: string): void {
   const ownedIcons = [
     ...document.querySelectorAll<HTMLLinkElement>(`head link[${STREAMED_ICON_ATTRIBUTE}]`),
   ];
-  const retainedKeys = new Set<string>();
+  const retainedIcons = new Map<number, HTMLLinkElement>();
 
-  for (let index = ownedIcons.length - 1; index >= 0; index--) {
-    const icon = ownedIcons[index];
+  for (const icon of ownedIcons) {
     if (icon.getAttribute(STREAMED_ICON_ATTRIBUTE) !== metadataKey) {
       icon.remove();
       continue;
     }
 
-    const iconKey = getIconDescriptorKey(icon);
-    if (retainedKeys.has(iconKey)) {
-      icon.remove();
+    const order = Number(icon.getAttribute(STREAMED_ICON_ORDER_ATTRIBUTE));
+    const previousIcon = retainedIcons.get(order);
+    if (previousIcon) {
+      previousIcon.remove();
+    }
+    retainedIcons.set(order, icon);
+  }
+
+  for (const [order, icon] of [...retainedIcons].sort(
+    ([leftOrder], [rightOrder]) => leftOrder - rightOrder,
+  )) {
+    if (!Number.isFinite(order)) {
       continue;
     }
-    retainedKeys.add(iconKey);
+    document.head.appendChild(icon);
   }
 }
 

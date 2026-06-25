@@ -3,6 +3,7 @@
 
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures";
+import { waitForAppRouterHydration } from "../helpers";
 
 const iconInsertionScript = `document.querySelectorAll('body link[data-vinext-streamed-icon]').forEach(el => document.head.appendChild(el))`;
 
@@ -12,6 +13,8 @@ type OwnedIcon = {
   sizes: string | null;
   type: string | null;
   media: string | null;
+  color: string | null;
+  fetchPriority: string | null;
 };
 
 async function ownedIcons(page: Page): Promise<OwnedIcon[]> {
@@ -22,6 +25,8 @@ async function ownedIcons(page: Page): Promise<OwnedIcon[]> {
       sizes: icon.getAttribute("sizes"),
       type: icon.getAttribute("type"),
       media: icon.getAttribute("media"),
+      color: icon.getAttribute("color"),
+      fetchPriority: icon.getAttribute("fetchpriority"),
     })),
   );
 }
@@ -33,6 +38,8 @@ const heartIcons: OwnedIcon[] = [
     sizes: null,
     type: null,
     media: null,
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "icon",
@@ -40,14 +47,26 @@ const heartIcons: OwnedIcon[] = [
     sizes: "16x16",
     type: "image/x-icon",
     media: null,
+    color: null,
+    fetchPriority: null,
   },
-  { rel: "icon", pathname: "/heart.png", sizes: null, type: null, media: null },
+  {
+    rel: "icon",
+    pathname: "/heart.png",
+    sizes: null,
+    type: null,
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
   {
     rel: "apple-touch-icon",
     pathname: "/heart-apple.png",
     sizes: null,
     type: null,
     media: null,
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "apple-touch-icon-precomposed",
@@ -55,17 +74,29 @@ const heartIcons: OwnedIcon[] = [
     sizes: null,
     type: null,
     media: null,
+    color: null,
+    fetchPriority: null,
   },
-  { rel: "mask-icon", pathname: "/heart-mask.svg", sizes: null, type: null, media: null },
+  {
+    rel: "mask-icon",
+    pathname: "/heart-mask.svg",
+    sizes: null,
+    type: null,
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
 ];
 
 const starIcons: OwnedIcon[] = [
   {
     rel: "shortcut icon",
     pathname: "/star-shortcut.png",
-    sizes: null,
-    type: null,
-    media: null,
+    sizes: "48x48",
+    type: "image/png",
+    media: "screen",
+    color: "#654321",
+    fetchPriority: "high",
   },
   {
     rel: "icon",
@@ -73,6 +104,44 @@ const starIcons: OwnedIcon[] = [
     sizes: "16x16",
     type: "image/x-icon",
     media: null,
+    color: null,
+    fetchPriority: null,
+  },
+  {
+    rel: "icon",
+    pathname: "/star-shared.png",
+    sizes: null,
+    type: null,
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
+  {
+    rel: "icon",
+    pathname: "/star-shared.png",
+    sizes: null,
+    type: "image/png",
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
+  {
+    rel: "icon",
+    pathname: "/star-duplicate.png",
+    sizes: "24x24",
+    type: "image/png",
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
+  {
+    rel: "icon",
+    pathname: "/star-duplicate.png",
+    sizes: "24x24",
+    type: "image/png",
+    media: null,
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "icon",
@@ -80,6 +149,8 @@ const starIcons: OwnedIcon[] = [
     sizes: "16x16",
     type: "image/png",
     media: "(prefers-color-scheme: light)",
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "icon",
@@ -87,6 +158,8 @@ const starIcons: OwnedIcon[] = [
     sizes: "32x32",
     type: "image/png",
     media: "(prefers-color-scheme: dark)",
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "icon",
@@ -94,13 +167,17 @@ const starIcons: OwnedIcon[] = [
     sizes: "any",
     type: "image/svg+xml",
     media: null,
+    color: null,
+    fetchPriority: null,
   },
   {
     rel: "apple-touch-icon",
     pathname: "/star-apple.png",
     sizes: null,
     type: null,
-    media: null,
+    media: "screen",
+    color: "#123456",
+    fetchPriority: "low",
   },
   {
     rel: "apple-touch-icon-precomposed",
@@ -108,8 +185,18 @@ const starIcons: OwnedIcon[] = [
     sizes: null,
     type: null,
     media: null,
+    color: null,
+    fetchPriority: null,
   },
-  { rel: "mask-icon", pathname: "/star-mask.svg", sizes: null, type: null, media: null },
+  {
+    rel: "mask-icon",
+    pathname: "/star-mask.svg",
+    sizes: null,
+    type: null,
+    media: null,
+    color: null,
+    fetchPriority: null,
+  },
 ];
 
 test.describe("Next.js compat: streamed metadata icons", () => {
@@ -153,6 +240,48 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     expect(consoleErrors).toEqual([]);
   });
 
+  test("preserves same-URL descriptors that differ only by omitted attributes", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto("/metadata-icons-stream/star");
+
+    await expect
+      .poll(() =>
+        ownedIcons(page).then((icons) =>
+          icons.filter((icon) => icon.pathname === "/star-shared.png"),
+        ),
+      )
+      .toEqual([starIcons[2], starIcons[3]]);
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("preserves exact duplicate icon count and order", async ({ page, consoleErrors }) => {
+    await page.goto("/metadata-icons-stream/star");
+
+    await expect
+      .poll(() =>
+        ownedIcons(page).then((icons) =>
+          icons.filter((icon) => icon.pathname === "/star-duplicate.png"),
+        ),
+      )
+      .toEqual([starIcons[4], starIcons[5]]);
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("supports shortcut icon descriptors", async ({ page, consoleErrors }) => {
+    await page.goto("/metadata-icons-stream/star");
+
+    await expect
+      .poll(() =>
+        ownedIcons(page).then((icons) =>
+          icons.filter((icon) => icon.pathname === "/star-shortcut.png"),
+        ),
+      )
+      .toEqual([starIcons[0]]);
+    expect(consoleErrors).toEqual([]);
+  });
+
   test("cleans up every owned relation on iconless navigation", async ({ page, consoleErrors }) => {
     await page.goto("/metadata-icons-stream/heart");
     await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
@@ -168,14 +297,26 @@ test.describe("Next.js compat: streamed metadata icons", () => {
           sizes: "1x1",
           type: "image/png",
           media: null,
+          color: null,
+          fetchPriority: null,
         },
-        { rel: "icon", pathname: "/icon", sizes: "32x32", type: "image/png", media: null },
+        {
+          rel: "icon",
+          pathname: "/icon",
+          sizes: "32x32",
+          type: "image/png",
+          media: null,
+          color: null,
+          fetchPriority: null,
+        },
         {
           rel: "icon",
           pathname: "/favicon.ico",
           sizes: "16x16",
           type: "image/x-icon",
           media: null,
+          color: null,
+          fetchPriority: null,
         },
         {
           rel: "apple-touch-icon",
@@ -183,6 +324,8 @@ test.describe("Next.js compat: streamed metadata icons", () => {
           sizes: "1x1",
           type: "image/png",
           media: null,
+          color: null,
+          fetchPriority: null,
         },
       ]);
     await expect(page.locator("head link[data-manual-icon]")).toHaveCount(3);
@@ -190,14 +333,34 @@ test.describe("Next.js compat: streamed metadata icons", () => {
   });
 
   test("keeps rapid icon replacement on the latest navigation", async ({ page, consoleErrors }) => {
-    await page.goto("/metadata-icons-stream/heart");
+    await page.goto("/metadata-icons-stream/none");
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      Object.assign(window, { __VINEXT_STAR_RSC_STARTED__: false });
+      window.fetch = (input, init) => {
+        const rawUrl =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(rawUrl, window.location.href);
+        const response = originalFetch(input, init);
+        if (url.pathname === "/metadata-icons-stream/star" && url.searchParams.has("_rsc")) {
+          Object.assign(window, { __VINEXT_STAR_RSC_STARTED__: true });
+        }
+        return response;
+      };
+    });
 
     await page.evaluate(() => {
       document.querySelector<HTMLAnchorElement>("#metadata-icons-star")?.click();
-      document.querySelector<HTMLAnchorElement>("#metadata-icons-heart")?.click();
     });
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__VINEXT_STAR_RSC_STARTED__")))
+      .toBe(true);
+    await page.locator("#metadata-icons-heart").click();
 
     await expect(page).toHaveURL(/\/metadata-icons-stream\/heart$/);
+    await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
+    await page.waitForTimeout(200);
     await expect.poll(() => ownedIcons(page)).toEqual(heartIcons);
     await expect(page.locator("head link[data-manual-icon]")).toHaveCount(3);
     expect(consoleErrors).toEqual([]);
