@@ -22,10 +22,19 @@ type EffectiveAppPageSegmentConfig = {
   runtime?: "edge" | "experimental-edge" | "nodejs";
 };
 
+type ParallelAppPageSegmentConfigBranch = {
+  configLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
+  layout?: AppRouteSegmentConfigModule | null;
+  page?: AppRouteSegmentConfigModule | null;
+  routeSegments?: readonly string[] | null;
+};
+
 type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: AppRouteSegmentConfigModule | null;
+  parallelBranches?: readonly (ParallelAppPageSegmentConfigBranch | null | undefined)[];
   parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   parallelSegments?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   routeSegments?: readonly string[];
@@ -90,10 +99,20 @@ function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]");
 }
 
+function getParallelSegments(
+  options: ResolveAppPageSegmentConfigOptions,
+): readonly (AppRouteSegmentConfigModule | null | undefined)[] {
+  if (!options.parallelBranches) return options.parallelSegments ?? [];
+  return options.parallelBranches.flatMap((branch) =>
+    branch ? [branch.layout, ...(branch.configLayouts ?? []), branch.page] : [],
+  );
+}
+
 function resolveDynamicParamsConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): boolean | undefined {
-  const segments = [...(options.layouts ?? []), options.page];
+  const parallelSegments = getParallelSegments(options);
+  const segments = [...(options.layouts ?? []), options.page, ...parallelSegments];
   let dynamicParamsConfig: boolean | undefined;
 
   for (const segment of segments) {
@@ -135,10 +154,38 @@ function resolveDynamicParamsConfig(
   if (typeof options.page?.generateStaticParams === "function") {
     lastDynamicSegmentHasStaticParams = true;
   }
-  if (
-    options.parallelSegments?.some((segment) => typeof segment?.generateStaticParams === "function")
-  ) {
-    lastDynamicSegmentHasStaticParams = true;
+
+  for (const branch of options.parallelBranches ?? []) {
+    if (!branch) continue;
+    const branchStartPosition = options.routeSegments.length - (branch.routeSegments?.length ?? 0);
+    const checkSegment = (
+      segment: AppRouteSegmentConfigModule | null | undefined,
+      ownerPosition: number,
+    ) => {
+      if (ownerPosition !== lastDynamicPosition) return;
+      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+      if (typeof segment?.generateStaticParams === "function") {
+        lastDynamicSegmentHasStaticParams = true;
+      }
+    };
+
+    checkSegment(branch.layout, branchStartPosition - 1);
+    branch.configLayouts?.forEach((layout, index) => {
+      checkSegment(
+        layout,
+        branchStartPosition + (branch.configLayoutTreePositions?.[index] ?? 0) - 1,
+      );
+    });
+    checkSegment(branch.page, branchStartPosition + (branch.routeSegments?.length ?? 0) - 1);
+  }
+
+  if (!options.parallelBranches) {
+    for (const segment of parallelSegments) {
+      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+      if (typeof segment?.generateStaticParams === "function") {
+        lastDynamicSegmentHasStaticParams = true;
+      }
+    }
   }
 
   return lastDynamicSegmentIsStaticOnly || lastDynamicSegmentHasStaticParams ? false : undefined;
@@ -164,6 +211,7 @@ export function resolveAppPageSegmentConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): EffectiveAppPageSegmentConfig {
   const segments = [...(options.layouts ?? []), options.page];
+  const parallelSegments = getParallelSegments(options);
   // Reduction strategies differ by field:
   // - dynamic: child segments override parents.
   // - dynamicParams: false is sticky across the route tree.
@@ -236,7 +284,7 @@ export function resolveAppPageSegmentConfig(
     );
   }
 
-  for (const segment of options.parallelSegments ?? []) {
+  for (const segment of parallelSegments) {
     if (!segment) continue;
 
     // Next.js traverses every parallel branch. Vinext's flattened route graph
@@ -249,12 +297,6 @@ export function resolveAppPageSegmentConfig(
       config.dynamicConfig = "force-dynamic";
     } else if (config.dynamicConfig === undefined && isRouteSegmentDynamic(segment.dynamic)) {
       config.dynamicConfig = segment.dynamic;
-    }
-
-    if (segment.dynamicParams === false) {
-      config.dynamicParamsConfig = false;
-    } else if (segment.dynamicParams === true && config.dynamicParamsConfig === undefined) {
-      config.dynamicParamsConfig = true;
     }
 
     if (config.runtime === undefined && isRouteSegmentRuntime(segment.runtime)) {

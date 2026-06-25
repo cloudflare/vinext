@@ -5,15 +5,23 @@ import { expect, test } from "@playwright/test";
 // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-root-param-dynamic-child/parallel-routes-root-param-dynamic-child.test.ts
 
 test.describe("parallel routes under a static root param", () => {
-  test("keeps child params dynamic when the child has no generateStaticParams", async ({
-    page,
-  }) => {
-    const response = await page.goto("/parallel-root-param/es/no-gsp/stories/dynamic-123");
+  for (const locale of ["en", "fr"]) {
+    test(`keeps child params dynamic for generated locale ${locale}`, async ({ page }) => {
+      const response = await page.goto(`/parallel-root-param/${locale}/no-gsp/stories/dynamic-123`);
 
-    expect(response?.status()).toBe(200);
-    await expect(page.getByTestId("parallel-root-story")).toHaveText("Story: es/dynamic-123");
-    await expect(page.getByTestId("parallel-root-breadcrumb")).toHaveText(
-      "Breadcrumb: es/dynamic-123",
+      expect(response?.status()).toBe(200);
+      await expect(page.getByTestId("parallel-root-story")).toHaveText(
+        `Story: ${locale}/dynamic-123`,
+      );
+      await expect(page.getByTestId("parallel-root-breadcrumb")).toHaveText(
+        `Breadcrumb: ${locale}/dynamic-123`,
+      );
+    });
+  }
+
+  test("rejects an unknown root param with a valid generated leaf", async ({ request }) => {
+    expect((await request.get("/parallel-root-param/es/gsp/stories/static-123")).status()).toBe(
+      404,
     );
   });
 

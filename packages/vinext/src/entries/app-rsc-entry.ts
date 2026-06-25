@@ -747,12 +747,14 @@ export default createAppRscHandler({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
+      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+        layout: slot.layout,
+        configLayouts: slot.configLayouts,
+        configLayoutTreePositions: slot.configLayoutTreePositions,
+        page: slot.page ?? slot.default,
+        routeSegments: slot.routeSegments,
+      })),
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
-      parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
-        slot.layout,
-        ...(slot.configLayouts ?? []),
-        slot.page ?? slot.default,
-      ]),
       routeSegments: route.routeSegments,
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
