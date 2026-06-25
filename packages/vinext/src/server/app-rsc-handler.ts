@@ -488,14 +488,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (originBlock) return originBlock;
   }
 
-  const hasBasePathOptOutRule = [
-    ...options.configRedirects,
-    ...options.configRewrites.beforeFiles,
-    ...options.configRewrites.afterFiles,
-    ...options.configRewrites.fallback,
-    ...options.configHeaders,
-  ].some((rule) => rule.basePath === false);
-  const normalized = normalizeRscRequest(request, options.basePath, hasBasePathOptOutRule);
+  const canHandleOutsideBasePath =
+    Boolean(options.runMiddleware) ||
+    [
+      ...options.configRedirects,
+      ...options.configRewrites.beforeFiles,
+      ...options.configRewrites.afterFiles,
+      ...options.configRewrites.fallback,
+      ...options.configHeaders,
+    ].some((rule) => rule.basePath === false);
+  const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
   if (normalized instanceof Response) return normalized;
 
   const {
@@ -798,7 +800,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         })
       : null;
   if (serverActionResponse) return serverActionResponse;
-  if (isPostRequest && actionId && !options.handleServerActionRequest) {
+  if (filesystemRouteEligible && isPostRequest && actionId && !options.handleServerActionRequest) {
     return createMissingServerActionResponse(options, actionId);
   }
 

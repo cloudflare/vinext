@@ -1197,6 +1197,21 @@ describe("createAppRscHandler", () => {
     expect(basePath).toBe("");
   });
 
+  it("allows middleware-only apps to handle requests outside basePath", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default: (request: Request) =>
+          Response.redirect(new URL("/docs/about", request.url).toString(), 307),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/about");
+  });
+
   it("allows query-only middleware rewrites to make outside-basePath routes eligible", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({
