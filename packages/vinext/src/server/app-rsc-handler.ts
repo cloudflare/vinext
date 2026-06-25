@@ -596,6 +596,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     status: null,
   };
   let didMiddlewareRewrite = false;
+  let outOfBasePathRequestClaimed = hadBasePath;
 
   if (options.runMiddleware) {
     const middlewareResult = await options.runMiddleware({
@@ -615,7 +616,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    didMiddlewareRewrite = cleanPathname !== normalized.cleanPathname;
+    didMiddlewareRewrite = middlewareResult.didRewrite;
+    if (didMiddlewareRewrite) outOfBasePathRequestClaimed = true;
     if (middlewareResult.search !== null) {
       url.search = middlewareResult.search;
     }
@@ -649,13 +651,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
     if (beforeFilesRewrite) {
+      outOfBasePathRequestClaimed = true;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
     }
   }
-
-  const outOfBasePathRequestClaimed =
-    hadBasePath || didMiddlewareRewrite || resolvedUrl !== originalResolvedUrl;
 
   if (outOfBasePathRequestClaimed && isImageOptimizationPath(cleanPathname)) {
     const imageRedirect = resolveDevImageRedirect(
@@ -852,6 +852,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
       if (!afterFilesRewrite) continue;
+      outOfBasePathRequestClaimed = true;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       match = options.matchRoute(cleanPathname);
@@ -894,6 +895,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (fallbackRewrite instanceof Response) return fallbackRewrite;
       if (!fallbackRewrite) continue;
+      outOfBasePathRequestClaimed = true;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       match = options.matchRoute(cleanPathname);

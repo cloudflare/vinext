@@ -43,6 +43,7 @@ export type ApplyAppMiddlewareResult =
   | {
       kind: "continue";
       cleanPathname: string;
+      didRewrite: boolean;
       search: string | null;
     }
   | {
@@ -211,6 +212,7 @@ export async function applyAppMiddleware(
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
   const middlewareRequest = requestWithoutFlightHeaders(options.request);
   let cleanPathname = options.cleanPathname;
+  let didRewrite = false;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
@@ -227,6 +229,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(forwarded.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
+      didRewrite = true;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);
@@ -282,6 +285,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
+      didRewrite = true;
       search = rewriteParsed.search;
     }
   }
@@ -292,5 +296,5 @@ export async function applyAppMiddleware(
     processMiddlewareHeaders(options.context.headers);
   }
 
-  return { kind: "continue", cleanPathname, search };
+  return { kind: "continue", cleanPathname, didRewrite, search };
 }

@@ -160,6 +160,53 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("page");
   });
 
+  it("allows identity basePath: false rewrites to claim App routes", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/about", destination: "/about", basePath: false }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/about"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page");
+  });
+
+  it.each(["afterFiles", "fallback"] as const)(
+    "allows out-of-basePath %s rewrites to reach Pages routes",
+    async (phase) => {
+      const renderPagesFallback = vi.fn(async () => new Response("pages", { status: 200 }));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles:
+            phase === "afterFiles"
+              ? [{ source: "/outside", destination: "/pages", basePath: false }]
+              : [],
+          fallback:
+            phase === "fallback"
+              ? [{ source: "/outside", destination: "/pages", basePath: false }]
+              : [],
+        },
+        matchRoute: () => null,
+        renderPagesFallback,
+      });
+
+      const response = await handler(new Request("https://example.test/outside"), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("pages");
+      expect(renderPagesFallback).toHaveBeenCalledWith(
+        expect.objectContaining({ pathname: "/pages" }),
+      );
+    },
+  );
+
   it("does not expose App routes directly outside basePath", async () => {
     const handler = createHandler({ configHeaders: [] });
 
