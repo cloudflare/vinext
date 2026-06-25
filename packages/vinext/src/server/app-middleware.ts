@@ -8,6 +8,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
 import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pipeline.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
+import { consumeDevMiddlewareContext } from "./dev-middleware-context-registry.js";
 
 export type AppMiddlewareContext = {
   headers: Headers | null;
@@ -49,20 +50,10 @@ export type ApplyAppMiddlewareResult =
       response: Response;
     };
 
-type ForwardedMiddlewareContext = {
-  h?: unknown;
-  r?: unknown;
-  s?: unknown;
-};
-
 // Re-exported from headers.ts for backward compatibility.
 export { FLIGHT_HEADERS } from "./headers.js";
 
 const FLIGHT_HEADER_SET = new Set(FLIGHT_HEADERS);
-
-function isForwardedMiddlewareContext(value: unknown): value is ForwardedMiddlewareContext {
-  return !!value && typeof value === "object";
-}
 
 function requestWithoutFlightHeaders(request: Request): Request {
   let hasFlightHeader = false;
@@ -79,15 +70,6 @@ function requestWithoutFlightHeaders(request: Request): Request {
   if (!hasFlightHeader) return request;
   const source = request.body ? request.clone() : request;
   return cloneRequestWithHeaders(source, headers);
-}
-
-function appendForwardedHeader(headers: Headers, value: unknown): void {
-  if (!Array.isArray(value) || value.length < 2) return;
-  const key = value[0];
-  const headerValue = value[1];
-  if (typeof key === "string" && typeof headerValue === "string") {
-    headers.append(key, headerValue);
-  }
 }
 
 function responseFromMiddlewareRedirect(result: {
@@ -178,30 +160,19 @@ function applyForwardedMiddlewareContext(
     return { applied: false };
   }
 
-  const header = request.headers.get(VINEXT_MW_CTX_HEADER);
-  if (!header) return { applied: false };
+  const handle = request.headers.get(VINEXT_MW_CTX_HEADER);
+  if (!handle) return { applied: false };
 
-  try {
-    const data = JSON.parse(header);
-    if (!isForwardedMiddlewareContext(data)) return { applied: false };
+  const data = consumeDevMiddlewareContext(handle);
+  if (!data) return { applied: false };
 
-    if (Array.isArray(data.h) && data.h.length > 0) {
-      context.headers = new Headers();
-      for (const entry of data.h) {
-        appendForwardedHeader(context.headers, entry);
-      }
-    }
-    if (typeof data.s === "number") {
-      context.status = data.s;
-    }
-    if (typeof data.r === "string" && data.r.length > 0) {
-      return { applied: true, rewriteUrl: data.r };
-    }
-    return { applied: true };
-  } catch (e) {
-    console.error("[vinext] Failed to parse forwarded middleware context:", e);
-    return { applied: false };
+  if (data.headers.length > 0) {
+    context.headers = new Headers(data.headers);
   }
+  if (data.status !== null) {
+    context.status = data.status;
+  }
+  return data.rewriteUrl ? { applied: true, rewriteUrl: data.rewriteUrl } : { applied: true };
 }
 
 export async function applyAppMiddleware(

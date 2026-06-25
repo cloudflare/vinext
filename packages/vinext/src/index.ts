@@ -108,6 +108,7 @@ import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-mani
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
+import { storeDevMiddlewareContext } from "./server/dev-middleware-context-registry.js";
 
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 
@@ -4157,10 +4158,10 @@ export const loadServerActionClient = ${
                           }
                         }
                         const mwStatus = result.status ?? result.rewriteStatus;
-                        req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                          h: mwCtxEntries,
-                          s: mwStatus ?? null,
-                          r: result.rewriteUrl ?? null,
+                        req.headers[VINEXT_MW_CTX_HEADER] = storeDevMiddlewareContext({
+                          headers: mwCtxEntries,
+                          status: mwStatus ?? null,
+                          rewriteUrl: result.rewriteUrl ?? null,
                         });
                       }
 

@@ -22,7 +22,7 @@ export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 
-/** Serialized middleware context (JSON) forwarded from dev server to RSC entry. */
+/** Authenticated middleware context forwarded from the hybrid dev server to the RSC entry. */
 export const VINEXT_MW_CTX_HEADER = "x-vinext-mw-ctx";
 
 /** Timing metrics: `handlerStart,compileMs,renderMs`. */
@@ -209,4 +209,4 @@ export const INTERNAL_HEADERS = [
 ];
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
-export const VINEXT_INTERNAL_HEADERS = [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER];
+export const VINEXT_INTERNAL_HEADERS = [VINEXT_MW_CTX_HEADER, VINEXT_PRERENDER_ROUTE_PARAMS_HEADER];

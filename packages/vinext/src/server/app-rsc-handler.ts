@@ -1121,14 +1121,15 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // Must happen BEFORE headersContextFromRequest() and
     // requestContextFromRequest() so the captured context never contains
     // attacker-controlled internal headers. This is the correct boundary
-    // for pure App Router requests; in hybrid app+pages mode the connect
-    // handler already filtered headers upstream and x-vinext-mw-ctx
-    // (not in INTERNAL_HEADERS) carries the forwarded middleware context.
+    // for pure App Router requests. In hybrid app+pages mode the connect
+    // handler already stripped any client-supplied value, then attached an
+    // authenticated middleware context for the RSC environment.
     // srvx's NodeRequestHeaders reads from rawHeaders for iteration but falls
     // back to req.headers for .get() / .has(). In the dev server we add
     // x-vinext-mw-ctx to req.headers after the Request is built, so it is
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
-    // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
+    // BEFORE iterating so the one-time process-local bridge survives
+    // internal-header filtering. The value is only an opaque registry handle.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
