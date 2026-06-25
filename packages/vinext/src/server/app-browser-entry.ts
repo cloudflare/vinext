@@ -157,6 +157,7 @@ import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
@@ -312,6 +313,7 @@ const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
+let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 const RSC_HMR_SETTLE_DELAY_MS = 150;
@@ -1421,6 +1423,12 @@ function bootstrapHydration(
     window.location.href,
     latestClientParams,
   );
+  void root.then((elements) => {
+    initialPrefetchRouterState = {
+      pathAndSearch: createSnapshotPathAndSearch(initialNavigationSnapshot),
+      routeId: AppElementsWire.readMetadata(elements).routeId,
+    };
+  });
   historyController.writeBootstrapHistoryMetadata();
 
   const onUncaughtError = createOnUncaughtError();
@@ -1597,6 +1605,7 @@ function bootstrapHydration(
         // the visible layout ids and binary-searches a byte budget, which is
         // pure waste on the cache-hit soft-nav path.
         const requestHeaders = createRscRequestHeaders({
+          fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
           renderMode:
@@ -1850,6 +1859,7 @@ function bootstrapHydration(
           navResponse = await fetch(rscUrl, {
             headers: requestHeaders,
             credentials: "include",
+            priority: "auto",
             signal: navigationAbortController.signal,
           });
         }
@@ -2036,6 +2046,33 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    getPrefetchRouterState: () => {
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        if (initialPrefetchRouterState) return initialPrefetchRouterState;
+        const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest ?? null;
+        const match = routeManifest
+          ? matchOptimisticRouteManifestRoute({
+              basePath: __basePath,
+              href: window.location.href,
+              routeManifest,
+            })
+          : null;
+        return match
+          ? {
+              pathAndSearch: createBasePathStrippedPathAndSearch(
+                new URL(window.location.href),
+                __basePath,
+              ),
+              routeId: match.route.id,
+            }
+          : null;
+      }
+      const state = browserNavigationController.getBrowserRouterState();
+      return {
+        pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
+        routeId: state.routeId,
+      };
+    },
     navigate: navigateRsc,
   });
 

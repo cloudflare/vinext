@@ -1814,6 +1814,10 @@ describe("build-time defines (Pages Router)", () => {
       JSON.stringify(false),
     );
   });
+
+  it("Next.js test mode defaults to false", () => {
+    expect(server.config.define?.["process.env.__NEXT_TEST_MODE"]).toBe(JSON.stringify(false));
+  });
 });
 
 // ---------------------------------------------------------------------------

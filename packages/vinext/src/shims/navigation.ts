@@ -52,6 +52,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
+import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
@@ -285,6 +286,20 @@ export function getCurrentNextUrl(): string {
   }
 
   return window.location.pathname + window.location.search;
+}
+
+export function createAppPrefetchRequestHeaders(options: {
+  fetchPriority: "auto" | "high" | "low";
+  interceptionContext?: string | null;
+  mountedSlotsHeader?: string | null;
+  renderMode?: AppRscRenderMode;
+}): Headers {
+  const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
+  return createRscRequestHeaders({
+    ...options,
+    nextUrl: getCurrentNextUrl(),
+    prefetchRouterState,
+  });
 }
 
 /** Get or create the shared in-memory RSC prefetch cache on window. */
@@ -801,8 +816,6 @@ export function consumePrefetchResponse(
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
   if (entry.cacheForNavigation === false) return null;
 
-  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
-
   if (entry.snapshot) {
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
       // Entry was already removed above. Slot mismatch means the prefetch
@@ -810,19 +823,22 @@ export function consumePrefetchResponse(
       return null;
     }
     if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
+      deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
       return null;
     }
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+    const snapshot = entry.snapshot;
     // Only synthesize `expiresAt` onto the returned snapshot when the entry (or
     // its snapshot) already carried one. Entries that never had an explicit
     // expiry must round-trip unchanged so callers/tests can assert the raw
     // snapshot — don't collapse this into an unconditional spread.
     if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
       return {
-        ...entry.snapshot,
+        ...snapshot,
         expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
       };
     }
-    return entry.snapshot;
+    return snapshot;
   }
 
   return null;
@@ -1890,7 +1906,10 @@ const _appRouter: AppRouterInstance = {
       const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
       const interceptionContext = getPrefetchInterceptionContext(fullHref);
       const mountedSlotsHeader = getMountedSlotsHeader();
-      const headers = createRscRequestHeaders({ interceptionContext });
+      const headers = createAppPrefetchRequestHeaders({
+        fetchPriority: "low",
+        interceptionContext,
+      });
       if (mountedSlotsHeader) {
         headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
       }

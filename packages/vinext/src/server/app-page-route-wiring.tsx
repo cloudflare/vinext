@@ -1,7 +1,9 @@
 import { Fragment, Suspense, type ComponentType, type ReactNode } from "react";
 import {
   AppElementsWire,
+  APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
   type AppElements,
@@ -46,6 +48,7 @@ import {
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
@@ -663,6 +666,7 @@ export function buildAppPageElements<
   }
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
+  const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
   const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
   if (shouldRenderPrefetchLoadingShell) {
@@ -673,11 +677,18 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  elements[pageId] = isPrefetchLoadingShell
-    ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+  if (isPrefetchEmpty) {
+    elements[APP_LAYOUT_IDS_KEY] = [];
+    elements[APP_ROOT_LAYOUT_KEY] = null;
+  }
+
+  elements[pageId] =
+    isPrefetchLoadingShell || isPrefetchEmpty
+      ? null
+      : renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {
+    if (isPrefetchEmpty) continue;
     const templateComponent = getDefaultExport(templateEntry.templateModule);
     if (!templateComponent) {
       continue;
@@ -703,6 +714,7 @@ export function buildAppPageElements<
   }
 
   for (let index = 0; index < layoutEntries.length; index++) {
+    if (isPrefetchEmpty) continue;
     const layoutEntry = layoutEntries[index];
     const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
     if (!layoutComponent) {
@@ -893,7 +905,7 @@ export function buildAppPageElements<
     );
   }
 
-  let routeChildren: ReactNode = (
+  let routeChildren: ReactNode = isPrefetchEmpty ? null : (
     <LayoutSegmentProvider segmentMap={{ children: [] }}>
       <Slot id={pageId} />
     </LayoutSegmentProvider>
@@ -1071,7 +1083,7 @@ export function buildAppPageElements<
       );
     }
 
-    if (!layoutEntry) {
+    if (!layoutEntry || isPrefetchEmpty) {
       routeChildren = segmentChildren;
       continue;
     }

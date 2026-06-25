@@ -61,6 +61,10 @@ function createTestNavigationRuntime(navigate: unknown) {
       rsc: undefined,
     },
     functions: {
+      getPrefetchRouterState: () => ({
+        pathAndSearch: "/current",
+        routeId: "route:/current",
+      }),
       navigate,
     },
   };
@@ -175,14 +179,9 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
 }
 
 async function flushPrefetchTasks(): Promise<void> {
-  // requestIdleCallback is mocked as sync, then prefetchUrl enters an async
-  // IIFE with awaited request-header hashing and cache writes. These ticks
-  // drain the current chain; update this helper if the async depth grows.
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 async function waitForFetchCalls(
@@ -1305,6 +1304,12 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+      const requestHeaders = new Headers(result.fetch.mock.calls[0]?.[1]?.headers);
+      expect(requestHeaders.get("next-router-prefetch")).toBe("1");
+      expect(requestHeaders.get("next-url")).toBe("/current");
+      expect(
+        JSON.parse(decodeURIComponent(requestHeaders.get("next-router-state-tree") ?? "")),
+      ).toEqual({ pathAndSearch: "/current", routeId: "route:/current" });
     } finally {
       result.restoreNodeEnv();
     }

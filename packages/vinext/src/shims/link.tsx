@@ -34,10 +34,10 @@ import {
   hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
+  createAppPrefetchRequestHeaders,
 } from "./navigation.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import {
-  createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
@@ -455,8 +455,9 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
-        const headers = createRscRequestHeaders({
+        const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
+          fetchPriority: priority,
           renderMode: isOptimisticRouteShellPrefetch
             ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : undefined,
@@ -496,8 +497,9 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const fetchPromise =
           __prefetchInlining && autoPrefetch.cacheForNavigation && autoPrefetch.prefetchShellFirst
             ? (async () => {
-                const shellHeaders = createRscRequestHeaders({
+                const shellHeaders = createAppPrefetchRequestHeaders({
                   interceptionContext,
+                  fetchPriority: priority,
                   renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
                 });
                 if (mountedSlotsHeader) {

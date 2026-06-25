@@ -3,6 +3,9 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
@@ -18,12 +21,40 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix, VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
+
+type PrefetchRouterState = {
+  pathAndSearch: string;
+  routeId: string;
+};
+
+function parsePrefetchRouterState(value: string | null): PrefetchRouterState | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(value));
+    if (!parsed || typeof parsed !== "object") return null;
+    const pathAndSearch = Reflect.get(parsed, "pathAndSearch");
+    const routeId = Reflect.get(parsed, "routeId");
+    if (
+      typeof pathAndSearch !== "string" ||
+      !pathAndSearch.startsWith("/") ||
+      typeof routeId !== "string" ||
+      routeId.length === 0
+    ) {
+      return null;
+    }
+    return { pathAndSearch, routeId };
+  } catch {
+    return null;
+  }
+}
 
 export type NormalizedRscRequest = {
   /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
@@ -132,9 +163,32 @@ export function normalizeRscRequest(
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
     request.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
   );
-  const renderMode = isRscRequest
+  let renderMode = isRscRequest
     ? parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER))
     : APP_RSC_RENDER_MODE_NAVIGATION;
+  if (
+    isRscRequest &&
+    renderMode === APP_RSC_RENDER_MODE_NAVIGATION &&
+    request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1"
+  ) {
+    const nextUrl = request.headers.get(NEXT_URL_HEADER);
+    const routerState = parsePrefetchRouterState(
+      request.headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
+    );
+    if (nextUrl && routerState) {
+      const nextRequestUrl = new URL(nextUrl, url);
+      const targetUrl = new URL(url);
+      targetUrl.pathname = cleanPathname;
+      targetUrl.searchParams.delete(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
+      const nextPathAndSearch = `${nextRequestUrl.pathname}${nextRequestUrl.search}`;
+      const targetPathAndSearch = `${targetUrl.pathname}${targetUrl.search}`;
+      renderMode =
+        routerState.pathAndSearch === nextPathAndSearch &&
+        routerState.pathAndSearch === targetPathAndSearch
+          ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
+          : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+    }
+  }
   const clientReuseManifest = isRscRequest
     ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
     : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);

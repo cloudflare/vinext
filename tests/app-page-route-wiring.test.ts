@@ -2,7 +2,9 @@ import { Fragment, createElement, isValidElement, type ReactElement, type ReactN
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_KEY,
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
@@ -22,6 +24,7 @@ import {
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -793,6 +796,40 @@ describe("app page route wiring helpers", () => {
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
     expect(html).not.toContain("Page");
+  });
+
+  it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).not.toContain("Page");
+    expect(html).not.toContain("Layout");
+    expect(html).not.toContain("Route loading");
+    expect(elements[APP_LAYOUT_IDS_KEY]).toEqual([]);
+    expect(elements[APP_ROOT_LAYOUT_KEY]).toBeNull();
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {

@@ -71,6 +71,30 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/?_rsc");
   });
 
+  it("preserves encoded spaces while adding the RSC cache-busting query", async () => {
+    const headers = createRscRequestHeaders();
+
+    await expect(createRscRequestUrl("/?param=with%20space", headers)).resolves.toBe(
+      "/?param=with%20space&_rsc",
+    );
+  });
+
+  it("only exposes fetch priority through the Next.js test-mode header", () => {
+    withEnvVar("__NEXT_TEST_MODE", undefined, () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBeNull();
+    });
+    withEnvVar("__NEXT_TEST_MODE", "1", () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBe("low");
+      expect(
+        createRscRequestHeaders({ fetchPriority: "auto" }).get("next-test-fetch-priority"),
+      ).toBe("auto");
+    });
+  });
+
   it("hashes Vinext RSC variant headers into the request URL", async () => {
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",

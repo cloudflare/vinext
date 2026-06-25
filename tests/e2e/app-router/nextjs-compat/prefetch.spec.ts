@@ -13,6 +13,8 @@ const BASE = "http://localhost:4174";
 
 type PrefetchTestState = {
   fetchUrls: string[];
+  loadingShellResponseText?: string;
+  prefetchHeaders?: Record<string, string>;
   requestIdleCallbackCalls: number;
 };
 
@@ -55,6 +57,36 @@ test.describe("Next.js compat: prefetch (browser)", () => {
     await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
       timeout: 10_000,
     });
+  });
+
+  test("normal router prefetch sends router state and reaches loading-shell rendering", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
+    await waitForAppRouterHydration(page);
+
+    const programmaticTarget =
+      "/nextjs-compat/prefetch-test/programmatic-target?prefetch-source=router-prefetch-protocol";
+    const prefetchResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/nextjs-compat/prefetch-test/programmatic-target" &&
+        url.searchParams.get("prefetch-source") === "router-prefetch-protocol" &&
+        url.searchParams.has("_rsc")
+      );
+    });
+    await page.evaluate((target) => {
+      const router = (window as PrefetchTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(target);
+    }, programmaticTarget);
+
+    const response = await prefetchResponse;
+    const headers = await response.request().allHeaders();
+    expect(headers["next-router-prefetch"]).toBe("1");
+    expect(headers["next-url"]).toBe("/nextjs-compat/prefetch-test");
+    expect(headers["next-router-state-tree"]).toBeTruthy();
+    expect(await response.text()).toContain("Loading programmatic prefetch target");
   });
 
   // Test that prefetched navigation preserves client state (no full reload)

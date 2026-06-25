@@ -23,6 +23,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -32,9 +33,16 @@ import {
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+
+function prefetchRouterStateHeader(pathAndSearch: string, routeId = "route:/dashboard"): string {
+  return encodeURIComponent(JSON.stringify({ pathAndSearch, routeId }));
+}
 
 function req(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://localhost${path}`, { headers });
@@ -479,6 +487,69 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
 
     expect(result.isRscRequest).toBe(true);
     expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+  });
+
+  it("maps a Next prefetch for the current tree to an empty payload", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/prefetch-auto/justputit?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader("/prefetch-auto/justputit"),
+          [NEXT_URL_HEADER]: "/prefetch-auto/justputit",
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
+  });
+
+  it("maps a Next prefetch from another dynamic segment to a loading shell", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/prefetch-auto/justputit?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader("/prefetch-auto/vercel"),
+          [NEXT_URL_HEADER]: "/prefetch-auto/vercel",
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+  });
+
+  it("does not treat pathname-only equality as current router-state equality", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/dashboard?tab=next&${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader("/dashboard?tab=current"),
+          [NEXT_URL_HEADER]: "/dashboard?tab=current",
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+  });
+
+  it("ignores incomplete Next prefetch hints without router-state semantics", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/dashboard?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_URL_HEADER]: "/dashboard",
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
   });
 });
 
