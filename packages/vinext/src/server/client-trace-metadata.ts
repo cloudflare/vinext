@@ -83,31 +83,35 @@ const OPEN_TELEMETRY_API_SYMBOL = Symbol.for("opentelemetry.js.api.1");
 const OPEN_TELEMETRY_SPAN_SYMBOL = Symbol.for("OpenTelemetry Context Key SPAN");
 
 function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
-  const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
-    | OpenTelemetryGlobal
-    | undefined;
-  if (!registry?.context || !registry.propagation) return null;
-
-  const activeContext = registry.context.active();
-  const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
-  const metadataSpan = hasActiveSpan
-    ? null
-    : registry.trace
-        ?.getTracer("vinext")
-        .startSpan("vinext.clientTraceMetadata", undefined, activeContext);
-  if (!hasActiveSpan && !metadataSpan) return [];
-  const context = metadataSpan
-    ? activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, metadataSpan)
-    : activeContext;
-  const entries: ClientTraceDataEntry[] = [];
+  let metadataSpan: { end(): void } | null = null;
   try {
-    registry.context.with(context, () => {
-      registry.propagation!.inject(context, entries, carrierSetter);
+    const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
+      | OpenTelemetryGlobal
+      | undefined;
+    if (!registry?.context || !registry.propagation) return null;
+    const contextApi = registry.context;
+    const propagation = registry.propagation;
+
+    const activeContext = contextApi.active();
+    const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
+    metadataSpan = hasActiveSpan
+      ? null
+      : (registry.trace
+          ?.getTracer("vinext")
+          .startSpan("vinext.clientTraceMetadata", undefined, activeContext) ?? null);
+    const context = metadataSpan
+      ? activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, metadataSpan)
+      : activeContext;
+    const entries: ClientTraceDataEntry[] = [];
+    contextApi.with(context, () => {
+      propagation.inject(context, entries, carrierSetter);
     });
+    return entries;
+  } catch {
+    return [];
   } finally {
     metadataSpan?.end();
   }
-  return entries;
 }
 
 function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {

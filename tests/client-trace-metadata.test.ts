@@ -244,7 +244,32 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     expect(startSpan).not.toHaveBeenCalled();
   });
 
-  it("does not fabricate span-derived metadata without a registered tracer provider", () => {
+  it("preserves non-span propagation metadata without a registered tracer provider", () => {
+    const rootContext = {
+      getValue: () => undefined,
+      setValue: () => rootContext,
+    };
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      version: "1.9.0",
+      context: { active: () => rootContext, with: (_context: unknown, fn: () => unknown) => fn() },
+      propagation: {
+        inject(
+          _context: unknown,
+          carrier: ClientTraceDataEntry[],
+          setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
+        ) {
+          setter.set(carrier, "my-test-key-1", "my-test-value-1");
+        },
+      },
+    };
+
+    expect(getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"])).toBe(
+      '<meta name="my-test-key-1" content="my-test-value-1"/>',
+    );
+  });
+
+  it("fails open and ends a created span when registry propagation throws", () => {
+    const end = vi.fn();
     const rootContext = {
       getValue: () => undefined,
       setValue: () => rootContext,
@@ -254,12 +279,16 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
       context: { active: () => rootContext, with: (_context: unknown, fn: () => unknown) => fn() },
       propagation: {
         inject() {
-          throw new Error("propagation should not run without a span");
+          throw new Error("propagation failure");
         },
+      },
+      trace: {
+        getTracer: () => ({ startSpan: () => ({ end }) }),
       },
     };
 
     expect(getClientTraceMetadataHTML(["my-parent-span-id"])).toBe("");
+    expect(end).toHaveBeenCalledOnce();
   });
 
   it("does not emit trace metadata while prerendering", () => {
