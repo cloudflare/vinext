@@ -167,6 +167,7 @@ import {
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
+  createSassCssUrlAssetImporter,
   createSassTildeImporter,
   createSassAwareFileSystemLoader,
 } from "./plugins/sass.js";
@@ -2228,10 +2229,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // which is appended at the end of `importers[]` by the vite:css
               // plugin (vite/src/node/plugins/css.ts makeScssWorker).
               const tildeImporter = createSassTildeImporter(root);
+              const cssUrlAssetImporter =
+                env.command === "build" ? createSassCssUrlAssetImporter() : null;
+              const userAdditionalData = sassPreprocessorOptions?.additionalData;
 
               // Base options shared by both .scss and .sass preprocessors.
               const baseOpts: SassPreprocessorOptions = {
                 ...sassPreprocessorOptions,
+                ...(cssUrlAssetImporter
+                  ? {
+                      additionalData: async (source: string, filename: string) => {
+                        const withUserData =
+                          typeof userAdditionalData === "function"
+                            ? await userAdditionalData(source, filename)
+                            : typeof userAdditionalData === "string"
+                              ? `${userAdditionalData}${source}`
+                              : source;
+                        return cssUrlAssetImporter.rewriteImports(withUserData, filename);
+                      },
+                    }
+                  : {}),
                 // Merge user-supplied importers (from sassOptions) with the
                 // tilde importer. Tilde goes first so it gets first crack at
                 // ~ prefixed URLs; other importers follow; Vite's own internal
@@ -2245,6 +2262,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // explicit cast to typecheck in both situations.
                 importers: [
                   tildeImporter,
+                  ...(cssUrlAssetImporter ? [cssUrlAssetImporter] : []),
                   ...((sassPreprocessorOptions?.importers as unknown[]) ?? []),
                 ] as SassPreprocessorOptions["importers"],
               };
