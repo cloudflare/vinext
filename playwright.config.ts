@@ -295,6 +295,18 @@ const projectServers = {
       timeout: 120_000,
     },
   },
+  "app-router-prefetch-searchparams": {
+    testDir: "./tests/e2e/app-router-prefetch-searchparams",
+    use: { baseURL: "http://localhost:4191" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4191",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4191,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

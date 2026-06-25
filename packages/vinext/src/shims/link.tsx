@@ -494,7 +494,9 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         // unified route payload, so gate that payload behind a loading-shell
         // request to preserve the same pending/dedup observable contract.
         const fetchPromise =
-          __prefetchInlining && autoPrefetch.cacheForNavigation && autoPrefetch.prefetchShellFirst
+          (mode === "full" || __prefetchInlining) &&
+          autoPrefetch.cacheForNavigation &&
+          autoPrefetch.prefetchShellFirst
             ? (async () => {
                 const shellHeaders = createRscRequestHeaders({
                   interceptionContext,
@@ -514,6 +516,17 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
                 if (!shellResponse.ok) {
                   return shellResponse;
                 }
+                prefetchRscResponse(
+                  shellRscUrl,
+                  Promise.resolve(shellResponse.clone()),
+                  interceptionContext,
+                  mountedSlotsHeader,
+                  undefined,
+                  {
+                    cacheForNavigation: false,
+                    optimisticRouteShell: true,
+                  },
+                );
                 await shellResponse.arrayBuffer().catch(() => {});
                 return fetch(rscUrl, {
                   headers,
