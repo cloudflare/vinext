@@ -2120,7 +2120,9 @@ async function navigateClient(
         browserUrl = redirectedUrl;
         htmlFetchUrl = redirectedUrl;
       } else if (middlewareEffect) {
-        middlewareDataResponse = middlewareEffect.response;
+        if (middlewareEffect.rewriteTarget || routeUrl === url) {
+          middlewareDataResponse = middlewareEffect.response;
+        }
         if (!dataTarget && middlewareEffect.rewriteTarget) {
           dataTarget = resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
         }
