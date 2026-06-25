@@ -961,6 +961,13 @@ export async function buildAppRouteGraph(
 
     const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null);
     if (!route) continue;
+    const hasOwnedSlotPage = route.parallelSlots.some(
+      (slot) => path.dirname(slot.ownerDir) === routeDir && slot.pagePath !== null,
+    );
+    if (!route.pagePath && !hasOwnedSlotPage) {
+      ghostParentRoutes.push(route);
+      continue;
+    }
     if (routePatterns.has(route.pattern)) {
       ghostParentRoutes.push(route);
       continue;
@@ -1510,6 +1517,7 @@ function directoryToAppRoute(
 
   // Discover loading, error in the route's directory.
   const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
+  const effectivePagePath = pagePath ?? (routePath ? null : findFile(routeDir, "default", matcher));
   const loadingPath = findFile(routeDir, "loading", matcher);
   const errorPath = findFile(routeDir, "error", matcher);
 
@@ -1533,7 +1541,7 @@ function directoryToAppRoute(
   return {
     ids: createAppRouteSemanticIds({
       pattern: pattern === "/" ? "/" : pattern,
-      pagePath,
+      pagePath: effectivePagePath,
       routePath,
       routeSegments: segments,
       layoutTreePositions,
@@ -1541,7 +1549,7 @@ function directoryToAppRoute(
       slots: parallelSlots,
     }),
     pattern: pattern === "/" ? "/" : pattern,
-    pagePath,
+    pagePath: effectivePagePath,
     routePath,
     layouts,
     templates,
