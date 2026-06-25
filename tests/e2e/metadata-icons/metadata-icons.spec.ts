@@ -13,8 +13,27 @@ async function ownedIconPaths(page: import("@playwright/test").Page): Promise<st
     );
 }
 
+function captureUnexpectedBrowserDiagnostics(page: import("@playwright/test").Page) {
+  const diagnostics: string[] = [];
+  const hydrationOrScriptWarning =
+    /hydration|hydrated|server rendered html|cannot render a .*<script>|<script>.*outside the main document/i;
+
+  page.on("console", (message) => {
+    if (
+      (message.type() === "warning" || message.type() === "error") &&
+      hydrationOrScriptWarning.test(message.text())
+    ) {
+      diagnostics.push(`console.${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => diagnostics.push(`pageerror: ${error.message}`));
+
+  return () => expect(diagnostics, "unexpected browser diagnostics").toEqual([]);
+}
+
 test.describe("Next.js compat: streamed metadata icons", () => {
   test("relocates initial icons during parsing with the request CSP nonce", async ({ page }) => {
+    const expectNoBrowserDiagnostics = captureUnexpectedBrowserDiagnostics(page);
     const response = await page.goto("/heart");
     const html = await response?.text();
 
@@ -24,11 +43,13 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     );
     await expect(page.locator("body link[data-vinext-streamed-icon]")).toHaveCount(0);
     await expect.poll(() => ownedIconPaths(page)).toEqual(["/heart-apple.png", "/heart.png"]);
+    expectNoBrowserDiagnostics();
   });
 
   test("replaces icons repeatedly without duplicates and preserves manual head icons", async ({
     page,
   }) => {
+    const expectNoBrowserDiagnostics = captureUnexpectedBrowserDiagnostics(page);
     await page.goto("/heart");
 
     for (let iteration = 0; iteration < 3; iteration++) {
@@ -43,11 +64,13 @@ test.describe("Next.js compat: streamed metadata icons", () => {
 
     await expect(page.locator("head link[data-vinext-streamed-icon]")).toHaveCount(2);
     await expect(page.locator("head link[data-manual-icon]")).toHaveCount(2);
+    expectNoBrowserDiagnostics();
   });
 
   test("cleans up owned icons on iconless navigation without deleting manual icons", async ({
     page,
   }) => {
+    const expectNoBrowserDiagnostics = captureUnexpectedBrowserDiagnostics(page);
     await page.goto("/heart");
     await expect.poll(() => ownedIconPaths(page)).toHaveLength(2);
 
@@ -55,9 +78,11 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     await expect(page).toHaveURL(/\/none$/);
     await expect(page.locator("head link[data-vinext-streamed-icon]")).toHaveCount(0);
     await expect(page.locator("head link[data-manual-icon]")).toHaveCount(2);
+    expectNoBrowserDiagnostics();
   });
 
   test("keeps rapid icon-to-icon replacement on the latest navigation", async ({ page }) => {
+    const expectNoBrowserDiagnostics = captureUnexpectedBrowserDiagnostics(page);
     await page.goto("/heart");
 
     await page.evaluate(() => {
@@ -69,5 +94,6 @@ test.describe("Next.js compat: streamed metadata icons", () => {
     await expect.poll(() => ownedIconPaths(page)).toEqual(["/heart-apple.png", "/heart.png"]);
     await expect(page.locator("head link[data-vinext-streamed-icon]")).toHaveCount(2);
     await expect(page.locator("head link[data-manual-icon]")).toHaveCount(2);
+    expectNoBrowserDiagnostics();
   });
 });

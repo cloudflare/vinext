@@ -29,6 +29,7 @@ import {
 } from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { createInlineScriptTag } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
@@ -537,6 +538,8 @@ function createStreamedIconKey(pathname: string, metadataHtml: string): string {
   return `${pathname}:${(hash >>> 0).toString(36)}`;
 }
 
+const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
+
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
@@ -553,15 +556,18 @@ export function createAppPageRouteBodyMetadata(
     /<link(?=[^>]*\srel="(?:icon|apple-touch-icon)")/g,
     `<link data-vinext-streamed-icon="${metadataKey}"`,
   );
+  const parserInsertedMetadataHtml =
+    metadataHtml + createInlineScriptTag(REINSERT_STREAMED_ICONS_SCRIPT, scriptNonce);
   return (
     <>
       <div
         hidden
+        suppressHydrationWarning
         dangerouslySetInnerHTML={{
-          __html: metadataHtml,
+          __html: parserInsertedMetadataHtml,
         }}
       />
-      <StreamedIconsInsertion metadataKey={metadataKey} nonce={scriptNonce} />
+      <StreamedIconsInsertion metadataKey={metadataKey} />
     </>
   );
 }

@@ -2,8 +2,6 @@
 
 import { useLayoutEffect } from "react";
 
-export const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
-
 const STREAMED_ICON_ATTRIBUTE = "data-vinext-streamed-icon";
 
 export function reconcileStreamedIcons(metadataKey: string): void {
@@ -32,15 +30,7 @@ export function reconcileStreamedIcons(metadataKey: string): void {
   }
 }
 
-export function StreamedIconsInsertion({
-  metadataKey,
-  nonce,
-}: {
-  metadataKey: string;
-  nonce?: string;
-}) {
+export function StreamedIconsInsertion({ metadataKey }: { metadataKey: string }) {
   useLayoutEffect(() => reconcileStreamedIcons(metadataKey), [metadataKey]);
-  return (
-    <script nonce={nonce} dangerouslySetInnerHTML={{ __html: REINSERT_STREAMED_ICONS_SCRIPT }} />
-  );
+  return null;
 }

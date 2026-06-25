@@ -3336,6 +3336,7 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(html).toContain(
       `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
     );
+    expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
   });
 
   it("body placement: includes icon cleanup reconciliation without streamed icons", () => {
@@ -3355,7 +3356,7 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     );
     const html = renderToStaticMarkup(node as React.ReactElement);
 
-    expect(html).toContain('<script nonce="test-nonce">');
+    expect(html).toMatch(/<script nonce="test-nonce">[\s\S]*<\/script><\/div>$/);
   });
 });
 
