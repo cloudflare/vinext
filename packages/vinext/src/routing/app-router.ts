@@ -49,6 +49,9 @@ export function invalidateAppRouteCache(): void {
  * TODO(#726): Layer 4 should consume this read model directly once the
  * navigation planner owns route graph facts.
  *
+ * `appDir` must be forward-slash — callers normalize it at their entry, and it
+ * flows into `buildAppRouteGraph`, which builds every path with `path.posix.*`.
+ *
  * @internal
  */
 export async function appRouteGraph(
@@ -71,6 +74,8 @@ export async function appRouteGraph(
 
 /**
  * Scan the app/ directory and return a list of routes.
+ *
+ * `appDir` must be forward-slash — it is forwarded to `appRouteGraph`.
  */
 export async function appRouter(
   appDir: string,

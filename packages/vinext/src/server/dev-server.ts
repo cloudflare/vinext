@@ -2,7 +2,6 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
-import { normalizeStaticPathname, type StaticPathsEntry } from "../routing/route-pattern.js";
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
@@ -58,6 +57,11 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import {
+  getPagesRouteParams,
+  matchesPagesStaticPath,
+  type PagesStaticPathsEntry,
+} from "./pages-page-data.js";
 import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
@@ -544,14 +548,19 @@ export function createSSRHandler(
 
     if (!match) {
       if (isDataReq) {
-        // Stale client requested data for a page that no longer exists.
-        // Emit a JSON 404 so the client hard-navigates (matches Next.js).
+        // Middleware data misses use Next.js's soft-miss protocol so the
+        // client router can distinguish them from stale-build deployment skew.
+        // Without middleware, preserve the JSON 404 hard-navigation response.
         // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
         // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
         const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
         const notFoundHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        if (hasMiddleware) {
+          notFoundHeaders["x-nextjs-matched-path"] =
+            `${locale ? `/${locale}` : ""}${localeStrippedUrl}`;
+        }
         if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-        res.writeHead(404, notFoundHeaders);
+        res.writeHead(hasMiddleware ? 200 : 404, notFoundHeaders);
         res.end("{}");
         return;
       }
@@ -720,30 +729,12 @@ export function createSSRHandler(
           });
           const fallback = pathsResult?.fallback ?? false;
 
-          // Only allow paths explicitly listed in getStaticPaths. Next.js
-          // accepts `paths` as Array<string | { params, locale? }>; the
-          // shared `StaticPathsEntry` type and `normalizeStaticPathname`
-          // helper in `../routing/route-pattern.ts` reference the upstream
-          // implementation.
-          type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
-          const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
-          const currentPathname = normalizeStaticPathname(url);
-          const isValidPath = paths.some((p) => {
-            if (typeof p === "string") {
-              return normalizeStaticPathname(p) === currentPathname;
-            }
-            const entryParams = p.params;
-            if (entryParams === undefined || entryParams === null) {
-              return false;
-            }
-            return Object.entries(entryParams).every(([key, val]) => {
-              const actual = params[key];
-              if (Array.isArray(val)) {
-                return Array.isArray(actual) && val.join("/") === actual.join("/");
-              }
-              return String(val) === String(actual);
-            });
-          });
+          const paths: PagesStaticPathsEntry[] = pathsResult?.paths ?? [];
+          const routePattern = patternToNextFormat(route.pattern);
+          const routeParams = getPagesRouteParams(routePattern);
+          const isValidPath = paths.some((pathEntry) =>
+            matchesPagesStaticPath(pathEntry, params, routeParams, url),
+          );
 
           if (fallback === false && !isValidPath) {
             if (isDataReq) {
@@ -1442,6 +1433,10 @@ export function createSSRHandler(
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
+          if ((statusCode ?? 200) === 200) {
+            const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
+            dataHeaders["x-nextjs-matched-path"] = matchedPathname;
+          }
           if (gsspExtraHeaders) {
             for (const [k, v] of Object.entries(gsspExtraHeaders)) {
               dataHeaders[k] = v;

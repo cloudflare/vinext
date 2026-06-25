@@ -753,7 +753,8 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
  * Scans the project at `root`, classifies all routes, and prints the
  * Next.js-style build report to stdout.
  *
- * Called at the end of `vinext build` in cli.ts.
+ * `root` must be forward-slash — it is passed to `findDir`. The caller (the
+ * `vinext build` entry in cli.ts) normalizes it.
  */
 export async function printBuildReport(options: {
   root: string;

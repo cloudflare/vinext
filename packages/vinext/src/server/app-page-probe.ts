@@ -395,6 +395,7 @@ type ProbeAppPageBeforeRenderResult = {
 
 type ProbeAppPageBeforeRenderOptions = {
   hasLoadingBoundary: boolean;
+  probePageBeforeRender?: boolean;
   skipProbes?: boolean;
   layoutCount: number;
   probeLayoutAt: (layoutIndex: number) => unknown;
@@ -457,7 +458,7 @@ export async function probeAppPageBeforeRender(
   // onError callback, and a short race window after shell-ready lets the
   // lifecycle swap the response to a 307/404 before bytes are flushed.
   // This mirrors Next.js's "until-first-byte-is-flushed" swap behavior.
-  if (options.hasLoadingBoundary) {
+  if (options.hasLoadingBoundary || options.probePageBeforeRender === false) {
     return { response: null, layoutFlags };
   }
 

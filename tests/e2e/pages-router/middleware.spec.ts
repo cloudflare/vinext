@@ -103,6 +103,39 @@ test.describe("Middleware (Pages Router)", () => {
     expect(nextData.props.pageProps).toBeDefined();
   });
 
+  test("adds the rendered path to middleware-rewritten data responses", async ({
+    page,
+    request,
+  }) => {
+    await page.goto(`${BASE}/middleware-general-ssr`);
+
+    const response = await request.get(
+      `${BASE}/_next/data/test-build-id/middleware-general-ssr.json`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()["x-nextjs-rewrite"]).toBe("/ssr");
+    expect(response.headers()["x-nextjs-matched-path"]).toBe("/ssr");
+  });
+
+  test("exposes data-request state to middleware without trusting the inbound header", async ({
+    request,
+  }) => {
+    const ordinaryResponse = await request.get(
+      `${BASE}/middleware-general-error-throw?message=ordinary`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(ordinaryResponse.status()).toBe(200);
+
+    const dataResponse = await request.get(
+      `${BASE}/_next/data/test-build-id/middleware-general-error-throw.json?message=data`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(dataResponse.status()).toBe(500);
+    expect(await dataResponse.text()).toContain("middleware data request failure");
+  });
+
   test("middleware does not affect static file requests", async ({ request }) => {
     // The matcher pattern excludes paths with dots (static files)
     // and paths starting with /_next. This is implicit from the matcher

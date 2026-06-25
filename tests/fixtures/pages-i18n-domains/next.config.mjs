@@ -1,4 +1,5 @@
 export default {
+  generateBuildId: async () => "test-build-id",
   i18n: {
     locales: ["en", "fr"],
     defaultLocale: "en",

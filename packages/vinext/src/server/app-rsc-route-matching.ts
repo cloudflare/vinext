@@ -38,6 +38,8 @@ type AppRscInterceptForMatching = {
   sourceMatchPattern?: string;
   sourcePageSegments?: readonly string[];
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -55,6 +57,8 @@ type AppRscSiblingInterceptForMatching = {
   sourcePageSegments?: readonly string[];
   slotId: string | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
@@ -74,6 +78,7 @@ type AppRscRouteForMatching = {
 
 type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
+  sourceMatchedParams: AppRscRouteParams;
 };
 
 type AppRscInterceptLoadState = {
@@ -91,6 +96,8 @@ type AppRscInterceptLookupEntry = {
   sourceMatchPatternParts: string[] | null;
   sourcePageSegments: readonly string[] | null;
   interceptLayouts: readonly unknown[];
+  interceptLayoutSegments?: readonly (readonly string[])[];
+  interceptBranchSegments?: readonly string[];
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   page: unknown;
   __pageLoader?: (() => Promise<unknown>) | null;
@@ -170,12 +177,16 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         if (matchedSourceParams === null && entry.sourceMatchPatternParts === null) {
           continue;
         }
-        const sourceParams = matchedSourceParams ?? createRouteParams();
+        const sourceParams =
+          matchedSourceParams && entry.sourceMatchPatternParts !== null
+            ? pickPatternParams(matchedSourceParams, entry.sourceMatchPatternParts)
+            : (matchedSourceParams ?? createRouteParams());
         return {
           ...entry,
           page: entry.__loadState.page,
           sourceRouteIndex: concreteSourceRouteIndex,
           matchedParams: mergeMatchedParams(sourceParams, params),
+          sourceMatchedParams: matchedSourceParams ?? createRouteParams(),
         };
       }
       return null;
@@ -199,6 +210,33 @@ function matchInterceptSource(sourceParts: string[], entry: AppRscInterceptLooku
   // Root pattern (`/`) matches any source.
   if (patternParts.length === 0) return true;
   return matchRoutePatternPrefix(sourceParts, patternParts);
+}
+
+function interceptSegmentPrecedence(segment: string): number {
+  if (!segment.startsWith(":")) return 0;
+  if (segment.endsWith("*")) return 3;
+  if (segment.endsWith("+")) return 2;
+  return 1;
+}
+
+function compareInterceptTargetPatterns(
+  a: AppRscInterceptLookupEntry,
+  b: AppRscInterceptLookupEntry,
+): number {
+  const sharedLength = Math.min(a.targetPatternParts.length, b.targetPatternParts.length);
+  for (let index = 0; index < sharedLength; index++) {
+    const aSegment = a.targetPatternParts[index];
+    const bSegment = b.targetPatternParts[index];
+    const precedence = interceptSegmentPrecedence(aSegment) - interceptSegmentPrecedence(bSegment);
+    if (precedence !== 0) return precedence;
+
+    if (aSegment !== bSegment) {
+      return aSegment.localeCompare(bSegment);
+    }
+  }
+
+  const lengthDifference = a.targetPatternParts.length - b.targetPatternParts.length;
+  return lengthDifference !== 0 ? lengthDifference : a.targetPattern.localeCompare(b.targetPattern);
 }
 
 function createInterceptLookup<Route extends AppRscRouteForMatching>(
@@ -242,6 +280,8 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             sourceMatchPatternParts,
             sourcePageSegments: intercept.sourcePageSegments ?? null,
             interceptLayouts: intercept.interceptLayouts,
+            interceptLayoutSegments: intercept.interceptLayoutSegments,
+            interceptBranchSegments: intercept.interceptBranchSegments,
             __loadInterceptLayouts: intercept.__loadInterceptLayouts,
             page: intercept.page,
             __pageLoader: intercept.__pageLoader,
@@ -271,6 +311,8 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceMatchPatternParts,
           sourcePageSegments: intercept.sourcePageSegments ?? null,
           interceptLayouts: intercept.interceptLayouts,
+          interceptLayoutSegments: intercept.interceptLayoutSegments,
+          interceptBranchSegments: intercept.interceptBranchSegments,
           __loadInterceptLayouts: intercept.__loadInterceptLayouts,
           page: intercept.page,
           __pageLoader: intercept.__pageLoader,
@@ -284,7 +326,9 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
       }
     }
   }
-  return interceptLookup;
+  // Array.prototype.sort is stable, so entries with identical target patterns
+  // retain declaration order across slots and sources.
+  return interceptLookup.sort(compareInterceptTargetPatterns);
 }
 
 export function matchAppRscRoutePattern(
@@ -299,4 +343,21 @@ function mergeMatchedParams(
   targetParams: AppRscRouteParams,
 ): AppRscRouteParams {
   return Object.assign(createRouteParams(), sourceParams, targetParams);
+}
+
+function pickPatternParams(
+  params: AppRscRouteParams,
+  patternParts: readonly string[],
+): AppRscRouteParams {
+  const picked = createRouteParams();
+  for (const patternPart of patternParts) {
+    if (!patternPart.startsWith(":")) continue;
+    const paramName =
+      patternPart.endsWith("+") || patternPart.endsWith("*")
+        ? patternPart.slice(1, -1)
+        : patternPart.slice(1);
+    const value = params[paramName];
+    if (value !== undefined) picked[paramName] = value;
+  }
+  return picked;
 }

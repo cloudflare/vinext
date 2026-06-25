@@ -185,6 +185,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
       if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
       if (slot.layoutPath) imports.getLazyLoaderVar(slot.layoutPath);
+      for (const layoutPath of slot.configLayoutPaths ?? []) {
+        imports.getLazyLoaderVar(layoutPath);
+      }
       if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath);
       if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
@@ -246,6 +249,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       slotId: ${JSON.stringify(ir.slotId ?? null)},
       interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
       __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+      interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
+      interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
       page: null,
       __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
       params: ${JSON.stringify(ir.params)},
@@ -260,6 +265,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           sourcePageSegments: ${JSON.stringify(ir.sourcePageSegments)},
           interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
           __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+          interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
+          interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
           page: null,
           __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
@@ -274,6 +281,9 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         __loadDefault: ${slot.defaultPath ? imports.getLazyLoaderVar(slot.defaultPath) : "null"},
         layout: null,
         __loadLayout: ${slot.layoutPath ? imports.getLazyLoaderVar(slot.layoutPath) : "null"},
+        configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
+        __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
+        configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
         error: null,

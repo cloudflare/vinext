@@ -240,6 +240,10 @@ function SlotLayout(props: Record<string, unknown>) {
   return createElement("div", { "data-slot-layout": "sidebar" }, readChildren(props.children));
 }
 
+function NestedSlotLayout(props: Record<string, unknown>) {
+  return createElement("div", { "data-slot-layout": "nested" }, readChildren(props.children));
+}
+
 function InterceptOuterLayout(props: Record<string, unknown>) {
   return createElement("div", { "data-intercept-layout": "outer" }, readChildren(props.children));
 }
@@ -771,6 +775,51 @@ describe("app page route wiring helpers", () => {
     );
 
     expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+  });
+
+  it("renders nested active slot layouts inside the slot root layout", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            configLayouts: [{ default: NestedSlotLayout }],
+            default: null,
+            error: null,
+            layout: { default: SlotLayout },
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html.indexOf('data-slot-layout="sidebar"')).toBeLessThan(
+      html.indexOf('data-slot-layout="nested"'),
+    );
+    expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
   });
 
   it("suppresses route and slot loading boundaries for refresh payloads", () => {

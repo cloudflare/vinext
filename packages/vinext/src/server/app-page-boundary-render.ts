@@ -1,7 +1,12 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
 import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
 import DefaultGlobalError from "vinext/shims/default-global-error";
-import { ErrorBoundary, GlobalErrorBoundary } from "vinext/shims/error-boundary";
+import {
+  ErrorBoundary,
+  GlobalErrorBoundary,
+  SerializedErrorBoundary,
+  type SerializedBoundaryError,
+} from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
@@ -9,7 +14,7 @@ import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead } from "./app-page-head.js";
+import { resolveAppPageHead, type ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -72,6 +77,7 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
@@ -127,6 +133,7 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
 
 type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageModule> = {
   error: unknown;
+  errorOrigin?: "rsc" | "ssr";
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;
   sanitizeErrorForClient: (error: Error) => Error;
@@ -351,6 +358,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const pathname = new URL(options.requestUrl).pathname;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
+    applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules,
     layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
@@ -426,7 +434,8 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   const rawError =
     options.error instanceof Error ? options.error : new Error(String(options.error));
   rewriteClientHookError(rawError);
-  const errorObject = options.sanitizeErrorForClient(rawError);
+  const errorObject =
+    options.errorOrigin === "ssr" ? rawError : options.sanitizeErrorForClient(rawError);
   const matchedParams = options.matchedParams ?? options.route?.params ?? {};
   const layoutModules = options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
@@ -435,6 +444,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   if (!errorBoundary.isGlobalError) {
     try {
       const { metadata, viewport } = await resolveAppPageHead({
+        applyFileBasedMetadata: options.applyFileBasedMetadata,
         basePath: options.basePath ?? "",
         fallbackOnFileMetadataError: true,
         layoutModules,
@@ -474,7 +484,19 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   // this extra wrapping. Mirrors Next.js's outer
   // `RootErrorBoundary errorComponent={DefaultGlobalError}`.
   const buildElement = (BoundaryComponent: AppPageComponent): ReactNode => {
-    const boundaryElement = createElement(BoundaryComponent, { error: errorObject });
+    const serializedError = {
+      digest: "digest" in errorObject ? String(errorObject.digest) : undefined,
+      message: errorObject.message,
+      name: errorObject.name,
+      stack: process.env.NODE_ENV !== "production" ? errorObject.stack : undefined,
+    } satisfies SerializedBoundaryError;
+    const boundaryElement =
+      errorBoundary.isGlobalError && BoundaryComponent !== DEFAULT_GLOBAL_ERROR_COMPONENT
+        ? createElement(SerializedErrorBoundary, {
+            error: serializedError,
+            fallback: BoundaryComponent,
+          })
+        : createElement(BoundaryComponent, { error: errorObject });
     return wrapRenderedBoundaryElement({
       element: createElement(
         Fragment,

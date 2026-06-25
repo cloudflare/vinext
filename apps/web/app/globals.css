@@ -19,3 +19,18 @@ body {
     -apple-system,
     sans-serif;
 }
+
+.vinext-code-block pre {
+  margin: 0;
+  overflow-x: auto;
+  padding: 1.25rem;
+  background: transparent !important;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+
+.vinext-code-block code {
+  display: block;
+  min-width: max-content;
+}

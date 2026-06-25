@@ -12,6 +12,44 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("exposes trusted data-request state to middleware", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBe(true);
+    expect(Object.keys(capturedRequest ?? {})).not.toContain("__isData");
+  });
+
+  it("does not expose data-request state for ordinary requests", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBeUndefined();
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {

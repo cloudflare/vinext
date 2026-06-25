@@ -1,8 +1,13 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
+import {
+  isDraftModeRequest,
+  setHeadersContext,
+  type HeadersAccessPhase,
+} from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
+import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -112,6 +117,9 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled:
+          options.draftModeSecret !== undefined &&
+          isDraftModeRequest(options.request, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "route",
@@ -143,9 +151,16 @@ export async function runAppRouteHandler(
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },
   });
-  const response = await options.handlerFn(trackedRequest.request, {
-    params: options.params,
-  });
+  const response = await runWithRootParamsUsage(
+    {
+      kind: "route-handler",
+      routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+    },
+    () =>
+      options.handlerFn(trackedRequest.request, {
+        params: options.params,
+      }),
+  );
 
   return {
     dynamicUsedInHandler: options.consumeDynamicUsage(),

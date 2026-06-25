@@ -85,6 +85,14 @@ export function normalizeServerActionThrownValue(data: unknown, responseStatus: 
   return createServerActionHttpFallbackError(responseStatus) ?? data;
 }
 
+export function shouldSyncServerActionHttpFallbackHead<TRoot>(
+  result: AppBrowserServerActionResult<TRoot> | TRoot,
+): boolean {
+  if (!isServerActionResult<TRoot>(result) || result.root !== undefined) return false;
+
+  return result.returnValue?.ok !== false;
+}
+
 export async function readInvalidServerActionResponseError(
   response: Pick<Response, "headers" | "status" | "text">,
   hasRedirectLocation: boolean,

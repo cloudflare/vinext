@@ -21,6 +21,7 @@ import {
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
   shouldClearClientNavigationCachesForServerActionResult,
+  shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
 import {
@@ -900,6 +901,23 @@ describe("app browser entry navigation scheduling", () => {
     } else {
       throw new Error("Expected fallback to have a digest property");
     }
+  });
+
+  it("lets thrown action HTTP fallbacks own their boundary robots metadata", () => {
+    expect(
+      shouldSyncServerActionHttpFallbackHead({
+        returnValue: { ok: false, data: new Error("sanitized") },
+      }),
+    ).toBe(false);
+    expect(shouldSyncServerActionHttpFallbackHead({ returnValue: { ok: true, data: null } })).toBe(
+      true,
+    );
+    expect(
+      shouldSyncServerActionHttpFallbackHead({
+        root: { __route: "/current" },
+        returnValue: { ok: false, data: new Error("sanitized") },
+      }),
+    ).toBe(false);
   });
 
   it("preserves ordinary server action errors for 500 responses", () => {

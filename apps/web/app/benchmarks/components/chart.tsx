@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { visibleMarkerMask } from "./chart-points";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ export function TrendChart({
     x: number;
     y: number;
     content: string;
+    pointId: string;
   } | null>(null);
 
   // Collect all non-null values to determine y-axis bounds
@@ -128,7 +130,7 @@ export function TrendChart({
         })}
 
         {/* Series lines + dots */}
-        {series.map((s) => {
+        {series.map((s, seriesIndex) => {
           // Build path segments, breaking on null values
           const segments: string[] = [];
           let inSegment = false;
@@ -151,46 +153,57 @@ export function TrendChart({
 
           if (segments.length === 0) return null;
           const pathD = segments.join(" ");
+          const visibleMarkers = visibleMarkerMask(s.values, formatY);
 
           return (
             <g key={s.name}>
               {/* Line */}
               <path d={pathD} fill="none" stroke={s.color} strokeWidth="2" />
-              {/* Dots — only for non-null values */}
+              {/* Every point remains interactive; repeated plateau markers stay hidden. */}
               {s.values.map((v, i) => {
                 if (v === null) return null;
-                const circle = (
-                  <circle
-                    cx={scaleX(i)}
-                    cy={scaleY(v)}
-                    r="3.5"
-                    fill={s.color}
-                    stroke="white"
-                    strokeWidth="1.5"
-                    className="cursor-pointer"
-                    onMouseEnter={(e) => {
-                      const rect = svgRef.current?.getBoundingClientRect();
-                      if (!rect) return;
-                      setTooltip({
-                        x: e.clientX - rect.left,
-                        y: e.clientY - rect.top - 10,
-                        content: `${s.name}: ${formatY(v)} (${labels[i]})`,
-                      });
-                    }}
-                    onMouseLeave={() => setTooltip(null)}
-                  />
+                const pointId = `${seriesIndex}-${pointKeys[i]}`;
+                const point = (
+                  <g key={`${pointKeys[i]}-${s.name}`}>
+                    <circle
+                      cx={scaleX(i)}
+                      cy={scaleY(v)}
+                      r="3.5"
+                      fill={s.color}
+                      stroke="white"
+                      strokeWidth="1.5"
+                      opacity={visibleMarkers[i] || tooltip?.pointId === pointId ? 1 : 0}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={scaleX(i)}
+                      cy={scaleY(v)}
+                      r="8"
+                      fill="transparent"
+                      className="cursor-pointer"
+                      onMouseEnter={(e) => {
+                        const rect = svgRef.current?.getBoundingClientRect();
+                        if (!rect) return;
+                        setTooltip({
+                          x: e.clientX - rect.left,
+                          y: e.clientY - rect.top - 10,
+                          content: `${s.name}: ${formatY(v)} (${labels[i]})`,
+                          pointId,
+                        });
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                    />
+                  </g>
                 );
                 const href = pointHrefs?.[i];
-                if (!href) {
-                  return <g key={`${pointKeys[i]}-${s.name}`}>{circle}</g>;
-                }
+                if (!href) return point;
                 return (
                   <a
                     key={`${pointKeys[i]}-${s.name}`}
                     href={href}
                     aria-label={`View commit ${labels[i]} benchmark results`}
                   >
-                    {circle}
+                    {point}
                   </a>
                 );
               })}

@@ -529,6 +529,7 @@ declare module "next/compat/router" {
 
 declare module "next/server" {
   export class NextRequest extends Request {
+    readonly __isData?: boolean;
     get nextUrl(): any;
     get cookies(): any;
     get ip(): string | undefined;

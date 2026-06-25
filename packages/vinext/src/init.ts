@@ -29,6 +29,7 @@ import {
   hasViteConfig,
   hasAppDir,
 } from "./utils/project.js";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -267,7 +268,7 @@ export function updateGitignore(root: string): boolean {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function init(options: InitOptions): Promise<InitResult> {
-  const root = path.resolve(options.root);
+  const root = normalizePathSeparators(path.resolve(options.root));
   const port = options.port ?? 3001;
   const exec =
     options._exec ??

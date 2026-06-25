@@ -375,7 +375,7 @@ jobs:
       # the package archives cached we skip the (slow) download step on hits.
       - name: Cache apt archives (WebKit deps)
         if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
           path: |
             ~/.cache/apt-archives

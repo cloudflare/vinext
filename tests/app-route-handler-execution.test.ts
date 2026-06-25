@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   consumeDynamicUsage,
   cookies,
+  draftMode,
   headers,
   markDynamicUsage,
   setHeadersContext,
@@ -11,6 +12,7 @@ import {
   executeAppRouteHandler,
   runAppRouteHandler,
 } from "../packages/vinext/src/server/app-route-handler-execution.js";
+import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -67,6 +69,54 @@ describe("app route handler execution helpers", () => {
     await expect(response.json()).resolves.toEqual({ header: "pong" });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-root-params-getters/simple.test.ts
+  it("rejects next/root-params inside route handlers", async () => {
+    const dynamicUsage = createDynamicUsageState();
+
+    await expect(
+      runAppRouteHandler({
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        async handlerFn() {
+          await getRootParam("lang");
+          return new Response("unreachable");
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        params: { lang: "en", locale: "us" },
+        request: new Request("https://example.com/en/us/route-handler"),
+        routePattern: "/[lang]/[locale]/route-handler",
+      }),
+    ).rejects.toThrow(
+      "Route /[lang]/[locale]/route-handler used `import('next/root-params').lang()` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.",
+    );
+  });
+
+  it("keeps route-handler root params restrictions for deferred work", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    let deferredRead!: Promise<string | string[] | undefined>;
+    let releaseDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      releaseDeferred = resolve;
+    });
+
+    await runWithRootParamsScope({ lang: "en" }, () =>
+      runAppRouteHandler({
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        async handlerFn() {
+          deferredRead = deferred.then(() => getRootParam("lang"));
+          return new Response("ok");
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        params: { lang: "en" },
+        request: new Request("https://example.com/en/route-handler"),
+        routePattern: "/[lang]/route-handler",
+      }),
+    );
+
+    releaseDeferred();
+    await expect(deferredRead).rejects.toThrow("inside a Route Handler");
+  });
+
   it("runs force-static route handlers with empty request APIs without marking dynamic usage", async () => {
     const dynamicUsage = createDynamicUsageState();
 
@@ -77,8 +127,13 @@ describe("app route handler execution helpers", () => {
         async handlerFn(request) {
           const headerStore = await headers();
           const cookieStore = await cookies();
+          const draft = await draftMode();
+          const draftModeInitiallyEnabled = draft.isEnabled;
+          draft.disable();
           return Response.json({
             cookie: cookieStore.get("session")?.value ?? null,
+            draftMode: draftModeInitiallyEnabled,
+            draftModeAfterDisable: draft.isEnabled,
             geo: request.geo ?? null,
             header: headerStore.get("x-test"),
             ip: request.ip ?? null,
@@ -95,11 +150,12 @@ describe("app route handler execution helpers", () => {
           headers: {
             "cf-connecting-ip": "203.0.113.10",
             "cf-ipcountry": "AU",
-            cookie: "session=abc",
+            cookie: "session=abc; __prerender_bypass=draft-secret",
             "x-test": "pong",
           },
         }),
         routePattern: "/api/static",
+        draftModeSecret: "draft-secret",
         setHeadersAccessPhase() {
           return "render";
         },
@@ -108,6 +164,8 @@ describe("app route handler execution helpers", () => {
       expect(dynamicUsedInHandler).toBe(false);
       await expect(response.json()).resolves.toEqual({
         cookie: null,
+        draftMode: true,
+        draftModeAfterDisable: false,
         geo: null,
         header: null,
         ip: null,

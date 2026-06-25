@@ -125,7 +125,7 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
       const reactDomPackageJson = require.resolve("react-dom/package.json");
       const reactDomDir = path.dirname(reactDomPackageJson);
       const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
-      const devRenderer: unknown = await import(devRendererPath);
+      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
       if (isStaticPrerenderModule(devRenderer)) {
         return devRenderer.prerender;
       }
