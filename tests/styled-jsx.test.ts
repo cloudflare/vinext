@@ -145,4 +145,25 @@ describe("styled-jsx compatibility plugin", () => {
     expect(result.code).toContain("button.jsx-");
     expect(result.code).not.toContain("styled-jsx/css");
   });
+
+  it("keeps real dev transforms safe for server environments", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const configResolved = plugin.configResolved as (config: {
+      root: string;
+      command: "serve";
+    }) => void;
+    configResolved({ root: process.cwd(), command: "serve" });
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<{ code: string }>;
+    };
+
+    const result = await transformHook.handler(
+      "export default function Page() { return <style jsx>{`p{color:red}`}</style>; }",
+      "/app/page.js",
+    );
+
+    expect(result.code).toContain("jsxDEV");
+    expect(result.code).not.toContain("$RefreshReg$");
+    expect(result.code).not.toContain("$RefreshSig$");
+  });
 });
