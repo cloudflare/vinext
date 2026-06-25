@@ -1620,6 +1620,20 @@ describe("resolveNextConfig appNavFailHandling", () => {
   });
 });
 
+describe("resolveNextConfig globalNotFound", () => {
+  it("defaults experimental.globalNotFound to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.globalNotFound).toBe(false);
+  });
+
+  it("reads experimental.globalNotFound from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { globalNotFound: true },
+    });
+    expect(resolved.globalNotFound).toBe(true);
+  });
+});
+
 describe("resolveNextConfig hashSalt", () => {
   const OLD_ENV = process.env.NEXT_HASH_SALT;
 
@@ -1981,6 +1995,7 @@ describe("detectNextIntlConfig", () => {
       transpilePackages: [],
       turbopackTranspilePackages: ["geist"],
       inlineCss: false,
+      globalNotFound: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,

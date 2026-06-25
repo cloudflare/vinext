@@ -989,9 +989,12 @@ describe("App Router entry templates", () => {
   });
 
   it("generateRscEntry emits a null global-not-found loader when no path is provided", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
+    });
 
     expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: true");
     expect(code).not.toContain("global-not-found.tsx");
   });
 

@@ -51,6 +51,8 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   fontProviders: AppFallbackRendererFontProviders;
   getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
+  /** Whether experimental.globalNotFound is enabled for route-miss 404s. */
+  globalNotFoundEnabled?: boolean;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
    * route-miss 404s render this module as a standalone document (skipping the
@@ -151,6 +153,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     fontProviders,
     getNavigationContext,
     globalErrorModule,
+    globalNotFoundEnabled = false,
     loadGlobalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
@@ -217,9 +220,9 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // regular not-found.tsx boundary inside the route's layouts.
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
-        statusCode === 404 && !!loadGlobalNotFoundModule && !route && !opts?.boundaryComponent;
+        statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
 
-      if (useGlobalNotFound) {
+      if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();
         const globalNotFoundComponent = globalNotFoundModule?.default ?? null;
         if (globalNotFoundComponent) {
@@ -260,6 +263,10 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         }
       }
 
+      const routeMissRootNotFoundModule = useGlobalNotFound
+        ? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule)
+        : effectiveRootNotFoundModule;
+
       return renderAppPageHttpAccessFallback({
         applyFileBasedMetadata,
         basePath,
@@ -288,7 +295,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         resolveChildSegments,
         rootForbiddenModule,
         rootLayouts,
-        rootNotFoundModule: effectiveRootNotFoundModule,
+        rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
         route,
         renderToReadableStream: rscRenderer,

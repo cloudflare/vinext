@@ -387,6 +387,8 @@ export type ResolvedNextConfig = {
   turbopackTranspilePackages: string[];
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss: boolean;
+  /** Enable standalone route-miss 404 handling (from experimental.globalNotFound). */
+  globalNotFound: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
   /** Verbatim body size limit config value (e.g. "2mb") for the "Body exceeded {limit} limit" error. Defaults to "1 MB". */
@@ -1349,6 +1351,7 @@ export async function resolveNextConfig(
       transpilePackages: [],
       turbopackTranspilePackages: [...DEFAULT_TRANSPILED_PACKAGES],
       inlineCss: false,
+      globalNotFound: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       expireTime: DEFAULT_EXPIRE_TIME,
@@ -1477,6 +1480,7 @@ export async function resolveNextConfig(
     ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
   const inlineCss = experimental?.inlineCss === true;
+  const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining =
     experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
 
@@ -1673,6 +1677,7 @@ export async function resolveNextConfig(
     transpilePackages,
     turbopackTranspilePackages,
     inlineCss,
+    globalNotFound,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
