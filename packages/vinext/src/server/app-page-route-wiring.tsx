@@ -138,6 +138,11 @@ export type AppPageRouteWiringRoute<
    * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
    */
   slots?: Readonly<Record<string, AppPageRouteWiringSlot<TModule, TErrorModule>>> | null;
+  childrenSlot?: {
+    id: string;
+    ownerTreePath: string;
+    state: AppElementsSlotBinding["state"];
+  } | null;
   /**
    * Static sibling segment names at each dynamic URL level for this route. Used
    * by the client router to determine if a cached prefetch of the dynamic
@@ -473,6 +478,16 @@ function createAppPageSlotBindings<
   },
 ): readonly AppElementsSlotBinding[] {
   const bindings: AppElementsSlotBinding[] = [];
+  if (route.childrenSlot) {
+    const ownerLayoutId = layoutEntries.find(
+      (layoutEntry) => layoutEntry.treePath === route.childrenSlot?.ownerTreePath,
+    )?.id;
+    bindings.push({
+      ownerLayoutId: ownerLayoutId ?? null,
+      slotId: route.childrenSlot.id,
+      state: route.childrenSlot.state,
+    });
+  }
   for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
     const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
     const layoutEntry = layoutEntries[targetIndex] ?? null;
@@ -548,6 +563,7 @@ export function buildAppPageElements<
     AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
   const pageId =
     renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
+  const pageElementId = options.route.childrenSlot?.id ?? pageId;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
@@ -673,7 +689,7 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  elements[pageId] = isPrefetchLoadingShell
+  elements[pageElementId] = isPrefetchLoadingShell
     ? null
     : renderAfterAppDependencies(options.element, pageDependencies);
 
@@ -858,7 +874,7 @@ export function buildAppPageElements<
       }
     }
 
-    const slotLayoutComponent = getDefaultExport(slot.layout);
+    const slotLayoutComponent = overrideOrPageComponent ? getDefaultExport(slot.layout) : null;
     if (slotLayoutComponent) {
       const SlotLayoutComponent = slotLayoutComponent;
       slotElement = (
@@ -895,7 +911,7 @@ export function buildAppPageElements<
 
   let routeChildren: ReactNode = (
     <LayoutSegmentProvider segmentMap={{ children: [] }}>
-      <Slot id={pageId} />
+      <Slot id={pageElementId} />
     </LayoutSegmentProvider>
   );
 

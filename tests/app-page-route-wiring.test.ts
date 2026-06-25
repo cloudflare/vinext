@@ -1127,7 +1127,7 @@ describe("app page route wiring helpers", () => {
     expect(elements["slot:team:/"]).toBeDefined();
   });
 
-  it("renders slot default.tsx on hard navigation when slot has no page", () => {
+  it("renders slot default.tsx without its slot layout on hard navigation", async () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: false,
@@ -1148,13 +1148,13 @@ describe("app page route wiring helpers", () => {
         notFounds: [null],
         routeSegments: [],
         slots: {
-          team: {
+          sidebar: {
             default: { default: DefaultPage },
             error: null,
-            layout: null,
+            layout: { default: SlotLayout },
             layoutIndex: 0,
             loading: null,
-            name: "team",
+            name: "sidebar",
             page: null,
             routeSegments: [],
           },
@@ -1167,8 +1167,12 @@ describe("app page route wiring helpers", () => {
     });
 
     // On hard navigation the default.tsx must render so the initial HTML is
-    // fully populated.
-    expect(elements["slot:team:/"]).toBeDefined();
+    // fully populated, but Next.js does not wrap the fallback in the slot's
+    // own layout because default.tsx sits beside that layout in the loader tree.
+    expect(elements["slot:sidebar:/"]).toBeDefined();
+    const html = await renderRouteEntry(elements, "route:/");
+    expect(html).toContain("default-slot");
+    expect(html).not.toContain('data-slot-layout="sidebar"');
   });
 
   it.each([

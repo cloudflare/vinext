@@ -235,6 +235,7 @@ describe("App Router route graph builder", () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@global/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "nested/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/default.tsx", EMPTY_PAGE);
@@ -245,6 +246,8 @@ describe("App Router route graph builder", () => {
       await writeAppFile(appDir, "nested/@bar/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/@bar/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "nested/@bar/subroute/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@bar/modal/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/settings/page.tsx", EMPTY_PAGE);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
 
@@ -252,6 +255,12 @@ describe("App Router route graph builder", () => {
       // sibling nested/default.tsx fallback.
       const nested = findRoute(graph.routes, "/nested");
       expect(nested.pagePath).toBe(path.join(appDir, "nested/page.tsx"));
+      expect(nested.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "active",
+      });
+      expect(nested.parallelSlots.some((slot) => slot.ownerTreePath === "/")).toBe(true);
 
       // Each sibling slot has its own page AND its own default — the page wins.
       const foo = nested.parallelSlots.find((slot) => slot.name === "foo");
@@ -274,6 +283,11 @@ describe("App Router route graph builder", () => {
       // @foo (no subroute page) keeps its default fallback.
       const subroute = findRoute(graph.routes, "/nested/subroute");
       expect(subroute.pagePath).toBe(path.join(appDir, "nested/default.tsx"));
+      expect(subroute.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "default",
+      });
       const subBar = subroute.parallelSlots.find((slot) => slot.name === "bar");
       const subFoo = subroute.parallelSlots.find((slot) => slot.name === "foo");
       expect(subBar).toMatchObject({
@@ -285,6 +299,48 @@ describe("App Router route graph builder", () => {
         name: "foo",
         pagePath: null,
         defaultPath: path.join(appDir, "nested/@foo/default.tsx"),
+      });
+
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get("route:/nested::slot:children:/nested"),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/nested/subroute::slot:children:/nested",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "default",
+      });
+
+      const settings = findRoute(graph.routes, "/nested/settings");
+      expect(settings.pagePath).toBe(path.join(appDir, "nested/settings/page.tsx"));
+      expect(settings.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "active",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/nested/settings::slot:children:/nested",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/nested",
+        slotId: "slot:children:/nested",
+        state: "active",
+      });
+
+      const modal = findRoute(graph.routes, "/nested/modal");
+      expect(modal.pagePath).toBe(path.join(appDir, "nested/default.tsx"));
+      expect(modal.childrenSlot).toEqual({
+        id: "slot:children:/nested",
+        ownerTreePath: "/nested",
+        state: "default",
       });
     });
   });

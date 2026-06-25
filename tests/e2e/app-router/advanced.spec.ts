@@ -78,6 +78,48 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 
+  test("soft navigation preserves the active children branch over target defaults", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts
+    await page.goto(`${BASE}/parallel-layouts`);
+    await waitForAppRouterHydration(page);
+
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Primary page");
+    await expect(page.getByTestId("parallel-layouts-foo-page")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-bar-page")).toBeVisible();
+
+    await page.getByTestId("parallel-layouts-subroute-link").click();
+    await expect(page).toHaveURL(`${BASE}/parallel-layouts/subroute`);
+    await expect(page.getByTestId("parallel-layouts-bar-subroute")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Primary page");
+    await expect(page.getByTestId("parallel-layouts-foo-page")).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Default page");
+    await expect(page.getByTestId("parallel-layouts-foo-default")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-foo-layout")).not.toBeVisible();
+  });
+
+  test("soft navigation preserves a real children route for a slot-only target", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/parallel-layouts/settings`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-settings-page")).toBeVisible();
+
+    await page.getByTestId("parallel-layouts-modal-link").click();
+    await expect(page).toHaveURL(`${BASE}/parallel-layouts/modal`);
+    await expect(page.getByTestId("parallel-layouts-bar-modal")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-settings-page")).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Default page");
+  });
+
   test("slot directories are not accessible as direct routes", async ({ page }) => {
     const response = await page.goto(`${BASE}/dashboard/team`);
     expect(response?.status()).toBe(404);
