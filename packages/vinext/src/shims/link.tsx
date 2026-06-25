@@ -35,6 +35,7 @@ import {
   navigateClientSide,
   prefetchRscResponse,
   createAppPrefetchRequestHeaders,
+  discardLearningOnlyPrefetchCacheEntry,
 } from "./navigation.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import {
@@ -448,7 +449,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchHref)
-            : { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true };
+            : { cacheForNavigation: true, prefetchShellFirst: false, shouldPrefetch: true };
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -474,11 +475,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           if (!autoPrefetch.cacheForNavigation) {
             return;
           }
-
-          const existing = getPrefetchCache().get(cacheKey);
-          if (existing?.cacheForNavigation === false) {
-            existing.cacheForNavigation = true;
-          }
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
         // A single freshness-aware gate covers both an exact prior prefetch and
         // an equivalent `_rsc` variant; the helper also deletes any stale exact

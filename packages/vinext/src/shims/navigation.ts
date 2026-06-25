@@ -543,14 +543,30 @@ function deletePrefetchCacheEntry(
   entry: PrefetchCacheEntry,
   notify: boolean,
 ): void {
-  cache.delete(cacheKey);
-  prefetched.delete(cacheKey);
-  if (notify) {
+  const ownsCacheKey = cache.get(cacheKey) === entry;
+  if (ownsCacheKey) {
+    cache.delete(cacheKey);
+    prefetched.delete(cacheKey);
+  }
+  if (notify && ownsCacheKey) {
     notifyPrefetchInvalidated(entry);
   } else {
     clearPrefetchInvalidation(entry);
     entry.onInvalidateCallbacks = undefined;
   }
+}
+
+export function discardLearningOnlyPrefetchCacheEntry(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+): boolean {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry?.cacheForNavigation !== false) return false;
+
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+  return true;
 }
 
 function invalidatePrefetchCacheEntry(cacheKey: string): void {
@@ -818,8 +834,8 @@ export function consumePrefetchResponse(
 
   if (entry.snapshot) {
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
-      // Entry was already removed above. Slot mismatch means the prefetch
-      // used stale slot context and cannot be safely reused.
+      // Slot mismatch means the prefetch used stale slot context and cannot
+      // be safely reused.
       return null;
     }
     if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {

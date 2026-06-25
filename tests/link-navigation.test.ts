@@ -1492,6 +1492,79 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not request a loading shell before an explicit full prefetch", async () => {
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      // Ported from Next.js:
+      // test/e2e/app-dir/instant-navigation-testing-api/instant-navigation-testing-api.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/instant-navigation-testing-api/instant-navigation-testing-api.test.ts
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(
+        (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      ).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("refetches instead of promoting an exact learning-only entry for a full Link prefetch", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    let resolveLearningPrefetch!: (response: Response) => void;
+    result.fetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveLearningPrefetch = resolve;
+        }),
+    );
+
+    try {
+      navigation.appRouterInstance.prefetch("/blog/hello");
+      await waitForFetchCalls(result.fetch, 1);
+
+      const partialEntry = Array.from(navigation.getPrefetchCache().values())[0];
+      expect(partialEntry?.outcome).toBe("pending");
+      expect(partialEntry?.cacheForNavigation).toBe(false);
+      expect(partialEntry?.optimisticRouteShell).toBe(true);
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+      await flushPrefetchTasks();
+
+      // Next.js refetches partial segments when a stronger Full strategy can
+      // provide more content instead of promoting the weaker cache entry:
+      // packages/next/src/client/components/segment-cache/scheduler.ts
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      const fullEntry = Array.from(navigation.getPrefetchCache().values())[0];
+      expect(fullEntry).not.toBe(partialEntry);
+      expect(fullEntry?.cacheForNavigation).toBe(true);
+      expect(fullEntry?.optimisticRouteShell).toBe(false);
+
+      resolveLearningPrefetch(new Response("", { status: 500 }));
+      await flushPrefetchTasks();
+      expect(Array.from(navigation.getPrefetchCache().values())[0]).toBe(fullEntry);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("does not prefetch visible links in development", async () => {
     // Next.js disables App Router viewport prefetching in development:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/links.ts
