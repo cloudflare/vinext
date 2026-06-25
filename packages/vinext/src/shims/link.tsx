@@ -68,6 +68,7 @@ import {
 } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
@@ -406,6 +407,7 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  */
 function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "high" = "low"): void {
   if (typeof window === "undefined") return;
+  if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
 
   const prefetchHref = getLinkPrefetchHref({
     href,

@@ -1310,6 +1310,32 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not prefetch visible or hovered links for a bot user agent", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        navigator: {
+          userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 
