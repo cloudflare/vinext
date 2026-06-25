@@ -6,6 +6,7 @@ import {
   isVisitedResponseCacheEntryFresh,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
+import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 
 function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): CachedRscResponse {
   return {
@@ -68,6 +69,19 @@ describe("visited response cache freshness", () => {
     expect(isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now })).toBe(
       false,
     );
+  });
+
+  it("retains decoded committed elements for partial Flight payload reuse", () => {
+    // Ported from Next.js: test/e2e/app-dir/app-client-cache/client-cache.original.test.ts
+    const elements = { "page:/dynamic": "cached page" } satisfies AppElements;
+    const entry = createVisitedResponseCacheEntry({
+      elements,
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+
+    expect(entry.elements).toBe(elements);
   });
 
   it("keeps traversal restores independent from dynamic stale expiry", () => {

@@ -105,6 +105,7 @@ import {
   type AppWireElements,
 } from "./app-elements.js";
 import {
+  COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createBfcacheSegmentStateKeyMap,
@@ -584,6 +585,7 @@ async function renderNavigationPayload(
   restoredBfcacheIds: Readonly<Record<string, string>> | null = null,
   reuseCurrentBfcacheIds: boolean = true,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+  onCommittedState?: (state: AppRouterState) => void,
 ): Promise<NavigationPayloadOutcome> {
   syncServerActionHttpFallbackHead(null);
   return browserNavigationController.renderNavigationPayload({
@@ -604,6 +606,7 @@ async function renderNavigationPayload(
     targetHref,
     navId,
     visibleCommitMode,
+    onCommittedState,
   });
 }
 
@@ -724,6 +727,7 @@ function storeVisitedResponseSnapshot(
   params: Record<string, string | string[]>,
   prefetchFallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
   requestMountedSlotsHeader: string | null = snapshot.mountedSlotsHeader ?? null,
+  elements?: AppElements,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -733,6 +737,7 @@ function storeVisitedResponseSnapshot(
     cacheKey,
     createVisitedResponseCacheEntry({
       fallbackTtlMs: prefetchFallbackTtlMs,
+      elements,
       now,
       mountedSlotsHeader: requestMountedSlotsHeader,
       params,
@@ -1772,11 +1777,13 @@ function bootstrapHydration(
             currentHref,
             cachedParams,
           );
-          const cachedPayload = decodeAppElementsPromise(
-            createFromFetch<AppWireElements>(
-              Promise.resolve(restoreRscResponse(cachedRoute.response)),
-            ),
-          );
+          const cachedPayload = cachedRoute.elements
+            ? Promise.resolve(cachedRoute.elements)
+            : decodeAppElementsPromise(
+                createFromFetch<AppWireElements>(
+                  Promise.resolve(restoreRscResponse(cachedRoute.response)),
+                ),
+              );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           const cachedRenderOutcome = await renderNavigationPayload(
             cachedPayload,
@@ -1787,7 +1794,9 @@ function bootstrapHydration(
             cachedParams,
             requestPreviousNextUrl,
             detachedNavigationCommits ? null : pendingRouterState,
-            VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+            cachedRoute.elements
+              ? COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN
+              : VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
             toActionType(navigationKind),
             toOperationLane(navigationKind),
             activeTraversalIntent,
@@ -2018,6 +2027,7 @@ function bootstrapHydration(
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
+        let committedState: AppRouterState | null = null;
         const renderOutcome = await renderNavigationPayload(
           rscPayload,
           navigationSnapshot,
@@ -2035,6 +2045,9 @@ function bootstrapHydration(
           restoredBfcacheIds,
           reuseCurrentBfcacheIds,
           visibleCommitMode,
+          (state) => {
+            committedState = state;
+          },
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during
@@ -2047,10 +2060,6 @@ function bootstrapHydration(
         try {
           const renderedElements = await rscPayload;
           const metadata = AppElementsWire.readMetadata(renderedElements);
-          if (!isCompleteAppPayloadMetadata(metadata)) {
-            void cacheBufferPromise.catch(() => {});
-            return;
-          }
           const cacheBuffer = await cacheBufferPromise;
           const responseSnapshot = createCachedRscResponseSnapshot(
             navResponse,
@@ -2084,6 +2093,27 @@ function bootstrapHydration(
               navParams,
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
+            );
+          } else if (
+            committedState !== null &&
+            getMountedSlotIdsHeader((committedState as AppRouterState).elements) === null
+          ) {
+            const state = committedState as AppRouterState;
+            const committedElements = {
+              ...state.elements,
+              [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
+              [AppElementsWire.keys.layoutIds]: state.layoutIds,
+              [AppElementsWire.keys.skippedLayoutIds]: [],
+              [AppElementsWire.keys.slotBindings]: state.slotBindings,
+            } satisfies AppElements;
+            storeVisitedResponseSnapshot(
+              rscUrl,
+              interceptionContext,
+              snapshot,
+              navParams,
+              DYNAMIC_NAVIGATION_CACHE_TTL,
+              mountedSlotsHeader,
+              committedElements,
             );
           } else {
             seedPrefetchResponseSnapshot(

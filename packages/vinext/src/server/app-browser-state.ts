@@ -131,8 +131,12 @@ export type PendingNavigationCommit = {
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
-  { origin: "fresh" } | { origin: "visited-cache" }
+  { origin: "committed-cache" } | { origin: "fresh" } | { origin: "visited-cache" }
 >;
+
+export const COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
+  origin: "committed-cache",
+};
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -188,6 +192,7 @@ export function isCacheRestorableAppPayloadMetadata(
 
 function requiresCacheEntryReuseProof(origin: AppNavigationPayloadOrigin): boolean {
   switch (origin.origin) {
+    case "committed-cache":
     case "fresh":
       return false;
     case "visited-cache":

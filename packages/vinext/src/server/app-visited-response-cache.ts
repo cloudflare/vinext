@@ -1,9 +1,11 @@
 import { resolveCachedRscResponseExpiresAt, type CachedRscResponse } from "vinext/shims/navigation";
+import type { AppElements } from "./app-elements.js";
 
 type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
 
 export type VisitedResponseCacheEntry = {
   createdAt: number;
+  elements?: AppElements;
   expiresAt: number;
   mountedSlotsHeader: string | null;
   params: Record<string, string | string[]>;
@@ -14,6 +16,7 @@ export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 
 export function createVisitedResponseCacheEntry(options: {
+  elements?: AppElements;
   fallbackTtlMs?: number;
   now: number;
   mountedSlotsHeader?: string | null;
@@ -22,6 +25,7 @@ export function createVisitedResponseCacheEntry(options: {
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
+    ...(options.elements ? { elements: options.elements } : {}),
     expiresAt: resolveCachedRscResponseExpiresAt(
       options.now,
       options.response,
