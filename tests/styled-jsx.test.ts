@@ -37,29 +37,32 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
 
 describe("styled-jsx compatibility plugin", () => {
   it("detects supported styled-jsx syntax variants", async () => {
-    const transform = vi.fn(async () => ({ code: "export default null;" }));
-    const plugin = createStyledJsxPlugin(process.cwd(), {
-      importModule: async () => ({ loadBindings: async () => undefined, transform }),
-    });
+    const plugin = createStyledJsxPlugin(process.cwd());
     const transformHook = plugin.transform as {
-      handler(source: string, id: string): Promise<unknown>;
+      handler(source: string, id: string): Promise<{ code: string } | null>;
     };
 
-    await transformHook.handler(
-      "export default <style nonce={getNonce({ fallback: true })} global jsx>{styles}</style>",
-      "/app/nested.tsx",
+    const nestedExpression = await transformHook.handler(
+      "export default <style nonce={/* user's nonce */ getNonce({ fallback: true })} global jsx>{`body{color:red}`}</style>",
+      "/app/nested.jsx",
     );
-    await transformHook.handler('const css = require ("styled-jsx/css")', "/app/css.js");
-    await transformHook.handler(
+    const cssImport = await transformHook.handler(
+      'const css = require ("styled-jsx/css"); export const styles = css`p{color:red}`;',
+      "/app/css.js",
+    );
+    const ordinaryStyle = await transformHook.handler(
       'export default <style data-language="jsx">{styles}</style>',
-      "/app/ordinary.tsx",
+      "/app/ordinary.jsx",
     );
-    await transformHook.handler(
+    const hyphenatedAttribute = await transformHook.handler(
       "export default <style jsx-global>{styles}</style>",
-      "/app/hyphenated.tsx",
+      "/app/hyphenated.jsx",
     );
 
-    expect(transform).toHaveBeenCalledTimes(2);
+    expect(nestedExpression?.code).toContain('from "styled-jsx/style"');
+    expect(cssImport).not.toBeNull();
+    expect(ordinaryStyle).toBeNull();
+    expect(hyphenatedAttribute).toBeNull();
   });
 
   it("resolves styled-jsx subpaths from Next's dependency graph", () => {

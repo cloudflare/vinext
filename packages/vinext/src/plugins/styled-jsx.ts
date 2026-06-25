@@ -21,70 +21,6 @@ const STYLED_JSX_SOURCE_RE =
 const STYLED_JSX_CSS_RE =
   /(?:from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 
-function skipJsxExpression(source: string, start: number): number {
-  let depth = 0;
-  let quote: '"' | "'" | "`" | null = null;
-  for (let index = start; index < source.length; index++) {
-    const character = source[index];
-    if (quote) {
-      if (character === "\\") index++;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") quote = character;
-    else if (character === "{") depth++;
-    else if (character === "}" && --depth === 0) return index + 1;
-  }
-  return source.length;
-}
-
-function hasStyledJsxTag(source: string): boolean {
-  for (
-    let tagStart = source.indexOf("<style");
-    tagStart !== -1;
-    tagStart = source.indexOf("<style", tagStart + 6)
-  ) {
-    const boundary = source[tagStart + 6];
-    if (boundary && !/[\s/>]/.test(boundary)) continue;
-
-    let index = tagStart + 6;
-    while (index < source.length) {
-      while (/\s/.test(source[index] ?? "")) index++;
-      if (source[index] === ">" || (source[index] === "/" && source[index + 1] === ">")) break;
-      if (source[index] === "{") {
-        index = skipJsxExpression(source, index);
-        continue;
-      }
-
-      const attribute = /^[A-Za-z_:][\w:.-]*/.exec(source.slice(index))?.[0];
-      if (!attribute) {
-        index++;
-        continue;
-      }
-      if (attribute === "jsx") return true;
-      index += attribute.length;
-      while (/\s/.test(source[index] ?? "")) index++;
-      if (source[index] !== "=") continue;
-      index++;
-      while (/\s/.test(source[index] ?? "")) index++;
-      if (source[index] === "{") index = skipJsxExpression(source, index);
-      else if (source[index] === '"' || source[index] === "'") {
-        const quote = source[index++];
-        while (index < source.length && source[index] !== quote) {
-          if (source[index] === "\\") index++;
-          index++;
-        }
-        index++;
-      }
-    }
-  }
-  return false;
-}
-
-function hasStyledJsxSource(source: string): boolean {
-  return STYLED_JSX_CSS_RE.test(source) || hasStyledJsxTag(source);
-}
-
 function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
 }
@@ -169,7 +105,7 @@ export function createStyledJsxPlugin(
         code: STYLED_JSX_SOURCE_RE,
       },
       async handler(source, id) {
-        if (!hasStyledJsxSource(source)) return null;
+        const hasStyledJsxCss = STYLED_JSX_CSS_RE.test(source);
         const compiler = await getCompiler();
         const result = await compiler.transform(source, {
           filename: id.split("?")[0],
@@ -188,6 +124,7 @@ export function createStyledJsxPlugin(
             },
           },
         });
+        if (!hasStyledJsxCss && !result.code.includes('from "styled-jsx/style"')) return null;
         return { code: result.code, map: result.map ?? null };
       },
     },
