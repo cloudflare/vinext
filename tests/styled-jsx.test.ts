@@ -36,16 +36,30 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
 }
 
 describe("styled-jsx compatibility plugin", () => {
-  it("detects supported styled-jsx syntax variants", () => {
-    const plugin = createStyledJsxPlugin(process.cwd());
-    const transformFilter = (plugin.transform as { filter: { code: RegExp } }).filter.code;
+  it("detects supported styled-jsx syntax variants", async () => {
+    const transform = vi.fn(async () => ({ code: "export default null;" }));
+    const plugin = createStyledJsxPlugin(process.cwd(), {
+      importModule: async () => ({ loadBindings: async () => undefined, transform }),
+    });
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<unknown>;
+    };
 
-    expect(transformFilter.test("export default <style global jsx>{styles}</style>")).toBe(true);
-    expect(transformFilter.test('const css = require ("styled-jsx/css")')).toBe(true);
-    expect(transformFilter.test('export default <style data-language="jsx">{styles}</style>')).toBe(
-      false,
+    await transformHook.handler(
+      "export default <style nonce={getNonce({ fallback: true })} global jsx>{styles}</style>",
+      "/app/nested.tsx",
     );
-    expect(transformFilter.test("export default <style jsx-global>{styles}</style>")).toBe(false);
+    await transformHook.handler('const css = require ("styled-jsx/css")', "/app/css.js");
+    await transformHook.handler(
+      'export default <style data-language="jsx">{styles}</style>',
+      "/app/ordinary.tsx",
+    );
+    await transformHook.handler(
+      "export default <style jsx-global>{styles}</style>",
+      "/app/hyphenated.tsx",
+    );
+
+    expect(transform).toHaveBeenCalledTimes(2);
   });
 
   it("resolves styled-jsx subpaths from Next's dependency graph", () => {
