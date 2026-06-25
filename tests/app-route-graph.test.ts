@@ -345,6 +345,48 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("prefers the nearest implicit children owner for nested parallel-route families", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@analytics/sub/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/team/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/team/@members/sub/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const team = findRoute(graph.routes, "/dashboard/team");
+      expect(team.childrenSlot).toEqual({
+        id: "slot:children:/dashboard/team",
+        ownerTreePath: "/dashboard/team",
+        state: "active",
+      });
+
+      const teamSubroute = findRoute(graph.routes, "/dashboard/team/sub");
+      expect(teamSubroute.childrenSlot).toEqual({
+        id: "slot:children:/dashboard/team",
+        ownerTreePath: "/dashboard/team",
+        state: "default",
+      });
+      expect(
+        graph.routeManifest.segmentGraph.slotBindings.get(
+          "route:/dashboard/team::slot:children:/dashboard/team",
+        ),
+      ).toMatchObject({
+        ownerLayoutId: "layout:/dashboard/team",
+        state: "active",
+      });
+    });
+  });
+
   it("materializes synthetic routes from a sibling route-group's parallel slot", async () => {
     // Two sibling route groups share the same URL pattern at the root:
     //   (group-a) provides a layout-only route with a catch-all parallel slot

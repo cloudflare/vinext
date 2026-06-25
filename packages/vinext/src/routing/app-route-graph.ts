@@ -1249,6 +1249,13 @@ function discoverSlotSubRoutes(
       ) {
         continue;
       }
+      const existingOwnerDepth = route.childrenSlot?.ownerTreePath
+        .split("/")
+        .filter(Boolean).length;
+      const candidateOwnerDepth = childrenOwnerTreePath.split("/").filter(Boolean).length;
+      if (existingOwnerDepth !== undefined && existingOwnerDepth >= candidateOwnerDepth) {
+        continue;
+      }
       route.childrenSlot = {
         id: childrenSlotId,
         ownerTreePath: childrenOwnerTreePath,
