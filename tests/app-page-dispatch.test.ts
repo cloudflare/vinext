@@ -1891,7 +1891,14 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(buildPageElement).toHaveBeenCalled();
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.anything(),
+      { region: "se" },
+      undefined,
+      expect.any(URLSearchParams),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it("admits generated catch-all params using default case-insensitive route matching", async () => {
