@@ -366,7 +366,9 @@ function createMountedParallelSlotSnapshots(
 
 function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(state.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
+  const matchedUrl =
+    state.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: state.interception,
@@ -389,9 +391,9 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
 
 function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(pending.action.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
-    pending.action.navigationSnapshot.pathname,
-  );
+  const matchedUrl =
+    pending.action.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(pending.action.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: pending.action.interception,

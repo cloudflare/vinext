@@ -744,6 +744,11 @@ type NavigationRequestState = {
   previousNextUrl: string | null;
 };
 
+function getCurrentMatchedRoutePathname(): string | null {
+  const routeKey = AppElementsWire.parseElementKey(getBrowserRouterState().routeId);
+  return routeKey?.kind === "route" ? routeKey.path : null;
+}
+
 function getRequestState(
   navigationKind: NavigationKind,
   targetPathname: string,
@@ -805,6 +810,7 @@ function getRequestState(
       const middlewareRewriteInterceptionContext =
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: __basePath,
+          currentMatchedPathname: getCurrentMatchedRoutePathname(),
           currentPathname: window.location.pathname,
           routeManifest: getBrowserRouteManifest(),
           targetPathname,

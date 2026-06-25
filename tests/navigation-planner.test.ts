@@ -1181,6 +1181,64 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/dashboard"]);
   });
 
+  it("uses concrete route ids when middleware rewrites hide dynamic source params", () => {
+    const slotId = "slot:modal:/interception-mw/:locale";
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+        interceptions: [
+          {
+            sourcePattern: "/interception-mw/:locale",
+            targetPattern: "/interception-mw/:locale/:username/p/:id",
+            slotId,
+            ownerLayoutId: "layout:/interception-mw/:locale",
+          },
+        ],
+      },
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale/:username/p/:id",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "root-boundary:/",
+        ["layout:/", "layout:/interception-mw/:locale"],
+        [{ ownerLayoutId: "layout:/interception-mw/:locale", slotId }],
+        [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+      ),
+      displayUrl: "https://example.com/interception-mw",
+      matchedUrl: "/interception-mw",
+      routeId: "route:/interception-mw/en",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...currentSnapshot,
+      displayUrl: "https://example.com/interception-mw/foo/p/1",
+      interception: {
+        sourceMatchedUrl: "/interception-mw/en",
+        sourceRouteId: "route:/interception-mw/en",
+        slotId,
+        targetMatchedUrl: "/interception-mw/en/foo/p/1",
+        targetRouteId: "route:/interception-mw/en/foo/p/1",
+      },
+      interceptionContext: "/interception-mw/en",
+      matchedUrl: "/interception-mw/en/foo/p/1",
+      routeId: "route:/interception-mw/en",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+  });
+
   it("does not let stale manifest route IDs override the matched URL", () => {
     const routeManifest = createTestRouteManifest([
       {

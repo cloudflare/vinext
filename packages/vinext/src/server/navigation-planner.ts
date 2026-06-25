@@ -777,6 +777,12 @@ function stripInterceptionContextFromRouteId(routeId: string): string {
   return separatorIndex === -1 ? routeId : routeId.slice(0, separatorIndex);
 }
 
+function matchedUrlFromConcreteRouteId(routeId: string): string | null {
+  const normalizedRouteId = stripInterceptionContextFromRouteId(routeId);
+  if (!normalizedRouteId.startsWith("route:/")) return null;
+  return normalizedRouteId.slice("route:".length);
+}
+
 function getMatchedUrlPathname(matchedUrl: string): string {
   try {
     return new URL(matchedUrl, "https://vinext.local").pathname;
@@ -822,6 +828,16 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
   const route = options.routeManifest.segmentGraph.routes.get(routeId);
   if (route && routeManifestRouteMatchesUrl(route, options.matchedUrl)) {
     return route;
+  }
+
+  const concreteRouteMatchedUrl =
+    route === undefined ? matchedUrlFromConcreteRouteId(options.routeId) : null;
+  if (concreteRouteMatchedUrl !== null) {
+    const concreteRoute = findRouteManifestRouteByMatchedUrl(
+      options.routeManifest,
+      concreteRouteMatchedUrl,
+    );
+    if (concreteRoute !== null) return concreteRoute;
   }
 
   return findRouteManifestRouteByMatchedUrl(options.routeManifest, options.matchedUrl);
@@ -1153,8 +1169,9 @@ function getVisibleInterceptionSourceIdentity(
       routeId: snapshot.interception.sourceRouteId,
     };
   }
+  const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
-    matchedUrl: snapshot.matchedUrl,
+    matchedUrl: concreteMatchedUrl ?? snapshot.matchedUrl,
     routeId: snapshot.routeId,
   };
 }

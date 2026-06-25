@@ -265,7 +265,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Scoped exclusively to /interception-mw/* to avoid interfering with other tests.
   // Mirrors Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
-  if (pathname.startsWith("/interception-mw/")) {
+  if (pathname === "/interception-mw" || pathname.startsWith("/interception-mw/")) {
     const withoutPrefix = pathname.slice("/interception-mw".length); // → /foo/p/1
     const locale = "en";
     const hasLocale = withoutPrefix.startsWith(`/${locale}/`) || withoutPrefix === `/${locale}`;
