@@ -2087,6 +2087,13 @@ function bootstrapHydration(
           visibleCommitMode,
           (state) => {
             committedState = state;
+            // Once React has committed this payload, its RSC stream owns the
+            // mounted tree even if a Suspense boundary is still consuming it.
+            // A later navigation may supersede future cache publication, but
+            // it must not abort the already-visible stream.
+            if (activeNavigationAbortController === navigationAbortController) {
+              activeNavigationAbortController = null;
+            }
           },
           detachedNavigationCommits ? "authoritative" : undefined,
         );
