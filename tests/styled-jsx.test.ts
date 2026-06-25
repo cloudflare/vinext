@@ -75,6 +75,25 @@ describe("styled-jsx compatibility plugin", () => {
     );
   });
 
+  it("leaves ordinary style tags untouched when Next is not installed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(root);
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    const importModule = vi.fn();
+    const plugin = createStyledJsxPlugin(root, { importModule });
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<unknown>;
+    };
+
+    await expect(
+      transformHook.handler(
+        'export default <style data-language="jsx">{styles}</style>',
+        "/app/ordinary.jsx",
+      ),
+    ).resolves.toBeNull();
+    expect(importModule).not.toHaveBeenCalled();
+  });
+
   it("uses Next's matching compiler for styled-jsx source", async () => {
     const loadBindings = vi.fn(async () => undefined);
     const transform = vi.fn(async () => ({

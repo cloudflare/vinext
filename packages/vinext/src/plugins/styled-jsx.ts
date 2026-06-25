@@ -106,6 +106,12 @@ export function createStyledJsxPlugin(
       },
       async handler(source, id) {
         const hasStyledJsxCss = STYLED_JSX_CSS_RE.test(source);
+        if (!getNextRequire()) {
+          if (!hasStyledJsxCss) return null;
+          throw new Error(
+            "[vinext] styled-jsx requires an installed next package so vinext can use its matching compiler.",
+          );
+        }
         const compiler = await getCompiler();
         const result = await compiler.transform(source, {
           filename: id.split("?")[0],
