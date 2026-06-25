@@ -128,7 +128,7 @@ test.describe("Next.js compat: bot prefetching in production", () => {
   // Ported from Next.js:
   // test/e2e/app-dir/app-prefetch/prefetching.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch/prefetching.test.ts
-  test("does not prefetch links for a bot user agent", async ({ page }) => {
+  test("does not prefetch links but still navigates for a bot user agent", async ({ page }) => {
     const app = await buildAndServePrefetchBotFixture();
 
     try {
@@ -153,6 +153,10 @@ test.describe("Next.js compat: bot prefetching in production", () => {
       await page.waitForTimeout(1_000);
 
       expect(targetRequests).toEqual([]);
+
+      await page.locator("#target-link").click();
+      await expect(page.locator("#target-page")).toHaveText("Target page");
+      expect(targetRequests).toHaveLength(1);
     } finally {
       await page.close();
       await closeServer(app.server);

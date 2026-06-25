@@ -407,7 +407,6 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  */
 function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "high" = "low"): void {
   if (typeof window === "undefined") return;
-  if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
 
   const prefetchHref = getLinkPrefetchHref({
     href,
@@ -436,6 +435,8 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   schedule(() => {
     void (async () => {
       if (hasAppNavigationRuntime()) {
+        if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
+
         // Hybrid ownership: skip the App RSC prefetch when Pages owns the
         // URL. The App's `__VINEXT_LINK_PREFETCH_ROUTES__` may include an
         // App catch-all that also matches the same path, so a naive

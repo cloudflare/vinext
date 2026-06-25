@@ -1336,6 +1336,89 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("preserves Pages Router viewport, explicit, and intent prefetches for a bot user agent", async () => {
+    const botWindowOverrides = {
+      __NEXT_DATA__: {
+        __vinext: {
+          pageModuleUrl: "/_next/static/chunks/pages/current.js",
+        },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    };
+
+    const defaultViewportObserver = stubIntersectionObserver();
+    const defaultViewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-default-viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      defaultViewportObserver.dispatchIntersectingEntry(defaultViewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(defaultViewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-default-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      defaultViewportResult.restoreNodeEnv();
+    }
+
+    const explicitViewportObserver = stubIntersectionObserver();
+    const viewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-explicit-viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      explicitViewportObserver.dispatchIntersectingEntry(viewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(viewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-explicit-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      viewportResult.restoreNodeEnv();
+    }
+
+    const intentResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-intent-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      intentResult.capturedAnchorProps.onMouseEnter?.({ currentTarget: intentResult.anchor });
+      await flushPrefetchTasks();
+
+      expect(intentResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-intent-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      intentResult.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 
