@@ -16,6 +16,7 @@ import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
+import type { Metadata } from "vinext/shims/metadata";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 
@@ -25,6 +26,7 @@ export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
+const APP_PENDING_METADATA_KEY = "__pendingMetadata";
 export const APP_RENDER_OBSERVATION_KEY = "__renderObservation";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
@@ -153,6 +155,7 @@ export type AppElementValue =
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | AppPendingMetadata
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[];
@@ -163,6 +166,7 @@ type AppWireElementValue =
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | AppPendingMetadata
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[];
@@ -196,12 +200,19 @@ type AppElementsMetadata = {
   interceptionContext: string | null;
   layoutIds: readonly string[];
   layoutFlags: LayoutFlags;
+  pendingMetadata: AppPendingMetadata | null;
   routeId: string;
   rootLayoutTreePath: string | null;
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   sourcePage: string | null;
 };
+
+export type AppPendingMetadata = Readonly<{
+  metadata: Metadata;
+  pathname: string;
+  trailingSlash?: boolean;
+}>;
 
 type AppElementsWireElementKey =
   | { kind: "layout"; treePath: string }
@@ -218,6 +229,7 @@ type AppElementsWireMetadataInput = {
   rootLayoutTreePath: string | null;
   slotBindings?: readonly AppElementsSlotBinding[];
   sourcePage?: string | null;
+  pendingMetadata?: AppPendingMetadata | null;
 };
 
 type AppElementsWireMetadataEntries = Readonly<{
@@ -226,6 +238,7 @@ type AppElementsWireMetadataEntries = Readonly<{
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
   [APP_ROOT_LAYOUT_KEY]: string | null;
+  [APP_PENDING_METADATA_KEY]?: AppPendingMetadata;
   [APP_SOURCE_PAGE_KEY]?: string;
   [APP_SLOT_BINDINGS_KEY]?: readonly AppElementsSlotBinding[];
 }>;
@@ -243,6 +256,7 @@ export type AppOutgoingElements = Readonly<
     | LayoutFlags
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
+    | AppPendingMetadata
     | AppElementsInterception
     | RenderObservation
     | readonly string[]
@@ -257,6 +271,7 @@ type AppElementsWireKeys = {
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
   readonly layoutFlags: typeof APP_LAYOUT_FLAGS_KEY;
+  readonly pendingMetadata: typeof APP_PENDING_METADATA_KEY;
   readonly renderObservation: typeof APP_RENDER_OBSERVATION_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
@@ -399,6 +414,7 @@ function createAppElementsWireMetadataEntries(
     ...(input.sourcePage === null || input.sourcePage === undefined
       ? {}
       : { [APP_SOURCE_PAGE_KEY]: input.sourcePage }),
+    ...(input.pendingMetadata ? { [APP_PENDING_METADATA_KEY]: input.pendingMetadata } : {}),
   };
   // Empty slot binding metadata is intentionally omitted. Missing
   // __slotBindings round-trips as [] and means "no route-state proof", so
@@ -654,6 +670,7 @@ export function buildOutgoingAppPayload(input: {
     | LayoutFlags
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
+    | AppPendingMetadata
     | AppElementsInterception
     | RenderObservation
     | readonly string[]
@@ -710,6 +727,24 @@ function readSourcePageMetadata(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !value.startsWith("/")) return null;
   return value;
+}
+
+function readPendingMetadata(value: unknown): AppPendingMetadata | null {
+  if (value === undefined || value === null) return null;
+  if (!isUnknownRecord(value) || !isUnknownRecord(value.metadata)) {
+    throw new Error("[vinext] Invalid __pendingMetadata in App Router payload");
+  }
+  if (typeof value.pathname !== "string") {
+    throw new Error("[vinext] Invalid __pendingMetadata pathname in App Router payload");
+  }
+  if (value.trailingSlash !== undefined && typeof value.trailingSlash !== "boolean") {
+    throw new Error("[vinext] Invalid __pendingMetadata trailingSlash in App Router payload");
+  }
+  return {
+    metadata: value.metadata as Metadata,
+    pathname: value.pathname,
+    ...(value.trailingSlash === undefined ? {} : { trailingSlash: value.trailingSlash }),
+  };
 }
 
 function createMissingCacheEntryReuseProof(): CacheEntryReuseProof {
@@ -824,6 +859,7 @@ export function readAppElementsMetadata(
     elements[APP_CACHE_ENTRY_REUSE_PROOF_KEY],
   );
   const sourcePage = readSourcePageMetadata(elements[APP_SOURCE_PAGE_KEY]);
+  const pendingMetadata = readPendingMetadata(elements[APP_PENDING_METADATA_KEY]);
 
   return {
     artifactCompatibility,
@@ -832,6 +868,7 @@ export function readAppElementsMetadata(
     interceptionContext: interceptionContext ?? null,
     layoutIds,
     layoutFlags,
+    pendingMetadata,
     routeId,
     rootLayoutTreePath,
     skippedLayoutIds,
@@ -850,6 +887,7 @@ export const AppElementsWire: AppElementsWireCodec = {
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,
     layoutFlags: APP_LAYOUT_FLAGS_KEY,
+    pendingMetadata: APP_PENDING_METADATA_KEY,
     renderObservation: APP_RENDER_OBSERVATION_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,

@@ -32,6 +32,7 @@ export {
   type AppElementsSlotBinding,
   type AppElements,
   type AppOutgoingElements,
+  type AppPendingMetadata,
   type AppWireElements,
   type LayoutFlags,
 } from "./app-elements-wire.js";

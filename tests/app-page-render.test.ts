@@ -33,7 +33,12 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import {
+  cookies,
+  headers,
+  headersContextFromRequest,
+  markDynamicUsage,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -325,6 +330,143 @@ describe("clearRequestContext timing — issue #660", () => {
 
     // Context must be cleared after the stream is fully consumed.
     expect(contextCleared).toHaveLength(1);
+  });
+
+  it("does not drain the Flight stream ahead of a slow HTML consumer", async () => {
+    const common = createCommonOptions();
+    let flightPulls = 0;
+    const htmlGate = createDeferred();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: false,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              await htmlGate.promise;
+              controller.enqueue(new TextEncoder().encode("<html>slow</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      renderToReadableStream() {
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            flightPulls++;
+            controller.enqueue(new Uint8Array(64 * 1024));
+          },
+        });
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(flightPulls).toBeLessThanOrEqual(2);
+
+    htmlGate.resolve();
+    await expect(response.text()).resolves.toBe("<html>slow</html>");
+  });
+
+  it("aborts Flight rendering and clears request context when HTML is cancelled", async () => {
+    const common = createCommonOptions();
+    const clearRequestContext = vi.fn();
+    const renderAborted = createDeferred();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      clearRequestContext,
+      isRscRequest: false,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return new ReadableStream<Uint8Array>({
+            pull() {},
+          });
+        },
+      }),
+      renderToReadableStream(_element, { signal }) {
+        signal?.addEventListener("abort", () => renderAborted.resolve(), { once: true });
+        return new ReadableStream<Uint8Array>({
+          pull() {},
+        });
+      },
+    });
+
+    await response.body?.cancel("client disconnected");
+    await renderAborted.promise;
+
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts Flight rendering and clears request context when the request aborts", async () => {
+    const common = createCommonOptions();
+    const requestAbortController = new AbortController();
+    const clearRequestContext = vi.fn();
+    const renderAborted = createDeferred();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      clearRequestContext,
+      isRscRequest: false,
+      requestSignal: requestAbortController.signal,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return new ReadableStream<Uint8Array>({
+            pull() {},
+          });
+        },
+      }),
+      renderToReadableStream(_element, { signal }) {
+        signal?.addEventListener("abort", () => renderAborted.resolve(), { once: true });
+        return new ReadableStream<Uint8Array>({
+          pull() {},
+        });
+      },
+    });
+
+    requestAbortController.abort("request disconnected");
+    await renderAborted.promise;
+
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+    await response.body?.cancel();
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("finalizes Flight rendering once when SSR setup fails without recovery", async () => {
+    const common = createCommonOptions();
+    const requestAbortController = new AbortController();
+    const clearRequestContext = vi.fn();
+    const removeEventListener = vi.spyOn(requestAbortController.signal, "removeEventListener");
+    const renderAborted = vi.fn();
+    const setupError = new Error("SSR setup failed");
+
+    await expect(
+      renderAppPageLifecycle({
+        ...common.options,
+        clearRequestContext,
+        requestSignal: requestAbortController.signal,
+        loadSsrHandler: async () => {
+          throw setupError;
+        },
+        renderErrorBoundaryResponse: async () => null,
+        renderToReadableStream(_element, { signal }) {
+          signal?.addEventListener("abort", renderAborted, { once: true });
+          return new ReadableStream<Uint8Array>({
+            pull() {},
+          });
+        },
+      }),
+    ).rejects.toBe(setupError);
+
+    expect(renderAborted).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+
+    requestAbortController.abort("late request abort");
+    expect(renderAborted).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledTimes(1);
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1285,6 +1427,70 @@ describe("app page render lifecycle", () => {
       kind: "http-access-fallback",
       statusCode: 404,
     });
+  });
+
+  it("keeps request headers and cookies available while rendering a late special error", async () => {
+    const common = createCommonOptions();
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(
+        new Request("https://example.com/late-error", {
+          headers: {
+            cookie: "session=late-error-cookie",
+            "x-late-error": "available",
+          },
+        }),
+      ),
+    });
+    const clearRequestContext = vi.fn(() => {
+      requestContext.headersContext = null;
+    });
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+    const renderPageSpecialError = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              expect((await headers()).get("x-late-error")).toBe("available");
+              expect((await cookies()).get("session")?.value).toBe("late-error-cookie");
+              expect(clearRequestContext).not.toHaveBeenCalled();
+              controller.enqueue(new TextEncoder().encode("late-error-boundary"));
+              controller.close();
+              clearRequestContext();
+            },
+          }),
+          { status: 404 },
+        ),
+    );
+
+    const response = await runWithRequestContext(requestContext, () =>
+      renderAppPageLifecycle({
+        ...common.options,
+        clearRequestContext,
+        hasLoadingBoundary: true,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            capturedOnError?.(notFoundError, null, null);
+            return {
+              htmlStream: createStream(["<html>fallback</html>"]),
+              metadataReady: Promise.resolve(),
+              capturedRscData: null,
+            };
+          },
+        }),
+        renderPageSpecialError,
+        renderToReadableStream(_element, opts) {
+          capturedOnError = opts.onError;
+          return createStream(["flight-data"]);
+        },
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("late-error-boundary");
+    expect(renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 });
 

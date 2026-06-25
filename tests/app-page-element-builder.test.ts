@@ -71,6 +71,7 @@ function createBaseOptions(overrides?: {
   opts?: Record<string, unknown> | null;
   searchParams?: URLSearchParams | null;
   mountedSlotsHeader?: string | null;
+  metadataPlacement?: "body" | "head" | "head-if-static";
 }) {
   return {
     route:
@@ -83,6 +84,7 @@ function createBaseOptions(overrides?: {
       isRscRequest: false,
       request: new Request("http://localhost/test"),
       mountedSlotsHeader: overrides?.mountedSlotsHeader ?? null,
+      metadataPlacement: overrides?.metadataPlacement,
     },
     globalErrorModule: null,
     rootNotFoundModule: null,
@@ -483,6 +485,59 @@ describe("buildPageElements", () => {
     expect(record[APP_ROUTE_KEY]).toBe("route:/hello");
     expect(Object.prototype.hasOwnProperty.call(record, "page:/hello")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(record, "route:/hello")).toBe(true);
+  });
+
+  it("places async generated metadata in the head for blocking static renders", async () => {
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "Static page"),
+        async generateMetadata() {
+          await Promise.resolve();
+          return { title: "Static generated title" };
+        },
+      } as AppPageModule,
+      layouts: [],
+      routeSegments: ["static"],
+      pattern: "/static",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/static", metadataPlacement: "head" }),
+    );
+    const record = result as Record<string, unknown>;
+    const routeElement = record["route:/static"];
+    if (!React.isValidElement(routeElement)) {
+      throw new Error("Expected route element");
+    }
+
+    const html = await renderNode(routeElement);
+    expect(html).toContain("<title>Static generated title</title>");
+    expect(html).not.toContain('<div hidden=""><title>Static generated title</title></div>');
+  });
+
+  it("keeps async generated metadata streamable for normal document renders", async () => {
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "Dynamic page"),
+        async generateMetadata() {
+          await Promise.resolve();
+          return { title: "Streamed generated title" };
+        },
+      } as AppPageModule,
+      layouts: [],
+      routeSegments: ["dynamic"],
+      pattern: "/dynamic",
+    });
+
+    const result = await buildPageElements(createBaseOptions({ route, routePath: "/dynamic" }));
+    const record = result as Record<string, unknown>;
+    const routeElement = record["route:/dynamic"];
+    if (!React.isValidElement(routeElement)) {
+      throw new Error("Expected route element");
+    }
+
+    const html = await renderNode(routeElement);
+    expect(html).toContain('<div hidden=""><title>Streamed generated title</title></div>');
   });
 
   it.each([

@@ -7,7 +7,10 @@ import {
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
 } from "../packages/vinext/src/server/app-page-stream.js";
-import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import {
+  deferUntilStreamConsumed,
+  trackStreamCompletion,
+} from "../packages/vinext/src/server/defer-until-stream-consumed.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -256,6 +259,22 @@ describe("app page stream helpers", () => {
     // The idempotent once() guard prevents double invocation — even if
     // some code path triggered cleanup again, onFlush fires exactly once.
     expect(onFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles tracked completion when the downstream stream is cancelled", async () => {
+    const onComplete = vi.fn();
+    const cleanup = vi.fn();
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        cleanup();
+      },
+    });
+
+    const wrapped = trackStreamCompletion(source, onComplete);
+    await wrapped.cancel("client disconnect");
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {

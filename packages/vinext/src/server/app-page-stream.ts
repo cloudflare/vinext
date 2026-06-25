@@ -7,8 +7,10 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import type { AppPendingMetadataPlacement } from "./app-pending-metadata.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+export { trackStreamCompletion } from "./defer-until-stream-consumed.js";
 
 export type AppPageFontData = {
   links: string[];
@@ -136,6 +138,7 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      pendingMetadataPlacement?: Promise<AppPendingMetadataPlacement>;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
@@ -176,6 +179,7 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
+  pendingMetadataPlacement?: Promise<AppPendingMetadataPlacement>;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
@@ -245,6 +249,7 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
+    pendingMetadataPlacement: options.pendingMetadataPlacement,
     waitForAllReady: options.waitForAllReady,
     initialDevServerError: options.initialDevServerError,
     // Only when the caller affirmatively knows there is no custom

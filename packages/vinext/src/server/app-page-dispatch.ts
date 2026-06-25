@@ -238,6 +238,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
     options?: {
+      metadataPlacement?: "body" | "head" | "head-if-static";
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
     },
@@ -555,6 +556,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   )
     ? false
     : Boolean(route.loading?.default);
+  const shouldRenderSharedArtifact = shouldReadAppPageCache({
+    isDraftMode,
+    isForceDynamic,
+    isProgressiveActionRender: options.isProgressiveActionRender === true,
+    isProduction: options.isProduction,
+    isRscRequest: options.isRscRequest,
+    revalidateSeconds: currentRevalidateSeconds,
+    scriptNonce: options.scriptNonce,
+  });
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -602,17 +612,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
-  if (
-    shouldReadAppPageCache({
-      isDraftMode,
-      isForceDynamic,
-      isProgressiveActionRender: options.isProgressiveActionRender === true,
-      isProduction: options.isProduction,
-      isRscRequest: options.isRscRequest,
-      revalidateSeconds: currentRevalidateSeconds,
-      scriptNonce: options.scriptNonce,
-    })
-  ) {
+  if (shouldRenderSharedArtifact) {
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
@@ -693,6 +693,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               new URLSearchParams(),
               undefined,
               {
+                metadataPlacement: "head",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
               },
@@ -892,6 +893,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           pageSearchParams,
           layoutParamAccess,
           {
+            metadataPlacement:
+              process.env.VINEXT_PRERENDER === "1" || shouldRenderSharedArtifact
+                ? process.env.VINEXT_PRERENDER === "1"
+                  ? "head"
+                  : "head-if-static"
+                : undefined,
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
           },
@@ -1016,6 +1023,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
+    requestSignal: options.request.signal,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);

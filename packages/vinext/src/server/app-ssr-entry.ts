@@ -3,7 +3,7 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
-import { Fragment, createElement as createReactElement, use } from "react";
+import { Fragment, Suspense, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
@@ -53,6 +53,7 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+import { PendingAppMetadata, type AppPendingMetadataPlacement } from "./app-pending-metadata.js";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -374,6 +375,7 @@ export async function handleSsr(
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
+    pendingMetadataPlacement?: Promise<AppPendingMetadataPlacement>;
     fallbackToErrorDocumentOnShellError?: boolean;
   },
 ): Promise<AppSsrRenderResult> {
@@ -413,6 +415,7 @@ export async function handleSsr(
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
+        let pendingMetadataElement: ReactNode = null;
 
         function VinextFlightRoot(): ReactNode {
           if (!flightRoot) {
@@ -421,6 +424,12 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
+          if (metadata.pendingMetadata && options?.pendingMetadataPlacement) {
+            pendingMetadataElement = createReactElement(PendingAppMetadata, {
+              pendingMetadata: metadata.pendingMetadata,
+              placement: options.pendingMetadataPlacement,
+            });
+          }
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
             metadata,
@@ -444,13 +453,21 @@ export async function handleSsr(
           // sentinel, so formatPublicBfcacheId resolves useRouter().bfcacheId to
           // the public hydration sentinel ("_b_0_") regardless until the client
           // context takes over. Per-segment minted ids are browser-only.
-          return BfcacheIdMapContext
+          const wrappedStateKeyTree = BfcacheIdMapContext
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
                 { value: bfcacheMaps.bfcacheIds },
                 stateKeyTree,
               )
             : stateKeyTree;
+          return createReactElement(
+            Fragment,
+            null,
+            wrappedStateKeyTree,
+            pendingMetadataElement
+              ? createReactElement(Suspense, { fallback: null }, pendingMetadataElement)
+              : null,
+          );
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);

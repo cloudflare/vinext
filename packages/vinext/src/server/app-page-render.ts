@@ -35,9 +35,11 @@ import {
   deferUntilStreamConsumed,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
+  trackStreamCompletion,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { AppPendingMetadataPlacement } from "./app-pending-metadata.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -163,6 +165,7 @@ type RenderAppPageLifecycleOptions = {
   params: Record<string, unknown>;
   pprFallbackShellSignal?: AbortSignal;
   pprFallbackShellReactSignal?: AbortSignal;
+  requestSignal?: AbortSignal;
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
@@ -677,6 +680,7 @@ export async function renderAppPageLifecycle(
     renderObservation: payloadRenderObservation,
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
+  const dynamicUsedBeforeRscRender = options.peekDynamicUsage?.() ?? false;
 
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
@@ -688,12 +692,62 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
+  const rscAbortController = new AbortController();
+  const rscRenderSignal = rscAbortController.signal;
+  const externalRscSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
+  const onExternalRscAbort = () => {
+    if (!rscAbortController.signal.aborted) {
+      rscAbortController.abort(externalRscSignal?.reason);
+    }
+  };
+  if (externalRscSignal) {
+    if (externalRscSignal.aborted) {
+      onExternalRscAbort();
+    } else {
+      externalRscSignal.addEventListener("abort", onExternalRscAbort, { once: true });
+    }
+  }
+  let renderLifecycleFinalized = false;
+  let requestContextCleared = false;
+  const finalizeRenderLifecycle = (abortReason?: unknown) => {
+    if (renderLifecycleFinalized) return;
+    renderLifecycleFinalized = true;
+    if (abortReason !== undefined) {
+      abortRscRender(abortReason);
+    }
+    options.requestSignal?.removeEventListener("abort", onRequestAbort);
+    externalRscSignal?.removeEventListener("abort", onExternalRscAbort);
+  };
+  const clearRequestContext = () => {
+    if (requestContextCleared) return;
+    requestContextCleared = true;
+    options.clearRequestContext();
+  };
+  const completeRenderLifecycle = (abortReason?: unknown) => {
+    finalizeRenderLifecycle(abortReason);
+    clearRequestContext();
+  };
+  const abortRscRender = (reason: unknown) => {
+    if (!rscAbortController.signal.aborted) {
+      rscAbortController.abort(reason);
+    }
+  };
+  const onRequestAbort = () => {
+    completeRenderLifecycle(options.requestSignal?.reason);
+  };
+  if (options.requestSignal) {
+    if (options.requestSignal.aborted) {
+      onRequestAbort();
+    } else {
+      options.requestSignal.addEventListener("abort", onRequestAbort, { once: true });
+    }
+  }
+
   let rscStream = await runWithFetchDedupe(async () => {
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
-      const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
         onError: rscErrorTracker.onRenderError,
-        signal: reactSignal,
+        signal: rscRenderSignal,
       });
       if (options.abortPprFallbackShell) {
         setTimeout(options.abortPprFallbackShell, 0);
@@ -703,8 +757,27 @@ export async function renderAppPageLifecycle(
 
     return options.renderToReadableStream(outgoingElement, {
       onError: rscErrorTracker.onRenderError,
+      signal: rscRenderSignal,
     });
   });
+  let resolvePendingMetadataPlacement!: (placement: AppPendingMetadataPlacement) => void;
+  const pendingMetadataPlacement = new Promise<AppPendingMetadataPlacement>((resolve) => {
+    resolvePendingMetadataPlacement = resolve;
+  });
+  if (!options.isRscRequest && !options.pprFallbackShellSignal) {
+    let resolveFlightCompletion!: () => void;
+    const flightCompletion = new Promise<void>((resolve) => {
+      resolveFlightCompletion = resolve;
+    });
+    rscStream = trackStreamCompletion(rscStream, resolveFlightCompletion);
+    void flightCompletion.then(() => {
+      resolvePendingMetadataPlacement(
+        dynamicUsedBeforeRscRender || options.peekDynamicUsage?.() ? "body" : "head",
+      );
+    });
+  } else {
+    resolvePendingMetadataPlacement("head");
+  }
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
@@ -870,45 +943,53 @@ export async function renderAppPageLifecycle(
   const fontLinkHeader = buildAppPageFontLinkHeader(fontData.preloads);
   let renderEnd: number | undefined;
 
-  const htmlRender = await renderAppPageHtmlStreamWithRecovery({
-    onShellRendered() {
-      if (!options.isProduction) {
-        renderEnd = performance.now();
-      }
-    },
-    renderErrorBoundaryResponse(error) {
-      const capturedRscError = rscErrorTracker.getCapturedError();
-      return options.renderErrorBoundaryResponse(
-        capturedRscError ?? error,
-        capturedRscError === null ? "ssr" : "rsc",
-      );
-    },
-    async renderHtmlStream() {
-      const ssrHandler = await options.loadSsrHandler();
-      return renderAppPageHtmlStream({
-        capturedRscDataRef,
-        fontData,
-        hasCustomGlobalError: options.hasCustomGlobalError,
-        navigationContext: options.getNavigationContext(),
-        basePath: options.basePath,
-        clientTraceMetadata: options.clientTraceMetadata,
-        reactMaxHeadersLength: options.reactMaxHeadersLength,
-        rootParams: options.rootParams,
-        pprFallbackShellSignal: options.pprFallbackShellSignal,
-        formState: options.formState ?? null,
-        rscStream: rscForResponse,
-        scriptNonce: options.scriptNonce,
-        sideStream: rscCapture.sideStream,
-        ssrHandler,
-        waitForAllReady: options.isPrerender === true,
-      });
-    },
-    renderSpecialErrorResponse(specialError) {
-      return options.renderPageSpecialError(specialError);
-    },
-    resolveSpecialError: resolveAppPageSpecialError,
-  });
+  let htmlRender;
+  try {
+    htmlRender = await renderAppPageHtmlStreamWithRecovery({
+      onShellRendered() {
+        if (!options.isProduction) {
+          renderEnd = performance.now();
+        }
+      },
+      renderErrorBoundaryResponse(error) {
+        const capturedRscError = rscErrorTracker.getCapturedError();
+        return options.renderErrorBoundaryResponse(
+          capturedRscError ?? error,
+          capturedRscError === null ? "ssr" : "rsc",
+        );
+      },
+      async renderHtmlStream() {
+        const ssrHandler = await options.loadSsrHandler();
+        return renderAppPageHtmlStream({
+          capturedRscDataRef,
+          fontData,
+          hasCustomGlobalError: options.hasCustomGlobalError,
+          navigationContext: options.getNavigationContext(),
+          basePath: options.basePath,
+          clientTraceMetadata: options.clientTraceMetadata,
+          reactMaxHeadersLength: options.reactMaxHeadersLength,
+          rootParams: options.rootParams,
+          pprFallbackShellSignal: options.pprFallbackShellSignal,
+          pendingMetadataPlacement,
+          formState: options.formState ?? null,
+          rscStream: rscForResponse,
+          scriptNonce: options.scriptNonce,
+          sideStream: rscCapture.sideStream,
+          ssrHandler,
+          waitForAllReady: options.isPrerender === true,
+        });
+      },
+      renderSpecialErrorResponse(specialError) {
+        return options.renderPageSpecialError(specialError);
+      },
+      resolveSpecialError: resolveAppPageSpecialError,
+    });
+  } catch (error) {
+    completeRenderLifecycle(error);
+    throw error;
+  }
   if (htmlRender.response) {
+    completeRenderLifecycle(new Error("App page HTML render returned an alternate response"));
     return htmlRender.response;
   }
   let htmlStream = htmlRender.htmlStream;
@@ -945,7 +1026,13 @@ export async function renderAppPageLifecycle(
       const specialError = resolveAppPageSpecialError(captured);
       if (specialError) {
         void htmlStream.cancel().catch(() => {});
-        return options.renderPageSpecialError(specialError);
+        finalizeRenderLifecycle(specialError);
+        try {
+          return await options.renderPageSpecialError(specialError);
+        } catch (error) {
+          clearRequestContext();
+          throw error;
+        }
       }
     }
   }
@@ -970,11 +1057,17 @@ export async function renderAppPageLifecycle(
   // Clearing the context synchronously here would race those executions, causing
   // headers()/cookies() to see a null context on warm (module-cached) requests.
   // See: https://github.com/cloudflare/vinext/issues/660
-  const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
-    dynamicUsedBeforeContextCleanup =
-      dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
-    options.clearRequestContext();
-  });
+  const safeHtmlStream = deferUntilStreamConsumed(
+    htmlStream,
+    () => {
+      dynamicUsedBeforeContextCleanup =
+        dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
+      completeRenderLifecycle();
+    },
+    (reason) => {
+      abortRscRender(reason);
+    },
+  );
 
   const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
     dynamicUsedDuringRender,

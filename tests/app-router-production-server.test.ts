@@ -65,6 +65,10 @@ function getInlineStyleText(html: string): string {
   return styles.join("\n");
 }
 
+function getDocumentSection(html: string, section: "head" | "body"): string {
+  return html.match(new RegExp(`<${section}[^>]*>([\\s\\S]*?)</${section}>`))?.[1] ?? "";
+}
+
 async function withCountingFetchTarget<T>(
   fn: (targetUrl: string, getRequestCount: () => number) => Promise<T>,
 ): Promise<T> {
@@ -1190,6 +1194,91 @@ describe("App Router Production server (startProdServer)", () => {
         delete process.env.TEST_FETCH_DEDUPE_TARGET;
       }
     });
+  });
+
+  it("keeps metadata in head across ISR MISS, HIT, and regeneration", async () => {
+    const assertHeadMetadata = (html: string) => {
+      const head = getDocumentSection(html, "head");
+      const body = getDocumentSection(html, "body");
+      expect(head).toMatch(/<title>ISR metadata \d+<\/title>/);
+      expect(head).toMatch(/<meta name="description" content="ISR metadata generation \d+"/);
+      expect(body).not.toContain("<title>");
+      return head.match(/<title>ISR metadata (\d+)<\/title>/)?.[1];
+    };
+
+    const miss = await fetch(`${baseUrl}/metadata-streaming-isr`);
+    expect(miss.headers.get("x-vinext-cache")).toBe("MISS");
+    const missGeneration = assertHeadMetadata(await miss.text());
+    expect(missGeneration).toBeTruthy();
+
+    const hit = await fetch(`${baseUrl}/metadata-streaming-isr`);
+    expect(hit.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(assertHeadMetadata(await hit.text())).toBe(missGeneration);
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const stale = await fetch(`${baseUrl}/metadata-streaming-isr`);
+    expect(stale.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(assertHeadMetadata(await stale.text())).toBe(missGeneration);
+
+    let regeneratedGeneration = missGeneration;
+    await waitForCondition(async () => {
+      const regenerated = await fetch(`${baseUrl}/metadata-streaming-isr`);
+      if (regenerated.headers.get("x-vinext-cache") !== "HIT") return false;
+      regeneratedGeneration = assertHeadMetadata(await regenerated.text());
+      return regeneratedGeneration !== missGeneration;
+    });
+    expect(regeneratedGeneration).not.toBe(missGeneration);
+  });
+
+  it("keeps async metadata in body for dynamic document streaming", async () => {
+    const response = await fetch(`${baseUrl}/metadata-streaming-dynamic`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    const html = await response.text();
+    expect(getDocumentSection(html, "head")).not.toContain("<title>");
+    expect(getDocumentSection(html, "body")).toContain("<title>Dynamic streamed metadata</title>");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/ppr-metadata-streaming/ppr-metadata-streaming.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/ppr-metadata-streaming/ppr-metadata-streaming.test.ts
+  it("keeps static metadata in body when only page content uses a dynamic API", async () => {
+    const response = await fetch(`${baseUrl}/metadata-streaming-body-dynamic`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    const html = await response.text();
+    expect(getDocumentSection(html, "head")).not.toContain("<title>");
+    expect(getDocumentSection(html, "body")).toContain(
+      "<title>Body dynamic streamed metadata</title>",
+    );
+  });
+
+  it("keeps static metadata in body when active parallel slots use dynamic APIs", async () => {
+    const response = await fetch(`${baseUrl}/metadata-streaming-parallel-dynamic`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    const html = await response.text();
+    expect(getDocumentSection(html, "head")).not.toContain("<title>");
+    expect(getDocumentSection(html, "body")).toContain(
+      "<title>Parallel slot dynamic streamed metadata</title>",
+    );
+    expect(html).toContain("Nested dynamic parallel slot using headers");
+    expect(html).toContain("Dynamic parallel slot using cookies");
+    expect(html).toContain("Dynamic parallel slot using connection");
+  });
+
+  it("keeps static metadata in body when an active default slot uses a dynamic API", async () => {
+    // Next.js v16.2.6 treats defaultPage as the active page component for a
+    // parallel branch while attaching MetadataOutlet only to the primary
+    // children branch in create-component-tree.tsx.
+    const response = await fetch(`${baseUrl}/metadata-streaming-default-dynamic`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    const html = await response.text();
+    expect(getDocumentSection(html, "head")).not.toContain("<title>");
+    expect(getDocumentSection(html, "body")).toContain(
+      "<title>Default slot dynamic streamed metadata</title>",
+    );
+    expect(html).toContain("Nested dynamic active default slot using cookies");
   });
 
   it("page ISR + searchParams: RSC requests stay dynamic instead of serving cached query data", async () => {

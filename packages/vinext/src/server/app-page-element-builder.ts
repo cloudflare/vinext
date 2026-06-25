@@ -101,6 +101,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
+  /** Force resolved metadata into the document head for blocking static renders. */
+  metadataPlacement?: "body" | "head" | "head-if-static";
 };
 
 export type BuildPageElementsOptions<
@@ -198,6 +200,7 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    metadataPlacement: requestedMetadataPlacement,
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -356,7 +359,7 @@ export async function buildPageElements<
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
-  const metadataPlacement =
+  const defaultMetadataPlacement =
     hasDynamicMetadata &&
     shouldServeStreamingMetadata(
       pageRequest.request.headers.get("user-agent") ?? "",
@@ -364,6 +367,7 @@ export async function buildPageElements<
     )
       ? "body"
       : "head";
+  const metadataPlacement = requestedMetadataPlacement ?? defaultMetadataPlacement;
 
   // For sibling intercepts, wrap the intercepting page in any layouts that
   // live under the interception marker directory (interceptLayouts). In Next.js

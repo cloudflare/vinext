@@ -6,6 +6,7 @@ import {
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsInterception,
+  type AppPendingMetadata,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import {
@@ -192,7 +193,7 @@ type BuildAppPageRouteElementOptions<
   layoutParamAccess?: AppLayoutParamAccessTracker;
   makeThenableParams: MakeThenableParams;
   matchedParams: AppPageParams;
-  metadataPlacement?: "body" | "head";
+  metadataPlacement?: "body" | "head" | "head-if-static";
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
@@ -502,7 +503,7 @@ function createAppPageRouteHead(
   metadata: Metadata | null,
   viewport: Viewport,
   pathname: string,
-  metadataPlacement: "body" | "head",
+  metadataPlacement: "body" | "head" | "head-if-static",
   trailingSlash?: boolean,
 ): ReactNode {
   return (
@@ -519,11 +520,12 @@ function createAppPageRouteHead(
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
-  metadataPlacement: "body" | "head",
+  metadataPlacement: "body" | "head" | "head-if-static",
   trailingSlash?: boolean,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
-  return (
+
+  const metadataHtml = (
     <div
       hidden
       dangerouslySetInnerHTML={{
@@ -531,6 +533,7 @@ export function createAppPageRouteBodyMetadata(
       }}
     />
   );
+  return metadataHtml;
 }
 
 export function buildAppPageElements<
@@ -607,6 +610,7 @@ export function buildAppPageElements<
     | ReactNode
     | string
     | null
+    | AppPendingMetadata
     | AppElementsInterception
     | readonly AppElementsSlotBinding[]
     | readonly string[]
@@ -618,6 +622,16 @@ export function buildAppPageElements<
       rootLayoutTreePath,
       routeId,
       sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
+      pendingMetadata:
+        metadataPlacement === "head-if-static" && options.resolvedMetadata
+          ? {
+              metadata: options.resolvedMetadata,
+              pathname: options.resolvedMetadataPathname ?? options.routePath,
+              ...(options.trailingSlash === undefined
+                ? {}
+                : { trailingSlash: options.trailingSlash }),
+            }
+          : null,
       slotBindings: createAppPageSlotBindings(options.route, layoutEntries, resolveSlotOverride, {
         interception: renderIdentity?.interception ?? options.interception ?? null,
         interceptionContext,
@@ -673,9 +687,11 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  elements[pageId] = isPrefetchLoadingShell
-    ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+  if (isPrefetchLoadingShell) {
+    elements[pageId] = null;
+  } else {
+    elements[pageId] = renderAfterAppDependencies(options.element, pageDependencies);
+  }
 
   for (const templateEntry of templateEntries) {
     const templateComponent = getDefaultExport(templateEntry.templateModule);

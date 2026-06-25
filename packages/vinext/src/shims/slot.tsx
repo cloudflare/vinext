@@ -8,6 +8,7 @@ import {
   type AppElementValue,
   type AppElements,
   type AppElementsInterception,
+  type AppPendingMetadata,
   type AppElementsSlotBinding,
   type LayoutFlags,
 } from "../server/app-elements.js";
@@ -179,6 +180,19 @@ function isCacheEntryReuseProofValue(value: unknown): value is CacheEntryReusePr
   return "kind" in value && value.kind === "runtime-cache-entry" && "decision" in value;
 }
 
+function isPendingMetadataValue(value: unknown): value is AppPendingMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return (
+    "metadata" in value &&
+    typeof value.metadata === "object" &&
+    value.metadata !== null &&
+    !Array.isArray(value.metadata) &&
+    "pathname" in value &&
+    typeof value.pathname === "string" &&
+    (!("trailingSlash" in value) || typeof value.trailingSlash === "boolean")
+  );
+}
+
 function isTransportMetadataValue(
   id: string,
   value: AppElementValue | undefined,
@@ -186,6 +200,7 @@ function isTransportMetadataValue(
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | AppPendingMetadata
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[] {
@@ -193,6 +208,7 @@ function isTransportMetadataValue(
     isLayoutFlagsValue(value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
+    isPendingMetadataValue(value) ||
     isInterceptionMetadataValue(value) ||
     isSkippedLayoutIdsMetadataValue(id, value) ||
     isSlotBindingListValue(value)

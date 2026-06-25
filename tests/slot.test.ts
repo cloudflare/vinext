@@ -156,6 +156,33 @@ describe("slot primitives", () => {
     }
   });
 
+  it("does not render pending metadata transported under a render entry", async () => {
+    const mod = await import("../packages/vinext/src/shims/slot.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const html = await renderHtml(
+        createContextProvider(
+          mod.ElementsContext,
+          {
+            "slot:pending-metadata:/": {
+              metadata: { title: "Pending title" },
+              pathname: "/pending-metadata",
+            },
+          },
+          React.createElement(mod.Slot, { id: "slot:pending-metadata:/" }),
+        ),
+      );
+
+      expect(html).toBe("");
+      expect(warn).toHaveBeenCalledWith(
+        "[vinext] Transport metadata value found under App Router render entry: slot:pending-metadata:/",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("warns in development when a non-slot entry is absent", async () => {
     const mod = await import("../packages/vinext/src/shims/slot.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
