@@ -95,7 +95,11 @@ describe("styled-jsx compatibility plugin", () => {
   });
 
   it("uses development JSX without browser refresh globals in dev", async () => {
-    const transform = vi.fn(async () => ({ code: "export default null;" }));
+    let receivedOptions: Record<string, unknown> | undefined;
+    const transform = vi.fn(async (_source: string, options: Record<string, unknown>) => {
+      receivedOptions = options;
+      return { code: "export default null;" };
+    });
     const plugin = createStyledJsxPlugin(process.cwd(), {
       importModule: async () => ({ loadBindings: async () => undefined, transform }),
     });
@@ -120,10 +124,10 @@ describe("styled-jsx compatibility plugin", () => {
         }),
       }),
     );
-    expect(
-      (transform.mock.calls[0][1] as { jsc: { transform: { react: Record<string, unknown> } } }).jsc
-        .transform.react,
-    ).not.toHaveProperty("refresh");
+    const reactOptions = (
+      receivedOptions as { jsc: { transform: { react: Record<string, unknown> } } }
+    ).jsc.transform.react;
+    expect(reactOptions).not.toHaveProperty("refresh");
   });
 
   it("transforms styled-jsx with the installed Next compiler", async () => {
