@@ -953,6 +953,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
     );
+    expect(code).toContain("paramNames: slot.slotParamNames");
+    expect(code).toContain("patternParts: slot.slotPatternParts");
+    expect(code).toContain("routePatternParts: route.patternParts");
     expect(code).toContain("slot.page ?? slot.default");
     expect(code).toContain("...(slot.configLayouts ?? [])");
     expect(code).toContain("interceptLayoutSegments:");

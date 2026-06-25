@@ -1,6 +1,7 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { loadAppInterceptLayouts } from "./app-route-module-loader.js";
@@ -15,7 +16,16 @@ type GenerateStaticParamsModule = {
 
 type GenerateStaticParamsSource = {
   generateStaticParams: GenerateStaticParams;
+  paramAliases?: Readonly<Record<string, string>>;
+  paramPatternParts?: readonly string[];
+  routePatternParts?: readonly string[];
   parentParamNames: readonly string[];
+};
+
+type ParallelGenerateStaticParamsModule = {
+  page?: GenerateStaticParamsModule | null;
+  paramNames?: readonly string[] | null;
+  patternParts?: readonly string[] | null;
 };
 
 export type ValidateAppPageDynamicParamsOptions = {
@@ -34,6 +44,8 @@ type ResolveAppPageGenerateStaticParamsSourcesOptions = {
   layouts?: readonly (GenerateStaticParamsModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: GenerateStaticParamsModule | null;
+  parallelPages?: readonly (ParallelGenerateStaticParamsModule | null | undefined)[];
+  routePatternParts?: readonly string[];
   routeSegments: readonly string[];
 };
 
@@ -176,6 +188,46 @@ function pickRouteParams(
   return params;
 }
 
+function remapRouteParams(
+  matchedParams: AppPageParams,
+  source: Pick<
+    GenerateStaticParamsSource,
+    "paramAliases" | "paramPatternParts" | "routePatternParts"
+  >,
+): AppPageParams {
+  if (source.paramPatternParts && source.routePatternParts) {
+    const urlParts: string[] = [];
+    for (const part of source.routePatternParts) {
+      if (!part.startsWith(":")) {
+        urlParts.push(part);
+        continue;
+      }
+
+      const paramName = part.slice(1).replace(/[+*]$/, "");
+      const value = matchedParams[paramName];
+      if (Array.isArray(value)) {
+        urlParts.push(...value.map(encodeURIComponent));
+      } else if (value !== undefined) {
+        urlParts.push(encodeURIComponent(value));
+      }
+    }
+
+    const slotParams = matchRoutePattern(urlParts, source.paramPatternParts);
+    if (slotParams) return slotParams;
+  }
+
+  if (!source.paramAliases) return matchedParams;
+
+  const params: AppPageParams = { ...matchedParams };
+  for (const [routeParamName, sourceParamName] of Object.entries(source.paramAliases)) {
+    const value = matchedParams[routeParamName];
+    if (value === undefined) continue;
+    delete params[routeParamName];
+    params[sourceParamName] = value;
+  }
+  return params;
+}
+
 function collectParentParamNames(
   routeSegments: readonly string[],
   boundaryPosition: number,
@@ -224,6 +276,39 @@ export function resolveAppPageGenerateStaticParamsSources(
         options.routeSegments,
         Math.max(0, options.routeSegments.length - 1),
       ),
+    });
+  }
+
+  const routeParamNames = options.routeSegments.flatMap((segment) => {
+    const name = getAppPageSegmentParamName(segment);
+    return name ? [name] : [];
+  });
+  for (const parallelPage of options.parallelPages ?? []) {
+    if (!parallelPage) continue;
+    const page = parallelPage.page;
+    if (typeof page?.generateStaticParams !== "function") continue;
+
+    const slotParamNames = parallelPage.paramNames ?? routeParamNames;
+    const lastSlotPatternPart = parallelPage.patternParts?.at(-1);
+    const parentParamNames =
+      lastSlotPatternPart === undefined || lastSlotPatternPart.startsWith(":")
+        ? slotParamNames.slice(0, -1)
+        : slotParamNames;
+    const paramAliases = Object.fromEntries(
+      routeParamNames.flatMap((routeParamName, index) => {
+        const slotParamName = slotParamNames[index];
+        return slotParamName && slotParamName !== routeParamName
+          ? [[routeParamName, slotParamName]]
+          : [];
+      }),
+    );
+
+    sources.push({
+      generateStaticParams: page.generateStaticParams,
+      ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
+      ...(parallelPage.patternParts ? { paramPatternParts: parallelPage.patternParts } : {}),
+      ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
+      parentParamNames,
     });
   }
 
@@ -298,12 +383,13 @@ export async function validateAppPageDynamicParams(
   }
 
   for (const source of generateStaticParamsSources) {
+    const sourceParams = remapRouteParams(options.params, source);
     const staticParams = await runWithFetchDedupe(() =>
       source.generateStaticParams({
-        params: pickRouteParams(options.params, source.parentParamNames),
+        params: pickRouteParams(sourceParams, source.parentParamNames),
       }),
     );
-    if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
+    if (Array.isArray(staticParams) && !areStaticParamsAllowed(sourceParams, staticParams)) {
       options.clearRequestContext();
       return notFoundResponse();
     }

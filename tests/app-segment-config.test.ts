@@ -209,6 +209,28 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("allows an ungenerated dynamic child below an ancestor dynamicParams=false segment", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: {},
+        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBeUndefined();
+  });
+
+  it("enforces ancestor dynamicParams=false when the dynamic child generates params", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+        layoutTreePositions: [1, 2],
+        page: { generateStaticParams() {} },
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }).dynamicParamsConfig,
+    ).toBe(false);
+  });
+
   it("resolves revalidate = false as Infinity (cache indefinitely)", () => {
     expect(
       resolveAppPageSegmentConfig({

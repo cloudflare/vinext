@@ -109,6 +109,52 @@ describe("app page request helpers", () => {
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
+  it("enforces generateStaticParams from a parallel page", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelPages: [
+          {
+            page: { generateStaticParams: () => [{ slug: "static-123" }] },
+            paramNames: ["locale", "slug"],
+            patternParts: [":locale", "gsp", "stories", ":slug"],
+          },
+        ],
+        routePatternParts: [":locale", "gsp", "stories", ":slug"],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }),
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "dynamic-123" },
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("remaps parallel page params before validating generateStaticParams", async () => {
+    const generateStaticParams = vi.fn(() => [{ name: "post" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelPages: [
+          {
+            page: { generateStaticParams },
+            paramNames: ["name"],
+            patternParts: [":name"],
+          },
+        ],
+        routePatternParts: [":id"],
+        routeSegments: ["[id]"],
+      }),
+      isDynamicRoute: true,
+      params: { id: "post" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.test.ts
   it("throws when generateStaticParams throws", async () => {

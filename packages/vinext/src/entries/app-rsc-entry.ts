@@ -745,6 +745,7 @@ export default createAppRscHandler({
     const PageComponent = route.page?.default;
     const __segmentConfig = __resolveAppPageSegmentConfig({
       layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
       page: route.page,
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
       parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
@@ -752,11 +753,18 @@ export default createAppRscHandler({
         ...(slot.configLayouts ?? []),
         slot.page ?? slot.default,
       ]),
+      routeSegments: route.routeSegments,
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
+      parallelPages: Object.values(route.slots ?? {}).map((slot) => ({
+        page: slot.page ?? slot.default,
+        paramNames: slot.slotParamNames,
+        patternParts: slot.slotPatternParts,
+      })),
+      routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
     const _asyncRouteParams = makeThenableParams(params);
