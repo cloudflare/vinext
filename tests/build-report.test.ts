@@ -63,9 +63,9 @@ describe("hasNamedExport", () => {
     expect(hasNamedExport("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
   });
 
-  it("detects the public name of aliased exports", () => {
-    expect(hasExportedName("export { gsp as getStaticProps };", "getStaticProps")).toBe(true);
-    expect(hasExportedName("export { getStaticProps as gsp };", "getStaticProps")).toBe(false);
+  it("matches Next.js local-name handling for aliased exports", () => {
+    expect(hasExportedName("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
+    expect(hasExportedName("export { getStaticProps as gsp };", "getStaticProps")).toBe(true);
   });
 
   it("ignores type-only exports with a runtime data-fetching name", () => {

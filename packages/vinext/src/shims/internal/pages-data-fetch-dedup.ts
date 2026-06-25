@@ -32,7 +32,7 @@
  *   browser only, so a single `Map` is sufficient.
  */
 
-import { NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 
 type InflightEntry = {
   controller: AbortController;
@@ -89,7 +89,7 @@ export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Prom
     const { signal: _signal, ...sharedInit } = init ?? {};
     cached = dedupedPagesDataFetch(dataHref, sharedInit)
       .then((response) => {
-        const expectedDeploymentId = new Headers(sharedInit.headers).get(NEXT_DEPLOYMENT_ID_HEADER);
+        const expectedDeploymentId = getDeploymentId() ?? null;
         const responseDeploymentId = response.headers.get("x-nextjs-deployment-id");
         if (
           !response.ok ||

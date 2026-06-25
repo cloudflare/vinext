@@ -142,6 +142,7 @@ describe("prefetchPagesData", () => {
   });
 
   it("evicts static data from a different deployment", async () => {
+    process.env.__VINEXT_DEPLOYMENT_ID = "deployment-a";
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -154,5 +155,21 @@ describe("prefetchPagesData", () => {
     });
 
     expect(Object.keys(getPagesStaticDataCache())).toEqual([]);
+  });
+
+  it("retains static data matching the canonical deployment ID", async () => {
+    process.env.__VINEXT_DEPLOYMENT_ID = "deployment-a";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response("{}", { headers: { "x-nextjs-deployment-id": "deployment-a" } }),
+      ),
+    );
+
+    await fetchStaticPagesData("/_next/data/build-id/ssg.json", {
+      headers: { "x-deployment-id": "stale-caller-value" },
+    });
+
+    expect(Object.keys(getPagesStaticDataCache())).toHaveLength(1);
   });
 });

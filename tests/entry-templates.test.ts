@@ -1169,8 +1169,12 @@ describe("Pages Router entry template", () => {
         "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
       );
       fs.writeFileSync(
-        path.join(pagesDir, "aliased.tsx"),
+        path.join(pagesDir, "public-alias.tsx"),
         "const loader = () => ({ props: {} }); export { loader as getStaticProps }; export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "local-alias.tsx"),
+        "const getStaticProps = () => ({ props: {} }); export { getStaticProps as loader }; export default function Page() { return null; }",
       );
 
       const code = await generateClientEntry(
@@ -1179,7 +1183,7 @@ describe("Pages Router entry template", () => {
         createValidFileMatcher(),
       );
 
-      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/aliased","/ssg"]');
+      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/local-alias","/ssg"]');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

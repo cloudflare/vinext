@@ -133,7 +133,7 @@ export function hasNamedExport(code: string, name: string): boolean {
   return hasNamedExportInProgram(program, name);
 }
 
-/** Returns true when a module exposes the requested public export name. */
+/** Returns true when Next.js' analyzer recognizes the requested export name. */
 export function hasExportedName(code: string, name: string): boolean {
   const program = parseRouteModule(code);
   if (!program) return false;
@@ -144,7 +144,7 @@ export function hasExportedName(code: string, name: string): boolean {
     if (declarationHasBindingName(node.declaration, name)) return true;
     for (const specifier of node.specifiers) {
       if (specifier.exportKind === "type") continue;
-      if (moduleExportNameValue(specifier.exported) === name) return true;
+      if (moduleExportNameValue(specifier.local) === name) return true;
     }
   }
   return false;
