@@ -678,7 +678,10 @@ describe("appRouter - route discovery", () => {
     });
   });
 
-  it("does not discover nested @slot sub-routes when the slot root has no page or default", async () => {
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  it("discovers nested @slot sub-routes when the children default can fill the leaf", async () => {
     await withTempDir("vinext-app-slot-nested-only-rootless-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
       await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
@@ -691,8 +694,16 @@ describe("appRouter - route discovery", () => {
       const patterns = routes.map((route) => route.pattern);
 
       expect(patterns).toContain("/inbox");
-      expect(patterns).not.toContain("/inbox/profile");
-      expect(matchAppRoute("/inbox/profile", routes)).toBeNull();
+      expect(patterns).toContain("/inbox/profile");
+      expect(matchAppRoute("/inbox/profile", routes)).toMatchObject({
+        pagePath: path.join(appDir, "inbox", "default.tsx"),
+        parallelSlots: [
+          expect.objectContaining({
+            name: "modal",
+            pagePath: path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
+          }),
+        ],
+      });
     });
   });
 
