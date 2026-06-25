@@ -977,6 +977,7 @@ describe("App Router entry templates", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
     // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
       globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
     });
 
@@ -995,6 +996,17 @@ describe("App Router entry templates", () => {
 
     expect(code).toContain("const __loadGlobalNotFoundModule = null;");
     expect(code).toContain("globalNotFoundEnabled: true");
+    expect(code).not.toContain("global-not-found.tsx");
+  });
+
+  it("generateRscEntry ignores global-not-found modules when the feature is disabled", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: false,
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: false");
     expect(code).not.toContain("global-not-found.tsx");
   });
 

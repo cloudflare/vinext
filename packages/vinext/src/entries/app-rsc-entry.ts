@@ -247,7 +247,8 @@ export function generateRscEntry(
     routes,
     metadataRoutes,
     globalErrorPath,
-    globalNotFoundPath: config?.globalNotFoundPath ?? null,
+    globalNotFoundPath:
+      config?.globalNotFound === true ? (config.globalNotFoundPath ?? null) : null,
   });
   const {
     imports,
