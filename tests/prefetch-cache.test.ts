@@ -451,6 +451,24 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
+  it("uses the dynamic stale window for automatic full prefetches", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/auto-full.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: DYNAMIC_NAVIGATION_CACHE_TTL },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + DYNAMIC_NAVIGATION_CACHE_TTL);
+  });
+
   it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {
     const rscUrl = "/dashboard.rsc";
     const deferred = createDeferredResponse();

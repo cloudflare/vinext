@@ -754,7 +754,11 @@ export function prefetchRscResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   options?: PrefetchOptions,
-  behavior: { cacheForNavigation?: boolean; optimisticRouteShell?: boolean } = {},
+  behavior: {
+    cacheForNavigation?: boolean;
+    fallbackTtlMs?: number;
+    optimisticRouteShell?: boolean;
+  } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -777,7 +781,7 @@ export function prefetchRscResponse(
         entry.expiresAt = resolveCachedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
-          PREFETCH_CACHE_TTL,
+          behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
         );
       } else {
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);

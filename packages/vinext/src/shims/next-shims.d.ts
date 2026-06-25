@@ -289,7 +289,11 @@ declare module "next/navigation" {
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
     options?: { onInvalidate?: () => void },
-    behavior?: { cacheForNavigation?: boolean; optimisticRouteShell?: boolean },
+    behavior?: {
+      cacheForNavigation?: boolean;
+      fallbackTtlMs?: number;
+      optimisticRouteShell?: boolean;
+    },
   ): void;
   export function consumePrefetchResponse(
     rscUrl: string,

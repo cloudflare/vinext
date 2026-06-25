@@ -27,6 +27,8 @@ import {
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import {
+  DYNAMIC_NAVIGATION_CACHE_TTL,
+  PREFETCH_CACHE_TTL,
   getPrefetchInterceptionContext,
   getPrefetchCache,
   getPrefetchedUrls,
@@ -541,6 +543,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
+            fallbackTtlMs: mode === "full" ? PREFETCH_CACHE_TTL : DYNAMIC_NAVIGATION_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
