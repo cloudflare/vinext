@@ -7,6 +7,7 @@ import {
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
+import { DEFAULT_GLOBAL_NOT_FOUND_MODULE } from "./default-global-not-found-module.js";
 import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
@@ -264,7 +265,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       }
 
       const routeMissRootNotFoundModule = useGlobalNotFound
-        ? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule)
+        ? (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule)
         : effectiveRootNotFoundModule;
 
       return renderAppPageHttpAccessFallback({
