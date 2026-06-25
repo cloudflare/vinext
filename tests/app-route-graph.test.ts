@@ -636,6 +636,27 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("keeps a standalone layout-only slot owner as a route", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "parallel-nested/home/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "parallel-nested/home/@parallel/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "parallel-nested/home/@parallel/nested/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const parent = findRoute(graph.routes, "/parallel-nested/home");
+      const nested = findRoute(graph.routes, "/parallel-nested/home/nested");
+
+      expect(parent.pagePath).toBeNull();
+      expect(parent.parallelSlots.find((slot) => slot.name === "parallel")?.defaultPath).toBe(
+        path.join(appDir, "parallel-nested/home/@parallel/default.tsx"),
+      );
+      expect(nested.parallelSlots.find((slot) => slot.name === "parallel")?.pagePath).toBe(
+        path.join(appDir, "parallel-nested/home/@parallel/nested/page.tsx"),
+      );
+    });
+  });
+
   // Ported from Next.js: test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
   it("keeps a sibling slot active when children are inside a route group", async () => {

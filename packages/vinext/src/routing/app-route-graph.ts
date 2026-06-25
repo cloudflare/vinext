@@ -961,10 +961,13 @@ export async function buildAppRouteGraph(
 
     const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null);
     if (!route) continue;
-    const hasOwnedSlotPage = route.parallelSlots.some(
-      (slot) => path.dirname(slot.ownerDir) === routeDir && slot.pagePath !== null,
+    const optionalCatchAllOwnsPattern = routes.some(
+      (candidate) =>
+        candidate.patternParts.length === route.patternParts.length + 1 &&
+        candidate.patternParts.at(-1)?.endsWith("*") &&
+        patternsStructurallyEquivalent(candidate.patternParts.slice(0, -1), route.patternParts),
     );
-    if (!route.pagePath && !hasOwnedSlotPage) {
+    if (!route.pagePath && optionalCatchAllOwnsPattern) {
       ghostParentRoutes.push(route);
       continue;
     }
