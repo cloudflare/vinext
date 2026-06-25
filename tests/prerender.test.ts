@@ -756,6 +756,23 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(r).toMatchObject({ route: "/revalidate-test", status: "rendered", revalidate: 60 });
   });
 
+  it("records App Router preload Link headers for cache seeding", () => {
+    const r = findRoute(results, "/nextjs-compat/react-max-headers-length");
+    expect(r).toMatchObject({
+      status: "rendered",
+      headers: { link: expect.stringContaining("rel=preload") },
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/nextjs-compat/react-max-headers-length",
+    );
+    expect(manifestRoute).toMatchObject({
+      headers: { link: expect.stringContaining("rel=preload") },
+    });
+  });
+
   it("uses the rendered cacheLife expire value for App Router ISR prerender entries", () => {
     const r = findRoute(results, "/prerender-cache-life");
     expect(r).toMatchObject({

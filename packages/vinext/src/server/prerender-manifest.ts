@@ -8,6 +8,7 @@ type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
+  headers?: Record<string, string>;
 };
 
 type PrerenderManifest = {
