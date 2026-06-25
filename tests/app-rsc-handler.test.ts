@@ -1212,6 +1212,23 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe("/docs/about");
   });
 
+  it("returns a plain 404 when middleware leaves an outside-basePath request unchanged", async () => {
+    const renderNotFound = vi.fn(async () => new Response("rendered not found", { status: 404 }));
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default: () => new Response(null, { headers: { "x-middleware-next": "1" } }),
+      },
+      renderNotFound,
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toBe("rendered not found");
+    expect(renderNotFound).not.toHaveBeenCalled();
+  });
+
   it("allows query-only middleware rewrites to make outside-basePath routes eligible", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({

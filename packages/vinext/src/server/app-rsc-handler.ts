@@ -919,6 +919,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
+  if (!filesystemRouteEligible) {
+    options.clearRequestContext();
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    return notFoundResponse({ headers });
+  }
+
   if (pagesDataRequest) {
     options.clearRequestContext();
     if (
