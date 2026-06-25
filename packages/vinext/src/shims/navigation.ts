@@ -133,7 +133,9 @@ function useChildSegments(parallelRoutesKey: string = "children"): string[] {
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
     const segmentMap = React.useContext(ctx);
-    return segmentMap[parallelRoutesKey] ?? [];
+    return (segmentMap[parallelRoutesKey] ?? []).filter(
+      (segment) => !segment.startsWith("__PAGE__"),
+    );
   } catch {
     return [];
   }

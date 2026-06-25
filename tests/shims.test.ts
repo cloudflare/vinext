@@ -1359,6 +1359,34 @@ describe("next/navigation shim", () => {
     expect(html).toContain("[]");
   });
 
+  it("hides internal page segment markers from selected layout hooks", async () => {
+    const React = await import("react");
+    const ReactDOMServer = await import("react-dom/server");
+    const { createElement } = React;
+    const { LayoutSegmentProvider } =
+      await import("../packages/vinext/src/shims/layout-segment-context.js");
+    const { useSelectedLayoutSegment, useSelectedLayoutSegments } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    function TestComponent() {
+      const segments = useSelectedLayoutSegments();
+      const segment = useSelectedLayoutSegment();
+      return createElement("span", null, JSON.stringify({ segment, segments }));
+    }
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(LayoutSegmentProvider, {
+        segmentMap: { children: ["blog", "__PAGE__"] },
+        // oxlint-disable-next-line react/no-children-prop
+        children: createElement(TestComponent),
+      }),
+    );
+
+    expect(html).toContain(
+      "{&quot;segment&quot;:&quot;blog&quot;,&quot;segments&quot;:[&quot;blog&quot;]}",
+    );
+  });
+
   // -------------------------------------------------------------------------
   // unstable_rethrow + unstable_isUnrecognizedActionError
   //

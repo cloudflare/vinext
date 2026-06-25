@@ -460,7 +460,7 @@ describe("app page route wiring helpers", () => {
         parts: ["a", "b"],
         slug: "post",
       }),
-    ).toEqual(["blog", "post", "a/b"]);
+    ).toEqual(["blog", "post", "a/b", "__PAGE__"]);
   });
 
   it("builds layout entries from tree paths instead of visible URL segments", () => {
