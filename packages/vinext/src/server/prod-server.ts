@@ -400,6 +400,7 @@ function installClientBuildManifestGlobals(
 ): void {
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
   setPagesClientAssets({
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
   });
@@ -1164,6 +1165,7 @@ function installPagesClientAssets(options: {
 
   setPagesClientAssets({
     clientEntry: metadata.clientEntryFile,
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
     ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,

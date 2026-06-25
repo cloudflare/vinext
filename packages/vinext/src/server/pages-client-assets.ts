@@ -1,5 +1,6 @@
 export type PagesClientAssets = {
   clientEntry?: string;
+  appBootstrapPreinitModules?: string[];
   ssrManifest?: Record<string, string[]>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;

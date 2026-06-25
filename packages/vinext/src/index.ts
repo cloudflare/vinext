@@ -5459,6 +5459,7 @@ export const loadServerActionClient = ${
 
             pagesClientAssetsModule = buildPagesClientAssetsModule({
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
+              appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,

@@ -3,6 +3,7 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
@@ -53,6 +54,7 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+import pagesClientAssets from "virtual:vinext-pages-client-assets";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -415,6 +417,12 @@ export async function handleSsr(
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
+            preinitModule(moduleUrl, {
+              as: "script",
+              nonce: options?.scriptNonce,
+            });
+          }
           if (!flightRoot) {
             flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
           }
