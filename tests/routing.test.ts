@@ -696,13 +696,16 @@ describe("appRouter - route discovery", () => {
       expect(patterns).toContain("/inbox");
       expect(patterns).toContain("/inbox/profile");
       expect(matchAppRoute("/inbox/profile", routes)).toMatchObject({
-        pagePath: path.join(appDir, "inbox", "default.tsx"),
-        parallelSlots: [
-          expect.objectContaining({
-            name: "modal",
-            pagePath: path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
-          }),
-        ],
+        route: {
+          pagePath: path.join(appDir, "inbox", "default.tsx"),
+          parallelSlots: [
+            expect.objectContaining({
+              name: "modal",
+              pagePath: path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
+            }),
+          ],
+        },
+        params: {},
       });
     });
   });
