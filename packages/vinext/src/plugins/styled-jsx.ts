@@ -115,7 +115,6 @@ export function createStyledJsxPlugin(
               react: {
                 runtime: "automatic",
                 development,
-                refresh: development,
                 useBuiltins: true,
               },
               optimizer: { simplify: false },

@@ -94,7 +94,7 @@ describe("styled-jsx compatibility plugin", () => {
     );
   });
 
-  it("preserves React development refresh transforms in dev", async () => {
+  it("uses development JSX without browser refresh globals in dev", async () => {
     const transform = vi.fn(async () => ({ code: "export default null;" }));
     const plugin = createStyledJsxPlugin(process.cwd(), {
       importModule: async () => ({ loadBindings: async () => undefined, transform }),
@@ -115,11 +115,15 @@ describe("styled-jsx compatibility plugin", () => {
       expect.objectContaining({
         jsc: expect.objectContaining({
           transform: expect.objectContaining({
-            react: expect.objectContaining({ development: true, refresh: true }),
+            react: expect.objectContaining({ development: true }),
           }),
         }),
       }),
     );
+    expect(
+      (transform.mock.calls[0][1] as { jsc: { transform: { react: Record<string, unknown> } } }).jsc
+        .transform.react,
+    ).not.toHaveProperty("refresh");
   });
 
   it("transforms styled-jsx with the installed Next compiler", async () => {
