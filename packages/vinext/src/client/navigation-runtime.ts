@@ -22,7 +22,7 @@ type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
 export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
 
-export type NavigationRuntimePrefetchRouterState = {
+type NavigationRuntimePrefetchRouterState = {
   pathAndSearch: string;
   routeId: string;
 };
