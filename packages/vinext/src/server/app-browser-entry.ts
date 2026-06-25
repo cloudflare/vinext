@@ -163,9 +163,9 @@ import {
 } from "./app-optimistic-routing.js";
 import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_STATE_HEADER,
 } from "./headers.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
@@ -1605,7 +1605,7 @@ function bootstrapHydration(
             navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
         requestHeaders.set(
-          NEXT_ROUTER_STATE_TREE_HEADER,
+          VINEXT_RSC_STATE_HEADER,
           createAppRscStateFingerprint(routerStateAtNavStart),
         );
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);

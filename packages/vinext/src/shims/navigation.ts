@@ -37,10 +37,10 @@ import {
 } from "../server/app-rsc-cache-busting.js";
 import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
 import {
-  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RSC_STATE_HEADER,
 } from "../server/headers.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -1897,7 +1897,7 @@ const _appRouter: AppRouterInstance = {
       }
       const rscStateFingerprint = getNavigationRuntime()?.functions.getRscStateFingerprint?.();
       if (rscStateFingerprint) {
-        headers.set(NEXT_ROUTER_STATE_TREE_HEADER, rscStateFingerprint);
+        headers.set(VINEXT_RSC_STATE_HEADER, rscStateFingerprint);
       }
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);

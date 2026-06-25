@@ -110,6 +110,17 @@ describe("App Router RSC cache-busting", () => {
     expect(feedHash).not.toBe(galleryHash);
   });
 
+  it("varies RSC URLs by the vinext visible-router-state fingerprint", async () => {
+    const firstHeaders = createRscRequestHeaders();
+    firstHeaders.set("X-Vinext-Rsc-State", "first");
+    const secondHeaders = createRscRequestHeaders();
+    secondHeaders.set("X-Vinext-Rsc-State", "second");
+
+    await expect(createRscRequestUrl("/photos/42", firstHeaders)).resolves.not.toBe(
+      await createRscRequestUrl("/photos/42", secondHeaders),
+    );
+  });
+
   it("varies preserve-current-UI refresh payloads from normal navigations", async () => {
     const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
     const refreshHash = await computeRscCacheBustingSearchParam(
@@ -310,7 +321,7 @@ describe("App Router RSC cache-busting", () => {
 
   it("exports the full Vary value for RSC-bearing App Router responses", () => {
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Rsc-State, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
     );
   });
 

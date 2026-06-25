@@ -14,6 +14,7 @@ import {
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
 
@@ -37,6 +38,7 @@ export const VINEXT_RSC_VARY_HEADER = [
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_URL_HEADER,
+  VINEXT_RSC_STATE_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -159,6 +161,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 
 type CreateCacheBustingInputOptions = {
   includeRenderModeHeader?: boolean;
+  includeStateHeader?: boolean;
 };
 
 function createCacheBustingInput(
@@ -172,6 +175,7 @@ function createCacheBustingInput(
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
+    ...(options.includeStateHeader === false ? [] : [headers.get(VINEXT_RSC_STATE_HEADER)]),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     ...(options.includeRenderModeHeader === false
@@ -197,7 +201,10 @@ function computeLegacyRscCacheBustingSearchParam(headers: Headers): string {
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeStateHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -206,7 +213,10 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeRenderModeHeader: false,
+    includeStateHeader: false,
+  });
   return input === null ? null : fnv1a64(input);
 }
 
