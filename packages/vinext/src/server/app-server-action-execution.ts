@@ -303,6 +303,7 @@ export type HandleServerActionRscRequestOptions<
 };
 
 function prepareActionPageRerenderContext(options: {
+  draftModeCookie: string | null | undefined;
   draftModeSecret: string;
   dynamicConfig: string | null | undefined;
   request: Request;
@@ -310,9 +311,13 @@ function prepareActionPageRerenderContext(options: {
   searchParams: URLSearchParams;
 }): URLSearchParams {
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const rerenderRequest = createActionRerenderRequest({
+      draftModeCookie: options.draftModeCookie,
+      request: options.request,
+    });
     setHeadersContext(
       createStaticGenerationHeadersContext({
-        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeEnabled: isDraftModeRequest(rerenderRequest, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "page",
@@ -321,6 +326,24 @@ function prepareActionPageRerenderContext(options: {
     );
   }
   return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
+
+function createActionRerenderRequest(options: {
+  draftModeCookie: string | null | undefined;
+  request: Request;
+}): Request {
+  if (!options.draftModeCookie) return options.request;
+
+  const headers = new Headers(options.request.headers);
+  const cookieHeader = applySetCookieMutationsToRequestCookieHeader(headers.get("cookie"), [
+    options.draftModeCookie,
+  ]);
+  if (cookieHeader === null) {
+    headers.delete("cookie");
+  } else {
+    headers.set("cookie", cookieHeader);
+  }
+  return new Request(options.request.url, { headers });
 }
 
 /**
@@ -1280,6 +1303,7 @@ export async function handleServerActionRscRequest<
       );
       const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
       const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: redirectDynamicConfig,
         request: redirectRenderRequest,
@@ -1430,6 +1454,7 @@ export async function handleServerActionRscRequest<
         actionRerenderTarget.route,
       );
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: actionRerenderDynamicConfig,
         request: options.request,

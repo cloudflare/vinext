@@ -1003,7 +1003,7 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
  */
 export function isDraftModeEnabled(): boolean {
   const context = _getState().headersContext;
-  if (!context || context.accessError) return false;
+  if (!context) return false;
   if (context.draftModeEnabled !== undefined) return context.draftModeEnabled;
   const secret = context.draftModeSecret;
   if (secret === undefined) return false;
