@@ -1725,6 +1725,63 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("keeps active render snapshots when a history restore commits URL state", async () => {
+    const previousWindow = globalThis.window;
+    const win = {
+      addEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
+      history: {
+        pushState() {},
+        replaceState() {},
+      },
+      location: {
+        href: "http://localhost/restored",
+        origin: "http://localhost",
+        pathname: "/restored",
+        search: "",
+      },
+      removeEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const { useUntrackedPathname } =
+        await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const Context = navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+
+      navigation.activateNavigationSnapshot();
+      const snapshot = navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/in-flight",
+        {},
+      );
+      navigation.commitClientNavigationState(7, { releaseSnapshot: false });
+
+      let pathname: string | null = "";
+      function Probe() {
+        pathname = useUntrackedPathname();
+        return React.createElement("span", null, pathname ?? "null");
+      }
+
+      renderToStaticMarkup(
+        React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
+      );
+      expect(pathname).toBe("/in-flight");
+
+      navigation.commitClientNavigationState(undefined, { releaseSnapshot: true });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("useUntrackedPathname returns Pages Router pathname when no App context is set", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");

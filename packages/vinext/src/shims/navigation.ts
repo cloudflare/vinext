@@ -1412,7 +1412,7 @@ export function commitClientNavigationState(
   // Only navigation-owned commits may release a render snapshot. Ownerless URL
   // syncs still update committed pathname/search state, but must not consume
   // the active snapshot for an in-flight App Router transition.
-  const shouldReleaseSnapshot = navId !== undefined || options?.releaseSnapshot === true;
+  const shouldReleaseSnapshot = options?.releaseSnapshot ?? navId !== undefined;
   if (shouldReleaseSnapshot && state.navigationSnapshotActiveCount > 0) {
     state.navigationSnapshotActiveCount -= 1;
   }

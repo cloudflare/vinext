@@ -362,7 +362,7 @@ function restoreHistoryStateSnapshot(
   });
   if (!restored) return false;
 
-  commitClientNavigationState(navId);
+  commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
 }
 
