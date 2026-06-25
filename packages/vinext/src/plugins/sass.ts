@@ -158,11 +158,11 @@ function deriveSassNamespace(importUrl: string): string {
   const normalized = importUrl.replaceAll("\\", "/").replace(/\/$/, "");
   const parts = normalized.split("/");
   let basename = parts.pop() ?? "stylesheet";
-  basename = basename.replace(/^_/, "").replace(/\.(?:scss|sass|css)$/i, "");
+  basename = basename.replace(/^_/, "").replace(/\..*$/, "");
   if (basename === "index" && parts.length > 0) {
-    basename = (parts.pop() ?? basename).replace(/^_/, "");
+    basename = (parts.pop() ?? basename).replace(/^_/, "").replace(/\..*$/, "");
   }
-  return basename.replaceAll("_", "-");
+  return basename;
 }
 
 /**

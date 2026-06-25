@@ -201,6 +201,29 @@ describe("createSassCssUrlAssetImporter", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("preserves underscores in Sass default namespaces", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-namespace-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    await fsp.writeFile(
+      path.join(tmpDir, "_my_colors.scss"),
+      `$fg: red;\n.colors { background-image: url('./colors.svg'); }`,
+    );
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const underscored = importer.rewriteImports(
+        `@use "./my_colors";\n.test { color: my_colors.$fg; }`,
+        entryPath,
+      );
+      expect(underscored).toContain(" as my_colors;");
+      expect(() =>
+        sass.compileString(underscored, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createSassTildeImporter", () => {
