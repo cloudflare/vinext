@@ -207,6 +207,46 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each(["afterFiles", "fallback"] as const)(
+    "allows out-of-basePath POST requests through %s rewrites to App route handlers",
+    async (phase) => {
+      const route = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/api",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api"],
+      });
+      const dispatchMatchedRouteHandler = vi.fn(async () => new Response("route", { status: 200 }));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles:
+            phase === "afterFiles"
+              ? [{ source: "/outside", destination: "/api", basePath: false }]
+              : [],
+          fallback:
+            phase === "fallback"
+              ? [{ source: "/outside", destination: "/api", basePath: false }]
+              : [],
+        },
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname) => (pathname === "/api" ? { params: {}, route } : null),
+      });
+
+      const response = await handler(
+        new Request("https://example.test/outside", { method: "POST" }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("route");
+      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+    },
+  );
+
   it("does not expose App routes directly outside basePath", async () => {
     const handler = createHandler({ configHeaders: [] });
 

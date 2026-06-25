@@ -731,12 +731,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const contentType = request.headers.get("content-type") || "";
 
   const isPostRequest = request.method.toUpperCase() === "POST";
-  if (!outOfBasePathRequestClaimed && isPostRequest) {
+  if (!outOfBasePathRequestClaimed && isPostRequest && actionId) {
     options.clearRequestContext();
     return notFoundResponse();
   }
   let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
-  if (isPostRequest && contentType.startsWith("multipart/form-data") && !actionId) {
+  if (
+    outOfBasePathRequestClaimed &&
+    isPostRequest &&
+    contentType.startsWith("multipart/form-data") &&
+    !actionId
+  ) {
     if (options.handleProgressiveActionRequest) {
       progressiveActionResult = await options.handleProgressiveActionRequest({
         actionId,
