@@ -540,6 +540,22 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_EMPTY);
   });
 
+  it("ignores malformed Next-Url instead of crashing request normalization", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/dashboard?tab=current&${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [NEXT_ROUTER_PREFETCH_HEADER]: "1",
+          [NEXT_ROUTER_STATE_TREE_HEADER]: prefetchRouterStateHeader("/dashboard?tab=current"),
+          [NEXT_URL_HEADER]: "http://[",
+        }),
+        "",
+      ),
+    );
+
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
+  });
+
   it("maps a Next prefetch from another dynamic segment to a loading shell", () => {
     const result = normalized(
       normalizeRscRequest(

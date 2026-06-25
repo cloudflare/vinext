@@ -66,6 +66,18 @@ function normalizeComparablePathAndSearch(value: string, basePath: string, baseU
   return `${pathname}${search ? `?${search}` : ""}`;
 }
 
+function tryNormalizeComparablePathAndSearch(
+  value: string,
+  basePath: string,
+  baseUrl: URL,
+): string | null {
+  try {
+    return normalizeComparablePathAndSearch(value, basePath, baseUrl);
+  } catch {
+    return null;
+  }
+}
+
 export type NormalizedRscRequest = {
   /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
   url: URL;
@@ -186,25 +198,22 @@ export function normalizeRscRequest(
       request.headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     );
     if (nextUrl && routerState) {
-      const nextRequestUrl = new URL(nextUrl, url);
       const targetUrl = new URL(url);
       targetUrl.pathname = cleanPathname;
       targetUrl.searchParams.delete(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
-      const routerPathAndSearch = normalizeComparablePathAndSearch(
+      const routerPathAndSearch = tryNormalizeComparablePathAndSearch(
         routerState.pathAndSearch,
         basePath,
         url,
       );
-      const nextPathAndSearch = normalizeComparablePathAndSearch(
-        nextRequestUrl.href,
-        basePath,
-        url,
-      );
+      const nextPathAndSearch = tryNormalizeComparablePathAndSearch(nextUrl, basePath, url);
       const targetPathAndSearch = normalizeComparablePathAndSearch(targetUrl.href, basePath, url);
-      renderMode =
-        routerPathAndSearch === nextPathAndSearch && routerPathAndSearch === targetPathAndSearch
-          ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
-          : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+      if (routerPathAndSearch !== null && nextPathAndSearch !== null) {
+        renderMode =
+          routerPathAndSearch === nextPathAndSearch && routerPathAndSearch === targetPathAndSearch
+            ? APP_RSC_RENDER_MODE_PREFETCH_EMPTY
+            : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+      }
     }
   }
   const clientReuseManifest = isRscRequest
