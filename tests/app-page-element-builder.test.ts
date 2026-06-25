@@ -485,6 +485,27 @@ describe("buildPageElements", () => {
     expect(Object.prototype.hasOwnProperty.call(record, "route:/hello")).toBe(true);
   });
 
+  it("keys rewritten page elements by the matched route rather than the visible pathname", async () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => React.createElement("div", null, "Rewritten")),
+      layouts: [],
+      routeSegments: ["matched"],
+      pattern: "/matched",
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({ route, routePath: "/matched" }),
+      displayPathname: "/visible",
+    });
+
+    const record = result as Record<string, unknown>;
+    expect(record[APP_ROUTE_KEY]).toBe("route:/matched");
+    expect(Object.prototype.hasOwnProperty.call(record, "page:/matched")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(record, "route:/matched")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(record, "page:/visible")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(record, "route:/visible")).toBe(false);
+  });
+
   it.each([
     ["memo", React.memo(() => React.createElement("div", null, "memo page"))],
     [
