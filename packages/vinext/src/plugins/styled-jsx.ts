@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Plugin } from "vite";
+import { parseAst, type Plugin } from "vite";
 
 type NextSwcModule = {
   loadBindings(): Promise<unknown>;
@@ -20,6 +20,49 @@ const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
   /(?:from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
+
+function hasStyledJsxTag(source: string, id: string): boolean {
+  const cleanId = id.split("?")[0];
+  const extension = path.extname(cleanId);
+  const lang = extension === ".ts" || extension === ".mts" || extension === ".cts" ? "ts" : "tsx";
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(source, { lang });
+  } catch {
+    return false;
+  }
+
+  const pending: unknown[] = [ast];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object" || visited.has(value)) continue;
+    visited.add(value);
+
+    const node = value as Record<string, unknown>;
+    if (node.type === "JSXOpeningElement") {
+      const name = node.name as { type?: string; name?: string } | undefined;
+      if (name?.type === "JSXIdentifier" && name.name === "style") {
+        const attributes = node.attributes as Array<Record<string, unknown>> | undefined;
+        if (
+          attributes?.some((attribute) => {
+            if (attribute.type !== "JSXAttribute") return false;
+            const attributeName = attribute.name as { type?: string; name?: string } | undefined;
+            return attributeName?.type === "JSXIdentifier" && attributeName.name === "jsx";
+          })
+        ) {
+          return true;
+        }
+      }
+    }
+
+    for (const child of Object.values(node)) {
+      if (Array.isArray(child)) pending.push(...child);
+      else if (child && typeof child === "object") pending.push(child);
+    }
+  }
+  return false;
+}
 
 function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
@@ -106,8 +149,9 @@ export function createStyledJsxPlugin(
       },
       async handler(source, id) {
         const hasStyledJsxCss = STYLED_JSX_CSS_RE.test(source);
+        const hasStyledJsxElement = !hasStyledJsxCss && hasStyledJsxTag(source, id);
+        if (!hasStyledJsxCss && !hasStyledJsxElement) return null;
         if (!getNextRequire()) {
-          if (!hasStyledJsxCss) return null;
           throw new Error(
             "[vinext] styled-jsx requires an installed next package so vinext can use its matching compiler.",
           );
@@ -130,7 +174,6 @@ export function createStyledJsxPlugin(
             },
           },
         });
-        if (!hasStyledJsxCss && !result.code.includes('from "styled-jsx/style"')) return null;
         return { code: result.code, map: result.map ?? null };
       },
     },

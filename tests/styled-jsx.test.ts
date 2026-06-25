@@ -94,6 +94,23 @@ describe("styled-jsx compatibility plugin", () => {
     expect(importModule).not.toHaveBeenCalled();
   });
 
+  it("rejects styled-jsx tags when Next is not installed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(root);
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    const plugin = createStyledJsxPlugin(root);
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<unknown>;
+    };
+
+    await expect(
+      transformHook.handler(
+        "export default <style nonce={/* user's nonce */ getNonce({ fallback: true })} jsx>{`p{color:red}`}</style>",
+        "/app/styled.jsx",
+      ),
+    ).rejects.toThrow("styled-jsx requires an installed next package");
+  });
+
   it("uses Next's matching compiler for styled-jsx source", async () => {
     const loadBindings = vi.fn(async () => undefined);
     const transform = vi.fn(async () => ({
