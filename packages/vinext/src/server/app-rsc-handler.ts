@@ -602,6 +602,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     status: null,
   };
   let didMiddlewareRewrite = false;
+  let didMiddlewareRewritePathname = false;
 
   if (options.runMiddleware) {
     const middlewareResult = await options.runMiddleware({
@@ -622,6 +623,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
     cleanPathname = middlewareResult.cleanPathname;
     didMiddlewareRewrite = middlewareResult.rewritten;
+    didMiddlewareRewritePathname = cleanPathname !== normalized.cleanPathname;
     if (middlewareResult.search !== null) {
       url.search = middlewareResult.search;
     }
@@ -813,7 +815,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       match === null || match.route.isDynamic
         ? ((await options.renderPagesFallback?.({
             appRouteMatch: match ?? null,
-            allowRscDocumentFallback: didMiddlewareRewrite,
+            allowRscDocumentFallback: didMiddlewareRewritePathname,
             isDataRequest,
             isRscRequest,
             matchKind,

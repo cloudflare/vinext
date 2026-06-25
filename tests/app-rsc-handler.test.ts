@@ -917,6 +917,35 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("pages");
   });
 
+  it("does not hand query-only middleware-rewritten RSC requests to Pages HTML", async () => {
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/source", headers);
+    const renderPagesFallback = vi.fn(async ({ allowRscDocumentFallback }) =>
+      allowRscDocumentFallback
+        ? new Response("pages", { headers: { "content-type": "text/html" } })
+        : null,
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      middlewareModule: {
+        default: () =>
+          new Response(null, {
+            headers: { "x-middleware-rewrite": "https://example.test/docs/source?query=updated" },
+          }),
+      },
+      renderPagesFallback,
+    });
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).not.toBe("text/html");
+    expect(renderPagesFallback).toHaveBeenCalledWith(
+      expect.objectContaining({ allowRscDocumentFallback: false }),
+    );
+  });
+
   it("does not duplicate additive config headers on non-redirect middleware responses", async () => {
     const handler = createHandler({
       configHeaders: [
