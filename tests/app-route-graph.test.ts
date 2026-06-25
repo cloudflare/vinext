@@ -621,6 +621,7 @@ describe("App Router route graph builder", () => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
       await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "[locale]/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[locale]/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "[locale]/@slot/default.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "[locale]/@slot/other/page.tsx", EMPTY_PAGE);
       await writeAppFile(appDir, "[locale]/[[...catchAll]]/page.tsx", EMPTY_PAGE);

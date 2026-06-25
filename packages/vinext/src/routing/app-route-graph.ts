@@ -967,7 +967,7 @@ export async function buildAppRouteGraph(
         candidate.patternParts.at(-1)?.endsWith("*") &&
         patternsStructurallyEquivalent(candidate.patternParts.slice(0, -1), route.patternParts),
     );
-    if (!route.pagePath && optionalCatchAllOwnsPattern) {
+    if (optionalCatchAllOwnsPattern) {
       ghostParentRoutes.push(route);
       continue;
     }
