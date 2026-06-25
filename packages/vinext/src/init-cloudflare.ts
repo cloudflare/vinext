@@ -4,6 +4,7 @@ import MagicString from "magic-string";
 import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions, InitImageOptimization } from "./init-platform.js";
+import { detectProject } from "./cloudflare/project.js";
 
 export type CloudflareProjectInfo = {
   root: string;
@@ -16,9 +17,104 @@ export type CloudflareProjectInfo = {
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   dataCache: "kv",
-  cdnCache: "workers-cache",
+  cdnCache: "data-cache",
   imageOptimization: "cloudflare-images",
 };
+
+export type CloudflarePlatformSetupContext = {
+  root: string;
+  isAppRouter: boolean;
+  existingViteConfigPath?: string;
+  today?: string;
+};
+
+export type CloudflarePlatformSetupResult = {
+  generatedViteConfig: boolean;
+  skippedViteConfig: boolean;
+  generatedPlatformFiles: string[];
+  nextSteps: string[];
+};
+
+export function setupCloudflarePlatform(
+  context: CloudflarePlatformSetupContext,
+  cloudflare: CloudflareInitOptions,
+): CloudflarePlatformSetupResult {
+  const tomlPath = path.join(context.root, "wrangler.toml");
+  if (fs.existsSync(tomlPath)) {
+    throw new Error(
+      "wrangler.toml is not supported by vinext init. Convert it to wrangler.jsonc and rerun.",
+    );
+  }
+
+  const projectInfo = detectProject(context.root);
+  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
+    .map((fileName) => path.join(context.root, fileName))
+    .find((candidate) => fs.existsSync(candidate));
+  const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
+  const imagesBinding = wranglerCode ? getWranglerImagesBinding(wranglerCode) : "IMAGES";
+
+  let generatedViteConfig = false;
+  let skippedViteConfig = false;
+  if (context.existingViteConfigPath) {
+    const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+    const updatedConfig = updateViteConfigForCloudflare(
+      context.existingViteConfigPath,
+      currentConfig,
+      {
+        isAppRouter: context.isAppRouter,
+        nativeModulesToStub: projectInfo.nativeModulesToStub,
+        cache: cloudflare,
+        imagesBinding,
+      },
+    );
+    if (updatedConfig !== currentConfig) {
+      fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
+      generatedViteConfig = true;
+    } else {
+      skippedViteConfig = true;
+    }
+  } else {
+    const configContent = context.isAppRouter
+      ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
+      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding);
+    fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
+    generatedViteConfig = true;
+  }
+
+  const generatedPlatformFiles: string[] = [];
+  if (!wranglerPath) {
+    fs.writeFileSync(
+      path.join(context.root, "wrangler.jsonc"),
+      generateWranglerConfig(projectInfo, cloudflare, context.today),
+      "utf-8",
+    );
+    generatedPlatformFiles.push("wrangler.jsonc");
+  } else if (wranglerCode) {
+    const updatedConfig = updateWranglerConfigForCloudflare(wranglerCode, cloudflare);
+    if (updatedConfig !== wranglerCode) {
+      fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
+      generatedPlatformFiles.push(path.basename(wranglerPath));
+    }
+  }
+
+  if (!context.isAppRouter && !projectInfo.hasWorkerEntry) {
+    fs.mkdirSync(path.join(context.root, "worker"), { recursive: true });
+    fs.writeFileSync(
+      path.join(context.root, "worker", "index.ts"),
+      generatePagesRouterWorkerEntry(),
+      "utf-8",
+    );
+    generatedPlatformFiles.push("worker/index.ts");
+  }
+
+  return {
+    generatedViteConfig,
+    skippedViteConfig,
+    generatedPlatformFiles,
+    nextSteps:
+      cloudflare.dataCache === "kv" ? ["npx wrangler kv namespace create VINEXT_KV_CACHE"] : [],
+  };
+}
 
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
@@ -54,7 +150,7 @@ export function generateWranglerConfig(
     config.images = { binding: "IMAGES" };
   }
 
-  if (options.dataCache === "kv" || options.cdnCache === "kv") {
+  if (options.dataCache === "kv") {
     config.kv_namespaces = [
       {
         binding: "VINEXT_KV_CACHE",
@@ -257,7 +353,7 @@ export function updateWranglerConfigForCloudflare(
       }
     }
   }
-  if (options.dataCache === "kv" || options.cdnCache === "kv") {
+  if (options.dataCache === "kv") {
     const kvProperty = findTopLevelJsonProperty(output, "kv_namespaces");
     if (!kvProperty) {
       output = appendTopLevelJsonProperty(
@@ -474,7 +570,7 @@ export default {
 
 function cacheImports(options: CloudflareInitOptions): string[] {
   const imports: string[] = [];
-  if (options.dataCache === "kv" || options.cdnCache === "kv") {
+  if (options.dataCache === "kv") {
     imports.push('import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";');
   }
   if (options.cdnCache === "workers-cache") {
@@ -493,7 +589,7 @@ function vinextExpression(
   imagesBinding = "IMAGES",
 ): string {
   const cacheEntries: string[] = [];
-  if (options.dataCache === "kv" || options.cdnCache === "kv") {
+  if (options.dataCache === "kv") {
     cacheEntries.push("data: kvDataAdapter()");
   }
   if (options.cdnCache === "workers-cache") cacheEntries.push("cdn: cdnAdapter()");
@@ -508,7 +604,7 @@ function vinextExpression(
   }
   return optionEntries.length === 0
     ? `${binding}()`
-    : `${binding}({ ${optionEntries.join(", ")} })`;
+    : `${binding}({\n  ${optionEntries.join(",\n  ")},\n})`;
 }
 
 /** Generate vite.config.ts for App Router */
@@ -1299,7 +1395,7 @@ export function updateViteConfigForCloudflare(
   const program = parseViteConfig(filePath, code);
   const cacheOptions = options.cache ?? {
     dataCache: "none",
-    cdnCache: "none",
+    cdnCache: "data-cache",
     imageOptimization: "cloudflare-images",
   };
   const config = findConfigObject(program);
@@ -1332,10 +1428,7 @@ export function updateViteConfigForCloudflare(
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
   const configureCaches = options.cache !== undefined;
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
-  if (
-    (cacheOptions.dataCache === "kv" || cacheOptions.cdnCache === "kv") &&
-    !hasVinextCacheSlot(existingVinextCall, "data")
-  ) {
+  if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
     const existing = commonJs
       ? findRequiredBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter")
       : findImportedBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter");
@@ -1416,7 +1509,7 @@ export function updateViteConfigForCloudflare(
                 imageOptimizerExpression?.slice(0, imageOptimizerExpression.indexOf("(")) ||
                   "imageAdapter",
                 options.imagesBinding,
-              ).replace(/\n/g, "\n  ")
+              )
             : `${vinextBinding}()`,
         binding: vinextBinding,
       },
@@ -1441,7 +1534,7 @@ export function updateViteConfigForCloudflare(
       if (imageOptimizerExpression) {
         properties.push(`images: { optimizer: ${imageOptimizerExpression} }`);
       }
-      output.appendLeft(existingVinextCall.end - 1, `{ ${properties.join(", ")} }`);
+      output.appendLeft(existingVinextCall.end - 1, `{\n  ${properties.join(",\n  ")},\n}`);
     } else {
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);

@@ -223,7 +223,7 @@ export default { plugins: [vinext()] };
       },
     );
     expectValidConfig(output);
-    expect(output).toContain("vinext({ cache:");
+    expect(output).toContain("vinext({\n  cache: { data: kvDataAdapter(), cdn: cdnAdapter() },");
     expect(output).toContain("images: { optimizer: imageAdapter() }");
   });
 
@@ -323,14 +323,14 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     expect(output).not.toContain("kvDataAdapter");
   });
 
-  it("configures KV CDN and omits image optimization", () => {
+  it("falls through to the data cache and omits image optimization", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
       nativeModulesToStub: [],
-      cache: { dataCache: "none", cdnCache: "kv", imageOptimization: "none" },
+      cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
-    expect(output).toContain("data: kvDataAdapter()");
+    expect(output).not.toContain("data:");
     expect(output).not.toContain("cdn:");
     expect(output).not.toContain("imageAdapter");
     expect(output).not.toContain("images:");
@@ -343,7 +343,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
       nativeModulesToStub: [],
-      cache: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+      cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
     expect(output).not.toContain("cdn:");

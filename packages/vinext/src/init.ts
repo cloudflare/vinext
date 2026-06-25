@@ -28,16 +28,7 @@ import {
   findViteConfigPath,
   hasViteConfig,
 } from "./utils/project.js";
-import {
-  generateAppRouterViteConfig,
-  generatePagesRouterViteConfig,
-  generatePagesRouterWorkerEntry,
-  generateWranglerConfig,
-  getWranglerImagesBinding,
-  updateWranglerConfigForCloudflare,
-  updateViteConfigForCloudflare,
-  usesCommonJsViteConfig,
-} from "./init-cloudflare.js";
+import { setupCloudflarePlatform, usesCommonJsViteConfig } from "./init-cloudflare.js";
 import { detectProject } from "./cloudflare/project.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -283,89 +274,6 @@ function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
     skippedViteConfig: false,
     generatedPlatformFiles: [],
     nextSteps: [],
-  };
-}
-
-function setupCloudflarePlatform(
-  context: PlatformSetupContext,
-  cloudflare: CloudflareInitOptions,
-): PlatformSetupResult {
-  const tomlPath = path.join(context.root, "wrangler.toml");
-  if (fs.existsSync(tomlPath)) {
-    throw new Error(
-      "wrangler.toml is not supported by vinext init. Convert it to wrangler.jsonc and rerun.",
-    );
-  }
-
-  const projectInfo = detectProject(context.root);
-  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
-    .map((fileName) => path.join(context.root, fileName))
-    .find((candidate) => fs.existsSync(candidate));
-  const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
-  const imagesBinding = wranglerCode ? getWranglerImagesBinding(wranglerCode) : "IMAGES";
-
-  let generatedViteConfig = false;
-  let skippedViteConfig = false;
-  if (context.existingViteConfigPath) {
-    const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
-    const updatedConfig = updateViteConfigForCloudflare(
-      context.existingViteConfigPath,
-      currentConfig,
-      {
-        isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
-        cache: cloudflare,
-        imagesBinding,
-      },
-    );
-    if (updatedConfig !== currentConfig) {
-      fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
-      generatedViteConfig = true;
-    } else {
-      skippedViteConfig = true;
-    }
-  } else {
-    const configContent = context.isAppRouter
-      ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
-      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding);
-    fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
-    generatedViteConfig = true;
-  }
-
-  const generatedPlatformFiles: string[] = [];
-  if (!wranglerPath) {
-    fs.writeFileSync(
-      path.join(context.root, "wrangler.jsonc"),
-      generateWranglerConfig(projectInfo, cloudflare, context.today),
-      "utf-8",
-    );
-    generatedPlatformFiles.push("wrangler.jsonc");
-  } else if (wranglerPath && wranglerCode) {
-    const updatedConfig = updateWranglerConfigForCloudflare(wranglerCode, cloudflare);
-    if (updatedConfig !== wranglerCode) {
-      fs.writeFileSync(wranglerPath, updatedConfig, "utf-8");
-      generatedPlatformFiles.push(path.basename(wranglerPath));
-    }
-  }
-
-  if (!context.isAppRouter && !projectInfo.hasWorkerEntry) {
-    fs.mkdirSync(path.join(context.root, "worker"), { recursive: true });
-    fs.writeFileSync(
-      path.join(context.root, "worker", "index.ts"),
-      generatePagesRouterWorkerEntry(),
-      "utf-8",
-    );
-    generatedPlatformFiles.push("worker/index.ts");
-  }
-
-  return {
-    generatedViteConfig,
-    skippedViteConfig,
-    generatedPlatformFiles,
-    nextSteps:
-      cloudflare.dataCache === "kv" || cloudflare.cdnCache === "kv"
-        ? ["npx wrangler kv namespace create VINEXT_KV_CACHE"]
-        : [],
   };
 }
 

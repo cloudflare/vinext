@@ -962,7 +962,7 @@ function printHelp(cmd?: string) {
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
-    --cdn-cache <type>   Cloudflare CDN/page cache: kv (default), workers-cache (private beta), or none
+    --cdn-cache <type>   Cloudflare CDN/page cache: data-cache (default) or workers-cache (private beta)
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
@@ -970,7 +970,7 @@ function printHelp(cmd?: string) {
   Examples:
     vinext init                   Prompt for a deployment platform
     vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
-    vinext init --platform=cloudflare --data-cache=kv --cdn-cache=kv
+    vinext init --platform=cloudflare --data-cache=kv
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images

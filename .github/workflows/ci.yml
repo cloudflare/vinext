@@ -313,7 +313,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: >-
           vp exec vinext init --skip-check --platform=cloudflare
-          --data-cache=kv --cdn-cache=workers
+          --data-cache=kv
           --image-optimization=cloudflare-images
 
       - name: Build generated Cloudflare project

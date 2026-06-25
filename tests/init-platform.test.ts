@@ -25,16 +25,16 @@ describe("parsePlatformArg", () => {
 describe("Cloudflare init choices", () => {
   it("parses cache and image flags", () => {
     expect(parseDataCacheArg(["--data-cache=none"])).toBe("none");
-    expect(parseCdnCacheArg(["--cdn-cache", "kv"])).toBe("kv");
+    expect(parseCdnCacheArg(["--cdn-cache", "data-cache"])).toBe("data-cache");
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
-  it("defaults to KV data, KV CDN cache, and Cloudflare Images", async () => {
+  it("defaults to KV data, data-cache CDN fallback, and Cloudflare Images", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "kv",
+      cdnCache: "data-cache",
       imageOptimization: "cloudflare-images",
     });
   });
@@ -42,7 +42,28 @@ describe("Cloudflare init choices", () => {
   it("tells agents to ask and rerun with all Cloudflare flags", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" } }),
-    ).rejects.toThrow("--data-cache=..., --cdn-cache=..., and --image-optimization=...");
+    ).rejects.toThrow("adding --cdn-cache=workers-cache only if they chose Workers Cache");
+  });
+
+  it("lets agents omit the default CDN cache flag", async () => {
+    await expect(
+      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
+        env: { CODEX_THREAD_ID: "test" },
+      }),
+    ).resolves.toEqual({
+      dataCache: "kv",
+      cdnCache: "data-cache",
+      imageOptimization: "none",
+    });
+  });
+
+  it("rejects legacy CDN cache choices", () => {
+    expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow(
+      "Expected data-cache or workers-cache",
+    );
+    expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow(
+      "Expected data-cache or workers-cache",
+    );
   });
 
   it("prompts for each missing Cloudflare choice", async () => {

@@ -165,7 +165,7 @@ async function runInit(
       platform: "cloudflare",
       cloudflare: {
         dataCache: "kv",
-        cdnCache: "kv",
+        cdnCache: "data-cache",
         imageOptimization: "cloudflare-images",
       },
       ...opts,
@@ -198,7 +198,7 @@ async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): 
       platform: "cloudflare",
       cloudflare: {
         dataCache: "kv",
-        cdnCache: "kv",
+        cdnCache: "data-cache",
         imageOptimization: "cloudflare-images",
       },
       ...opts,
@@ -505,22 +505,20 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe("export default {};\n");
   });
 
-  it("supports KV CDN cache with no data cache or image optimization", async () => {
+  it("supports CDN fallthrough with no data cache or image optimization", async () => {
     setupProject(tmpDir, { router: "app" });
 
     await runInit(tmpDir, {
       platform: "cloudflare",
-      cloudflare: { dataCache: "none", cdnCache: "kv", imageOptimization: "none" },
+      cloudflare: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
 
     const config = readFile(tmpDir, "vite.config.ts");
-    expect(config).toContain("data: kvDataAdapter()");
+    expect(config).not.toContain("data:");
     expect(config).not.toContain("cdn:");
     expect(config).not.toContain("imageAdapter");
     const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
-    expect(wrangler.kv_namespaces).toEqual([
-      { binding: "VINEXT_KV_CACHE", id: "<your-kv-namespace-id>" },
-    ]);
+    expect(wrangler.kv_namespaces).toBeUndefined();
     expect(wrangler.images).toBeUndefined();
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
   });

@@ -37,7 +37,10 @@ import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
 
 export default defineConfig({
   plugins: [
-    vinext({ cache: { data: kvDataAdapter() }, images: { optimizer: imageAdapter() } }),
+    vinext({
+      cache: { data: kvDataAdapter() },
+      images: { optimizer: imageAdapter() },
+    }),
     cloudflare({
       viteEnvironment: {
         name: "rsc",
@@ -144,7 +147,10 @@ import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
-  plugins: [custom(), vinext({ cache: { data: kvDataAdapter() }, images: { optimizer: imageAdapter() } }),
+  plugins: [custom(), vinext({
+  cache: { data: kvDataAdapter() },
+  images: { optimizer: imageAdapter() },
+}),
     cloudflare({
       viteEnvironment: {
         name: "rsc",

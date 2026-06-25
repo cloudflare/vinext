@@ -7,7 +7,7 @@ type DependencyUpgradeRecommendation = {
   upgrades: string[];
 };
 
-export function getDependencyUpgradeDeps(
+function getDependencyUpgradeDeps(
   root: string,
   recommendations: Record<string, DependencyUpgradeRecommendation>,
 ): string[] {

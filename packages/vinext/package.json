@@ -107,7 +107,7 @@
     "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
-    "am-i-vibing": "0.5.0",
+    "am-i-vibing": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
