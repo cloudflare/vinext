@@ -712,6 +712,37 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("does not prepend basePath to opt-out redirects outside basePath", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [
+        { source: "/outside", destination: "/landing", permanent: false, basePath: false },
+      ],
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/landing");
+  });
+
+  it("does not prepend basePath when normalizing trailing slashes outside basePath", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
+        afterFiles: [],
+        fallback: [],
+      },
+      trailingSlash: true,
+    });
+
+    const response = await handler(new Request("https://example.test/outside"), null);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/outside/");
+  });
+
   it("keeps the real status for config redirects on Pages data requests", async () => {
     // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts

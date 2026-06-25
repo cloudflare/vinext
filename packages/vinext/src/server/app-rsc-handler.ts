@@ -346,12 +346,17 @@ function createMissingServerActionResponse(
   return createServerActionNotFoundResponse();
 }
 
-// TODO(#1333): once App Router supports `basePath: false` rules (see
-// `normalizeRscRequest` — it 404s out-of-basePath requests before they
-// reach this code), pass `hadBasePath` here and skip the prefix when
-// false, mirroring the same guard in `prod-server.ts` and `deploy.ts`.
-function redirectDestinationWithBasePath(destination: string, basePath: string): string {
-  if (!basePath || isExternalUrl(destination) || hasBasePath(destination, basePath)) {
+function redirectDestinationWithBasePath(
+  destination: string,
+  basePath: string,
+  hadBasePath: boolean,
+): string {
+  if (
+    !basePath ||
+    !hadBasePath ||
+    isExternalUrl(destination) ||
+    hasBasePath(destination, basePath)
+  ) {
     return destination;
   }
   return basePath + destination;
@@ -534,7 +539,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const trailingSlashRedirect = normalizeTrailingSlash(
     pathname,
-    options.basePath,
+    hadBasePath ? options.basePath : "",
     options.trailingSlash,
     url.search,
   );
@@ -561,7 +566,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (redirect) {
     const destination = sanitizeDestination(
-      redirectDestinationWithBasePath(redirect.destination, options.basePath),
+      redirectDestinationWithBasePath(redirect.destination, options.basePath, hadBasePath),
     );
     // For RSC navigations `createRscRedirectLocation` recomputes the
     // cache-busting `_rsc` param onto the Location. For plain (document)
