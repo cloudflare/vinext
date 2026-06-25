@@ -28,6 +28,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { suspendPrefetchSuspenseShell } from "./prefetch-suspense-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 
 // ---------------------------------------------------------------------------
@@ -875,6 +876,10 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
+  const prefetchShellPromise = suspendPrefetchSuspenseShell("`headers()`");
+  if (prefetchShellPromise) {
+    return _decorateSuspendingRequestApiPromise(prefetchShellPromise);
+  }
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
@@ -910,6 +915,10 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
+  const prefetchShellPromise = suspendPrefetchSuspenseShell("`cookies()`");
+  if (prefetchShellPromise) {
+    return _decorateSuspendingRequestApiPromise(prefetchShellPromise);
+  }
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);

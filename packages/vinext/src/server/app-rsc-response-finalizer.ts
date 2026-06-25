@@ -1,7 +1,7 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { VINEXT_RSC_PARTIAL_SHELL_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -29,6 +29,19 @@ type FinalizeAppRscResponseOptions = {
   requestContext: RequestContext;
 };
 
+function lockPartialShellCacheHeaders(response: Response, isPartialShell: boolean): void {
+  if (!isPartialShell) {
+    response.headers.delete(VINEXT_RSC_PARTIAL_SHELL_HEADER);
+    return;
+  }
+
+  response.headers.set(VINEXT_RSC_PARTIAL_SHELL_HEADER, "1");
+  applyCdnResponseHeaders(response.headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  response.headers.delete("CDN-Cache-Control");
+  response.headers.delete("Cloudflare-CDN-Cache-Control");
+  response.headers.delete("Cache-Tag");
+}
+
 /**
  * Apply App Router response finalization that must happen outside individual
  * route dispatchers.
@@ -51,6 +64,7 @@ export function finalizeAppRscResponse(
   if (response.status >= 300 && response.status < 400) {
     return response;
   }
+  const isPartialShell = response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER) === "1";
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
     const varyHeader = response.headers.get("Vary");
@@ -74,6 +88,7 @@ export function finalizeAppRscResponse(
   }
 
   if (!options.configHeaders.length) {
+    lockPartialShellCacheHeaders(response, isPartialShell);
     return response;
   }
 
@@ -110,6 +125,7 @@ export function finalizeAppRscResponse(
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
   });
+  lockPartialShellCacheHeaders(response, isPartialShell);
 
   return response;
 }

@@ -7,6 +7,7 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -64,6 +65,7 @@ type BuildAppPageRscResponseOptions = {
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
+  partialShell?: boolean;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
 };
@@ -277,6 +279,11 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.partialShell) {
+    headers.set(VINEXT_RSC_PARTIAL_SHELL_HEADER, "1");
+  } else {
+    headers.delete(VINEXT_RSC_PARTIAL_SHELL_HEADER);
+  }
   applyRscCompatibilityIdHeader(headers);
 
   applyTimingHeader(headers, options.timing);

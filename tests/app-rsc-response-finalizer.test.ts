@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { VINEXT_RSC_PARTIAL_SHELL_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import type { RequestContext } from "../packages/vinext/src/config/config-matchers.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
@@ -66,6 +72,98 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+
+  it("keeps partial Suspense shells uncacheable after config headers", () => {
+    const response = new Response("shell", {
+      headers: {
+        [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+      },
+    });
+    const request = new Request("http://example.com/about");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [
+            { key: "Cache-Control", value: "s-maxage=30" },
+            { key: "CDN-Cache-Control", value: "s-maxage=30" },
+            { key: "Cloudflare-CDN-Cache-Control", value: "s-maxage=30" },
+            { key: "Cache-Tag", value: "partial-shell" },
+            { key: VINEXT_RSC_PARTIAL_SHELL_HEADER, value: "0" },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
+    expect(response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER)).toBe("1");
+  });
+
+  it("removes config-injected partial shell markers from full responses", () => {
+    const response = new Response("body", {
+      headers: { "Cache-Control": "s-maxage=30" },
+    });
+
+    finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: VINEXT_RSC_PARTIAL_SHELL_HEADER, value: "1" }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get(VINEXT_RSC_PARTIAL_SHELL_HEADER)).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("s-maxage=30");
+  });
+
+  it("uses the active CDN adapter to clear custom cache headers", () => {
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "Surrogate-Control": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(adapter);
+    try {
+      const response = new Response("shell", {
+        headers: {
+          [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+          "Surrogate-Control": "max-age=30",
+        },
+      });
+
+      finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      });
+
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("surrogate-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 });
 

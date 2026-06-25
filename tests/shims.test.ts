@@ -3415,6 +3415,39 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("headers() and cookies() suspend during Suspense shell prefetch", async () => {
+    const { createPrefetchSuspenseShellState, runWithPrefetchSuspenseShellState } =
+      await import("../packages/vinext/src/shims/prefetch-suspense-shell.js");
+    const { setHeadersContext, headers, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers({ "x-custom": "test-value" }),
+      cookies: new Map([["session", "abc123"]]),
+    });
+
+    try {
+      const requestApis: Array<() => Promise<object> & object> = [() => headers(), () => cookies()];
+      for (const readRequestApi of requestApis) {
+        const state = createPrefetchSuspenseShellState("/suspense-prefetch");
+        const pending = runWithPrefetchSuspenseShellState(state, readRequestApi);
+        let settled = false;
+        void pending
+          .catch(() => {})
+          .finally(() => {
+            settled = true;
+          });
+
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        state.dynamicAbortController.abort();
+        await expect(pending).rejects.toThrow("render was aborted");
+      }
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
   it("headers() and cookies() reuse request API promise identity within a request context", async () => {
     // Next.js caches request API promises by the underlying request object:
     // packages/next/src/server/request/headers.ts
@@ -4615,6 +4648,33 @@ describe("next/server shim", () => {
 
     expect(outcome).toEqual({ completed: false });
     expect(ranAfterConnection).toBe(false);
+  });
+
+  it("connection() suspends from shell state even when request headers omit the render mode", async () => {
+    const { createPrefetchSuspenseShellState, runWithPrefetchSuspenseShellState } =
+      await import("../packages/vinext/src/shims/prefetch-suspense-shell.js");
+    const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { connection } = await import("../packages/vinext/src/shims/server.js");
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const state = createPrefetchSuspenseShellState("/suspense-prefetch");
+
+    try {
+      const pending = runWithPrefetchSuspenseShellState(state, connection);
+      let settled = false;
+      void pending
+        .catch(() => {})
+        .finally(() => {
+          settled = true;
+        });
+
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      state.dynamicAbortController.abort();
+      await expect(pending).rejects.toThrow("render was aborted");
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it("URLPattern is exported and available in Node 20+", async () => {

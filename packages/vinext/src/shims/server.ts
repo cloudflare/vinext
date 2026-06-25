@@ -1060,6 +1060,11 @@ export async function connection(): Promise<void> {
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  const { suspendPrefetchSuspenseShell } = await import("./prefetch-suspense-shell.js");
+  const pendingShell = suspendPrefetchSuspenseShell("connection()");
+  if (pendingShell) {
+    await pendingShell;
+  }
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;

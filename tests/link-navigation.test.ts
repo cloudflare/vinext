@@ -8,8 +8,14 @@ import {
   type LinkPrefetchDecision,
   type LinkPrefetchRouterMode,
 } from "../packages/vinext/src/shims/link-prefetch.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_RSC_RENDER_MODE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
 
 type CapturedEffect = () => void | (() => void);
@@ -1418,6 +1424,45 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("starts App Router viewport prefetches without waiting for browser idle", async () => {
+    const observer = stubIntersectionObserver();
+    const idleCallback = vi.fn();
+    vi.stubGlobal("requestIdleCallback", idleCallback);
+    const result = await renderIsolatedLink({
+      href: "/products/1",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(idleCallback).not.toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps ordinary App Router viewport prefetches on the idle queue", async () => {
+    const observer = stubIntersectionObserver();
+    const idleCallback = vi.fn();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback: idleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+
+      expect(idleCallback).toHaveBeenCalledTimes(1);
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("full-prefetches visible dynamic links without a loading shell boundary for client params", async () => {
     const observer = stubIntersectionObserver();
 
@@ -1444,12 +1489,48 @@ describe("Link prefetch scheduling", () => {
       );
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        null,
+        APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
       );
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(true);
       expect(entry?.optimisticRouteShell).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not promote a server-declared partial shell on repeat prefetch", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/clothing/1",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry).toBeDefined();
+      entry!.cacheForNavigation = false;
+      entry!.partialSuspenseShell = true;
+      result.fetch.mockResolvedValue(
+        new Response("shell", {
+          headers: { [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1" },
+        }),
+      );
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 2);
+      await flushPrefetchTasks();
+
+      expect(Array.from(getPrefetchCache().values())[0]).toMatchObject({
+        cacheForNavigation: false,
+        optimisticRouteShell: false,
+        partialSuspenseShell: true,
+      });
     } finally {
       result.restoreNodeEnv();
     }
@@ -1749,7 +1830,7 @@ describe("Link prefetch scheduling", () => {
       );
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        null,
+        APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
       );
     } finally {
       result.restoreNodeEnv();

@@ -21,6 +21,12 @@ import {
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import {
+  createPrefetchSuspenseShellState,
+  runWithPrefetchSuspenseShellState,
+  schedulePrefetchSuspenseShellAbort,
+  wasPrefetchSuspenseShellAborted,
+} from "vinext/shims/prefetch-suspense-shell";
+import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
   resolveAppPageHtmlResponsePolicy,
@@ -37,7 +43,10 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -688,7 +697,29 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
+  let prefetchSuspenseShellWasAborted = false;
   let rscStream = await runWithFetchDedupe(async () => {
+    if (
+      options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL &&
+      options.prerenderToReadableStream
+    ) {
+      const shellState = createPrefetchSuspenseShellState(options.cleanPathname);
+      const pendingResult = runWithPrefetchSuspenseShellState(shellState, () =>
+        options.prerenderToReadableStream!(outgoingElement, {
+          onError: rscErrorTracker.onRenderError,
+          signal: shellState.reactAbortController.signal,
+        }),
+      );
+      const cancelAbort = schedulePrefetchSuspenseShellAbort(shellState);
+      try {
+        const result = await pendingResult;
+        prefetchSuspenseShellWasAborted = wasPrefetchSuspenseShellAborted(shellState);
+        return result.prelude;
+      } finally {
+        cancelAbort();
+      }
+    }
+
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
@@ -763,7 +794,9 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const shouldBypassRscCache =
+      shouldBypassRscCacheForSkipTransport || prefetchSuspenseShellWasAborted;
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -777,6 +810,8 @@ export async function renderAppPageLifecycle(
         });
     if (shouldBypassRscCacheForSkipTransport) {
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+    } else if (prefetchSuspenseShellWasAborted) {
+      options.isrDebug?.("RSC cache write skipped (partial Suspense shell)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
       options.dynamicStaleTimeSeconds !== undefined &&
@@ -796,6 +831,9 @@ export async function renderAppPageLifecycle(
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
+      partialShell:
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL &&
+        prefetchSuspenseShellWasAborted,
       policy: rscResponsePolicy,
       timing: buildResponseTiming({
         compileEnd,
@@ -804,6 +842,12 @@ export async function renderAppPageLifecycle(
         responseKind: "rsc",
       }),
     });
+    if (prefetchSuspenseShellWasAborted) {
+      rscResponse.headers.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+      rscResponse.headers.delete("CDN-Cache-Control");
+      rscResponse.headers.delete("Cloudflare-CDN-Cache-Control");
+      rscResponse.headers.delete("Cache-Tag");
+    }
 
     // In dev mode, wrap the RSC response body to forward invalid dynamic usage
     // errors after the stream is consumed. This mirrors Next.js behavior where
@@ -824,7 +868,9 @@ export async function renderAppPageLifecycle(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata && !prefetchSuspenseShellWasAborted
+          ? capturedRscDataRef.value
+          : null,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,

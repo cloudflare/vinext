@@ -247,6 +247,7 @@ declare module "next/navigation" {
     mountedSlotsHeader?: string | null;
     onInvalidateCallbacks?: Set<() => void>;
     optimisticRouteShell?: boolean;
+    partialSuspenseShell?: boolean;
     outcome: "pending" | "cache-seeded";
     snapshot?: CachedRscResponse;
     pending?: Promise<void>;

@@ -325,21 +325,25 @@ describe("Link App Router prefetch mode", () => {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
         prefetchShellFirst: true,
+        prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
         prefetchShellFirst: false,
+        prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
         prefetchShellFirst: true,
+        prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
         prefetchShellFirst: false,
+        prefetchSuspenseShell: true,
         shouldPrefetch: true,
       });
       // Ported from Next.js:
@@ -348,11 +352,13 @@ describe("Link App Router prefetch mode", () => {
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
         prefetchShellFirst: false,
+        prefetchSuspenseShell: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
         prefetchShellFirst: false,
+        prefetchSuspenseShell: false,
         shouldPrefetch: false,
       });
     } finally {

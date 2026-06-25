@@ -15,6 +15,7 @@ import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/serve
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_PARTIAL_SHELL_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -321,6 +322,54 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
     expect(cache.has(rscUrl)).toBe(true);
     expect(prefetched.has(rscUrl)).toBe(true);
+  });
+
+  it("downgrades server-declared partial shells from navigation reuse", async () => {
+    const rscUrl = "/suspense-shell.rsc";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+          },
+        }),
+      ),
+    );
+
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    expect(getPrefetchCache().get(rscUrl)).toMatchObject({
+      cacheForNavigation: false,
+      optimisticRouteShell: false,
+      partialSuspenseShell: true,
+    });
+    expect(consumePrefetchResponse(rscUrl)).toBeNull();
+  });
+
+  it("rejects partial shells even if their navigation flag is promoted", async () => {
+    const rscUrl = "/promoted-suspense-shell.rsc";
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_PARTIAL_SHELL_HEADER]: "1",
+          },
+        }),
+      ),
+    );
+
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry).toBeDefined();
+    entry!.cacheForNavigation = true;
+
+    expect(hasPrefetchCacheEntryForNavigation(rscUrl)).toBe(false);
+    expect(consumePrefetchResponse(rscUrl)).toBeNull();
   });
 
   it("derives the interception context from the current pathname", () => {
