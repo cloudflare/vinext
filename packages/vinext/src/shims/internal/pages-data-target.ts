@@ -11,7 +11,7 @@ import { stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
-import { dedupedPagesDataFetch } from "./pages-data-fetch-dedup.js";
+import { dedupedPagesDataFetch, fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 
 export type PagesDataTarget = {
@@ -132,7 +132,9 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   const deploymentId = getDeploymentId();
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
-  void dedupedPagesDataFetch(target.dataHref, { headers }).catch(() => {});
+  const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(target.pattern) === true;
+  const dataFetch = isSsg ? fetchStaticPagesData : dedupedPagesDataFetch;
+  void dataFetch(target.dataHref, { headers }).catch(() => {});
 
   void target.loader().catch(() => {});
 }

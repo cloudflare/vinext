@@ -133,6 +133,23 @@ export function hasNamedExport(code: string, name: string): boolean {
   return hasNamedExportInProgram(program, name);
 }
 
+/** Returns true when a module exposes the requested public export name. */
+export function hasExportedName(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    if (node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return true;
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported) === name) return true;
+    }
+  }
+  return false;
+}
+
 function hasNamedExportInProgram(program: Program, name: string): boolean {
   for (const node of program.body) {
     if (node.type !== "ExportNamedDeclaration") continue;

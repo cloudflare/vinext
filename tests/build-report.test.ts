@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  hasExportedName,
   hasNamedExport,
   extractExportConstString,
   extractExportConstNumber,
@@ -60,6 +61,23 @@ describe("hasNamedExport", () => {
 
   it("does not detect alias exported under the searched name", () => {
     expect(hasNamedExport("export { gsp as getStaticProps };", "getStaticProps")).toBe(false);
+  });
+
+  it("detects the public name of aliased exports", () => {
+    expect(hasExportedName("export { gsp as getStaticProps };", "getStaticProps")).toBe(true);
+    expect(hasExportedName("export { getStaticProps as gsp };", "getStaticProps")).toBe(false);
+  });
+
+  it("ignores type-only exports with a runtime data-fetching name", () => {
+    expect(
+      hasExportedName('export type { Loader as getStaticProps } from "./data";', "getStaticProps"),
+    ).toBe(false);
+    expect(
+      hasExportedName(
+        "type Loader = () => unknown; export { type Loader as getStaticProps };",
+        "getStaticProps",
+      ),
+    ).toBe(false);
   });
 
   it("returns false when export is absent", () => {

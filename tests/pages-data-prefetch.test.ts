@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { clearPagesDataInflight } from "../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js";
+import {
+  clearPagesDataInflight,
+  fetchStaticPagesData,
+  getPagesStaticDataCache,
+} from "../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js";
 import { prefetchPagesData } from "../packages/vinext/src/shims/internal/pages-data-target.js";
 
 describe("prefetchPagesData", () => {
   beforeEach(() => {
     clearPagesDataInflight();
     vi.stubGlobal("document", {});
+    vi.stubGlobal("window", {
+      location: { href: "http://localhost/", origin: "http://localhost" },
+      __VINEXT_PAGES_SSG_PATTERNS__: [],
+    });
   });
 
   afterEach(() => {
@@ -45,5 +53,106 @@ describe("prefetchPagesData", () => {
       "x-nextjs-data": "1",
     });
     expect(loader).toHaveBeenCalledOnce();
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  it("retains only SSG prefetch responses in the public static-data cache", async () => {
+    window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/ssg"];
+    const fetchMock = vi.fn(async () => new Response('{"pageProps":{}}'));
+    vi.stubGlobal("fetch", fetchMock);
+    const loader = vi.fn(async () => ({ default: null }));
+
+    prefetchPagesData({
+      buildId: "build-id",
+      dataHref: "/_next/data/build-id/ssg.json",
+      loader,
+      locale: undefined,
+      pagePath: "/ssg",
+      params: {},
+      pattern: "/ssg",
+      search: "",
+    });
+    prefetchPagesData({
+      buildId: "build-id",
+      dataHref: "/_next/data/build-id/dynamic.json",
+      loader,
+      locale: undefined,
+      pagePath: "/dynamic",
+      params: {},
+      pattern: "/dynamic",
+      search: "",
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const cacheKeys = Object.keys(getPagesStaticDataCache());
+    expect(cacheKeys).toHaveLength(1);
+    expect(cacheKeys[0]).toContain("/_next/data/build-id/ssg.json");
+  });
+
+  it("evicts static data responses that opt out of middleware caching", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { headers: { "x-middleware-cache": "no-cache" } })),
+    );
+
+    await fetchStaticPagesData("/_next/data/build-id/ssg.json");
+
+    expect(Object.keys(getPagesStaticDataCache())).toEqual([]);
+  });
+
+  it("keeps the persistent static fetch alive when one navigation aborts", async () => {
+    let resolveFetch!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+    const controller = new AbortController();
+    const cancelled = fetchStaticPagesData("/_next/data/build-id/ssg.json", {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+
+    resolveFetch(new Response("{}"));
+    await expect(fetchStaticPagesData("/_next/data/build-id/ssg.json")).resolves.toBeInstanceOf(
+      Response,
+    );
+    expect(Object.keys(getPagesStaticDataCache())).toHaveLength(1);
+  });
+
+  it("keeps navigation data readable after a public cache consumer reads its response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"pageProps":{"value":1}}')),
+    );
+
+    await fetchStaticPagesData("/_next/data/build-id/ssg.json");
+    const [publicEntry] = Object.values(getPagesStaticDataCache());
+    expect(await (await publicEntry).json()).toEqual({ pageProps: { value: 1 } });
+
+    await expect(
+      (await fetchStaticPagesData("/_next/data/build-id/ssg.json")).json(),
+    ).resolves.toEqual({ pageProps: { value: 1 } });
+  });
+
+  it("evicts static data from a different deployment", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response("{}", { headers: { "x-nextjs-deployment-id": "deployment-b" } }),
+      ),
+    );
+
+    await fetchStaticPagesData("/_next/data/build-id/ssg.json", {
+      headers: { "x-deployment-id": "deployment-a" },
+    });
+
+    expect(Object.keys(getPagesStaticDataCache())).toEqual([]);
   });
 });

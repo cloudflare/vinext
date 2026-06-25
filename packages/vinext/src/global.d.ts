@@ -96,6 +96,9 @@ declare global {
      */
     __VINEXT_PAGE_PATTERNS__: string[] | undefined;
 
+    /** Pages Router patterns whose modules export `getStaticProps`. */
+    __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
+
     /**
      * Pages Router `_app` loader. Dynamic `import()` thunk for the user's
      * `pages/_app.tsx` module, or `undefined` when the app has no `_app`.

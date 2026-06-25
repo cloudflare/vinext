@@ -38,7 +38,11 @@ import {
   markAppRouteDetectedOnPrefetch,
 } from "./internal/app-route-detection.js";
 import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
-import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
+import {
+  dedupedPagesDataFetch,
+  fetchStaticPagesData,
+  getPagesStaticDataCache,
+} from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { splitPathSegments } from "../routing/utils.js";
@@ -1675,7 +1679,9 @@ async function navigateClientData(
       };
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
-      res = await dedupedPagesDataFetch(initialTarget.dataHref, {
+      const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(initialTarget.pattern) === true;
+      const dataFetch = isSsg ? fetchStaticPagesData : dedupedPagesDataFetch;
+      res = await dataFetch(initialTarget.dataHref, {
         headers,
         signal: controller.signal,
       });
@@ -1687,6 +1693,12 @@ async function navigateClientData(
     }
   }
   assertStillCurrent();
+
+  const responseDeploymentId = res.headers.get("x-nextjs-deployment-id");
+  const currentDeploymentId = getDeploymentId() ?? null;
+  if (responseDeploymentId !== null && responseDeploymentId !== currentDeploymentId) {
+    scheduleHardNavigationAndThrow(url, "Loaded static props were from an outdated deployment");
+  }
 
   // Soft-redirect protocol: the data endpoint emits 200 + x-nextjs-redirect
   // when middleware (or gSSP/gSP) chose a redirect for this URL.
@@ -3221,6 +3233,7 @@ const _components = getPagesRouterComponentsMap();
 const RouterMethods = {
   /** See `_components` comment above for the dual role this map plays. */
   components: _components,
+  sdc: getPagesStaticDataCache(),
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
     // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)
