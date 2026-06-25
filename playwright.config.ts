@@ -45,7 +45,7 @@ const projectServers = {
   "app-router": {
     testDir: "./tests/e2e",
     testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
-    testIgnore: appRouterBrowserSpecificTests,
+    testIgnore: [appRouterBrowserSpecificTests, "**/app-router/nextjs-compat/client-cache.spec.ts"],
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
   },

@@ -1841,6 +1841,7 @@ function bootstrapHydration(
             visibleCommitMode,
           );
           if (cachedRenderOutcome === "no-commit") {
+            if (!browserNavigationController.isCurrentNavigation(navId)) return;
             deleteVisitedResponse(rscUrl, requestInterceptionContext);
             continue;
           }

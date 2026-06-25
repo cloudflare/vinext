@@ -294,6 +294,10 @@ jobs:
             label: app-router 3/3
             shardIndex: 3
             shardTotal: 3
+          - project: app-router-client-cache
+            label: app-router-client-cache
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router-chrome-browser-specific
             label: app-router-chrome-browser-specific
             shardIndex: 1
