@@ -80,6 +80,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(new URL("/", request.url));
   }
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/concurrent-navigations/proxy.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/concurrent-navigations/proxy.ts
+  // Prefetch route A normally, then rewrite only the navigation request to B.
+  // The App Router must discard the mismatched prefetched route tree while
+  // reusing the navigation response for the rewritten route.
+  if (
+    pathname.startsWith("/nextjs-compat/mismatching-prefetch/dynamic-page/") &&
+    request.headers.get("x-vinext-rsc-render-mode") !== "prefetch-loading-shell"
+  ) {
+    const mismatchRewrite = request.nextUrl.searchParams.get("mismatch-rewrite");
+    if (mismatchRewrite) {
+      return NextResponse.rewrite(new URL(mismatchRewrite, request.url));
+    }
+  }
+
   // Used by Vitest: nextjs-compat/hooks.test.ts — verifies usePathname()
   // returns the CANONICAL URL (the one the user sees) after a middleware
   // rewrite, not the internal rewrite target. Mirrors the Next.js test
@@ -355,6 +371,7 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
+    "/nextjs-compat/mismatching-prefetch/:path*",
     "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",
     "/middleware-rewrite-query",

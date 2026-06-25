@@ -4,6 +4,7 @@ import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js
 
 type AppPageRenderIdentityInput = {
   displayPathname: string;
+  matchedRoutePathname?: string;
   interceptionContext?: string | null;
   interceptSourceMatchedUrl?: string | null;
   interceptSlotId?: string | null;
@@ -36,11 +37,14 @@ export function createAppPageRenderIdentity(
 ): AppPageRenderIdentity {
   const interceptionContext = input.interceptionContext ?? null;
   const targetMatchedPathname = normalizeAppPageRenderMatchedPathname(input.displayPathname);
+  const requestedMatchedRoutePathname = normalizeAppPageRenderMatchedPathname(
+    input.matchedRoutePathname ?? input.displayPathname,
+  );
   const sourceMatchedPathname = normalizeAppPageInterceptionProofPathname(
     input.interceptSourceMatchedUrl ?? null,
   );
   const slotId = input.interceptSlotId ?? null;
-  const matchedRoutePathname = sourceMatchedPathname ?? targetMatchedPathname;
+  const matchedRoutePathname = sourceMatchedPathname ?? requestedMatchedRoutePathname;
   const routeId = AppElementsWire.encodeRouteId(matchedRoutePathname, null);
   const pageId = AppElementsWire.encodePageId(matchedRoutePathname, null);
   const interception =
