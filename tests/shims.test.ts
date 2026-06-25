@@ -18226,6 +18226,22 @@ describe("next/image enhancements", () => {
     expect(result.props.srcSet).toContain("w");
   });
 
+  it("getImageProps uses Next.js width candidates for responsive sizes", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Responsive",
+      width: 500,
+      height: 300,
+      sizes: "(max-width: 768px) 100vw, 50vw",
+    });
+
+    expect(result.props.src).toContain("w=3840");
+    expect(result.props.srcSet).toContain("w=384");
+    expect(result.props.srcSet).toContain("w=3840");
+    expect(result.props.srcSet).not.toContain("w=256");
+  });
+
   it("getImageProps does not generate srcSet for fill images", async () => {
     const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
     const result = getImageProps({

@@ -337,8 +337,7 @@ function preloadImageResource(input: {
  * Generate a srcSet string for responsive images.
  *
  * Each width points to the `/_next/image` optimization endpoint so the
- * server can resize and transcode the image. Only includes widths that are
- * <= 2x the original image width to avoid pointless upscaling.
+ * server can resize and transcode the image.
  */
 function getImageWidths(width: number): number[] {
   return [
@@ -359,10 +358,17 @@ function generateImageAttributes(
   sizes?: string,
 ): { src: string; srcSet: string } {
   if (sizes) {
-    const widths = RESPONSIVE_WIDTHS.filter((candidateWidth) => candidateWidth <= width * 2);
-    const candidates = widths.length > 0 ? widths : [width];
+    const viewportWidthPattern = /(^|\s)(1?\d?\d)vw/g;
+    const viewportPercentages = Array.from(sizes.matchAll(viewportWidthPattern), (match) =>
+      Number.parseInt(match[2], 10),
+    );
+    const minimumWidth =
+      viewportPercentages.length > 0
+        ? RESPONSIVE_WIDTHS[0] * (Math.min(...viewportPercentages) * 0.01)
+        : 0;
+    const candidates = ALL_IMAGE_WIDTHS.filter((candidateWidth) => candidateWidth >= minimumWidth);
     return {
-      src: imageOptimizationUrl(src, width, quality),
+      src: imageOptimizationUrl(src, candidates[candidates.length - 1], quality),
       srcSet: candidates
         .map(
           (candidateWidth) =>
