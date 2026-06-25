@@ -100,6 +100,7 @@ type AppRscMiddlewareContext = AppMiddlewareContext;
 type RunAppMiddlewareOptions = {
   cleanPathname: string;
   context: AppRscMiddlewareContext;
+  hadBasePath: boolean;
   isDataRequest: boolean;
   request: Request;
 };
@@ -604,6 +605,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const middlewareResult = await options.runMiddleware({
       cleanPathname,
       context: middlewareContext,
+      hadBasePath,
       isDataRequest: isMiddlewareDataRequest,
       request: userlandRequest,
     });
@@ -617,7 +619,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    didMiddlewareRewrite = cleanPathname !== normalized.cleanPathname;
+    didMiddlewareRewrite = middlewareResult.rewritten;
     if (middlewareResult.search !== null) {
       url.search = middlewareResult.search;
     }
@@ -737,7 +739,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const isPostRequest = request.method.toUpperCase() === "POST";
   let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
-  if (isPostRequest && contentType.startsWith("multipart/form-data") && !actionId) {
+  if (
+    filesystemRouteEligible &&
+    isPostRequest &&
+    contentType.startsWith("multipart/form-data") &&
+    !actionId
+  ) {
     if (options.handleProgressiveActionRequest) {
       progressiveActionResult = await options.handleProgressiveActionRequest({
         actionId,
@@ -777,7 +784,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const serverActionResponse =
-    isPostRequest && actionId && options.handleServerActionRequest
+    filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest
       ? await options.handleServerActionRequest({
           actionId,
           cleanPathname,

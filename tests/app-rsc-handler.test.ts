@@ -1158,6 +1158,66 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("does not dispatch server actions outside basePath when an opt-out rule exists", async () => {
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({
+      configHeaders: [{ source: "/outside", headers: [], basePath: false }],
+      handleServerActionRequest,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/about", {
+        method: "POST",
+        headers: { "next-action": "abc123" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(handleServerActionRequest).not.toHaveBeenCalled();
+  });
+
+  it("passes outside-basePath state to middleware", async () => {
+    let pathname: string | undefined;
+    let basePath: string | undefined;
+    const handler = createHandler({
+      configHeaders: [{ source: "/outside", headers: [], basePath: false }],
+      middlewareModule: {
+        default: (request: Request & { nextUrl: URL & { basePath: string } }) => {
+          pathname = request.nextUrl.pathname;
+          basePath = request.nextUrl.basePath;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    await handler(new Request("https://example.test/outside"), null);
+
+    expect(pathname).toBe("/outside");
+    expect(basePath).toBe("");
+  });
+
+  it("allows query-only middleware rewrites to make outside-basePath routes eligible", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [{ source: "/about", headers: [], basePath: false }],
+      dispatchMatchedPage,
+      middlewareModule: {
+        default: (request: Request) =>
+          new Response(null, {
+            headers: {
+              "x-middleware-rewrite": new URL("/about?from=middleware", request.url).toString(),
+            },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/about"), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalled();
+  });
+
   it("preserves Node route handler RSC URLs while hiding internal parsed params", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/front-redirect-issue/front-redirect-issue.test.ts

@@ -834,8 +834,9 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
+    expect(withMiddleware).toContain("hadBasePath,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
