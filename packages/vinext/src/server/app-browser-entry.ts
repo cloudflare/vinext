@@ -86,6 +86,7 @@ import {
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  resolveServerActionOperationLane,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
@@ -1357,7 +1358,7 @@ function registerServerActionCallback(): void {
           navigationPlanner,
           performHardNavigation: (url, historyMode) =>
             browserNavigationController.performHardNavigation(url, historyMode),
-          renderRedirectPayload(elements, target, actionInitiation) {
+          renderRedirectPayload(elements, target, actionInitiation, revalidation) {
             const hashIdx = target.href.indexOf("#");
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
@@ -1376,7 +1377,7 @@ function registerServerActionCallback(): void {
               null,
               FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
               target.type === "push" ? "navigate" : "replace",
-              "server-action",
+              resolveServerActionOperationLane(revalidation),
               null,
               actionScrollIntent,
             ).catch(() => {

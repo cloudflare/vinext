@@ -37,6 +37,7 @@ import {
   type ApprovedVisibleCommit,
 } from "./app-browser-visible-commit.js";
 import {
+  resolveServerActionOperationLane,
   shouldScheduleRefreshForDiscardedServerAction,
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
@@ -812,7 +813,7 @@ export function createAppBrowserNavigationController(
       navigationSnapshot,
       nextElements,
       renderId: allocateRenderId(),
-      operationLane: "server-action",
+      operationLane: resolveServerActionOperationLane(lifecycleOptions?.revalidation ?? "none"),
       payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       startedNavigationId,
       routeManifest: getRouteManifest(),

@@ -151,12 +151,13 @@ function reduceApprovedVisibleCommitState(
   switch (action.type) {
     case "traverse":
     case "navigate": {
-      const preserveElementIds = action.reuseCurrentBfcacheIds
-        ? commit.decision.preserveElementIds.filter((id) => {
-            const previousBfcacheId = state.bfcacheIds[id];
-            return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
-          })
-        : [];
+      const preserveElementIds =
+        action.reuseCurrentBfcacheIds && action.operation.lane !== "refresh"
+          ? commit.decision.preserveElementIds.filter((id) => {
+              const previousBfcacheId = state.bfcacheIds[id];
+              return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
+            })
+          : [];
       const preservedElementIdSet = new Set(preserveElementIds);
       const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
         ? commit.decision.preservePreviousSlotIds.filter((slotId) => {

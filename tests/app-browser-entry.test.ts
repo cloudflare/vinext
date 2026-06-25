@@ -20,6 +20,7 @@ import {
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
+  resolveServerActionOperationLane,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
@@ -888,6 +889,9 @@ describe("app browser entry navigation scheduling", () => {
     expect(
       parseServerActionRevalidationHeader(new Headers({ [ACTION_REVALIDATED_HEADER]: "not-json" })),
     ).toBe("none");
+    expect(resolveServerActionOperationLane("none")).toBe("server-action");
+    expect(resolveServerActionOperationLane("dynamicOnly")).toBe("refresh");
+    expect(resolveServerActionOperationLane("staticAndDynamic")).toBe("refresh");
   });
 
   it("restores action HTTP fallback errors from response status", () => {
@@ -4413,6 +4417,83 @@ describe("app browser entry previousNextUrl helpers", () => {
       "layout:/dashboard",
       "layout:/dashboard/settings",
     ]);
+  });
+
+  it("installs fresh same-layout output on refresh commits", async () => {
+    const previousLayout = React.createElement("div", null, "previous layout");
+    const nextLayout = React.createElement("div", null, "refreshed layout");
+    const state = createState({
+      bfcacheIds: { "layout:/": "0" },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        { "layout:/": previousLayout },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+      routeId: "route:/dashboard",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "layout:/": nextLayout,
+        "page:/dashboard": React.createElement("main", null, "dashboard"),
+      },
+      layoutIds: ["layout:/"],
+      operationLane: "refresh",
+      rootLayoutTreePath: "/",
+      routeId: "route:/dashboard",
+    });
+
+    expect(nextState.elements["layout:/"]).toBe(nextLayout);
+  });
+
+  it("installs fresh matching layouts for revalidating same-URL server actions", async () => {
+    const previousLayout = React.createElement("div", null, "previous layout");
+    const nextLayout = React.createElement("div", null, "revalidated layout");
+    const initialState = createState({
+      bfcacheIds: { "layout:/": "0" },
+      elements: createResolvedElements(
+        "route:/settings",
+        "/",
+        null,
+        { "layout:/": previousLayout },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings");
+
+    try {
+      await controller.commitSameUrlNavigatePayload(
+        Promise.resolve(
+          createResolvedElements(
+            "route:/settings",
+            "/",
+            null,
+            {
+              "layout:/": nextLayout,
+              "page:/settings": React.createElement("main", null, "settings"),
+            },
+            ["layout:/"],
+          ),
+        ),
+        stateRef.current.navigationSnapshot,
+        undefined,
+        stateRef.current,
+        { revalidation: "staticAndDynamic" },
+      );
+
+      expect(stateRef.current.activeOperation).toMatchObject({ lane: "refresh" });
+      expect(stateRef.current.elements["layout:/"]).toBe(nextLayout);
+    } finally {
+      detach();
+    }
   });
 
   it("installs fresh dynamic layout output when its bound segment identity changes", async () => {
