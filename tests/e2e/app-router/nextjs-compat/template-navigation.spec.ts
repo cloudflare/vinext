@@ -24,18 +24,23 @@ test.describe("template navigation", () => {
     await expect(page.getByTestId("client-template-count")).toHaveText("Template 0");
   });
 
-  test("server template rerenders on navigation", async ({ page }) => {
-    await page.goto(`${BASE}/nextjs-compat/template-server`);
+  test("server template identity follows its segment boundary", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/template-server/alpha`);
     await waitForAppRouterHydration(page);
 
-    const firstRenderId = await page.getByTestId("server-template-render-id").textContent();
-    await page.getByTestId("server-template-link").click();
-    await expect(page.getByTestId("server-template-other-page")).toBeVisible();
-    await expect(page.getByTestId("server-template-render-id")).not.toHaveText(firstRenderId!);
+    await page.getByTestId("server-template-identity-increment").click();
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
 
-    const secondRenderId = await page.getByTestId("server-template-render-id").textContent();
-    await page.getByTestId("server-template-link").click();
-    await expect(page.getByTestId("server-template-page")).toBeVisible();
-    await expect(page.getByTestId("server-template-render-id")).not.toHaveText(secondRenderId!);
+    await page.getByTestId("server-template-search-link").click();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/template-server/alpha?view=details`);
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+
+    await page.getByTestId("server-template-child-link").click();
+    await expect(page.getByTestId("server-template-child-page")).toHaveText("Child alpha");
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+
+    await page.getByTestId("server-template-param-link").click();
+    await expect(page.getByTestId("server-template-section-page")).toHaveText("Section beta");
+    await expect(page.getByTestId("server-template-identity")).toHaveText("0");
   });
 });
