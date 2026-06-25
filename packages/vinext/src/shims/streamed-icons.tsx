@@ -6,7 +6,7 @@ const STREAMED_ICON_ATTRIBUTE = "data-vinext-streamed-icon";
 
 export function reconcileStreamedIcons(metadataKey: string): void {
   document
-    .querySelectorAll<HTMLLinkElement>('body link[rel="icon"], body link[rel="apple-touch-icon"]')
+    .querySelectorAll<HTMLLinkElement>(`body link[${STREAMED_ICON_ATTRIBUTE}]`)
     .forEach((icon) => document.head.appendChild(icon));
 
   const ownedIcons = [

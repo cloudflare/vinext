@@ -7,6 +7,11 @@ export async function generateMetadata(): Promise<Metadata> {
     icons: {
       icon: "/star.png",
       apple: "/star-apple.png",
+      shortcut: "/star-shortcut.png",
+      other: [
+        { rel: "apple-touch-icon-precomposed", url: "/star-precomposed.png" },
+        { rel: "mask-icon", url: "/star-mask.svg" },
+      ],
     },
   };
 }

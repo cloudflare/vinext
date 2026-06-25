@@ -800,6 +800,7 @@ type MetadataHeadProps = {
   metadata: Metadata;
   pathname?: string;
   trailingSlash?: boolean;
+  streamedIconKey?: string;
 };
 
 function escapeHtmlText(value: string): string {
@@ -848,6 +849,7 @@ function renderMetadataElementToHtml(node: unknown): string {
       return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
     case "link":
       return `<link${renderMetadataAttributes(props, [
+        "data-vinext-streamed-icon",
         "rel",
         "href",
         "hrefLang",
@@ -863,14 +865,24 @@ function renderMetadataElementToHtml(node: unknown): string {
 export function renderMetadataToHtml(
   metadata: Metadata,
   pathname = "/",
-  options?: { trailingSlash?: boolean },
+  options?: { trailingSlash?: boolean; streamedIconKey?: string },
 ): string {
   return renderMetadataElementToHtml(
-    MetadataHead({ metadata, pathname, trailingSlash: options?.trailingSlash }),
+    MetadataHead({
+      metadata,
+      pathname,
+      trailingSlash: options?.trailingSlash,
+      streamedIconKey: options?.streamedIconKey,
+    }),
   );
 }
 
-export function MetadataHead({ metadata, pathname = "/", trailingSlash }: MetadataHeadProps) {
+export function MetadataHead({
+  metadata,
+  pathname = "/",
+  trailingSlash,
+  streamedIconKey,
+}: MetadataHeadProps) {
   const elements: React.ReactElement[] = [];
   let key = 0;
 
@@ -1173,7 +1185,14 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
         ? metadata.icons.shortcut
         : [metadata.icons.shortcut];
       for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={stringifyUrl(s)} />);
+        elements.push(
+          <link
+            key={key++}
+            data-vinext-streamed-icon={streamedIconKey}
+            rel="shortcut icon"
+            href={stringifyUrl(s)}
+          />,
+        );
       }
     }
     // Icon
@@ -1182,6 +1201,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
         elements.push(
           <link
             key={key++}
+            data-vinext-streamed-icon={streamedIconKey}
             rel="icon"
             href={stringifyUrl(i.url)}
             {...(i.sizes ? { sizes: i.sizes } : {})}
@@ -1200,6 +1220,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
         elements.push(
           <link
             key={key++}
+            data-vinext-streamed-icon={streamedIconKey}
             rel="apple-touch-icon"
             href={stringifyUrl(a.url)}
             {...(a.sizes ? { sizes: a.sizes } : {})}
@@ -1218,6 +1239,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
         elements.push(
           <link
             key={key++}
+            data-vinext-streamed-icon={streamedIconKey}
             rel={o.rel}
             href={stringifyUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}

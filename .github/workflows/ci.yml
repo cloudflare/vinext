@@ -290,10 +290,6 @@ jobs:
             label: app-router-bfcache
             shardIndex: 1
             shardTotal: 1
-          - project: metadata-icons
-            label: metadata-icons
-            shardIndex: 1
-            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3

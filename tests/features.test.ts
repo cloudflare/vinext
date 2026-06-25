@@ -3320,6 +3320,11 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
         icons: {
           icon: "/favicon.ico",
           apple: "/apple-touch-icon.png",
+          shortcut: "/shortcut.png",
+          other: [
+            { rel: "apple-touch-icon-precomposed", url: "/precomposed.png" },
+            { rel: "mask-icon", url: "/mask.svg" },
+          ],
         },
       },
       "/icons",
@@ -3333,8 +3338,17 @@ describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
     expect(html).toMatch(
       /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon" href="\/apple-touch-icon\.png">/,
     );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="shortcut icon" href="\/shortcut\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="apple-touch-icon-precomposed" href="\/precomposed\.png">/,
+    );
+    expect(html).toMatch(
+      /<link data-vinext-streamed-icon="[^"]+" rel="mask-icon" href="\/mask\.svg">/,
+    );
     expect(html).toContain(
-      `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`,
+      `document.querySelectorAll('body link[data-vinext-streamed-icon]').forEach(el => document.head.appendChild(el))`,
     );
     expect(html).toMatch(/<script>document\.querySelectorAll[\s\S]*<\/script><\/div>$/);
   });

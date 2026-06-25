@@ -69,18 +69,6 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
-  "metadata-icons": {
-    testDir: "./tests/e2e/metadata-icons",
-    use: { baseURL: "http://localhost:4191" },
-    server: {
-      command:
-        "(test -e node_modules || ln -s ../app-basic/node_modules node_modules) && npx vp dev --port 4191",
-      cwd: "./tests/fixtures/metadata-icons",
-      port: 4191,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-    },
-  },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
     use: { baseURL: "http://localhost:4185" },

@@ -538,7 +538,7 @@ function createStreamedIconKey(pathname: string, metadataHtml: string): string {
   return `${pathname}:${(hash >>> 0).toString(36)}`;
 }
 
-const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
+const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[data-vinext-streamed-icon]').forEach(el => document.head.appendChild(el))`;
 
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
@@ -552,10 +552,9 @@ export function createAppPageRouteBodyMetadata(
   const metadataKey = hasStreamedIcons(metadata)
     ? createStreamedIconKey(pathname, renderedMetadataHtml)
     : "";
-  const metadataHtml = renderedMetadataHtml.replace(
-    /<link(?=[^>]*\srel="(?:icon|apple-touch-icon)")/g,
-    `<link data-vinext-streamed-icon="${metadataKey}"`,
-  );
+  const metadataHtml = metadataKey
+    ? renderMetadataToHtml(metadata, pathname, { trailingSlash, streamedIconKey: metadataKey })
+    : renderedMetadataHtml;
   const parserInsertedMetadataHtml =
     metadataHtml + createInlineScriptTag(REINSERT_STREAMED_ICONS_SCRIPT, scriptNonce);
   return (
