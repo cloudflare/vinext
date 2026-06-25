@@ -13264,7 +13264,7 @@ describe("app router scroll intent state", () => {
     const { beginAppRouterScrollIntent, clearAppRouterScrollIntent } =
       await import("../packages/vinext/src/shims/app-router-scroll-state.js");
 
-    const originalDocument = globalThis.document;
+    const originalDocumentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
     const existingStylesheet = {} as Element;
     const existingMetadata = {} as Element;
     Object.defineProperty(globalThis, "document", {
@@ -13281,10 +13281,11 @@ describe("app router scroll intent state", () => {
       expect(intent.headElements?.has(existingMetadata)).toBe(true);
     } finally {
       clearAppRouterScrollIntent();
-      Object.defineProperty(globalThis, "document", {
-        configurable: true,
-        value: originalDocument,
-      });
+      if (originalDocumentDescriptor) {
+        Object.defineProperty(globalThis, "document", originalDocumentDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "document");
+      }
     }
   });
 
