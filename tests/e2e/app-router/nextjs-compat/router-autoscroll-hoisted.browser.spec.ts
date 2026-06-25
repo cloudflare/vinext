@@ -25,7 +25,9 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
 async function writeHoistedScrollFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const hoistedDir = path.join(appDir, "hoisted");
+  const cssModuleDir = path.join(appDir, "css-module", "[num]");
   await fs.mkdir(hoistedDir, { recursive: true });
+  await fs.mkdir(cssModuleDir, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
@@ -66,6 +68,40 @@ export default function HomePage() {
       <div id="hoisted-page">Hoisted page</div>
       {Array.from({ length: 500 }, (_, index) => <div key={index}>{index}</div>)}
     </>
+  );
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(cssModuleDir, "styles.module.css"),
+    `.square {
+  /* Intentionally empty: React still hoists the route stylesheet resource. */
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(cssModuleDir, "page.tsx"),
+    `import Link from "next/link";
+import styles from "./styles.module.css";
+
+export default async function CssModulePage({
+  params,
+}: {
+  params: Promise<{ num: string }>;
+}) {
+  const { num } = await params;
+  return (
+    <div>
+      {Array.from({ length: 100 }, (_, index) => (
+        <div key={index} style={{ height: 100, width: 100, margin: 10 }}>
+          <Link id="lower" href={\`/css-module/\${Number(num) - 1}\`} prefetch={false}>
+            lower
+          </Link>
+          <div>{num}</div>
+        </div>
+      ))}
+      <div className={styles.square} />
+    </div>
   );
 }
 `,
@@ -130,3 +166,28 @@ test("does not scroll to top when React hoists the route's first DOM node", asyn
     await fs.rm(app.fixtureRoot, { recursive: true, force: true });
   }
 });
+
+for (const clickMode of ["playwright", "javascript"] as const) {
+  test(`scrolls to top for CSS Module navigation clicked via ${clickMode}`, async ({ page }) => {
+    const app = await startHoistedScrollFixture();
+
+    try {
+      await page.goto(`${app.baseUrl}/css-module/1`);
+      await waitForAppRouterHydration(page);
+      await page.evaluate(() => window.scrollTo(0, 1000));
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(1000);
+
+      if (clickMode === "javascript") {
+        await page.evaluate(() => document.getElementById("lower")?.click());
+      } else {
+        await page.locator("#lower").first().click();
+      }
+
+      await expect(page).toHaveURL(`${app.baseUrl}/css-module/0`);
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    } finally {
+      await app.server.close();
+      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+}
