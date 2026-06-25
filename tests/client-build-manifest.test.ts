@@ -372,6 +372,28 @@ describe("computeClientRuntimeMetadata", () => {
       "https://cdn.example.com/assets/_next/static/shared.js",
       "https://cdn.example.com/assets/_next/static/runtime.js",
     ]);
+
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/",
+        assetPrefix: "",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/_next/static/shared.js", "/_next/static/runtime.js"]);
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/docs/_next/static/shared.js", "/docs/_next/static/runtime.js"]);
+    expect(
+      computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "/cdn",
+      }).appBootstrapPreinitModules,
+    ).toEqual(["/cdn/_next/static/shared.js", "/cdn/_next/static/runtime.js"]);
   });
 
   it("applies base path to all paths", async () => {

@@ -2544,14 +2544,35 @@ describe("Cloudflare client asset sidecar generation", () => {
   it("serializes runtime metadata as an importable module", () => {
     const source = buildPagesClientAssetsModule({
       clientEntry: "assets/entry.js",
+      appBootstrapPreinitModules: ["/assets/framework.js"],
       ssrManifest: { "pages/index.tsx": ["assets/page.js"] },
       lazyChunks: ["assets/lazy.js"],
       dynamicPreloads: { "src/widget.tsx": ["assets/widget.js"] },
     });
 
     expect(source).toBe(
-      'export default {"clientEntry":"assets/entry.js","ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]}};\n',
+      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]}};\n',
     );
+  });
+
+  it("serializes root-anchored App bootstrap preinit modules", () => {
+    const clientDir = writeClientBuild(tmpDir, manifestWithLazyChunks);
+    fs.writeFileSync(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({ appBrowserEntry: "assets/app-entry.js" }),
+    );
+
+    const metadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+    });
+    const sidecarPath = path.join(tmpDir, "vinext-client-assets.js");
+    fs.writeFileSync(sidecarPath, buildPagesClientAssetsModule(metadata));
+
+    expect(readGeneratedModule(sidecarPath).appBootstrapPreinitModules).toEqual([
+      "/assets/framework.js",
+    ]);
   });
 
   it("keeps lazy chunks base-relative while applying assetPrefix to dynamic preloads", () => {
