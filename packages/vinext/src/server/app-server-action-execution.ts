@@ -1273,7 +1273,11 @@ export async function handleServerActionRscRequest<
         request: options.request,
         url: redirectTarget,
       });
-      setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      setHeadersContext(
+        headersContextFromRequest(redirectRenderRequest, {
+          draftModeSecret: options.draftModeSecret,
+        }),
+      );
       const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
       const redirectSearchParams = prepareActionPageRerenderContext({
         draftModeSecret: options.draftModeSecret,

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
@@ -384,4 +384,65 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
 
     expect(value2).toBe(value1);
   });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  test("unstable_cache bypasses cache in draft mode", async ({ request }) => {
+    const key = `bypass-${Date.now()}`;
+
+    try {
+      expect((await request.get(`${BASE}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+
+      const draft1 = await readDraftCachePage(request, key);
+      const draft2 = await readDraftCachePage(request, key);
+
+      expect(draft1.data).not.toBe(draft2.data);
+    } finally {
+      await request.get(`${BASE}/nextjs-compat/api/draft-disable`);
+    }
+  });
+
+  test("unstable_cache does not cache new results in draft mode", async ({ request }) => {
+    const key = `write-${Date.now()}`;
+
+    let draft;
+    try {
+      expect((await request.get(`${BASE}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      draft = await readDraftCachePage(request, key);
+    } finally {
+      await request.get(`${BASE}/nextjs-compat/api/draft-disable`);
+    }
+
+    const normal = await readDraftCachePage(request, key);
+
+    expect(draft).toBeDefined();
+    expect(draft.data).not.toBe(normal.data);
+  });
+
+  test("unstable_cache exposes draft mode status", async ({ request }) => {
+    const key = `status-${Date.now()}`;
+
+    const normal = await readDraftCachePage(request, key);
+    expect(normal.draftMode).toBe("false");
+
+    try {
+      expect((await request.get(`${BASE}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      const draft = await readDraftCachePage(request, key);
+      expect(draft.draftMode).toBe("true");
+    } finally {
+      await request.get(`${BASE}/nextjs-compat/api/draft-disable`);
+    }
+  });
 });
+
+async function readDraftCachePage(request: APIRequestContext, key: string) {
+  const response = await request.get(
+    `${BASE}/nextjs-compat/unstable-cache-draft?key=${encodeURIComponent(key)}`,
+  );
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  return {
+    data: html.match(/id="cached-data">([^<]+)/)?.[1],
+    draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1],
+  };
+}

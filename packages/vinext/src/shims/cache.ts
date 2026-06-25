@@ -19,7 +19,11 @@
  * target used by the generated cache-adapter module.
  */
 
-import { getHeadersAccessPhase, markDynamicUsage as _markDynamic } from "./headers.js";
+import {
+  getHeadersAccessPhase,
+  isDraftModeEnabled,
+  markDynamicUsage as _markDynamic,
+} from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { fnv1a64 } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
@@ -595,33 +599,39 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
     });
 
-    // Try to get from cache. Stale entries are usable in normal App Router
-    // requests, but foreground-refresh inside revalidation scopes so the
-    // regenerated page/route stores fresh data.
-    const existing = await getDataCacheHandler().get(cacheKey, {
-      kind: "FETCH",
-      tags,
-    });
-    if (existing?.value && existing.value.kind === "FETCH") {
-      const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
-      if (cached.ok) {
-        if (existing.cacheState === "stale") {
-          if (shouldServeStaleUnstableCacheEntry()) {
-            scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-              refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
-            );
+    const isDraftMode = isDraftModeEnabled();
+    if (!isDraftMode) {
+      // Try to get from cache. Stale entries are usable in normal App Router
+      // requests, but foreground-refresh inside revalidation scopes so the
+      // regenerated page/route stores fresh data.
+      const existing = await getDataCacheHandler().get(cacheKey, {
+        kind: "FETCH",
+        tags,
+      });
+      if (existing?.value && existing.value.kind === "FETCH") {
+        const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+        if (cached.ok) {
+          if (existing.cacheState === "stale") {
+            if (shouldServeStaleUnstableCacheEntry()) {
+              scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
+                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+              );
+              return cached.value;
+            }
+          } else {
             return cached.value;
           }
-        } else {
-          return cached.value;
         }
+        // Corrupted entries fall through to a foreground refresh.
       }
-      // Corrupted entries fall through to a foreground refresh.
     }
 
     // Cache miss — call the function inside the unstable_cache ALS scope
     // so that headers()/cookies()/connection() can detect they're in a
     // cache scope and throw an appropriate error.
+    if (isDraftMode) {
+      return await _unstableCacheAls.run(true, () => fn(...args));
+    }
     return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   };
 
