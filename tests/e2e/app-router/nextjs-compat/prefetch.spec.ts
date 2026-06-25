@@ -178,7 +178,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
     await page.evaluate(() => {
       const router = (window as PrefetchTestWindow).next?.router;
       if (router === undefined) throw new Error("Missing app router instance");
-      router.push("/nextjs-compat/prefetch-test/programmatic-target");
+      void router.push("/nextjs-compat/prefetch-test/programmatic-target");
     });
 
     await expect
