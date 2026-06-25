@@ -1595,6 +1595,7 @@ function bootstrapHydration(
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
+    const navigationCacheGeneration = clientNavigationCacheGeneration;
     discardedServerActionRefreshScheduler.markNavigationStart();
 
     // Loop variables for inline redirect following. On a redirect, these are
@@ -2093,8 +2094,10 @@ function bootstrapHydration(
         // never actually rendered successfully.
         try {
           const renderedElements = await rscPayload;
+          if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
           const metadata = AppElementsWire.readMetadata(renderedElements);
           const cacheBuffer = await cacheBufferPromise;
+          if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
           const responseSnapshot = createCachedRscResponseSnapshot(
             navResponse,
             cacheBuffer,
@@ -2120,6 +2123,7 @@ function bootstrapHydration(
             metadata.interceptionContext,
           );
           if (isCacheRestorableAppPayloadMetadata(metadata)) {
+            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
               interceptionContext,
@@ -2140,6 +2144,7 @@ function bootstrapHydration(
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
+            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
               interceptionContext,
@@ -2150,6 +2155,7 @@ function bootstrapHydration(
               committedElements,
             );
           } else {
+            if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             seedPrefetchResponseSnapshot(
               rscUrl,
               snapshot,

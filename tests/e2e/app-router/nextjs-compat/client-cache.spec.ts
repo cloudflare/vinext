@@ -17,6 +17,19 @@ type RscRequest = {
   pathname: string;
 };
 
+type DelayedNavigationCachePublicationState = {
+  releaseOldNavigationTail: (() => void) | null;
+};
+
+type ClientCacheTestWindow = Window & {
+  __VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__?: DelayedNavigationCachePublicationState;
+  next?: {
+    router?: {
+      refresh(): void;
+    };
+  };
+};
+
 async function installFixedTime(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const NativeDate = Date;
@@ -219,5 +232,98 @@ test.describe("Next.js compat: client cache", () => {
     const refreshed = await navigateTo(page, "#client-cache-none", "2");
     expect(refreshed).not.toBe(initial);
     expect(requestsFor(requests, `${ROOT}/2`).some((request) => !request.partial)).toBe(true);
+  });
+
+  test("a navigation tail cannot republish after refresh invalidates its cache generation", async ({
+    page,
+  }) => {
+    await page.addInitScript((targetPath) => {
+      const testWindow = window as ClientCacheTestWindow;
+      const originalFetch = window.fetch.bind(window);
+      const state: DelayedNavigationCachePublicationState = {
+        releaseOldNavigationTail: null,
+      };
+      testWindow.__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__ = state;
+
+      window.fetch = async (input, init) => {
+        const rawUrl =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(rawUrl, window.location.href);
+        const headers = new Headers(input instanceof Request ? input.headers : undefined);
+        if (init?.headers) {
+          new Headers(init.headers).forEach((value, key) => {
+            headers.set(key, value);
+          });
+        }
+
+        const response = await originalFetch(input, init);
+        if (
+          state.releaseOldNavigationTail !== null ||
+          url.pathname !== targetPath ||
+          !url.searchParams.has("_rsc") ||
+          headers.get("rsc") !== "1" ||
+          response.body === null
+        ) {
+          return response;
+        }
+
+        const targetBody = response.body;
+        const originalTee = targetBody.tee.bind(targetBody);
+        targetBody.tee = function () {
+          const [reactBranch, cacheBranch] = originalTee();
+          const cacheReader = cacheBranch.getReader();
+          const delayedCacheBranch = new ReadableStream<Uint8Array<ArrayBuffer>>({
+            async start(controller) {
+              while (true) {
+                const result = await cacheReader.read();
+                if (result.done) break;
+                controller.enqueue(result.value);
+              }
+              await new Promise<void>((resolve) => {
+                state.releaseOldNavigationTail = resolve;
+              });
+              controller.close();
+            },
+            cancel(reason) {
+              return cacheReader.cancel(reason);
+            },
+          });
+          return [reactBranch, delayedCacheBranch];
+        };
+        return response;
+      };
+    }, `${ROOT}/2`);
+
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    const initial = await navigateTo(page, "#client-cache-none", "2");
+
+    await page.evaluate(() => {
+      const router = (window as ClientCacheTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.refresh();
+    });
+    await expect
+      .poll(() => requestsFor(requests, `${ROOT}/2`).filter((request) => !request.partial).length)
+      .toBeGreaterThanOrEqual(2);
+    await expect.poll(() => readRandom(page)).not.toBe(initial);
+    const refreshed = await readRandom(page);
+
+    await page.evaluate(() => {
+      const state = (window as ClientCacheTestWindow)
+        .__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__;
+      if (
+        state?.releaseOldNavigationTail === null ||
+        state?.releaseOldNavigationTail === undefined
+      ) {
+        throw new Error("Old navigation tail was not delayed");
+      }
+      state.releaseOldNavigationTail();
+    });
+    await navigateHome(page);
+    requests.length = 0;
+
+    expect(await navigateTo(page, "#client-cache-none", "2")).toBe(refreshed);
+    expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
   });
 });
