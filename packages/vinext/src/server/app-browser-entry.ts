@@ -152,6 +152,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.js";
+import { createAppRscStateFingerprint } from "./app-rsc-state-fingerprint.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
@@ -162,6 +163,7 @@ import {
 } from "./app-optimistic-routing.js";
 import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
@@ -1602,6 +1604,10 @@ function bootstrapHydration(
           renderMode:
             navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
+        requestHeaders.set(
+          NEXT_ROUTER_STATE_TREE_HEADER,
+          createAppRscStateFingerprint(routerStateAtNavStart),
+        );
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const visitedResponseCandidate = shouldBypassNavigationCache
           ? {
@@ -2036,6 +2042,7 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    getRscStateFingerprint: () => createAppRscStateFingerprint(getBrowserRouterState()),
     navigate: navigateRsc,
   });
 

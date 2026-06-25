@@ -37,6 +37,7 @@ import {
 } from "../server/app-rsc-cache-busting.js";
 import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
 import {
+  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -1893,6 +1894,10 @@ const _appRouter: AppRouterInstance = {
       const headers = createRscRequestHeaders({ interceptionContext });
       if (mountedSlotsHeader) {
         headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+      }
+      const rscStateFingerprint = getNavigationRuntime()?.functions.getRscStateFingerprint?.();
+      if (rscStateFingerprint) {
+        headers.set(NEXT_ROUTER_STATE_TREE_HEADER, rscStateFingerprint);
       }
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);

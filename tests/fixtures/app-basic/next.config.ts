@@ -84,6 +84,11 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      {
+        source: "/nextjs-compat/rsc-query-redirect/source",
+        destination: "/nextjs-compat/rsc-query-redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -121,6 +126,10 @@ const nextConfig: NextConfig = {
         {
           source: "/rewrite-search-param/:term",
           destination: "/search?q=from-rewrite",
+        },
+        {
+          source: "/nextjs-compat/rsc-query-rewrite/source",
+          destination: "/nextjs-compat/rsc-query-rewrite/dest",
         },
       ],
       afterFiles: [

@@ -43,7 +43,7 @@ import {
   stripRscSuffix,
 } from "../server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
-import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
+import { NEXT_ROUTER_STATE_TREE_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safety.js";
 import {
   canLinkIntentPrefetch,
@@ -464,6 +464,10 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
+        const rscStateFingerprint = getNavigationRuntime()?.functions.getRscStateFingerprint?.();
+        if (rscStateFingerprint) {
+          headers.set(NEXT_ROUTER_STATE_TREE_HEADER, rscStateFingerprint);
+        }
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
@@ -502,6 +506,9 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
                 });
                 if (mountedSlotsHeader) {
                   shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+                }
+                if (rscStateFingerprint) {
+                  shellHeaders.set(NEXT_ROUTER_STATE_TREE_HEADER, rscStateFingerprint);
                 }
                 const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
                 const shellResponse = await fetch(shellRscUrl, {
