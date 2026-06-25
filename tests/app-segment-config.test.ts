@@ -66,7 +66,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
     });
@@ -80,7 +79,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "default-cache",
       revalidateSeconds: null,
     });
@@ -316,7 +314,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "error",
-      dynamicParamsConfig: false,
       fetchCache: "only-cache",
       revalidateSeconds: null,
       runtime: "nodejs",
