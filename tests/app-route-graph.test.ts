@@ -465,6 +465,26 @@ describe("App Router route graph builder", () => {
   // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
   // ("should match correctly when defining an explicit slot but no page").
   describe("explicit slot but no page (issue #1535)", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+    // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+    it("uses the parent children default for a leaf parallel-slot sub-route", async () => {
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "no-children/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "no-children/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "no-children/@slot/other/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const route = findRoute(graph.routes, "/no-children/other");
+
+        expect(route.pagePath).toBe(path.join(appDir, "no-children/default.tsx"));
+        expect(route.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+          path.join(appDir, "no-children/@slot/other/page.tsx"),
+        );
+      });
+    });
+
     it("falls children through to the sibling catch-all for a slot-only sub-route", async () => {
       // /baz: @slot/baz/page.tsx exists, but there is no baz/page.tsx and no
       // root default.tsx. Next.js serves /baz's children from the sibling
