@@ -2097,16 +2097,18 @@ async function navigateClient(
       // routeUrl === url (no mask), behaviour is unchanged.
       let dataTarget = resolvePagesDataNavigationTarget(routeUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
-      let middlewareEffect: MiddlewareDataEffect | null;
-      try {
-        middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          throw new NavigationCancelledError(browserUrl);
+      let middlewareEffect: MiddlewareDataEffect | null = null;
+      if (hasVinextMiddleware(window.__NEXT_DATA__)) {
+        try {
+          middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            throw new NavigationCancelledError(browserUrl);
+          }
+          throw err;
         }
-        throw err;
+        assertStillCurrent();
       }
-      assertStillCurrent();
       const redirectLocation = middlewareEffect?.redirectLocation ?? null;
       if (redirectLocation) {
         const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
