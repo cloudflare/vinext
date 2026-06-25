@@ -2097,32 +2097,32 @@ async function navigateClient(
       // routeUrl === url (no mask), behaviour is unchanged.
       let dataTarget = resolvePagesDataNavigationTarget(routeUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
-      if (!dataTarget) {
-        let middlewareEffect: MiddlewareDataEffect | null;
-        try {
-          middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
-        } catch (err: unknown) {
-          if (err instanceof DOMException && err.name === "AbortError") {
-            throw new NavigationCancelledError(browserUrl);
-          }
-          throw err;
+      let middlewareEffect: MiddlewareDataEffect | null;
+      try {
+        middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          throw new NavigationCancelledError(browserUrl);
         }
-        assertStillCurrent();
-        const redirectLocation = middlewareEffect?.redirectLocation ?? null;
-        if (redirectLocation) {
-          const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
-          if (!redirectedUrl) {
-            scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
-          }
-          window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-          routerRuntimeState.lastPathnameAndSearch =
-            window.location.pathname + window.location.search;
-          routerRuntimeState.lastHash = window.location.hash;
-          browserUrl = redirectedUrl;
-          htmlFetchUrl = redirectedUrl;
-        } else if (middlewareEffect?.rewriteTarget) {
+        throw err;
+      }
+      assertStillCurrent();
+      const redirectLocation = middlewareEffect?.redirectLocation ?? null;
+      if (redirectLocation) {
+        const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
+        if (!redirectedUrl) {
+          scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
+        }
+        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+        routerRuntimeState.lastPathnameAndSearch =
+          window.location.pathname + window.location.search;
+        routerRuntimeState.lastHash = window.location.hash;
+        browserUrl = redirectedUrl;
+        htmlFetchUrl = redirectedUrl;
+      } else if (middlewareEffect) {
+        middlewareDataResponse = middlewareEffect.response;
+        if (!dataTarget && middlewareEffect.rewriteTarget) {
           dataTarget = resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
-          if (dataTarget) middlewareDataResponse = middlewareEffect.response;
         }
       }
 

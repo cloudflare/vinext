@@ -16414,6 +16414,62 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("hard-navigates when middleware rewrites an existing Pages path to App Router", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const sourceLoader = vi.fn(async () => ({ default: () => null }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_PATTERNS__: ["/exists-but-not-routed"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/exists-but-not-routed": sourceLoader,
+      },
+    });
+    const hrefAssignments = trackHrefAssignments(win);
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(
+      async () =>
+        new Response("{}", {
+          headers: {
+            "content-type": "application/json",
+            "x-nextjs-rewrite": "/about",
+          },
+        }),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/exists-but-not-routed");
+
+      expect(result).toBe(false);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+      expect(hrefAssignments).toEqual([
+        "http://localhost/exists-but-not-routed",
+        "/exists-but-not-routed",
+      ]);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("does not double-prefix basePath for middleware data redirects", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
