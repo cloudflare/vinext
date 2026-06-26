@@ -342,7 +342,8 @@ function appendTopLevelJsonProperty(code: string, property: string): string {
   const closing = code.lastIndexOf("}");
   if (closing < 0) throw new Error("Could not find the root object in Wrangler config.");
   const before = code.slice(0, closing);
-  const needsComma = !/,\s*$/.test(before) && !/{\s*$/.test(before);
+  const structuralBefore = stripJsonComments(before);
+  const needsComma = !/,\s*$/.test(structuralBefore) && !/{\s*$/.test(structuralBefore);
   return `${before}${needsComma ? "," : ""}\n${property}\n${code.slice(closing)}`;
 }
 
@@ -359,7 +360,7 @@ export function updateWranglerConfigForCloudflare(
   if (options.cdnCache === "workers-cache") {
     const cacheProperty = findTopLevelJsonProperty(output, "cache");
     if (!cacheProperty) {
-      output = appendTopLevelJsonProperty(output, '  "cache": { "enabled": true },');
+      output = appendTopLevelJsonProperty(output, '  "cache": { "enabled": true }');
     } else {
       const cache = JSON.parse(
         stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
@@ -373,7 +374,7 @@ export function updateWranglerConfigForCloudflare(
   if (options.imageOptimization === "cloudflare-images") {
     const imagesProperty = findTopLevelJsonProperty(output, "images");
     if (!imagesProperty) {
-      output = appendTopLevelJsonProperty(output, '  "images": { "binding": "IMAGES" },');
+      output = appendTopLevelJsonProperty(output, '  "images": { "binding": "IMAGES" }');
     } else {
       const images = JSON.parse(
         stripJsonComments(output.slice(imagesProperty.valueStart, imagesProperty.valueEnd)),
@@ -388,7 +389,7 @@ export function updateWranglerConfigForCloudflare(
     if (!kvProperty) {
       output = appendTopLevelJsonProperty(
         output,
-        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }],',
+        '  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }]',
       );
     } else {
       const rawValue = output.slice(kvProperty.valueStart, kvProperty.valueEnd);
@@ -1346,6 +1347,27 @@ function ensurePlugins(
   );
   const hasTrailingComma = endsWithCommaIgnoringWhitespaceAndComments(arraySuffix);
   const prefix = hasExistingElements && !hasTrailingComma ? "," : "";
+  const inlineArray = !code.slice(array.start, array.end).includes("\n");
+  if (inlineArray && hasExistingElements) {
+    output.appendLeft(array.start + 1, `\n${elementIndent}`);
+    let previousElement: ESTree.ArrayExpressionElement | null = null;
+    for (const element of array.elements) {
+      if (!element) continue;
+      if (previousElement) {
+        const gap = code.slice((previousElement as AstNode).end, (element as AstNode).start);
+        const commaIndex = gap.indexOf(",");
+        if (commaIndex >= 0) {
+          const trivia = gap.slice(commaIndex + 1).trim();
+          output.overwrite(
+            (previousElement as AstNode).end,
+            (element as AstNode).start,
+            trivia ? `,\n${elementIndent}${trivia}\n${elementIndent}` : `,\n${elementIndent}`,
+          );
+        }
+      }
+      previousElement = element;
+    }
+  }
   output.appendLeft(
     closingOffset,
     `${prefix}\n${missingExpressions

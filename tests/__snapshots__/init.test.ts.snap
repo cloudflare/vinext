@@ -147,7 +147,9 @@ import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
-  plugins: [custom(), vinext({
+  plugins: [
+    custom(),
+    vinext({
       cache: { data: kvDataAdapter() },
       images: { optimizer: imageAdapter() },
     }),

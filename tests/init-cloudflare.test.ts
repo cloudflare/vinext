@@ -82,6 +82,37 @@ module.exports = defineConfig({ plugins: [vinext()] });
     expect(output).toContain("cloudflare()");
   });
 
+  it("wraps inline plugin arrays while preserving comments", () => {
+    const input = `import first from "./first.js";
+import second from "./second.js";
+export default { plugins: [first(), /* keep second */ second()] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "none",
+      },
+    });
+    expectValidConfig(output);
+    expect(output).toContain(
+      "plugins: [\n  first(),\n  /* keep second */\n  second(),\n  vinext(),\n  cloudflare(),\n]",
+    );
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", output, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "data-cache",
+          imageOptimization: "none",
+        },
+      }),
+    ).toBe(output);
+  });
+
   it("preserves comments in existing plugin arrays", () => {
     const input = `import custom from "./custom.js";
 export default {
@@ -337,6 +368,21 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     expect(output).not.toContain("images:");
   });
 
+  it("configures image optimization independently of cache adapters", () => {
+    const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "cloudflare-images",
+      },
+    });
+    expectValidConfig(output);
+    expect(output).not.toContain("cache:");
+    expect(output).toContain("images: { optimizer: imageAdapter() }");
+  });
+
   it("omits a CDN adapter without replacing existing image config", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext({ imageOptimization: true })] };
@@ -374,6 +420,37 @@ export default { plugins: [vinext({ imageOptimization: true })] };
         imageOptimization: "cloudflare-images",
       }),
     ).toBe(output);
+  });
+
+  it("keeps additive Wrangler JSON updates valid strict JSON", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "name": "existing" }\n`, {
+      dataCache: "kv",
+      cdnCache: "workers-cache",
+      imageOptimization: "cloudflare-images",
+    });
+    expect(JSON.parse(output)).toMatchObject({
+      name: "existing",
+      cache: { enabled: true },
+      images: { binding: "IMAGES" },
+      kv_namespaces: [{ binding: "VINEXT_KV_CACHE" }],
+    });
+  });
+
+  it("updates a comment-only Wrangler JSONC root without a leading comma", () => {
+    const input = `{
+  // keep this comment
+}\n`;
+    const options = {
+      dataCache: "none" as const,
+      cdnCache: "data-cache" as const,
+      imageOptimization: "cloudflare-images" as const,
+    };
+    const output = updateWranglerConfigForCloudflare(input, options);
+    expect(output).toContain("// keep this comment");
+    expect(JSON.parse(output.replace("  // keep this comment\n", ""))).toEqual({
+      images: { binding: "IMAGES" },
+    });
+    expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
 
   it("enables an existing disabled Workers Cache config", () => {
