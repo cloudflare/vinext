@@ -260,6 +260,28 @@ describe("collectAssetTags", () => {
     expect(tags[0]).toContain("entry.js");
   });
 
+  it("injects an explicit development client entry without a manifest", () => {
+    const result = collectAssetTags({
+      manifest: null,
+      moduleIds: [],
+      clientPreambleUrl: "/@id/__x00__@vitejs/plugin-react/preamble",
+      clientEntryUrl: "/@id/__x00__virtual:vinext-client-entry",
+      scriptNonce: "dev-nonce",
+      disableOptimizedLoading: false,
+    });
+
+    const tags = parseTags(result);
+    expect(tags[0]).toBe(
+      '<script type="module" nonce="dev-nonce" src="/@id/__x00__@vitejs/plugin-react/preamble"></script>',
+    );
+    expect(result).toContain(
+      '<link rel="modulepreload" nonce="dev-nonce" href="/@id/__x00__virtual:vinext-client-entry" />',
+    );
+    expect(result).toContain(
+      '<script type="module" defer nonce="dev-nonce" src="/@id/__x00__virtual:vinext-client-entry" crossorigin></script>',
+    );
+  });
+
   it("includes shared framework- chunks", () => {
     const manifest = makeManifest({
       vendor: ["framework-abc123.js"],

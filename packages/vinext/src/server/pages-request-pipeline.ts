@@ -46,6 +46,8 @@ export type PagesRenderOptions = {
   isDataReq?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
+  clientEntryUrl?: string;
+  clientPreambleUrl?: string;
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";

@@ -648,7 +648,15 @@ export default {
             : null,
         renderPage: typeof renderPage === "function"
           ? (req, resolvedUrl, options, stagedHeaders) =>
-              renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
+              renderPage(req, resolvedUrl, null, ctx, stagedHeaders, {
+                ...options,
+                clientPreambleUrl: import.meta.env.DEV
+                  ? "/@id/__x00__@vitejs/plugin-react/preamble"
+                  : undefined,
+                clientEntryUrl: import.meta.env.DEV
+                  ? "/@id/__x00__virtual:vinext-client-entry"
+                  : undefined,
+              })
           : null,
         handleApi: typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)

@@ -896,6 +896,14 @@ describe("scanPublicFileRoutes", () => {
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
+  it("supplies the Vite client bootstrap when rendering in development", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("clientPreambleUrl: import.meta.env.DEV");
+    expect(content).toContain('"/@id/__x00__@vitejs/plugin-react/preamble"');
+    expect(content).toContain("clientEntryUrl: import.meta.env.DEV");
+    expect(content).toContain('"/@id/__x00__virtual:vinext-client-entry"');
+  });
+
   it("keeps Cloudflare dev _next/data URLs intact for Worker normalization", () => {
     const indexSource = fs.readFileSync(
       path.join(import.meta.dirname, "../packages/vinext/src/index.ts"),

@@ -186,6 +186,8 @@ type RenderPageOptions = {
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
   err?: unknown;
+  clientEntryUrl?: string;
+  clientPreambleUrl?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -705,6 +707,8 @@ export function createPagesPageHandler(
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,
+          clientEntryUrl: options?.clientEntryUrl,
+          clientPreambleUrl: options?.clientPreambleUrl,
           scriptNonce,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           basePath: vinextConfig.basePath,

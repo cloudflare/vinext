@@ -165,7 +165,9 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
+    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, {");
+    expect(content).toContain("clientPreambleUrl: import.meta.env.DEV");
+    expect(content).toContain("clientEntryUrl: import.meta.env.DEV");
   });
 });
 

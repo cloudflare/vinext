@@ -92,6 +92,10 @@ type CollectAssetTagsOptions = {
    * all manifest assets are injected.
    */
   moduleIds: (string | null | undefined)[];
+  /** Explicit client bootstrap URL supplied by development runtime adapters. */
+  clientEntryUrl?: string;
+  /** React Refresh preamble URL that must execute before the development client entry. */
+  clientPreambleUrl?: string;
   /** Script nonce for CSP. */
   scriptNonce?: string;
   /**
@@ -161,9 +165,18 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
     (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
   const lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
 
-  // Inject the client entry script if embedded by vinext:cloudflare-build.
-  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
-    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
+  // Development adapters provide the Vite-served virtual entry explicitly.
+  // Production Workers use the client entry embedded by vinext:cloudflare-build.
+  const clientEntry =
+    options.clientEntryUrl ||
+    (typeof globalThis !== "undefined" ? globalThis.__VINEXT_CLIENT_ENTRY__ : undefined);
+  if (clientEntry) {
+    if (options.clientPreambleUrl) {
+      tags.push(
+        '<script type="module"' + nonceAttr + ' src="' + options.clientPreambleUrl + '"></script>',
+      );
+    }
+    const entry = clientEntry;
     seen.add(entry);
     tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(entry) + '" />');
     tags.push(

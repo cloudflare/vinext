@@ -230,7 +230,15 @@ export default {
       // Page routes
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        response = await renderPage(request, resolvedUrl, null);
+        const renderOptions = {
+          clientPreambleUrl: import.meta.env.DEV
+            ? "/@id/__x00__@vitejs/plugin-react/preamble"
+            : undefined,
+          clientEntryUrl: import.meta.env.DEV
+            ? "/@id/__x00__virtual:vinext-client-entry"
+            : undefined,
+        };
+        response = await renderPage(request, resolvedUrl, null, undefined, undefined, renderOptions);
 
         // Fallback rewrites (if SSR returned 404)
         if (response && response.status === 404 && configRewrites.fallback?.length) {
@@ -239,7 +247,14 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null);
+            response = await renderPage(
+              request,
+              fallbackRewrite,
+              null,
+              undefined,
+              undefined,
+              renderOptions,
+            );
           }
         }
       }
