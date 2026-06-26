@@ -779,12 +779,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // post-action match block below runs, which is too late for action
   // execution and route-handler dispatch (both happen earlier).
   //
-  // The route is matched against the pre-rewrite cleanPathname here. If the
-  // afterFiles / fallback rewrites further down land on a different route,
-  // the second `setRootParams` call below replaces this value before the
-  // page renders, so there is no stale-value risk for ordinary page renders.
-  // For action requests we intentionally do not re-run rewrites — actions
-  // are always processed against the cleanPathname they were posted to.
+  // The route is matched against the current cleanPathname here. Ordinary
+  // requests may still be rewritten by the afterFiles / fallback loops below,
+  // where the second `setRootParams` call replaces this value before rendering.
+  // Out-of-basePath Server Actions resolve those late rewrites above so this
+  // match already uses their claimed destination.
   const preActionMatch = outOfBasePathRequestClaimed ? options.matchRoute(cleanPathname) : null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
