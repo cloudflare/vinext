@@ -213,6 +213,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import { escapeRegExp } from "./utils/regex.js";
 import {
@@ -1182,6 +1183,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ...(viteMajorVersion >= 8 ? [] : [loadVite7TsconfigPathsPlugin(earlyBaseDir)]),
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
+    // Next.js ignores requests without any statically known path component
+    // during graph analysis and leaves a deterministic runtime failure.
+    createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
@@ -1847,9 +1851,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // or `build.ssr` in config). SSR builds must NOT use manualChunks
         // because they use inlineDynamicImports which is incompatible.
         const isSSR = !!config.build?.ssr;
+        const serverTranspilePackages = [
+          ...(nextConfig?.turbopackTranspilePackages ?? []),
+          ...(nextConfig?.optimizePackageImports ?? []),
+        ];
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
-          nextConfig?.transpilePackages,
+          serverTranspilePackages,
         );
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
@@ -4567,7 +4575,7 @@ export const loadServerActionClient = ${
           if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
             return null;
           }
-          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
+          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
         },
       },
     },

@@ -258,14 +258,6 @@ export function resolveAppPageSegmentConfig(
     }
   }
 
-  // Static-only dynamic modes change the default, but explicit dynamicParams wins.
-  if (
-    config.dynamicParamsConfig === undefined &&
-    (config.dynamicConfig === "error" || config.dynamicConfig === "force-static")
-  ) {
-    config.dynamicParamsConfig = false;
-  }
-
   return config;
 }
 

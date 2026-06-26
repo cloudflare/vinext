@@ -244,6 +244,42 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "config recognized; vinext does not implement navigation result caching",
   },
+  "experimental.middlewarePrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyPrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.middlewareClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalMiddlewareRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalProxyRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.instrumentationHook": {
+    status: "unsupported",
+    detail: "not recognized; instrumentation files are enabled automatically",
+  },
+  skipMiddlewareUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  skipProxyUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",
@@ -882,6 +918,8 @@ export function analyzeConfig(root: string): CheckItem[] {
     "webpack",
     "reactStrictMode",
     "poweredByHeader",
+    "skipMiddlewareUrlNormalize",
+    "skipProxyUrlNormalize",
   ];
 
   for (const opt of configOptions) {

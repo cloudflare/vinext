@@ -4830,7 +4830,7 @@ describe("next/cache shim", () => {
     // Simulate a route handler phase
     const previousPhase = setHeadersAccessPhase("route-handler");
     try {
-      await expect(updateTag("some-tag")).rejects.toThrow(
+      expect(() => updateTag("some-tag")).toThrow(
         /updateTag can only be called from within a Server Action/,
       );
     } finally {
@@ -4844,7 +4844,7 @@ describe("next/cache shim", () => {
 
     const previousPhase = setHeadersAccessPhase("render");
     try {
-      await expect(updateTag("some-tag")).rejects.toThrow(
+      expect(() => updateTag("some-tag")).toThrow(
         /updateTag can only be called from within a Server Action/,
       );
     } finally {
@@ -10350,6 +10350,10 @@ describe("matchConfigPattern", () => {
     });
     // Regex-group pattern with a trailing slash.
     expect(matchConfigPattern("/123/", "/:id(\\d+)")).toEqual({ id: "123" });
+    // Next.js appends an optional trailing-slash matcher even when the source
+    // itself ends in `/`, so both canonical forms match the same rule.
+    expect(matchConfigPattern("/en/", "/:lang(en|es)/")).toEqual({ lang: "en" });
+    expect(matchConfigPattern("/en", "/:lang(en|es)/")).toBeNull();
   });
 
   it("preserves the root path and catch-all semantics under trailing slash", async () => {
@@ -10627,6 +10631,20 @@ describe("matchRedirect locale-static index", () => {
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("/en/security-dest");
     expect(result!.permanent).toBe(false);
+  });
+
+  it("matches a slash-ending source against a canonical slashed pathname", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/:lang(en|es)/",
+        destination: "/:lang/legacy/",
+        permanent: false,
+      },
+    ];
+
+    expect(matchRedirect("/en/", redirects, emptyCtx)?.destination).toBe("/en/legacy/");
+    expect(matchRedirect("/en", redirects, emptyCtx)).toBeNull();
   });
 
   it("matches a locale-prefixed pathname (locale omitted)", async () => {
@@ -11187,6 +11205,10 @@ describe("matchHeaders", () => {
         source: "/api/:path*",
         headers: [{ key: "x-api-header", value: "1" }],
       },
+      {
+        source: "/docs/",
+        headers: [{ key: "x-docs-header", value: "1" }],
+      },
     ];
 
     const aboutMatched = matchHeaders("/about/", rules, makeCtx());
@@ -11194,6 +11216,9 @@ describe("matchHeaders", () => {
 
     const apiMatched = matchHeaders("/api/users/", rules, makeCtx());
     expect(apiMatched).toEqual([{ key: "x-api-header", value: "1" }]);
+    const docsMatched = matchHeaders("/docs/", rules, makeCtx());
+    expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
+    expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
   });
 });
 

@@ -162,7 +162,7 @@ export function refresh(): void {
  *
  * @see https://nextjs.org/docs/app/api-reference/functions/updateTag
  */
-export async function updateTag(tag: string): Promise<void> {
+export function updateTag(tag: string): Promise<void> {
   if (getHeadersAccessPhase() !== "action") {
     throw new Error(
       "updateTag can only be called from within a Server Action. " +
@@ -172,7 +172,7 @@ export async function updateTag(tag: string): Promise<void> {
   }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await _invalidateEncodedTag(encodeCacheTag(tag));
+  return _invalidateEncodedTag(encodeCacheTag(tag));
 }
 
 /**

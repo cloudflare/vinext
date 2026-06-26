@@ -1867,12 +1867,30 @@ describe("App Router integration", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("defaults dynamicParams to false under a dynamic = 'error' layout", async () => {
+  it("keeps implicit dynamicParams enabled under a dynamic = 'error' layout", async () => {
     const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/known`);
     expect(known.status).toBe(200);
     expect(await known.text()).toContain('data-testid="layout-segment-config-dynamic-error"');
 
     const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/unknown`);
+    expect(unknown.status).toBe(200);
+    expect(await unknown.text()).toContain('data-testid="layout-segment-config-dynamic-error"');
+  });
+
+  it("keeps explicit dynamicParams = true enabled under a dynamic = 'error' layout", async () => {
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-true/unknown`);
+    expect(unknown.status).toBe(200);
+    expect(await unknown.text()).toContain(
+      'data-testid="layout-segment-config-dynamic-error-true"',
+    );
+  });
+
+  it("enforces explicit dynamicParams = false under a dynamic = 'error' layout", async () => {
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/known`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain('data-testid="layout-segment-config-dynamic-error-false"');
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/unknown`);
     expect(unknown.status).toBe(404);
   });
 

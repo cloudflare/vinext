@@ -76,6 +76,9 @@ export function collectBindingNames(pattern: unknown, target: Set<string>): void
     case "AssignmentPattern":
       collectBindingNames(node.left, target);
       return;
+    case "TSParameterProperty":
+      collectBindingNames(node.parameter, target);
+      return;
     case "ArrayPattern":
       for (const element of nodeArray(node.elements)) collectBindingNames(element, target);
       return;

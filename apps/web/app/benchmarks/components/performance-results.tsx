@@ -1,12 +1,14 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Table } from "@cloudflare/kumo/components/table";
 import { TrendChart } from "./chart";
 import { formatBytes, formatMs, RUNNER_COLORS } from "./format";
+import { benchmarkSelectionUrl, resolveSelectedBenchmarkFromSearch } from "./benchmark-url-state";
 
 export type PerformanceMeasurement = {
   benchmarkId: string;
@@ -189,15 +191,29 @@ export function PerformanceResultsTable({
 }
 
 export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const latest = runs.at(-1);
-  const scenarios = latest
-    ? Array.from(
-        new Map(
-          latest.measurements.map((measurement) => [measurement.scenarioId, measurement]),
-        ).values(),
-      )
-    : [];
-  const [activeScenario, setActiveScenario] = useState(scenarios[0]?.scenarioId ?? "");
+  const scenarios = useMemo(
+    () =>
+      latest
+        ? Array.from(
+            new Map(
+              latest.measurements.map((measurement) => [measurement.scenarioId, measurement]),
+            ).values(),
+          )
+        : [],
+    [latest],
+  );
+  const scenarioIds = useMemo(() => scenarios.map((scenario) => scenario.scenarioId), [scenarios]);
+  const [activeScenario, setActiveScenario] = useState(scenarioIds[0] ?? "");
+
+  useEffect(() => {
+    const selected = resolveSelectedBenchmarkFromSearch(scenarioIds, window.location.search);
+    if (selected) setActiveScenario(selected);
+  }, [scenarioIds, searchParams]);
+
   const selectedScenario =
     scenarios.find((scenario) => scenario.scenarioId === activeScenario) ?? scenarios[0];
 
@@ -212,7 +228,18 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
           label: scenario.label,
         }))}
         value={selectedScenario.scenarioId}
-        onValueChange={setActiveScenario}
+        onValueChange={(benchmarkId) => {
+          setActiveScenario(benchmarkId);
+          router.replace(
+            benchmarkSelectionUrl(
+              pathname,
+              new URLSearchParams(window.location.search),
+              benchmarkId,
+              window.location.hash,
+            ),
+            { scroll: false },
+          );
+        }}
       />
       <div className="mt-4">
         <PerformanceTrendChart runs={runs} scenario={selectedScenario} />

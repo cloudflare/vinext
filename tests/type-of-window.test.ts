@@ -156,6 +156,51 @@ switch (value) {
     expect(result?.code).toContain("var window");
   });
 
+  it("preserves window bindings declared in loop headers", () => {
+    const result = replaceTypeofWindow(
+      `for (const window of windows) console.log(typeof window)
+for (let window; condition; ) console.log(typeof window)`,
+      "undefined",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("keeps switch-case bindings out of the discriminant scope", () => {
+    const result = replaceTypeofWindow(
+      `switch (typeof window) {
+  case typeof window:
+    let window
+    console.log(typeof window)
+}`,
+      "undefined",
+    );
+
+    expect(result?.code).toContain('switch ("undefined")');
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+  });
+
+  it("contains var window bindings in TypeScript namespaces and static blocks", () => {
+    const result = replaceTypeofWindow(
+      `namespace Loader {
+  if (condition) var window
+  console.log(typeof window)
+}
+class BrowserLoader {
+  static {
+    if (condition) var window
+    console.log(typeof window)
+  }
+}
+console.log(typeof window)`,
+      "undefined",
+      "/app/page.ts",
+    );
+
+    expect(result?.code.match(/typeof window/g)).toHaveLength(2);
+    expect(result?.code).toContain('console.log("undefined")');
+  });
+
   it("preserves selected conditional expression precedence", () => {
     const result = replaceTypeofWindow(
       `const value = typeof window === "undefined" ? (serverValue, fallbackValue) : browserValue`,

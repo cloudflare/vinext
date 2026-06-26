@@ -247,6 +247,50 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("contains dynamic = 'error' failures without terminating later App Router requests", async () => {
+    const errorRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-dynamic-error/static-bailout-1`,
+    );
+    expect(errorRes.status).toBe(500);
+
+    const forceStaticRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-force-static/static-bailout-1`,
+      {
+        headers: {
+          cookie: "app-static-dynamic=hidden",
+          "x-app-static": "hidden",
+        },
+      },
+    );
+    expect(forceStaticRes.status).toBe(200);
+    const forceStaticHtml = await forceStaticRes.text();
+    expect(forceStaticHtml).toContain("/nextjs-compat/app-static-force-static");
+    expect(forceStaticHtml).toContain("static-bailout-1");
+    expect(forceStaticHtml).toContain('<p id="headers">[]</p>');
+    expect(forceStaticHtml).toContain('<p id="cookies">[]</p>');
+
+    const homeRes = await fetch(`${baseUrl}/`);
+    expect(homeRes.status).toBe(200);
+    expect(await homeRes.text()).toContain("Welcome to App Router");
+  });
+
+  // Next.js v16.2.6 only selects NOT_FOUND fallback when dynamicParams is explicitly false:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/static-paths/app.ts
+  it("matches dynamic = 'error' dynamicParams admission semantics", async () => {
+    for (const route of ["dynamic-error", "dynamic-error-true"]) {
+      const unknown = await fetch(`${baseUrl}/layout-segment-config/${route}/unknown`);
+      expect(unknown.status).toBe(200);
+    }
+
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/known`);
+    expect(known.status).toBe(200);
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
   //
@@ -787,6 +831,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toHaveProperty("message");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("lets route handlers synchronously catch updateTag errors without crashing", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/update-tag-error`);
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("updateTag can only be called from within a Server Action"),
+    });
+
+    const healthRes = await fetch(`${baseUrl}/api/hello`);
+    expect(healthRes.status).toBe(200);
   });
 
   it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {

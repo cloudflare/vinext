@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Table } from "@cloudflare/kumo/components/table";
 import {
@@ -68,7 +69,13 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
 
       <section>
         <h2 className="mb-3 text-lg font-semibold">Performance Trends</h2>
-        <PerformanceTrends runs={[...runs].reverse()} />
+        <Suspense
+          fallback={
+            <div className="h-[374px] animate-pulse rounded-lg border border-gray-200 bg-gray-50" />
+          }
+        >
+          <PerformanceTrends runs={[...runs].reverse()} />
+        </Suspense>
       </section>
 
       <section>
