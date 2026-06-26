@@ -62,6 +62,31 @@ test.describe("Cloudflare Workers Hydration", () => {
     void consoleErrors;
   });
 
+  test("applies the CSP nonce to preinit and bootstrap scripts", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const response = await page.goto(`${BASE}/?csp-nonce=1`);
+    expect(response?.headers()["content-security-policy"]).toContain(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const preinitScripts = page.locator('head script[async][type="module"][src]');
+    await expect(preinitScripts).not.toHaveCount(0);
+    for (const script of await preinitScripts.all()) {
+      await expect(script).toHaveAttribute("nonce", "vinext-test-nonce");
+    }
+
+    const bootstrapScript = page.locator('body script#_R_[type="module"][src]');
+    await expect(bootstrapScript).toHaveCount(1);
+    await expect(bootstrapScript).toHaveAttribute("nonce", "vinext-test-nonce");
+
+    await page.click('[data-testid="increment"]');
+    await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 1");
+
+    void consoleErrors;
+  });
+
   // Regression test for https://github.com/cloudflare/vinext/issues/695
   // createFromReadableStream was awaited before hydrateRoot, blocking effects.
   test("useEffect fires after RSC hydration", async ({ page, consoleErrors }) => {
