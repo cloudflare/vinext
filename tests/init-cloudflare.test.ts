@@ -255,7 +255,7 @@ export default { plugins: [vinext()] };
     );
     expectValidConfig(output);
     expect(output).toContain(
-      "vinext({\n    cache: { data: kvDataAdapter(), cdn: cdnAdapter() },\n    images: { optimizer: imageAdapter() },\n  })",
+      "vinext({\n    cache: { data: kvDataAdapter(), cdn: cdnAdapter() },\n    images: { optimizer: imagesOptimizer() },\n  })",
     );
   });
 
@@ -274,10 +274,10 @@ export default { plugins: [vinext()] };
       },
     );
     expectValidConfig(output);
-    expect(output).toContain("optimizer: imageAdapter()");
+    expect(output).toContain("optimizer: imagesOptimizer()");
   });
 
-  it("updates an existing Cloudflare image adapter to match a custom Wrangler binding", () => {
+  it("migrates the discarded draft image builder and updates its binding", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `import vinext from "vinext";\nimport { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";\nexport default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };\n`,
@@ -293,7 +293,97 @@ export default { plugins: [vinext()] };
       },
     );
     expectValidConfig(output);
-    expect(output).toContain('optimizer: imageAdapter({ binding: "CUSTOM_IMAGES" })');
+    expect(output).not.toContain("imageAdapter");
+    expect(output).toContain('optimizer: imagesOptimizer({ binding: "CUSTOM_IMAGES" })');
+  });
+
+  it("migrates an aliased discarded draft image builder", () => {
+    const output = updateViteConfigForCloudflare(
+      "vite.config.ts",
+      `import vinext from "vinext";\nimport { imageAdapter as optimizeImages } from "@vinext/cloudflare/images/images-optimizer";\nexport default { plugins: [vinext({ images: { optimizer: optimizeImages() } })] };\n`,
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "data-cache",
+          imageOptimization: "cloudflare-images",
+        },
+      },
+    );
+    expectValidConfig(output);
+    expect(output).not.toContain("imageAdapter");
+    expect(output).toContain("import { imagesOptimizer as optimizeImages }");
+    expect(output).toContain("optimizer: optimizeImages()");
+  });
+
+  it("migrates a CommonJS discarded draft image builder", () => {
+    const output = updateViteConfigForCloudflare(
+      "vite.config.cjs",
+      `const vinext = require("vinext");\nconst { imageAdapter } = require("@vinext/cloudflare/images/images-optimizer");\nmodule.exports = { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };\n`,
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "data-cache",
+          imageOptimization: "cloudflare-images",
+        },
+      },
+    );
+    expectValidConfig(output);
+    expect(output).not.toContain("imageAdapter");
+    expect(output).toContain("const { imagesOptimizer } = require(");
+    expect(output).toContain("optimizer: imagesOptimizer()");
+  });
+
+  it("migrates an aliased CommonJS discarded draft image builder", () => {
+    const output = updateViteConfigForCloudflare(
+      "vite.config.cjs",
+      `const vinext = require("vinext");\nconst { imageAdapter: optimizeImages } = require("@vinext/cloudflare/images/images-optimizer");\nmodule.exports = { plugins: [vinext({ images: { optimizer: optimizeImages() } })] };\n`,
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "data-cache",
+          imageOptimization: "cloudflare-images",
+        },
+      },
+    );
+    expectValidConfig(output);
+    expect(output).not.toContain("imageAdapter");
+    expect(output).toContain("const { imagesOptimizer: optimizeImages } = require(");
+    expect(output).toContain("optimizer: optimizeImages()");
+  });
+
+  it.each([
+    {
+      fileName: "vite.config.ts",
+      input: `import vinext from "vinext";\nimport { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";\nexport default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };\n`,
+      expectedImport:
+        'import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";',
+    },
+    {
+      fileName: "vite.config.cjs",
+      input: `const vinext = require("vinext");\nconst { imageAdapter } = require("@vinext/cloudflare/images/images-optimizer");\nmodule.exports = { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };\n`,
+      expectedImport:
+        'const { imagesOptimizer } = require("@vinext/cloudflare/images/images-optimizer");',
+    },
+  ])("migrates the discarded draft builder when image optimization is disabled", (fixture) => {
+    const output = updateViteConfigForCloudflare(fixture.fileName, fixture.input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "none",
+      },
+    });
+    expectValidConfig(output);
+    expect(output).not.toContain("imageAdapter");
+    expect(output).toContain(fixture.expectedImport);
+    expect(output).toContain("optimizer: imagesOptimizer()");
   });
 
   it("preserves an unrelated custom image optimizer", () => {
@@ -312,7 +402,7 @@ export default { plugins: [vinext()] };
       },
     );
     expect(output).toContain("optimizer: customOptimizer()");
-    expect(output).not.toContain("imageAdapter");
+    expect(output).not.toContain("imagesOptimizer");
   });
 
   it("adds native module aliases through AST object updates", () => {
@@ -364,7 +454,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     expectValidConfig(output);
     expect(output).not.toContain("data:");
     expect(output).not.toContain("cdn:");
-    expect(output).not.toContain("imageAdapter");
+    expect(output).not.toContain("imagesOptimizer");
     expect(output).not.toContain("images:");
   });
 
@@ -380,7 +470,7 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
     });
     expectValidConfig(output);
     expect(output).not.toContain("cache:");
-    expect(output).toContain("images: { optimizer: imageAdapter() }");
+    expect(output).toContain("images: { optimizer: imagesOptimizer() }");
   });
 
   it("omits a CDN adapter without replacing existing image config", () => {
@@ -395,7 +485,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expectValidConfig(output);
     expect(output).not.toContain("cdn:");
     expect(output).toContain("imageOptimization: true");
-    expect(output).not.toContain("imageAdapter");
+    expect(output).not.toContain("imagesOptimizer");
   });
 
   it("additively updates Wrangler JSONC", () => {
@@ -478,7 +568,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(output).toContain('"cache": { "enabled": true }');
     expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
-    expect(vite).toContain('imageAdapter({ binding: "CUSTOM_IMAGES" })');
+    expect(vite).toContain('imagesOptimizer({ binding: "CUSTOM_IMAGES" })');
   });
 
   it("repairs an unusable Wrangler Images binding", () => {

@@ -605,7 +605,7 @@ function cacheImports(options: CloudflareInitOptions): string[] {
     imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
   }
   if (options.imageOptimization === "cloudflare-images") {
-    imports.push('import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";');
+    imports.push('import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";');
   }
   return imports;
 }
@@ -613,7 +613,7 @@ function cacheImports(options: CloudflareInitOptions): string[] {
 function vinextExpression(
   options: CloudflareInitOptions,
   binding = "vinext",
-  imageBinding = "imageAdapter",
+  imageBinding = "imagesOptimizer",
   imagesBinding = "IMAGES",
 ): string {
   const cacheEntries: string[] = [];
@@ -658,7 +658,7 @@ export function generateAppRouterViteConfig(
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
   plugins.push(
-    `    ${vinextExpression(options, "vinext", "imageAdapter", imagesBinding).replace(/\n/g, "\n    ")},`,
+    `    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding).replace(/\n/g, "\n    ")},`,
   );
 
   plugins.push(`    cloudflare({
@@ -729,7 +729,7 @@ export function generatePagesRouterViteConfig(
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(options, "vinext", "imageAdapter", imagesBinding).replace(/\n/g, "\n    ")},
+    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });
@@ -1180,7 +1180,7 @@ function isUsableImageOptimizer(property: AstProperty | undefined): boolean {
   );
 }
 
-function isImageAdapterCall(
+function isImagesOptimizerCall(
   property: AstProperty | undefined,
   binding: string | undefined,
 ): boolean {
@@ -1191,6 +1191,92 @@ function isImageAdapterCall(
     property.value.callee.type === "Identifier" &&
     property.value.callee.name === binding,
   );
+}
+
+function migrateDiscardedImagesOptimizerBinding(
+  program: ESTree.Program,
+  output: MagicString,
+  property: AstProperty | undefined,
+  commonJs: boolean,
+  bindings: Set<string>,
+): string | undefined {
+  if (
+    !property ||
+    property.value.type !== "CallExpression" ||
+    property.value.callee.type !== "Identifier"
+  ) {
+    return undefined;
+  }
+
+  const source = "@vinext/cloudflare/images/images-optimizer";
+  const legacyImported = "imageAdapter";
+  const legacyBinding = commonJs
+    ? findRequiredBinding(program, source, legacyImported)
+    : findImportedBinding(program, source, legacyImported);
+  if (!legacyBinding || property.value.callee.name !== legacyBinding) return undefined;
+
+  const binding =
+    legacyBinding === legacyImported ? allocateBinding(bindings, "imagesOptimizer") : legacyBinding;
+  if (commonJs) {
+    for (const statement of program.body) {
+      if (statement.type !== "VariableDeclaration") continue;
+      for (const declaration of statement.declarations) {
+        if (
+          !declaration.init ||
+          declaration.init.type !== "CallExpression" ||
+          declaration.init.callee.type !== "Identifier" ||
+          declaration.init.callee.name !== "require" ||
+          declaration.init.arguments[0]?.type !== "Literal" ||
+          declaration.init.arguments[0].value !== source ||
+          declaration.id.type !== "ObjectPattern"
+        ) {
+          continue;
+        }
+        const legacyProperty = declaration.id.properties.find(
+          (candidate) =>
+            candidate.type === "Property" &&
+            candidate.key.type === "Identifier" &&
+            candidate.key.name === legacyImported &&
+            candidate.value.type === "Identifier" &&
+            candidate.value.name === legacyBinding,
+        );
+        if (legacyProperty) {
+          output.overwrite(
+            (legacyProperty as AstNode).start,
+            (legacyProperty as AstNode).end,
+            binding === "imagesOptimizer" ? "imagesOptimizer" : `imagesOptimizer: ${binding}`,
+          );
+        }
+      }
+    }
+  } else {
+    for (const statement of program.body) {
+      if (statement.type !== "ImportDeclaration" || statement.source.value !== source) continue;
+      const legacySpecifier = statement.specifiers.find(
+        (specifier): specifier is ESTree.ImportSpecifier =>
+          specifier.type === "ImportSpecifier" &&
+          specifier.imported.type === "Identifier" &&
+          specifier.imported.name === legacyImported &&
+          specifier.local.name === legacyBinding,
+      );
+      if (legacySpecifier) {
+        output.overwrite(
+          (legacySpecifier as AstNode).start,
+          (legacySpecifier as AstNode).end,
+          binding === "imagesOptimizer" ? "imagesOptimizer" : `imagesOptimizer as ${binding}`,
+        );
+      }
+    }
+  }
+
+  if (binding !== legacyBinding) {
+    output.overwrite(
+      (property.value.callee as AstNode).start,
+      (property.value.callee as AstNode).end,
+      binding,
+    );
+  }
+  return binding;
 }
 
 function ensureVinextCache(
@@ -1516,20 +1602,32 @@ export function updateViteConfigForCloudflare(
     cacheAdditions.push({ name: "cdn", expression: `${binding}()` });
   }
   let imageOptimizerExpression: string | undefined;
+  const migratedImagesOptimizer = migrateDiscardedImagesOptimizerBinding(
+    program,
+    output,
+    existingImageOptimizer,
+    commonJs,
+    bindings,
+  );
   if (cacheOptions.imageOptimization === "cloudflare-images") {
     const source = "@vinext/cloudflare/images/images-optimizer";
-    const imported = "imageAdapter";
-    const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
+    const imported = "imagesOptimizer";
+    const existing =
+      migratedImagesOptimizer ??
+      (commonJs
+        ? findRequiredBinding(program, source, imported)
+        : findImportedBinding(program, source, imported));
     if (
       !isUsableImageOptimizer(existingImageOptimizer) ||
-      isImageAdapterCall(existingImageOptimizer, existing)
+      migratedImagesOptimizer ||
+      isImagesOptimizerCall(existingImageOptimizer, existing)
     ) {
       const local = existing ?? allocateBinding(bindings, imported);
-      const imageBinding = commonJs
-        ? ensureNamedRequire(program, output, source, imported, local)
-        : ensureNamedImport(program, output, source, imported, local);
+      const imageBinding = migratedImagesOptimizer
+        ? migratedImagesOptimizer
+        : commonJs
+          ? ensureNamedRequire(program, output, source, imported, local)
+          : ensureNamedImport(program, output, source, imported, local);
       const bindingOption =
         options.imagesBinding && options.imagesBinding !== "IMAGES"
           ? `{ binding: ${JSON.stringify(options.imagesBinding)} }`
@@ -1556,7 +1654,7 @@ export function updateViteConfigForCloudflare(
                 cacheOptions,
                 vinextBinding,
                 imageOptimizerExpression?.slice(0, imageOptimizerExpression.indexOf("(")) ||
-                  "imageAdapter",
+                  "imagesOptimizer",
                 options.imagesBinding,
               )
             : `${vinextBinding}()`,

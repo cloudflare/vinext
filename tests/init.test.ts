@@ -516,7 +516,7 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).not.toContain("data:");
     expect(config).not.toContain("cdn:");
-    expect(config).not.toContain("imageAdapter");
+    expect(config).not.toContain("imagesOptimizer");
     const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
     expect(wrangler.kv_namespaces).toBeUndefined();
     expect(wrangler.images).toBeUndefined();

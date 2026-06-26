@@ -207,7 +207,7 @@ export function formatImageOptimizationHint(): string {
     `  [vinext] next/image is served unoptimized. To enable edge image\n` +
     `  optimization via Cloudflare Images, run:\n\n` +
     `    vinext init --platform=cloudflare --image-optimization=cloudflare-images\n\n` +
-    `  This adds the imageAdapter() option to your Vite config and the matching\n` +
+    `  This adds the imagesOptimizer() option to your Vite config and the matching\n` +
     `  IMAGES binding to your Wrangler config without replacing existing settings.`
   );
 }

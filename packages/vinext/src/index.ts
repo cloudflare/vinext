@@ -844,9 +844,9 @@ export type VinextOptions = {
    * used by both built-in and custom worker entrypoints that forward `env`.
    *
    * @example
-   * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+   * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
    *
-   * vinext({ images: { optimizer: imageAdapter() } })
+   * vinext({ images: { optimizer: imagesOptimizer() } })
    */
   images?: VinextImageConfig;
   /**

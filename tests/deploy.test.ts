@@ -827,7 +827,7 @@ describe("viteConfigHasImageAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `export default { plugins: [vinext({ images: { optimizer: imageAdapter() } })] };`,
+      `export default { plugins: [vinext({ images: { optimizer: imagesOptimizer() } })] };`,
     );
     expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
   });
@@ -866,7 +866,7 @@ describe("formatImageOptimizationHint", () => {
   it("points users to additive init configuration", () => {
     const message = formatImageOptimizationHint();
     expect(message).toContain("--image-optimization=cloudflare-images");
-    expect(message).toContain("imageAdapter()");
+    expect(message).toContain("imagesOptimizer()");
     expect(message).toContain("IMAGES binding");
   });
 });
