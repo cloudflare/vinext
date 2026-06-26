@@ -17,8 +17,8 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
-} from "../server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+} from "../utils/protocol-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 
 /**

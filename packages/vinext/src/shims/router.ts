@@ -2616,10 +2616,17 @@ async function performNavigation(
   const appPathNorm = appPath !== null ? removeTrailingSlash(appPath) : null;
   const appPathEntry =
     appPathNorm !== null ? getPagesRouterComponentsMap()[appPathNorm] : undefined;
-  const appRouteDetected =
-    (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) ||
-    ["app", "document"].includes(resolveHybridClientRouteOwner(resolved, __basePath) ?? "");
-  if (appRouteDetected) {
+  const hasAppRouteMarker =
+    appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter;
+  if (hasAppRouteMarker) {
+    if (mode === "push") window.location.assign(full);
+    else window.location.replace(full);
+    return new Promise<boolean>(() => {});
+  }
+  const hybridOwner = window.__VINEXT_LINK_PREFETCH_ROUTES__?.length
+    ? resolveHybridClientRouteOwner(resolved, __basePath)
+    : null;
+  if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
@@ -2704,7 +2711,7 @@ async function prefetchUrl(url: string): Promise<void> {
   // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
   // the Next.js deploy test reads `window.next.router.components[<path>]` to
   // assert prefetch detection. See issue #1526.
-  markAppRouteDetectedOnPrefetch(url, __basePath);
+  await markAppRouteDetectedOnPrefetch(url, __basePath);
 
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels

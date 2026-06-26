@@ -174,7 +174,7 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
-type DevErrorOverlayModule = typeof import("./dev-error-overlay.js");
+type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
 
 type ServerActionResult = AppBrowserServerActionResult<AppWireElements>;
 
@@ -1394,7 +1394,7 @@ async function main(): Promise<void> {
 
   let devErrorOverlay: DevErrorOverlayModule | null = null;
   if (import.meta.env.DEV) {
-    devErrorOverlay = await import("./dev-error-overlay.js");
+    devErrorOverlay = await import("../client/dev-error-overlay.js");
     devErrorOverlay.installDevErrorOverlay();
     devErrorOverlay.installViteHmrErrorHandler(import.meta.hot);
     devErrorOverlay.reportInitialDevServerErrors();

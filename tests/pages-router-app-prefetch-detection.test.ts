@@ -234,7 +234,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     ["trailing slash", "/about/", ["about"]],
     ["query and hash", "/about?from=pages#details", ["about"]],
     ["interception target", "/photos/123", ["photos", ":id"]],
-  ])("synchronously detects %s destinations", async (_label, href, patternParts) => {
+  ])("detects %s destinations", async (_label, href, patternParts) => {
     installFakeBrowserGlobals([
       {
         canPrefetchLoadingShell: false,
@@ -246,7 +246,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     const { getPagesRouterComponentsMap, markAppRouteDetectedOnPrefetch } =
       await import("../packages/vinext/src/shims/internal/app-route-detection.js");
 
-    markAppRouteDetectedOnPrefetch(href, "");
+    await markAppRouteDetectedOnPrefetch(href, "");
 
     expect(
       getPagesRouterComponentsMap()[new URL(href, "http://localhost").pathname.replace(/\/$/, "")],
@@ -265,7 +265,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     const { markAppRouteDetectedOnPrefetch } =
       await import("../packages/vinext/src/shims/internal/app-route-detection.js");
 
-    markAppRouteDetectedOnPrefetch("/docs/fr/about?from=pages#details", "/docs");
+    await markAppRouteDetectedOnPrefetch("/docs/fr/about?from=pages#details", "/docs");
 
     const routerModule = await import("../packages/vinext/src/shims/router.js");
     expect(routerModule.default.components["/about"]).toEqual({ __appRouter: true });
@@ -279,7 +279,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     const { getPagesRouterComponentsMap, markAppRouteDetectedOnPrefetch } =
       await import("../packages/vinext/src/shims/internal/app-route-detection.js");
 
-    markAppRouteDetectedOnPrefetch("https://example.com/about", "");
+    await markAppRouteDetectedOnPrefetch("https://example.com/about", "");
     expect(getPagesRouterComponentsMap()).toEqual({});
   });
 
@@ -298,7 +298,7 @@ describe("Pages Router records app routes as detected on prefetch", () => {
       await import("../packages/vinext/src/shims/internal/app-route-detection.js");
     const routerModule = await import("../packages/vinext/src/shims/router.js");
 
-    markAppRouteDetectedOnPrefetch("/pages-dir/foobar", "");
+    await markAppRouteDetectedOnPrefetch("/pages-dir/foobar", "");
     expect(routerModule.default.components["/pages-dir/foobar"]).toBeUndefined();
 
     void routerModule.default.push("/pages-dir/foobar");

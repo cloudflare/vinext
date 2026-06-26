@@ -31,7 +31,7 @@ const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
 const middlewareRequestHeadersPath = resolveEntryPath(
-  "../server/middleware-request-headers.js",
+  "../utils/middleware-request-headers.js",
   import.meta.url,
 );
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
