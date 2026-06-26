@@ -42,6 +42,7 @@ import { toSameOriginPath, withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -324,6 +325,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
         for (const entry of entries) {
           if (entry.isIntersecting || entry.intersectionRatio > 0) {
             void (async () => {
+              if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
+
               // Mirror the Link/router prefetch computation so the cache key the
               // navigation later looks up matches what we prefetch here. Without
               // this, intercepted routes or pages with mounted parallel slots

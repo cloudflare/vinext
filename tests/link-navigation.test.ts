@@ -176,13 +176,10 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
 
 async function flushPrefetchTasks(): Promise<void> {
   // requestIdleCallback is mocked as sync, then prefetchUrl enters an async
-  // IIFE with awaited request-header hashing and cache writes. These ticks
-  // drain the current chain; update this helper if the async depth grows.
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  // IIFE that may resolve lazy runtime modules before hashing headers and
+  // writing caches. Dynamic imports can cross a macrotask boundary, so drain
+  // one event-loop turn rather than relying on a fixed microtask depth.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function waitForFetchCalls(
@@ -1307,6 +1304,115 @@ describe("Link prefetch scheduling", () => {
       );
     } finally {
       result.restoreNodeEnv();
+    }
+  });
+
+  it("does not prefetch visible or hovered links for a bot user agent", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        navigator: {
+          userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("preserves Pages Router viewport, explicit, and intent prefetches for a bot user agent", async () => {
+    const botWindowOverrides = {
+      __NEXT_DATA__: {
+        __vinext: {
+          pageModuleUrl: "/_next/static/chunks/pages/current.js",
+        },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    };
+
+    const defaultViewportObserver = stubIntersectionObserver();
+    const defaultViewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-default-viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      defaultViewportObserver.dispatchIntersectingEntry(defaultViewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(defaultViewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-default-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      defaultViewportResult.restoreNodeEnv();
+    }
+
+    const explicitViewportObserver = stubIntersectionObserver();
+    const viewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-explicit-viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      explicitViewportObserver.dispatchIntersectingEntry(viewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(viewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-explicit-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      viewportResult.restoreNodeEnv();
+    }
+
+    const intentResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-intent-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      intentResult.capturedAnchorProps.onMouseEnter?.({ currentTarget: intentResult.anchor });
+      await flushPrefetchTasks();
+
+      expect(intentResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-intent-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      intentResult.restoreNodeEnv();
     }
   });
 

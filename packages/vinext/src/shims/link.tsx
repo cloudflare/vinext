@@ -48,6 +48,7 @@ import {
 } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
@@ -413,6 +414,8 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   schedule(() => {
     void (async () => {
       if (hasAppNavigationRuntime()) {
+        if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
+
         const [
           navigation,
           { AppElementsWire },
@@ -1310,7 +1313,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         // surfaces it above).
         if (childOnClick) childOnClick(event);
         if (event.defaultPrevented) return;
-        void handleClick(event, { skipLinkOnClick: true });
+        return handleClick(event, { skipLinkOnClick: true });
       },
       onMouseEnter: (event: MouseEvent<HTMLAnchorElement>) => {
         if (childOnMouseEnter) childOnMouseEnter(event);
@@ -1336,9 +1339,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       <a
         ref={setRefs}
         href={fullHref}
-        onClick={(event) => {
-          void handleClick(event);
-        }}
+        onClick={handleClick as React.MouseEventHandler<HTMLAnchorElement>}
         onMouseEnter={handleMouseEnter}
         onTouchStart={handleTouchStart}
         {...anchorProps}

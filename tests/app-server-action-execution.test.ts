@@ -31,6 +31,7 @@ import {
   cookies,
   getHeadersContext,
   headersContextFromRequest,
+  isDraftModeEnabled,
   setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
@@ -1653,10 +1654,12 @@ describe("app server action execution helpers", () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
     const renderRequests: Request[] = [];
+    let redirectRenderDraftMode = false;
     const response = await handleServerActionRscRequest(
       createRscOptions({
         buildPageElement({ request }) {
           renderRequests.push(request);
+          redirectRenderDraftMode = isDraftModeEnabled();
           return "redirect-target:{}:none";
         },
         getAndClearPendingCookies() {
@@ -1679,7 +1682,7 @@ describe("app server action execution helpers", () => {
         },
         request: createFetchActionRequest({
           accept: "text/x-component",
-          cookie: "session=1; deleted=stale",
+          cookie: "session=1; deleted=stale; __prerender_bypass=draft-secret",
           "next-action": "action-id",
           rsc: "1",
         }),
@@ -1698,7 +1701,10 @@ describe("app server action execution helpers", () => {
     expect(renderRequest.headers.get("rsc")).toBeNull();
     expect(renderRequest.headers.get("content-type")).toBeNull();
     expect(renderRequest.headers.get("origin")).toBeNull();
-    expect(renderRequest.headers.get("cookie")).toBe("session=1; theme=dark");
+    expect(renderRequest.headers.get("cookie")).toBe(
+      "session=1; __prerender_bypass=draft-secret; theme=dark",
+    );
+    expect(redirectRenderDraftMode).toBe(true);
   });
 
   it("renders internal action redirects with the target route's root params", async () => {

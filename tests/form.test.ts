@@ -81,7 +81,10 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
   };
 }
 
-function renderClientForm(props: Record<string, unknown>) {
+function renderClientForm(
+  props: Record<string, unknown>,
+  { effects = [] }: { effects?: Array<() => void | (() => void)> } = {},
+) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
   //
@@ -103,7 +106,9 @@ function renderClientForm(props: Record<string, unknown>) {
     useCallback(fn: unknown) {
       return fn;
     },
-    useEffect() {},
+    useEffect(effect: () => void | (() => void)) {
+      effects.push(effect);
+    },
     // Minimal pass-through for anything else that might be called
     readContext: () => null,
     useContext: () => null,
@@ -128,6 +133,7 @@ function renderClientForm(props: Record<string, unknown>) {
     expect(rendered.type).toBe("form");
     return rendered.props as {
       onSubmit: (event: any) => Promise<void>;
+      ref: (node: HTMLFormElement | null) => void;
     };
   } finally {
     ReactSharedInternals.H = previousDispatcher;
@@ -209,6 +215,7 @@ function installClientGlobals({ supportsSubmitter }: { supportsSubmitter: boolea
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
@@ -780,6 +787,57 @@ describe("Form file input warning", () => {
 // ─── prefetch prop ──────────────────────────────────────────────────────
 
 describe("Form prefetch prop", () => {
+  it("does not viewport-prefetch App Router forms for a bot user agent", async () => {
+    // App Router Form prefetches through vinext's shared RSC prefetch path,
+    // which mirrors the bot suppression applied to Link/router.prefetch.
+    vi.stubEnv("NODE_ENV", "production");
+    const effects: Array<() => void | (() => void)> = [];
+    const fetch = vi.fn();
+    const observe = vi.fn();
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+
+    class FakeIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = vi.fn(() => []);
+    }
+
+    const { window } = createWindowStub();
+    vi.stubGlobal("window", {
+      ...window,
+      navigator: {
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+    const { ref } = renderClientForm({ action: "/search" }, { effects });
+    const form = {} as HTMLFormElement;
+    ref(form);
+    for (const effect of effects) effect();
+
+    expect(observe).toHaveBeenCalledWith(form);
+    intersectionCallback?.(
+      [
+        {
+          intersectionRatio: 1,
+          isIntersecting: true,
+          target: form,
+        } as unknown as IntersectionObserverEntry,
+      ],
+      {} as IntersectionObserver,
+    );
+    await Promise.resolve();
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("accepts prefetch={false} without errors", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => {
