@@ -141,8 +141,14 @@ export async function resolveInitPlatform(
         .trim()
         .toLowerCase();
 
-      if (answer === "" || answer === "1" || answer === "cloudflare") return "cloudflare";
-      if (answer === "2" || answer === "node") return "node";
+      if (answer === "" || answer === "1" || answer === "cloudflare") {
+        output.write("\n");
+        return "cloudflare";
+      }
+      if (answer === "2" || answer === "node") {
+        output.write("\n");
+        return "node";
+      }
       output.write("  Please choose Cloudflare (1) or Node (2).\n");
     }
   } finally {
@@ -197,16 +203,22 @@ export async function resolveCloudflareInitOptions(
       if (current) return current;
       while (true) {
         const answer = (await question(prompt)).trim().toLowerCase();
-        if (answer === "") return defaultValue;
+        if (answer === "") {
+          output.write("\n");
+          return defaultValue;
+        }
         const value = values[answer];
-        if (value) return value;
+        if (value) {
+          output.write("\n");
+          return value;
+        }
         output.write(`  ${error}\n`);
       }
     };
 
     const dataCache = await promptChoice(
       explicitDataCache,
-      "  Choose a data cache:\n\n    1. Cloudflare KV (default)\n    2. None\n\n  Data cache [1]: ",
+      "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       { "1": "kv", kv: "kv", "2": "none", none: "none" },
       "kv",
       "Please choose Cloudflare KV (1) or None (2).",
@@ -214,7 +226,7 @@ export async function resolveCloudflareInitOptions(
     const cdnCache = explicitCdnCache ?? "data-cache";
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
-      "  Choose image optimization:\n\n    1. Cloudflare Images (default)\n    2. None\n\n  Image optimization [1]: ",
+      "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       {
         "1": "cloudflare-images",
         "cloudflare-images": "cloudflare-images",

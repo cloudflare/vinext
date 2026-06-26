@@ -66,10 +66,12 @@ describe("Cloudflare init choices", () => {
   it("prompts only for public Cloudflare choices", async () => {
     const prompts: string[] = [];
     const answers = ["2", "2"];
+    const output = new PassThrough();
     await expect(
       resolveCloudflareInitOptions([], {
         env: {},
         isInteractive: true,
+        output,
         question: async (prompt) => {
           prompts.push(prompt);
           return answers.shift() ?? "";
@@ -80,7 +82,11 @@ describe("Cloudflare init choices", () => {
       cdnCache: "data-cache",
       imageOptimization: "none",
     });
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toEqual([
+      "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
+      "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
+    ]);
+    expect(output.read()?.toString()).toBe("\n\n");
     expect(prompts.join("\n")).not.toContain("Workers Cache");
     expect(prompts.join("\n")).not.toContain("CDN");
   });
@@ -98,6 +104,26 @@ describe("Cloudflare init choices", () => {
       cdnCache: "workers-cache",
       imageOptimization: "none",
     });
+  });
+
+  it("does not add a section break when repeating an invalid choice", async () => {
+    const prompts: string[] = [];
+    const answers = ["invalid", "2", "2"];
+    const output = new PassThrough();
+    await resolveCloudflareInitOptions([], {
+      env: {},
+      isInteractive: true,
+      output,
+      question: async (prompt) => {
+        prompts.push(prompt);
+        return answers.shift() ?? "";
+      },
+    });
+
+    expect(prompts[0]).toMatch(/^  Choose a data cache:/);
+    expect(prompts[1]).toMatch(/^  Choose a data cache:/);
+    expect(prompts[2]).toMatch(/^  Choose image optimization:/);
+    expect(output.read()?.toString()).toBe("  Please choose Cloudflare KV (1) or None (2).\n\n\n");
   });
 });
 
@@ -122,13 +148,23 @@ describe("resolveInitPlatform", () => {
   });
 
   it("defaults the interactive prompt to Cloudflare", async () => {
+    const prompts: string[] = [];
+    const output = new PassThrough();
     await expect(
       resolveInitPlatform([], {
         env: {},
         isInteractive: true,
-        question: async () => "",
+        output,
+        question: async (prompt) => {
+          prompts.push(prompt);
+          return "";
+        },
       }),
     ).resolves.toBe("cloudflare");
+    expect(prompts).toEqual([
+      "  Choose a deployment platform:\n    1. Cloudflare (default)\n    2. Node\n  Platform [1]: ",
+    ]);
+    expect(output.read()?.toString()).toBe("\n");
   });
 
   it("accepts Node from the interactive prompt", async () => {
