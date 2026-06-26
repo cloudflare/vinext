@@ -164,15 +164,14 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // Production Workers use the client entry embedded by vinext:cloudflare-build.
   const clientEntry = runtimeAssets.clientEntry;
   if (clientEntry) {
-    const entry = clientEntry;
-    seen.add(entry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(entry) + '" />');
+    seen.add(clientEntry);
+    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(clientEntry) + '" />');
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
         ' src="' +
-        href(entry) +
+        href(clientEntry) +
         '" crossorigin></script>',
     );
   }

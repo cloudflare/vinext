@@ -1152,6 +1152,31 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("omits the React preamble when the React plugin is disabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-preamble-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { reactPreamble: false },
+      );
+
+      expect(code).not.toContain("@vitejs/plugin-react/preamble");
+      expect(code).toContain("hydrateRoot(");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("hydrates _app with the full Pages props envelope", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-props-"));
     const pagesDir = path.join(tmpDir, "pages");

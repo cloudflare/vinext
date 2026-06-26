@@ -998,6 +998,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
+      reactPreamble: options.react !== false,
     });
   }
 
@@ -2833,7 +2834,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-          if (cleanId === VIRTUAL_PAGES_CLIENT_ASSETS) {
+          const resolvePagesClientAssetsId = () => {
             if (this.environment?.config.command === "build") {
               const externalId =
                 this.environment.name === "ssr"
@@ -2850,31 +2851,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               return { id: externalId, external: true };
             }
             return RESOLVED_PAGES_CLIENT_ASSETS;
-          }
+          };
+          if (cleanId === VIRTUAL_PAGES_CLIENT_ASSETS) return resolvePagesClientAssetsId();
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY)) {
             return RESOLVED_CLIENT_ENTRY;
           }
-          if (cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS)) {
-            if (this.environment?.config.command === "build") {
-              const externalId =
-                this.environment.name === "ssr"
-                  ? `../${PAGES_CLIENT_ASSETS_MODULE}`
-                  : `./${PAGES_CLIENT_ASSETS_MODULE}`;
-              pagesClientAssetsOutputDirs.add(
-                path.resolve(
-                  this.environment.config.root ?? process.cwd(),
-                  this.environment.name === "ssr"
-                    ? path.dirname(this.environment.config.build.outDir)
-                    : this.environment.config.build.outDir,
-                ),
-              );
-              return { id: externalId, external: true };
-            }
-            return RESOLVED_PAGES_CLIENT_ASSETS;
-          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS))
+            return resolvePagesClientAssetsId();
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
