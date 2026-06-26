@@ -17,3 +17,14 @@ export function writePagesClientAssetsModuleIfMissing(
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(outputPath, moduleSource);
 }
+
+export function findCommonOutputDir(first: string, second: string): string {
+  let candidate = path.resolve(first);
+  const target = path.resolve(second);
+  while (target !== candidate && !target.startsWith(candidate + path.sep)) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) return parent;
+    candidate = parent;
+  }
+  return candidate;
+}
