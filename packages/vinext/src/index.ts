@@ -165,6 +165,8 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
+  setPagesClientAssetsBuildMetadata,
+  takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
@@ -5482,10 +5484,17 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
             });
+            if (hasAppDir && hasPagesDir) {
+              setPagesClientAssetsBuildMetadata(buildRoot, pagesClientAssetsModule);
+            }
           }
 
           if (pagesClientAssetsModule === null) {
             if (pagesClientAssetsOutputDirs.size === 0) return;
+            const buildRoot = envConfig.root ?? process.cwd();
+            pagesClientAssetsModule = takePagesClientAssetsBuildMetadata(buildRoot);
+          }
+          if (pagesClientAssetsModule === null) {
             const emptyModule = buildPagesClientAssetsModule({});
             for (const outputDir of pagesClientAssetsOutputDirs) {
               writePagesClientAssetsModuleIfMissing(outputDir, emptyModule);
