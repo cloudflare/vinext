@@ -46,13 +46,6 @@ declare global {
   }
 }
 
-/**
- * Pages Router `components` map shape. Next.js types this loosely (route
- * pattern → `PrivateRouteInfo`), but for the App Router-detected case it
- * stores `{ __appRouter: true }` as a marker (see Next.js source link above).
- * Vinext only writes the marker variant; reads are by test code that checks
- * for `__appRouter: true`.
- */
 export { getPagesRouterComponentsMap } from "./pages-router-components.js";
 
 /**

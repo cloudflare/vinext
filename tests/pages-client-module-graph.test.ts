@@ -45,6 +45,7 @@ describe("Pages client module graph", () => {
       const graph = collectEagerImports(entry);
       expect([...graph].filter((file) => file.startsWith("server/"))).toEqual([]);
       expect([...graph].filter((file) => file.startsWith("plugins/"))).toEqual([]);
+      expect(graph.has("config/config-matchers.ts")).toBe(false);
     },
   );
 });

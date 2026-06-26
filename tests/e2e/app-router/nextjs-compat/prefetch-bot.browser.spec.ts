@@ -1,10 +1,14 @@
 import fs from "node:fs/promises";
-import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
+import {
+  startChildProductionServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 const GOOGLEBOT_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) " +
@@ -14,15 +18,8 @@ const GOOGLEBOT_USER_AGENT =
 type ProductionApp = {
   baseUrl: string;
   fixtureRoot: string;
-  server: Server;
+  server: ChildProductionServer;
 };
-
-async function closeServer(server: Server): Promise<void> {
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  await closed;
-}
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -122,20 +119,12 @@ async function buildAndServePrefetchBotFixture(): Promise<ProductionApp> {
   );
   await runPrerender({ root: fixtureRoot });
 
-  const { startProdServer } = await import(
-    pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
-  );
-  const started = await startProdServer({
-    host: "127.0.0.1",
-    port: 0,
-    outDir: path.join(fixtureRoot, "dist"),
-    noCompression: true,
-  });
+  const started = await startChildProductionServer(fixtureRoot);
 
   return {
     baseUrl: `http://127.0.0.1:${started.port}`,
     fixtureRoot,
-    server: started.server,
+    server: started,
   };
 }
 
@@ -193,7 +182,7 @@ test.describe("Next.js compat: bot prefetching in production", () => {
       expect(formTargetRequests).toHaveLength(1);
     } finally {
       await page.close();
-      await closeServer(app.server);
+      await stopChildProductionServer(app.server);
       await fs.rm(app.fixtureRoot, { recursive: true, force: true });
     }
   });

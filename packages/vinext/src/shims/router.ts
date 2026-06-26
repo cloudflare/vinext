@@ -37,7 +37,7 @@ import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
 } from "./internal/app-route-detection.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -2623,9 +2623,20 @@ async function performNavigation(
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
   }
-  const hybridOwner = window.__VINEXT_LINK_PREFETCH_ROUTES__?.length
-    ? resolveHybridClientRouteOwner(resolved, __basePath)
+  let hybridOwner = window.__VINEXT_LINK_PREFETCH_ROUTES__?.length
+    ? resolveDirectHybridClientRouteOwner(resolved, __basePath)
     : null;
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  if (
+    rewrites &&
+    (rewrites.beforeFiles.length > 0 ||
+      rewrites.afterFiles.length > 0 ||
+      rewrites.fallback.length > 0)
+  ) {
+    hybridOwner = (
+      await import("./internal/hybrid-client-route-owner.js")
+    ).resolveHybridClientRouteOwner(resolved, __basePath);
+  }
   if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
