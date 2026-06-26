@@ -48,7 +48,6 @@ import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import {
   buildPagesClientAssetsModule,
-  findCloudflareWorkerOutputDirs,
   writePagesClientAssetsModuleIfMissing,
 } from "../packages/vinext/src/build/pages-client-assets-module.js";
 import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
@@ -2391,9 +2390,9 @@ describe("Cloudflare _headers file generation", () => {
   });
 });
 
-// ─── Cloudflare client asset sidecar generation ─────────────────────────────
+// ─── Client asset sidecar generation ────────────────────────────────────────
 
-describe("Cloudflare client asset sidecar generation", () => {
+describe("client asset sidecar generation", () => {
   const manifestWithLazyChunks = {
     "virtual:vinext-app-browser-entry": {
       file: "assets/app-entry.js",
@@ -2500,19 +2499,6 @@ describe("Cloudflare client asset sidecar generation", () => {
     writePagesClientAssetsModuleIfMissing(outputDir, buildPagesClientAssetsModule({}));
 
     expect(fs.readFileSync(sidecarPath, "utf-8")).toBe(clientModule);
-  });
-
-  it("discovers final Cloudflare Worker outputs and skips the client assets directory", () => {
-    writeFile(tmpDir, "dist/pages_router_cloudflare/wrangler.json", "{}");
-    writeFile(tmpDir, "dist/nested/worker/wrangler.json", "{}");
-    writeFile(tmpDir, "dist/client/wrangler.json", "{}");
-
-    expect(findCloudflareWorkerOutputDirs(tmpDir).sort()).toEqual(
-      [
-        path.join(tmpDir, "dist", "nested", "worker"),
-        path.join(tmpDir, "dist", "pages_router_cloudflare"),
-      ].sort(),
-    );
   });
 
   it("resolves the Pages client entry for mixed app+pages builds", () => {

@@ -165,7 +165,6 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
-  findCloudflareWorkerOutputDirs,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
@@ -2835,37 +2834,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-          const resolvePagesClientAssetsId = () => {
-            if (this.environment?.config.command === "build") {
-              const buildRoot = this.environment.config.root ?? process.cwd();
-              const environmentOutDir = path.resolve(
-                buildRoot,
-                this.environment.config.build.outDir,
-              );
-              const sidecarDir =
-                this.environment.name === "ssr"
-                  ? hasAppDir
-                    ? path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server"))
-                    : path.dirname(environmentOutDir)
-                  : environmentOutDir;
-              let externalId = normalizePathSeparators(
-                path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
-              );
-              if (!externalId.startsWith(".")) externalId = `./${externalId}`;
-              pagesClientAssetsOutputDirs.add(sidecarDir);
-              return { id: externalId, external: true };
-            }
-            return RESOLVED_PAGES_CLIENT_ASSETS;
-          };
-          if (cleanId === VIRTUAL_PAGES_CLIENT_ASSETS) return resolvePagesClientAssetsId();
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY)) {
             return RESOLVED_CLIENT_ENTRY;
           }
-          if (cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS))
-            return resolvePagesClientAssetsId();
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
@@ -3148,6 +3122,42 @@ export const loadServerActionClient = ${
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
           return { code: patchPlan.code, map: patchPlan.map };
+        },
+      },
+    },
+    {
+      name: "vinext:pages-client-assets-resolver",
+      // The resolver and writer share a build-scoped destination registry.
+      // Keep only these focused plugins shared across Vite environments.
+      sharedDuringBuild: true,
+      resolveId: {
+        filter: { id: /virtual:vinext-pages-client-assets$/ },
+        handler(id) {
+          const cleanId = normalizePathSeparators(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+          if (
+            cleanId !== VIRTUAL_PAGES_CLIENT_ASSETS &&
+            !cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS)
+          ) {
+            return;
+          }
+          if (this.environment?.config.command !== "build") {
+            return RESOLVED_PAGES_CLIENT_ASSETS;
+          }
+
+          const buildRoot = this.environment.config.root ?? process.cwd();
+          const environmentOutDir = path.resolve(buildRoot, this.environment.config.build.outDir);
+          const sidecarDir =
+            this.environment.name === "ssr"
+              ? hasAppDir
+                ? path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server"))
+                : path.dirname(environmentOutDir)
+              : environmentOutDir;
+          let externalId = normalizePathSeparators(
+            path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
+          );
+          if (!externalId.startsWith(".")) externalId = `./${externalId}`;
+          pagesClientAssetsOutputDirs.add(sidecarDir);
+          return { id: externalId, external: true };
         },
       },
     },
@@ -5440,6 +5450,8 @@ export const loadServerActionClient = ${
       name: "vinext:pages-client-assets",
       apply: "build",
       enforce: "post",
+      // See vinext:pages-client-assets-resolver above.
+      sharedDuringBuild: true,
       closeBundle: {
         sequential: true,
         order: "post",
@@ -5472,21 +5484,6 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
             });
-
-            // Vite clones plugin instances per environment, so the client
-            // environment cannot rely on the server environment's resolveId
-            // hook having populated this set. Write the deterministic Node
-            // destinations while the descriptor is available here.
-            if (!hasCloudflarePlugin && !hasNitroPlugin) {
-              if (hasAppDir) {
-                pagesClientAssetsOutputDirs.add(
-                  path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server")),
-                );
-              }
-              if (hasPagesDir) {
-                pagesClientAssetsOutputDirs.add(path.resolve(buildRoot, "dist"));
-              }
-            }
           }
 
           if (pagesClientAssetsModule === null) {
@@ -5496,12 +5493,6 @@ export const loadServerActionClient = ${
               writePagesClientAssetsModuleIfMissing(outputDir, emptyModule);
             }
             return;
-          }
-          if (hasCloudflarePlugin) {
-            const buildRoot = envConfig.root ?? process.cwd();
-            for (const outputDir of findCloudflareWorkerOutputDirs(buildRoot)) {
-              pagesClientAssetsOutputDirs.add(outputDir);
-            }
           }
           for (const outputDir of pagesClientAssetsOutputDirs) {
             fs.mkdirSync(outputDir, { recursive: true });

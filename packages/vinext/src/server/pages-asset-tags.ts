@@ -161,7 +161,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
 
   // Development adapters provide the Vite-served virtual entry explicitly.
-  // Production Workers use the client entry embedded by vinext:cloudflare-build.
+  // Production builds use the client entry registered from the emitted sidecar.
   const clientEntry = runtimeAssets.clientEntry;
   if (clientEntry) {
     seen.add(clientEntry);
