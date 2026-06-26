@@ -18,7 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { runCheck, formatReport } from "./check.js";
 import {
   ensureESModule,
@@ -39,6 +39,51 @@ import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
 
+const terminalStyle = {
+  bold: (value: string) => (process.stdout.isTTY ? `\x1b[1m${value}\x1b[0m` : value),
+  cyan: (value: string) => (process.stdout.isTTY ? `\x1b[36m${value}\x1b[0m` : value),
+  green: (value: string) => (process.stdout.isTTY ? `\x1b[32m${value}\x1b[0m` : value),
+  yellow: (value: string) => (process.stdout.isTTY ? `\x1b[33m${value}\x1b[0m` : value),
+};
+
+function formatList(items: string[], indent: string): string {
+  return items.map((item) => `${indent}- ${item}`).join("\n");
+}
+
+function isApproveBuildsError(error: unknown): boolean {
+  const details = [
+    error instanceof Error ? error.message : String(error),
+    typeof error === "object" && error && "output" in error ? String(error.output) : "",
+    typeof error === "object" && error && "stdout" in error ? String(error.stdout) : "",
+    typeof error === "object" && error && "stderr" in error ? String(error.stderr) : "",
+  ].join("\n");
+  return /approve-builds|ignored build scripts|blocked build scripts|ERR_PNPM_.*BUILD/i.test(
+    details,
+  );
+}
+
+function hasAutomaticallyIgnoredBuilds(output: string): boolean {
+  const automaticallyIgnored = output.match(
+    /Automatically ignored builds during installation:\s*\n([\s\S]*?)(?:\n\s*\n|$)/i,
+  )?.[1];
+  if (!automaticallyIgnored) return false;
+  return automaticallyIgnored
+    .split("\n")
+    .map((line) => line.trim())
+    .some(
+      (line) => line.length > 0 && !/^none\.?$/i.test(line) && !/^cannot identify\b/i.test(line),
+    );
+}
+
+function inspectPnpmIgnoredBuilds(root: string): string {
+  const result = spawnSync("pnpm", ["ignored-builds"], {
+    cwd: root,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type InitOptions = {
@@ -55,7 +100,12 @@ export type InitOptions = {
   /** Cloudflare cache and image choices. */
   cloudflare?: CloudflareInitOptions;
   /** @internal — override exec for testing (avoids ESM spy issues) */
-  _exec?: (cmd: string, opts: { cwd: string; stdio: string }) => void;
+  _exec?: (
+    cmd: string,
+    opts: { cwd: string; stdio: string },
+  ) => string | void | Promise<string | void>;
+  /** @internal — override pnpm ignored-builds inspection for testing */
+  _inspectPnpmIgnoredBuilds?: (root: string) => string;
   /** @internal — stable compatibility date for snapshot tests */
   _today?: string;
 };
@@ -182,23 +232,28 @@ export function isDepInstalled(root: string, dep: string): boolean {
  *
  * Returns ["react@latest", "react-dom@latest"] if upgrade is needed, [] otherwise.
  */
-function installDeps(
+async function installDeps(
   root: string,
   deps: string[],
-  exec: (cmd: string, opts: { cwd: string; stdio: string }) => void,
+  exec: (
+    cmd: string,
+    opts: { cwd: string; stdio: string },
+  ) => string | void | Promise<string | void>,
   { dev = true }: { dev?: boolean } = {},
-): void {
-  if (deps.length === 0) return;
+): Promise<string> {
+  if (deps.length === 0) return "";
 
   const baseCmd = detectPackageManager(root);
   // Strip " -D" for non-dev installs (keeps deps in "dependencies", not "devDependencies")
   const installCmd = dev ? baseCmd : baseCmd.replace(/ -D$/, "");
   const depsStr = deps.join(" ");
 
-  exec(`${installCmd} ${depsStr}`, {
-    cwd: root,
-    stdio: "inherit",
-  });
+  return (
+    (await exec(`${installCmd} ${depsStr}`, {
+      cwd: root,
+      stdio: "inherit",
+    })) ?? ""
+  );
 }
 
 // ─── .gitignore Update ───────────────────────────────────────────────────────
@@ -295,10 +350,37 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   const exec =
     options._exec ??
-    ((cmd: string, opts: { cwd: string; stdio: string }) => {
-      const [program, ...args] = cmd.split(" ");
-      execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
-    });
+    ((cmd: string, opts: { cwd: string; stdio: string }) =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn(cmd, {
+          cwd: opts.cwd,
+          shell: true,
+          stdio: ["inherit", "pipe", "pipe"],
+        });
+        let output = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          const text = chunk.toString();
+          output += text;
+          process.stdout.write(text);
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          const text = chunk.toString();
+          output += text;
+          process.stderr.write(text);
+        });
+        child.on("error", (error) => reject(Object.assign(error, { output })));
+        child.on("close", (status) => {
+          if (status === 0) resolve(output);
+          else {
+            reject(
+              Object.assign(new Error(`Command failed with exit code ${status}: ${cmd}`), {
+                status,
+                output,
+              }),
+            );
+          }
+        });
+      }));
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
 
@@ -392,6 +474,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const neededDeps = getInitDeps(isApp, platform);
   const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
+  let dependencyInstallNeedsApproval = false;
+  let dependenciesAdded = false;
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
@@ -400,51 +484,106 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (isApp && missingDeps.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
+      console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
       console.log(
-        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+        formatList(
+          reactUpgrade.map((dep) => dep.replace(/@latest$/, "")),
+          "    ",
+        ),
       );
-      installDeps(root, reactUpgrade, exec, { dev: false });
+      try {
+        const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } catch (error) {
+        if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+        dependencyInstallNeedsApproval = true;
+      }
     }
   }
 
   if (missingDeps.length > 0) {
-    console.log(`  Installing ${missingDeps.join(", ")}...`);
-    installDeps(root, missingDeps, exec);
+    console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
+    console.log(formatList(missingDeps, "    "));
+    try {
+      const installOutput = await installDeps(root, missingDeps, exec);
+      dependenciesAdded = true;
+      if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
+    }
     console.log();
+  }
+
+  if (
+    pmName === "pnpm" &&
+    !dependencyInstallNeedsApproval &&
+    !options._exec &&
+    hasAutomaticallyIgnoredBuilds(inspectPnpmIgnoredBuilds(root))
+  ) {
+    dependencyInstallNeedsApproval = true;
+  } else if (
+    pmName === "pnpm" &&
+    !dependencyInstallNeedsApproval &&
+    options._inspectPnpmIgnoredBuilds &&
+    hasAutomaticallyIgnoredBuilds(options._inspectPnpmIgnoredBuilds(root))
+  ) {
+    dependencyInstallNeedsApproval = true;
   }
 
   // ── Step 7: Print summary ──────────────────────────────────────────────
 
-  console.log("  vinext init complete!\n");
+  console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (missingDeps.length > 0) {
-    console.log(`    \u2713 Added ${missingDeps.join(", ")} to devDependencies`);
+  if (dependenciesAdded) {
+    console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
+    console.log(formatList(missingDeps, "      "));
+  }
+  if (dependencyInstallNeedsApproval) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Dependency installation is waiting for build-script approval`,
+    );
   }
   if (addedTypeModule) {
-    console.log(`    \u2713 Added "type": "module" to package.json`);
+    console.log(`    ${terminalStyle.green("\u2713")} Added "type": "module" to package.json`);
   }
   for (const [oldName, newName] of renamedConfigs) {
-    console.log(`    \u2713 Renamed ${oldName} \u2192 ${newName}`);
+    console.log(`    ${terminalStyle.green("\u2713")} Renamed ${oldName} \u2192 ${newName}`);
   }
   for (const script of addedScripts) {
-    console.log(`    \u2713 Added ${script} script`);
+    console.log(`    ${terminalStyle.green("\u2713")} Added ${script} script`);
   }
   if (generatedViteConfig) {
-    console.log(`    \u2713 Generated vite.config.ts`);
+    console.log(`    ${terminalStyle.green("\u2713")} Generated vite.config.ts`);
   }
   for (const file of generatedPlatformFiles) {
-    console.log(`    \u2713 Generated ${file}`);
+    console.log(`    ${terminalStyle.green("\u2713")} Generated ${file}`);
   }
   if (skippedViteConfig) {
-    console.log(`    - Skipped vite.config.ts (already exists, use --force to overwrite)`);
+    console.log(
+      `    ${terminalStyle.yellow("-")} Skipped vite.config.ts (already exists, use --force to overwrite)`,
+    );
   }
   if (updatedGitignore) {
-    console.log(`    \u2713 Added vinext output directories to .gitignore`);
+    console.log(
+      `    ${terminalStyle.green("\u2713")} Added vinext output directories to .gitignore`,
+    );
+  }
+
+  const nextSteps = [...platformSetup.nextSteps];
+  if (dependencyInstallNeedsApproval) {
+    nextSteps.push(
+      "Dependency installation is incomplete because pnpm blocked dependency build scripts:",
+      "1. Review and approve the required build scripts:",
+      "   pnpm approve-builds",
+      "2. Finish installing dependencies:",
+      "   pnpm install",
+    );
   }
 
   console.log(`
-  Next steps:
-${platformSetup.nextSteps.map((step) => `    ${step}`).join("\n")}${platformSetup.nextSteps.length > 0 ? "\n" : ""}
+  ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
+${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n" : ""}
     ${pmName} run dev:vinext    Start the vinext dev server
     ${pmName} run build:vinext  Build production output
     ${pmName} run start:vinext  Start vinext production server
@@ -452,7 +591,7 @@ ${platformSetup.nextSteps.map((step) => `    ${step}`).join("\n")}${platformSetu
 `);
 
   return {
-    installedDeps: missingDeps,
+    installedDeps: dependenciesAdded ? missingDeps : [],
     addedTypeModule,
     renamedConfigs,
     addedScripts,

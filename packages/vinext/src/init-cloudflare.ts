@@ -137,12 +137,34 @@ export function setupCloudflarePlatform(
     generatedPlatformFiles.push("worker/index.ts");
   }
 
+  const finalWranglerPath = wranglerPath ?? path.join(context.root, "wrangler.jsonc");
+  const finalWranglerFileName = path.basename(finalWranglerPath);
+  const finalWranglerConfig = JSON.parse(
+    stripJsonComments(fs.readFileSync(finalWranglerPath, "utf-8")),
+  ) as { kv_namespaces?: Array<{ binding?: unknown; id?: unknown }> };
+  const kvBinding = finalWranglerConfig.kv_namespaces?.find(
+    (namespace) => namespace.binding === "VINEXT_KV_CACHE",
+  );
+  const needsKvNamespaceId =
+    cloudflare.dataCache === "kv" &&
+    (!kvBinding ||
+      typeof kvBinding.id !== "string" ||
+      kvBinding.id.length === 0 ||
+      kvBinding.id === "<your-kv-namespace-id>");
+
   return {
     generatedViteConfig,
     skippedViteConfig,
     generatedPlatformFiles,
-    nextSteps:
-      cloudflare.dataCache === "kv" ? ["npx wrangler kv namespace create VINEXT_KV_CACHE"] : [],
+    nextSteps: needsKvNamespaceId
+      ? [
+          "Cloudflare setup is incomplete until you finish KV configuration:",
+          "1. Create the KV namespace:",
+          "   npx wrangler kv namespace create VINEXT_KV_CACHE",
+          `2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in ${finalWranglerFileName}:`,
+          '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
+        ]
+      : [],
   };
 }
 

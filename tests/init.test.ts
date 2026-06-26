@@ -127,7 +127,7 @@ function setupProject(
 
 /** No-op exec for tests — records calls for assertions */
 function noopExec(): {
-  exec: (cmd: string, opts: { cwd: string; stdio: string }) => void;
+  exec: (cmd: string, opts: { cwd: string; stdio: string }) => string | void;
   calls: Array<{ cmd: string; opts: { cwd: string; stdio: string } }>;
 } {
   const calls: Array<{ cmd: string; opts: { cwd: string; stdio: string } }> = [];
@@ -145,11 +145,18 @@ function noopExec(): {
 async function runInit(
   dir: string,
   opts: Partial<InitOptions> = {},
-): Promise<{ result: Awaited<ReturnType<typeof init>>; execCalls: Array<{ cmd: string }> }> {
+): Promise<{
+  result: Awaited<ReturnType<typeof init>>;
+  execCalls: Array<{ cmd: string }>;
+  output: string;
+}> {
   const { exec, calls } = noopExec();
+  const output: string[] = [];
 
   // Suppress console output during tests
-  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  const consoleSpy = vi
+    .spyOn(console, "log")
+    .mockImplementation((...args) => output.push(args.join(" ")));
   const consoleErrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
   // Mock process.exit to prevent test from exiting
@@ -170,7 +177,7 @@ async function runInit(
       },
       ...opts,
     });
-    return { result, execCalls: calls };
+    return { result, execCalls: calls, output: output.join("\n") };
   } finally {
     consoleSpy.mockRestore();
     consoleErrSpy.mockRestore();
@@ -480,6 +487,87 @@ describe("init — basic functionality", () => {
     });
   });
 
+  it("prints explicit steps to finish Cloudflare KV setup", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { output } = await runInit(tmpDir);
+
+    expect(output).toContain("Cloudflare setup is incomplete until you finish KV configuration:");
+    expect(output).toContain("1. Create the KV namespace:");
+    expect(output).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
+    expect(output).toContain(
+      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.jsonc:",
+    );
+    expect(output).toContain('Set its "id" value, replacing "<your-kv-namespace-id>" if present.');
+  });
+
+  it("omits KV setup steps when Wrangler already has a namespace ID", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "existing-id" }]
+}\n`,
+    );
+
+    const { output } = await runInit(tmpDir);
+
+    expect(output).not.toContain(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+    );
+    expect(output).not.toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
+    expect(output).not.toContain("<your-kv-namespace-id>");
+  });
+
+  it("names wrangler.json when that is the configured Wrangler file", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.json", `{ "name": "existing" }\n`);
+
+    const { output } = await runInit(tmpDir);
+
+    expect(output).toContain(
+      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.json:",
+    );
+    expect(output).not.toContain("entry in wrangler.jsonc:");
+  });
+
+  it("prints KV setup steps when the binding exists without an ID", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE" }]
+}\n`,
+    );
+
+    const { output } = await runInit(tmpDir);
+
+    expect(output).toContain("Cloudflare setup is incomplete until you finish KV configuration:");
+    expect(output).toContain(
+      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.jsonc:",
+    );
+    expect(output).toContain('Set its "id" value');
+  });
+
+  it("omits KV setup steps when the data cache is disabled", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { output } = await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "cloudflare-images",
+      },
+    });
+
+    expect(output).not.toContain(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+    );
+    expect(output).not.toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
+  });
+
   it("keeps Node init free of Cloudflare scaffolding", async () => {
     setupProject(tmpDir, { router: "pages" });
 
@@ -743,6 +831,20 @@ describe("init — CJS config renaming", () => {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
+  it("prints dependencies as a dashed list", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { output } = await runInit(tmpDir);
+
+    expect(output).toContain(
+      "  Installing dependencies:\n    - vinext\n    - vite\n    - @vitejs/plugin-react",
+    );
+    expect(output).toContain(
+      "    ✓ Added dependencies to devDependencies:\n      - vinext\n      - vite\n      - @vitejs/plugin-react",
+    );
+    expect(output).not.toContain("Installing vinext, vite");
+  });
+
   it("writes all project setup before invoking the package manager", async () => {
     setupProject(tmpDir, { router: "app" });
     const setupAtInstall: Array<{
@@ -802,6 +904,95 @@ describe("init — dependency installation", () => {
     expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(true);
     expect(readFile(tmpDir, ".gitignore")).toContain(".vinext/");
     expect(readFile(tmpDir, ".gitignore")).toContain("dist/");
+  });
+
+  it("adds pnpm approve-builds recovery instructions for blocked build scripts", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+
+    const { result, output } = await runInit(tmpDir, {
+      _exec: () => {
+        const error = new Error("pnpm install failed") as Error & { stderr: string };
+        error.stderr =
+          "Ignored build scripts: esbuild. Run pnpm approve-builds to pick which dependencies should be allowed to run scripts.";
+        throw error;
+      },
+    });
+
+    expect(result.installedDeps).toEqual([]);
+    expect(output).toContain("Dependency installation is waiting for build-script approval");
+    expect(output).toContain(
+      "Dependency installation is incomplete because pnpm blocked dependency build scripts:",
+    );
+    expect(output).toContain("1. Review and approve the required build scripts:");
+    expect(output).toContain("pnpm approve-builds");
+    expect(output).toContain("2. Finish installing dependencies:");
+    expect(output).toContain("pnpm install");
+    expect(output).not.toContain("Added dependencies to devDependencies:");
+  });
+
+  it("detects blocked builds after a successful pnpm install", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+
+    const { result, output } = await runInit(tmpDir, {
+      _inspectPnpmIgnoredBuilds: () =>
+        "Automatically ignored builds during installation:\n  esbuild\n  workerd\n",
+    });
+
+    expect(result.installedDeps).toContain("vinext");
+    expect(output).toContain("pnpm approve-builds");
+    expect(output).toContain("pnpm install");
+    expect(output).toContain("Added dependencies to devDependencies:");
+  });
+
+  it("does not request approval when pnpm has no automatically ignored builds", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+
+    const { result, output } = await runInit(tmpDir, {
+      _inspectPnpmIgnoredBuilds: () =>
+        "Automatically ignored builds during installation:\n  None\n\nExplicitly ignored package builds:\n  msw\n",
+    });
+
+    expect(result.installedDeps).toContain("vinext");
+    expect(output).not.toContain("pnpm approve-builds");
+  });
+
+  it("does not classify non-pnpm install failures as approve-builds errors", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    await expect(
+      runInit(tmpDir, {
+        _exec: () => {
+          throw new Error("Ignored build scripts: unrelated npm failure");
+        },
+      }),
+    ).rejects.toThrow("Ignored build scripts: unrelated npm failure");
+  });
+
+  it("continues the main dependency add after a React approve-builds warning", async () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.3");
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    const commands: string[] = [];
+
+    const { result, output } = await runInit(tmpDir, {
+      _exec: (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes("react@latest")) {
+          throw Object.assign(new Error("pnpm add failed"), {
+            output: "Ignored build scripts. Run pnpm approve-builds.",
+          });
+        }
+      },
+    });
+
+    expect(
+      commands.some((cmd) => cmd.includes("react-server-dom-webpack") && cmd.includes("-D")),
+    ).toBe(true);
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+    expect(output).toContain("pnpm approve-builds");
   });
 
   it("detects missing vinext and vite dependencies and installs them", async () => {
