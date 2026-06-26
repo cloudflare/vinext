@@ -74,12 +74,16 @@ test.describe("Cloudflare Workers Hydration", () => {
     const preinitScripts = page.locator('head script[async][type="module"][src]');
     await expect(preinitScripts).not.toHaveCount(0);
     for (const script of await preinitScripts.all()) {
-      await expect(script).toHaveAttribute("nonce", "vinext-test-nonce");
+      expect(await script.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe(
+        "vinext-test-nonce",
+      );
     }
 
     const bootstrapScript = page.locator('body script#_R_[type="module"][src]');
     await expect(bootstrapScript).toHaveCount(1);
-    await expect(bootstrapScript).toHaveAttribute("nonce", "vinext-test-nonce");
+    expect(await bootstrapScript.evaluate((element) => (element as HTMLScriptElement).nonce)).toBe(
+      "vinext-test-nonce",
+    );
 
     await page.click('[data-testid="increment"]');
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 1");
