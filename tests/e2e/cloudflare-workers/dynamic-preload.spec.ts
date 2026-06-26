@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { expect, test } from "../fixtures";
 
-const FIXTURE_DIR = `${process.cwd()}/tests/e2e/fixtures/app-dynamic-preload-cloudflare`;
+const FIXTURE_DIR = `${process.cwd()}/tests/e2e/cloudflare-workers/fixture`;
 const BASE_URL = "http://localhost:4192";
 
 let server: ChildProcess;
