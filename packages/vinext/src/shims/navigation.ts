@@ -17,6 +17,8 @@ import {
   type NavigationRuntimeVisibleCommitMode,
 } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import { resolveAppRoutePrefetchPolicy } from "../client/app-route-prefetch-policy.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL } from "../server/app-rsc-render-mode.js";
 import {
   clearAppNavigationFailureTarget,
   stageAppNavigationFailureTarget,
@@ -246,6 +248,7 @@ export type PrefetchCacheEntry = {
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
   optimisticRouteShell?: boolean;
+  instantShell?: boolean;
   partialSuspenseShell?: boolean;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
@@ -576,17 +579,19 @@ function addPrefetchInvalidationCallback(
   entry.onInvalidateCallbacks.add(onInvalidate);
 }
 
-function attachPrefetchInvalidationCallback(
+export function attachPrefetchInvalidationCallback(
   cacheKey: string,
   onInvalidate: (() => void) | undefined,
-): void {
-  if (onInvalidate === undefined) return;
+  expectedEntry?: PrefetchCacheEntry,
+): boolean {
+  if (onInvalidate === undefined) return false;
   const entry = getPrefetchCache().get(cacheKey);
-  if (!entry) return;
+  if (!entry || (expectedEntry !== undefined && entry !== expectedEntry)) return false;
   addPrefetchInvalidationCallback(entry, onInvalidate);
   if (entry.outcome === "cache-seeded") {
     schedulePrefetchInvalidation(cacheKey, entry);
   }
+  return true;
 }
 
 export function invalidatePrefetchCache(): void {
@@ -730,7 +735,11 @@ export function prefetchRscResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   options?: PrefetchOptions,
-  behavior: { cacheForNavigation?: boolean; optimisticRouteShell?: boolean } = {},
+  behavior: {
+    cacheForNavigation?: boolean;
+    instantShell?: boolean;
+    optimisticRouteShell?: boolean;
+  } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -739,6 +748,7 @@ export function prefetchRscResponse(
 
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: behavior.cacheForNavigation ?? true,
+    instantShell: behavior.instantShell === true,
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
@@ -1912,7 +1922,18 @@ const _appRouter: AppRouterInstance = {
       const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
       const interceptionContext = getPrefetchInterceptionContext(fullHref);
       const mountedSlotsHeader = getMountedSlotsHeader();
-      const headers = createRscRequestHeaders({ interceptionContext });
+      const prefetchPolicy = resolveAppRoutePrefetchPolicy({
+        basePath: __basePath,
+        currentHref: window.location.href,
+        href: fullHref,
+        routes: window.__VINEXT_LINK_PREFETCH_ROUTES__,
+      });
+      const headers = createRscRequestHeaders({
+        interceptionContext,
+        renderMode: prefetchPolicy.prefetchInstantShell
+          ? APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL
+          : undefined,
+      });
       if (mountedSlotsHeader) {
         headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
       }
@@ -1934,6 +1955,10 @@ const _appRouter: AppRouterInstance = {
         interceptionContext,
         mountedSlotsHeader,
         options,
+        {
+          cacheForNavigation: true,
+          instantShell: prefetchPolicy.prefetchInstantShell,
+        },
       );
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);

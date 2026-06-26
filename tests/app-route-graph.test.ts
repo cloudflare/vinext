@@ -101,6 +101,40 @@ async function createSemanticIdsFixture(appDir: string): Promise<void> {
 }
 
 describe("App Router route graph builder", () => {
+  it("propagates unstable_instant from pages and ancestor layouts", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(
+        appDir,
+        "layout.tsx",
+        "export const unstable_instant = false; export default function Layout() {}",
+      );
+      await writeAppFile(
+        appDir,
+        "page-instant/page.tsx",
+        "export const unstable_instant = { prefetch: 'runtime' }; export default function Page() {}",
+      );
+      await writeAppFile(
+        appDir,
+        "layout-instant/layout.tsx",
+        "export const unstable_instant = { prefetch: 'runtime' }; export default function Layout() {}",
+      );
+      await writeAppFile(appDir, "layout-instant/page.tsx", EMPTY_PAGE);
+      await writeAppFile(
+        appDir,
+        "static-instant/page.tsx",
+        "export const unstable_instant = { prefetch: 'static' }; export default function Page() {}",
+      );
+      await writeAppFile(appDir, "plain/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/page-instant").hasInstant).toBe(true);
+      expect(findRoute(graph.routes, "/layout-instant").hasInstant).toBe(true);
+      expect(findRoute(graph.routes, "/static-instant").hasInstant).toBe(false);
+      expect(findRoute(graph.routes, "/plain").hasInstant).toBe(false);
+    });
+  });
+
   it("materializes pages, handlers, layouts, and inherited parallel slots", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
@@ -220,6 +254,63 @@ describe("App Router route graph builder", () => {
         pagePath: path.join(appDir, "dashboard/@team/members/page.tsx"),
         routeSegments: ["members"],
       });
+    });
+  });
+
+  it("propagates ancestor unstable_instant to synthetic parallel-slot routes", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(
+        appDir,
+        "dashboard/layout.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+      );
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@team/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@team/members/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/dashboard").hasInstant).toBe(true);
+      expect(findRoute(graph.routes, "/dashboard/members").hasInstant).toBe(true);
+    });
+  });
+
+  it("detects unstable_instant on active parallel-slot pages and layouts", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/@team/page.tsx", EMPTY_PAGE);
+      await writeAppFile(
+        appDir,
+        "dashboard/@team/members/layout.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+      );
+      await writeAppFile(appDir, "dashboard/@team/members/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/dashboard").hasInstant).toBe(false);
+      expect(findRoute(graph.routes, "/dashboard/members").hasInstant).toBe(true);
+    });
+  });
+
+  it("detects unstable_instant on parallel-slot root layouts", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "dashboard/page.tsx", EMPTY_PAGE);
+      await writeAppFile(
+        appDir,
+        "dashboard/@team/layout.tsx",
+        `export const unstable_instant = { prefetch: "runtime" };\n${EMPTY_LAYOUT}`,
+      );
+      await writeAppFile(appDir, "dashboard/@team/default.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/dashboard").hasInstant).toBe(true);
     });
   });
 

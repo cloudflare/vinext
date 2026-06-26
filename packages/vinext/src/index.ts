@@ -22,6 +22,7 @@ import {
   invalidateAppRouteCache,
   matchAppRoute,
 } from "./routing/app-router.js";
+import { routeModuleHasInstant } from "./routing/app-route-graph.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
@@ -3424,9 +3425,12 @@ export const loadServerActionClient = ${
         }
 
         function invalidateHybridClientEntries() {
-          if (!hasAppDir || !hasPagesDir) return;
+          if (!hasAppDir) return;
           for (const env of Object.values(server.environments)) {
-            for (const id of [RESOLVED_CLIENT_ENTRY, RESOLVED_APP_BROWSER_ENTRY]) {
+            const ids = hasPagesDir
+              ? [RESOLVED_CLIENT_ENTRY, RESOLVED_APP_BROWSER_ENTRY]
+              : [RESOLVED_APP_BROWSER_ENTRY];
+            for (const id of ids) {
               const mod = env.moduleGraph.getModuleById(id);
               if (mod) env.moduleGraph.invalidateModule(mod);
             }
@@ -3531,6 +3535,25 @@ export const loadServerActionClient = ${
         regenerateAppRouteTypes();
         revalidateHybridRoutes();
 
+        const instantConfigByFile = new Map<string, boolean>();
+        if (hasAppDir) {
+          void appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher).then((graph) => {
+            const files = new Set<string>();
+            for (const route of graph.routes) {
+              if (route.pagePath) files.add(route.pagePath);
+              for (const layoutPath of route.layouts) files.add(layoutPath);
+              for (const slot of route.parallelSlots) {
+                if (slot.pagePath) files.add(slot.pagePath);
+                if (slot.layoutPath) files.add(slot.layoutPath);
+                for (const layoutPath of slot.configLayoutPaths ?? []) files.add(layoutPath);
+              }
+            }
+            for (const filePath of files) {
+              instantConfigByFile.set(filePath, routeModuleHasInstant(filePath));
+            }
+          });
+        }
+
         // Node throws on unhandled 'error' events on sockets. When a browser
         // drops the connection mid-response (common in dev: HMR triggers a
         // reload while an RSC stream is still flushing), the next res.write
@@ -3550,6 +3573,7 @@ export const loadServerActionClient = ${
             routeChanged = true;
           }
           if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
+            instantConfigByFile.set(filePath, routeModuleHasInstant(filePath));
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
@@ -3567,6 +3591,7 @@ export const loadServerActionClient = ${
             routeChanged = true;
           }
           if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
+            instantConfigByFile.delete(filePath);
             invalidateAppRoutingModules();
             regenerateAppRouteTypes();
             routeChanged = true;
@@ -3576,6 +3601,15 @@ export const loadServerActionClient = ${
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }
+        });
+        server.watcher.on("change", (filePath: string) => {
+          if (!hasAppDir || !shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) return;
+          const nextHasInstant = routeModuleHasInstant(filePath);
+          const previousHasInstant = instantConfigByFile.get(filePath) ?? false;
+          instantConfigByFile.set(filePath, nextHasInstant);
+          if (nextHasInstant === previousHasInstant) return;
+          invalidateAppRouteCache();
+          invalidateHybridClientEntries();
         });
 
         // ── Dev request origin check ─────────────────────────────────────

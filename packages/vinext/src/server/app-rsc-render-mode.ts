@@ -2,6 +2,7 @@ export type AppRscRenderMode =
   | "navigation"
   | "prefetch-loading-shell"
   | "prefetch-suspense-shell"
+  | "prefetch-instant-shell"
   | "refresh-preserve-ui"
   | "action-rerender-preserve-ui";
 
@@ -10,6 +11,8 @@ export const APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL =
   "prefetch-loading-shell" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL =
   "prefetch-suspense-shell" satisfies AppRscRenderMode;
+export const APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL =
+  "prefetch-instant-shell" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI =
   "refresh-preserve-ui" satisfies AppRscRenderMode;
 export const APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI =
@@ -33,6 +36,9 @@ export function getRscRenderModeCacheVariant(mode: AppRscRenderMode): string | n
   if (mode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL) {
     return "prefetch-suspense-shell";
   }
+  if (mode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL) {
+    return "prefetch-instant-shell";
+  }
 
   return shouldUsePreserveUiCacheVariant(mode) ? "preserve-ui" : null;
 }
@@ -43,6 +49,8 @@ export function parseAppRscRenderMode(value: string | null): AppRscRenderMode {
       return APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
     case APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL:
       return APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL;
+    case APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL:
+      return APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL;
     case APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI:
       return APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI;
     case APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI:

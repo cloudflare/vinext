@@ -69,6 +69,7 @@ export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute
 export function toLinkPrefetchRoute(route: AppRoute): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: route.loadingPath !== null,
+    ...(route.hasInstant ? { hasInstant: true } : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
   };

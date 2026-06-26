@@ -44,6 +44,7 @@ import {
 } from "../server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
 } from "../server/app-rsc-render-mode.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
@@ -65,12 +66,11 @@ import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
+import { resolveAppRoutePrefetchPolicy } from "../client/app-route-prefetch-policy.js";
 import {
   navigatePagesRouterLinkWithFallback,
   resolvePagesRouterQueryOnlyHref,
 } from "../client/pages-router-link-navigation.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
-import { stripBasePath } from "../utils/base-path.js";
 import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
@@ -183,7 +183,6 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
-const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
@@ -314,62 +313,17 @@ export function resolveLinkPrefetchMode(
   return "auto";
 }
 
-function toSameOriginRouteHref(href: string): string | null {
-  if (typeof window === "undefined") return null;
-
-  let url: URL;
-  try {
-    url = new URL(href, window.location.href);
-  } catch {
-    return null;
-  }
-
-  if (url.origin !== window.location.origin) return null;
-
-  return `${stripBasePath(url.pathname, __basePath)}${url.search}`;
-}
-
 function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
 
-function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
-  cacheForNavigation: boolean;
-  prefetchSuspenseShell: boolean;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: boolean;
-} {
-  const hasLoadingShell = route.canPrefetchLoadingShell;
-  return {
-    // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
-    // Routes with loading boundaries prefetch a shell first so navigation can
-    // commit loading.js immediately. Dynamic routes without loading-shell
-    // fallbacks are treated as exact-URL full prefetches; the prefetch cache is
-    // keyed by the concrete RSC URL, so this cannot reuse data across params.
-    cacheForNavigation: !hasLoadingShell,
-    prefetchSuspenseShell: route.isDynamic && !hasLoadingShell,
-    prefetchShellFirst: !route.isDynamic,
-    shouldPrefetch: true,
-  };
-}
-
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
-  if (typeof window === "undefined") return false;
-
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes) return false;
-
-  const routeHref = toSameOriginRouteHref(href);
-  if (routeHref === null) return false;
-
-  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) return false;
-
-  return resolveMatchedAutoAppRoutePrefetch(match.route).cacheForNavigation;
+  return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
+  prefetchInstantShell: boolean;
   prefetchShellFirst: boolean;
   prefetchSuspenseShell: boolean;
   shouldPrefetch: boolean;
@@ -377,43 +331,45 @@ export function resolveAutoAppRoutePrefetch(href: string): {
   if (typeof window === "undefined") {
     return {
       cacheForNavigation: false,
+      prefetchInstantShell: false,
       prefetchShellFirst: false,
       prefetchSuspenseShell: false,
       shouldPrefetch: false,
     };
   }
 
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes) {
+  return resolveAppRoutePrefetchPolicy({
+    basePath: __basePath,
+    currentHref: window.location.href,
+    href,
+    routes: window.__VINEXT_LINK_PREFETCH_ROUTES__,
+  });
+}
+
+export function resolveAppRoutePrefetch(
+  href: string,
+  mode: LinkPrefetchMode,
+): ReturnType<typeof resolveAutoAppRoutePrefetch> {
+  if (mode === "disabled") {
     return {
       cacheForNavigation: false,
+      prefetchInstantShell: false,
       prefetchShellFirst: false,
       prefetchSuspenseShell: false,
       shouldPrefetch: false,
     };
   }
 
-  const routeHref = toSameOriginRouteHref(href);
-  if (routeHref === null) {
-    return {
-      cacheForNavigation: false,
-      prefetchShellFirst: false,
-      prefetchSuspenseShell: false,
-      shouldPrefetch: false,
-    };
-  }
+  const matched = resolveAutoAppRoutePrefetch(href);
+  if (mode === "auto" || matched.prefetchInstantShell) return matched;
 
-  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) {
-    return {
-      cacheForNavigation: false,
-      prefetchShellFirst: false,
-      prefetchSuspenseShell: false,
-      shouldPrefetch: false,
-    };
-  }
-
-  return resolveMatchedAutoAppRoutePrefetch(match.route);
+  return {
+    cacheForNavigation: true,
+    prefetchInstantShell: false,
+    prefetchShellFirst: true,
+    prefetchSuspenseShell: false,
+    shouldPrefetch: true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -450,11 +406,14 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
     return;
   }
 
-  const appAutoPrefetch =
-    hasAppNavigationRuntime() && mode === "auto" ? resolveAutoAppRoutePrefetch(prefetchHref) : null;
+  const appPrefetch = hasAppNavigationRuntime()
+    ? mode === "auto"
+      ? resolveAutoAppRoutePrefetch(prefetchHref)
+      : resolveAppRoutePrefetch(prefetchHref, mode)
+    : null;
 
   const schedule =
-    priority === "high" || appAutoPrefetch?.prefetchSuspenseShell === true
+    priority === "high" || appPrefetch?.prefetchSuspenseShell === true
       ? (fn: () => void) => {
           fn();
         }
@@ -474,15 +433,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         if (hybridOwner === "pages" || hybridOwner === "document") {
           return;
         }
-        const autoPrefetch =
-          mode === "auto"
-            ? (appAutoPrefetch ?? resolveAutoAppRoutePrefetch(prefetchHref))
-            : {
-                cacheForNavigation: true,
-                prefetchShellFirst: true,
-                prefetchSuspenseShell: false,
-                shouldPrefetch: true,
-              };
+        const autoPrefetch = appPrefetch ?? resolveAppRoutePrefetch(prefetchHref, mode);
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -494,7 +445,9 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           renderMode: isOptimisticRouteShellPrefetch
             ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : autoPrefetch.prefetchSuspenseShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL
+              ? autoPrefetch.prefetchInstantShell
+                ? APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL
+                : APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL
               : undefined,
         });
         if (mountedSlotsHeader) {
@@ -578,6 +531,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
+            instantShell: autoPrefetch.prefetchInstantShell,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );

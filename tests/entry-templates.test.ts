@@ -183,6 +183,7 @@ describe("App Router generated manifest construction", () => {
         templateTreePositions: [],
         layoutTreePositions: [0],
         isDynamic: true,
+        hasInstant: true,
         params: ["slug"],
         siblingIntercepts: [],
       },
@@ -223,7 +224,7 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+      '{"canPrefetchLoadingShell":true,"hasInstant":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',

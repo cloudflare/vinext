@@ -12,6 +12,7 @@ import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./f
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 import { normalizePathSeparators } from "../utils/path.js";
+import { hasNamedExportObjectStringProperty } from "../build/report.js";
 
 type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -191,7 +192,40 @@ export type AppRoute = {
   rootParamNames?: string[];
   /** Pre-split pattern segments (computed once at scan time, reused per request) */
   patternParts: string[];
+  /** Whether the page or any active ancestor layout opts into unstable_instant. */
+  hasInstant?: boolean;
 };
+
+export function routeModuleHasInstant(filePath: string | null): boolean {
+  if (filePath === null) return false;
+  try {
+    return hasNamedExportObjectStringProperty(
+      fs.readFileSync(filePath, "utf8"),
+      "unstable_instant",
+      "prefetch",
+      "runtime",
+    );
+  } catch {
+    return false;
+  }
+}
+
+function routeHasInstant(options: {
+  layouts: readonly string[];
+  pagePath: string | null;
+  parallelSlots: readonly ParallelSlot[];
+}): boolean {
+  return (
+    routeModuleHasInstant(options.pagePath) ||
+    options.layouts.some((layoutPath) => routeModuleHasInstant(layoutPath)) ||
+    options.parallelSlots.some(
+      (slot) =>
+        routeModuleHasInstant(slot.pagePath) ||
+        routeModuleHasInstant(slot.layoutPath ?? null) ||
+        (slot.configLayoutPaths ?? []).some((layoutPath) => routeModuleHasInstant(layoutPath)),
+    )
+  );
+}
 
 export type AppRouteSemanticIds = {
   route: string;
@@ -1100,6 +1134,7 @@ function discoverSlotSubRoutes(
       }
       return slot;
     });
+    route.hasInstant = routeHasInstant(route);
   };
 
   // Iterate real routes first so that later ghost-parent passes can detect
@@ -1300,6 +1335,11 @@ function discoverSlotSubRoutes(
         params: [...parentRoute.params, ...subParams],
         rootParamNames: parentRoute.rootParamNames,
         patternParts: [...parentRoute.patternParts, ...urlParts],
+        hasInstant: routeHasInstant({
+          layouts: parentRoute.layouts,
+          pagePath: childrenFallback,
+          parallelSlots: subSlots,
+        }),
         siblingIntercepts: [],
       };
       syntheticRoutes.push(newRoute);
@@ -1564,6 +1604,7 @@ function directoryToAppRoute(
     params,
     rootParamNames: computeRootParamNames(segments, layoutTreePositions),
     patternParts: urlSegments,
+    hasInstant: routeHasInstant({ layouts, pagePath, parallelSlots }),
     siblingIntercepts: [],
   };
 }

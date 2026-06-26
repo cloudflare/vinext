@@ -48,7 +48,11 @@ async function writeFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const sourceDir = path.join(appDir, "mismatching-prefetch");
   const dynamicDir = path.join(sourceDir, "dynamic-page", "[param]");
+  const instantPageDir = path.join(appDir, "instant-page");
+  const instantLayoutDir = path.join(appDir, "instant-layout");
   await fs.mkdir(dynamicDir, { recursive: true });
+  await fs.mkdir(instantPageDir, { recursive: true });
+  await fs.mkdir(instantLayoutDir, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
@@ -82,6 +86,45 @@ export default function Page() {
 }
 `,
   );
+  await fs.writeFile(
+    path.join(appDir, "page.tsx"),
+    `"use client";
+import Link from "next/link";
+import { useState } from "react";
+function InstantLink({ id, href, children }: { id: string; href: string; children: React.ReactNode }) {
+  const [visible, setVisible] = useState(false);
+  return <div>
+    <button id={"reveal-" + id} onClick={() => setVisible(true)}>Reveal</button>
+    {visible ? <Link id={id} href={href} prefetch={true}>{children}</Link> : null}
+  </div>;
+}
+export default function Page() { return <main>
+  <InstantLink id="instant-page-link" href="/instant-page">Page instant</InstantLink>
+  <InstantLink id="instant-layout-link" href="/instant-layout">Layout instant</InstantLink>
+</main>; }
+`,
+  );
+  const instantPage = `import { Suspense } from "react";
+import { cookies } from "next/headers";
+import { connection } from "next/server";
+async function Cached() { const value = (await cookies()).get("test")?.value ?? "default"; return <div id="cached-content">Cached content: {value}</div>; }
+async function Dynamic() { await connection(); return <div id="dynamic-content">Dynamic content</div>; }
+export default function Page() { return <>
+  <Suspense fallback={<div>Loading cached...</div>}><Cached /></Suspense>
+  <Suspense fallback={<div>Loading dynamic...</div>}><Dynamic /></Suspense>
+</>; }
+`;
+  await fs.writeFile(
+    path.join(instantPageDir, "page.tsx"),
+    `export const unstable_instant = { prefetch: "runtime", samples: [] };\n${instantPage}`,
+  );
+  await fs.writeFile(
+    path.join(instantLayoutDir, "layout.tsx"),
+    `export const unstable_instant = { prefetch: "runtime", samples: [] };
+export default function Layout({ children }: { children: React.ReactNode }) { return <>{children}</>; }
+`,
+  );
+  await fs.writeFile(path.join(instantLayoutDir, "page.tsx"), instantPage);
   await fs.writeFile(
     path.join(dynamicDir, "page.tsx"),
     `import { Suspense } from "react";
@@ -215,3 +258,33 @@ test("prefetches a fallback from a user Suspense boundary", async ({ page }) => 
     await fs.rm(app.fixtureRoot, { recursive: true, force: true });
   }
 });
+
+for (const [linkId, pathname] of [
+  ["instant-page-link", "/instant-page"],
+  ["instant-layout-link", "/instant-layout"],
+] as const) {
+  test(`prefetch={true} respects unstable_instant on ${pathname}`, async ({ page }) => {
+    const app = await buildAndServeFixture();
+    try {
+      await page.goto(app.baseUrl);
+      await waitForAppRouterHydration(page);
+      const responsePromise = page.waitForResponse((response) => {
+        const request = response.request();
+        return (
+          new URL(response.url()).pathname === pathname &&
+          request.headers()["x-vinext-rsc-render-mode"] === "prefetch-instant-shell"
+        );
+      });
+      await page.locator(`#reveal-${linkId}`).click();
+      const response = await responsePromise;
+      expect(response.ok()).toBe(true);
+      const payload = await response.text();
+      expect(payload).toContain("Cached content");
+      expect(payload).toContain("Loading dynamic...");
+      expect(payload).not.toContain("Dynamic content");
+    } finally {
+      await closeServer(app.server);
+      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+}

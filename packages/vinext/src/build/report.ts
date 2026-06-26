@@ -133,6 +133,79 @@ export function hasNamedExport(code: string, name: string): boolean {
   return hasNamedExportInProgram(program, name);
 }
 
+/**
+ * Returns whether a named export is statically known to be truthy.
+ *
+ * Object/array/function-like initializers are treated as truthy without
+ * evaluating user code. External re-exports are also treated as truthy because
+ * their runtime value cannot be determined safely.
+ */
+export function hasTruthyNamedExport(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  const localName = findExportedLocalNameInProgram(program, name);
+  if (localName === null) return false;
+
+  const initializer =
+    findExportedConstInitializerInProgram(program, name) ??
+    findLocalConstInitializerInProgram(program, localName);
+  if (initializer === null) return true;
+
+  const expression = unwrapStaticExpression(initializer);
+  if (expression.type !== "Literal") return true;
+  return Boolean(expression.value);
+}
+
+export function hasNamedExportObjectStringProperty(
+  code: string,
+  name: string,
+  property: string,
+  expectedValue: string,
+): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  const localName = findExportedLocalNameInProgram(program, name);
+  if (localName === null) return false;
+  const initializer =
+    findExportedConstInitializerInProgram(program, name) ??
+    findLocalConstInitializerInProgram(program, localName);
+  if (initializer === null) return false;
+
+  const expression = unwrapStaticExpression(initializer);
+  if (expression.type !== "ObjectExpression") return false;
+  for (const candidate of expression.properties) {
+    if (
+      candidate.type !== "Property" ||
+      candidate.computed ||
+      propertyName(candidate.key) !== property
+    ) {
+      continue;
+    }
+    const value = unwrapStaticExpression(candidate.value);
+    return value.type === "Literal" && value.value === expectedValue;
+  }
+  return false;
+}
+
+function findExportedLocalNameInProgram(program: Program, name: string): string | null {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    if (node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return name;
+
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported) === name) {
+        return moduleExportNameValue(specifier.local);
+      }
+    }
+  }
+
+  return null;
+}
+
 function hasNamedExportInProgram(program: Program, name: string): boolean {
   for (const node of program.body) {
     if (node.type !== "ExportNamedDeclaration") continue;
@@ -178,6 +251,17 @@ function findExportedConstInitializerInProgram(program: Program, name: string): 
       if (bindingName(declarator.id) === name) {
         return declarator.init;
       }
+    }
+  }
+
+  return null;
+}
+
+function findLocalConstInitializerInProgram(program: Program, name: string): Expression | null {
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration" || node.kind !== "const") continue;
+    for (const declarator of node.declarations) {
+      if (bindingName(declarator.id) === name) return declarator.init;
     }
   }
 

@@ -21,6 +21,7 @@ import {
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import {
+  cancelPrefetchSuspenseShellAbort,
   createPrefetchSuspenseShellState,
   runWithPrefetchSuspenseShellState,
   schedulePrefetchSuspenseShellAbort,
@@ -44,6 +45,7 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -700,17 +702,24 @@ export async function renderAppPageLifecycle(
   let prefetchSuspenseShellWasAborted = false;
   let rscStream = await runWithFetchDedupe(async () => {
     if (
-      options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL &&
+      (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL ||
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL) &&
       options.prerenderToReadableStream
     ) {
-      const shellState = createPrefetchSuspenseShellState(options.cleanPathname);
+      const shellState = createPrefetchSuspenseShellState(
+        options.cleanPathname,
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL,
+      );
       const pendingResult = runWithPrefetchSuspenseShellState(shellState, () =>
         options.prerenderToReadableStream!(outgoingElement, {
           onError: rscErrorTracker.onRenderError,
           signal: shellState.reactAbortController.signal,
         }),
       );
-      const cancelAbort = schedulePrefetchSuspenseShellAbort(shellState);
+      const cancelAbort =
+        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL
+          ? schedulePrefetchSuspenseShellAbort(shellState)
+          : () => cancelPrefetchSuspenseShellAbort(shellState);
       try {
         const result = await pendingResult;
         prefetchSuspenseShellWasAborted = wasPrefetchSuspenseShellAborted(shellState);
@@ -832,7 +841,8 @@ export async function renderAppPageLifecycle(
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
       partialShell:
-        options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL &&
+        (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_SUSPENSE_SHELL ||
+          options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_INSTANT_SHELL) &&
         prefetchSuspenseShellWasAborted,
       policy: rscResponsePolicy,
       timing: buildResponseTiming({

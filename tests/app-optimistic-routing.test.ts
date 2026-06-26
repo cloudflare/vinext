@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, Suspense, type ReactNode } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -12,6 +12,7 @@ import {
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationPayload,
+  sanitizeInstantShellElements,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import type {
@@ -251,6 +252,7 @@ describe("App Router optimistic routing", () => {
     });
 
     expect(template).toMatchObject<Partial<OptimisticRouteTemplate>>({
+      concreteHrefKey: null,
       routeId: "route:/blog/:slug",
     });
     if (template === null) {
@@ -281,6 +283,219 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("accepts instant shells without a loading-boundary marker", () => {
+    const routeManifest = blogManifest();
+    const elements = createBlogElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+
+    expect(template).toMatchObject<Partial<OptimisticRouteTemplate>>({
+      concreteHrefKey: "/blog/post-1",
+      pageElementIds: [],
+      routeId: "route:/blog/:slug",
+    });
+  });
+
+  it("does not reuse preserved instant content across dynamic params", () => {
+    const routeManifest = blogManifest();
+    const elements = createBlogElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      preservePageElements: true,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected instant template");
+
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          concreteHrefKey: template.concreteHrefKey,
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+
+    expect(
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/blog/post-1",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      }),
+    ).not.toBeNull();
+    expect(
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/blog/post-2",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves fulfilled instant content and suspends rejected lazy children", () => {
+    const rejectedLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init() {
+        throw new Error("should not initialize rejected lazy child");
+      },
+      _payload: { status: "rejected" },
+    };
+    const resolvedLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init() {
+        return createElement("div", { id: "cached-content" }, "Cached content");
+      },
+      _payload: { status: "resolved_model" },
+    };
+    const pageId = AppElementsWire.encodePageId("/instant", null);
+    const elements = {
+      [pageId]: createElement(
+        "main",
+        null,
+        createElement(Suspense, { fallback: "cached" }, resolvedLazy as never),
+        createElement(Suspense, { fallback: "dynamic" }, rejectedLazy as never),
+      ),
+    } as AppElements;
+
+    const sanitized = sanitizeInstantShellElements(elements);
+    const page = sanitized[pageId];
+    expect(page).not.toBe(elements[pageId]);
+    expect(page).toMatchObject({
+      props: {
+        children: [
+          { props: { children: { props: { children: "Cached content", id: "cached-content" } } } },
+          { props: { children: { type: expect.any(Function) } } },
+        ],
+      },
+    });
+  });
+
+  it.each(["pending", "blocked", "halted"])(
+    "suspends %s instant lazy children without initializing them",
+    (status) => {
+      const payload = { status };
+      const suspendedLazy = {
+        $$typeof: Symbol.for("react.lazy"),
+        _init(receivedPayload: unknown) {
+          throw receivedPayload;
+        },
+        _payload: payload,
+      };
+      const pageId = AppElementsWire.encodePageId("/instant", null);
+      const elements = {
+        [pageId]: createElement(Suspense, { fallback: "dynamic" }, suspendedLazy as never),
+      } as AppElements;
+
+      const sanitized = sanitizeInstantShellElements(elements);
+
+      expect(sanitized[pageId]).toMatchObject({
+        props: { children: { type: expect.any(Function) } },
+      });
+    },
+  );
+
+  it.each(["resolved_model", "resolved_module"])(
+    "suspends %s lazy children when initialization is still blocked",
+    (status) => {
+      const pending = new Promise<never>(() => {});
+      const suspendedLazy = {
+        $$typeof: Symbol.for("react.lazy"),
+        _init() {
+          throw pending;
+        },
+        _payload: { status },
+      };
+      const pageId = AppElementsWire.encodePageId("/instant", null);
+      const elements = {
+        [pageId]: createElement(Suspense, { fallback: "dynamic" }, suspendedLazy as never),
+      } as AppElements;
+
+      const sanitized = sanitizeInstantShellElements(elements);
+
+      expect(sanitized[pageId]).toMatchObject({
+        props: { children: { type: expect.any(Function) } },
+      });
+    },
+  );
+
+  it("sanitizes suspended instant content in named element props", () => {
+    const payload = { status: "pending" };
+    const suspendedLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init(receivedPayload: unknown) {
+        throw receivedPayload;
+      },
+      _payload: payload,
+    };
+    const ClientShell = (_props: { content: ReactNode }) => null;
+    const pageId = AppElementsWire.encodePageId("/instant", null);
+    const elements = {
+      [pageId]: createElement(ClientShell, {
+        content: createElement(Suspense, { fallback: "dynamic" }, suspendedLazy as never),
+      }),
+    } as AppElements;
+
+    const sanitized = sanitizeInstantShellElements(elements);
+
+    expect(sanitized[pageId]).toMatchObject({
+      props: { content: { props: { children: { type: expect.any(Function) } } } },
+    });
+  });
+
+  it.each([
+    ["layout", AppElementsWire.encodeLayoutId("/")],
+    ["parallel slot", AppElementsWire.encodeSlotId("modal", "/")],
+  ])("sanitizes suspended instant content in %s elements", (_kind, elementId) => {
+    const payload = { status: "pending" };
+    const suspendedLazy = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init(receivedPayload: unknown) {
+        throw receivedPayload;
+      },
+      _payload: payload,
+    };
+    const routeId = AppElementsWire.encodeRouteId("/instant", null);
+    const pageId = AppElementsWire.encodePageId("/instant", null);
+    const elements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [AppElementsWire.encodeLayoutId("/")],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [elementId]: createElement(Suspense, { fallback: "dynamic" }, suspendedLazy as never),
+      [pageId]: createElement("main", null, "Page"),
+      [routeId]: createElement("main", null, "Route"),
+    } as AppElements;
+
+    const sanitized = sanitizeInstantShellElements(elements);
+
+    expect(sanitized[elementId]).toMatchObject({
+      props: { children: { type: expect.any(Function) } },
+    });
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

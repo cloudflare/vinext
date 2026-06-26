@@ -17,6 +17,7 @@ import ReactDOMServer from "react-dom/server";
 // Link is a "use client" component but renderToString still works for SSR output.
 import Link, {
   canAutoPrefetchFullAppRoute,
+  resolveAppRoutePrefetch,
   resolveAutoAppRoutePrefetch,
   resolveLinkPrefetchMode,
   useLinkStatus,
@@ -286,6 +287,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
+        {
+          canPrefetchLoadingShell: false,
+          hasInstant: true,
+          patternParts: ["instant"],
+          isDynamic: false,
+        },
       ],
     };
 
@@ -318,32 +325,63 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
+        {
+          canPrefetchLoadingShell: false,
+          hasInstant: true,
+          patternParts: ["instant"],
+          isDynamic: false,
+        },
       ],
     };
 
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        prefetchInstantShell: false,
         prefetchShellFirst: true,
         prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        prefetchInstantShell: false,
         prefetchShellFirst: false,
         prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
+        prefetchInstantShell: false,
         prefetchShellFirst: true,
         prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
+        prefetchInstantShell: false,
         prefetchShellFirst: false,
         prefetchSuspenseShell: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAppRoutePrefetch("/instant", "full")).toEqual({
+        cacheForNavigation: true,
+        prefetchInstantShell: true,
+        prefetchShellFirst: false,
+        prefetchSuspenseShell: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAppRoutePrefetch("/products/1", "full")).toEqual({
+        cacheForNavigation: true,
+        prefetchInstantShell: false,
+        prefetchShellFirst: true,
+        prefetchSuspenseShell: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAppRoutePrefetch("/about", "full")).toEqual({
+        cacheForNavigation: true,
+        prefetchInstantShell: false,
+        prefetchShellFirst: true,
+        prefetchSuspenseShell: false,
         shouldPrefetch: true,
       });
       // Ported from Next.js:
@@ -351,12 +389,14 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        prefetchInstantShell: false,
         prefetchShellFirst: false,
         prefetchSuspenseShell: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
+        prefetchInstantShell: false,
         prefetchShellFirst: false,
         prefetchSuspenseShell: false,
         shouldPrefetch: false,
