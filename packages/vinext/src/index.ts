@@ -5484,15 +5484,18 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
             });
-            if (hasAppDir && hasPagesDir) {
-              setPagesClientAssetsBuildMetadata(buildRoot, pagesClientAssetsModule);
+            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+            if (hasAppDir && hasPagesDir && buildSession) {
+              setPagesClientAssetsBuildMetadata(buildSession, pagesClientAssetsModule);
             }
           }
 
           if (pagesClientAssetsModule === null) {
             if (pagesClientAssetsOutputDirs.size === 0) return;
-            const buildRoot = envConfig.root ?? process.cwd();
-            pagesClientAssetsModule = takePagesClientAssetsBuildMetadata(buildRoot);
+            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+            if (buildSession) {
+              pagesClientAssetsModule = takePagesClientAssetsBuildMetadata(buildSession);
+            }
           }
           if (pagesClientAssetsModule === null) {
             const emptyModule = buildPagesClientAssetsModule({});

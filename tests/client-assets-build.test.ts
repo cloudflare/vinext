@@ -4,6 +4,11 @@ import path from "node:path";
 import { build, createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  clearPagesClientAssetsBuildMetadata,
+  setPagesClientAssetsBuildMetadata,
+  takePagesClientAssetsBuildMetadata,
+} from "../packages/vinext/src/build/pages-client-assets-module.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -40,6 +45,13 @@ export default function Page() {
 }
 
 describe("client asset sidecar builds", () => {
+  it("clears unconsumed hybrid metadata at the end of a build session", () => {
+    const buildSession = "aborted-hybrid-build";
+    setPagesClientAssetsBuildMetadata(buildSession, 'export default {"clientEntry":"stale.js"};\n');
+    clearPagesClientAssetsBuildMetadata(buildSession);
+    expect(takePagesClientAssetsBuildMetadata(buildSession)).toBeNull();
+  });
+
   it("keeps App Router metadata at the stable root of nested custom server outputs", async () => {
     const fixtureRoot = await createFixture();
     const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-out-"));
@@ -102,6 +114,9 @@ describe("client asset sidecar builds", () => {
   it("reuses client metadata for the separate Pages server build in hybrid apps", async () => {
     const fixtureRoot = await createFixture();
     const clientOutDir = path.join(fixtureRoot, "custom-client-output");
+    const buildSession = `test-${path.basename(fixtureRoot)}`;
+    const previousBuildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+    process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = buildSession;
     try {
       await writeFile(
         path.join(fixtureRoot, "pages", "legacy.tsx"),
@@ -141,6 +156,11 @@ describe("client asset sidecar builds", () => {
       );
       expect(pagesEntry).toContain("../vinext-client-assets.js");
     } finally {
+      if (previousBuildSession === undefined) {
+        delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+      } else {
+        process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = previousBuildSession;
+      }
       await fs.rm(fixtureRoot, { recursive: true, force: true });
     }
   });

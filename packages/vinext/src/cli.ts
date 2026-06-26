@@ -41,6 +41,7 @@ import {
 } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
+import { clearPagesClientAssetsBuildMetadata } from "./build/pages-client-assets-module.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -537,20 +538,25 @@ async function buildApp() {
   // use createBuilder + buildApp(). vinext() defines the appropriate environments
   // in its config() hook for each case, so cloudflare() and the plain Node SSR
   // build both work correctly.
-  const config = buildViteConfig({}, logger);
-  const builder = await vite.createBuilder(config);
-  await builder.buildApp();
+  const isHybrid = isApp && hasPagesDir();
+  const pagesClientAssetsBuildSession = isHybrid ? randomBytes(16).toString("hex") : null;
+  if (pagesClientAssetsBuildSession) {
+    process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
+  }
+  try {
+    const config = buildViteConfig({}, logger);
+    const builder = await vite.createBuilder(config);
+    await builder.buildApp();
 
-  if (isApp) {
-    // Hybrid app (both app/ and pages/ directories): also build the Pages Router
-    // SSR bundle so the prerender phase can render Pages Router routes.
-    // The App Router multi-env build (buildApp) doesn't include the Pages Router
-    // SSR entry, so we run it as a separate step here.
-    // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
-    // loading the user's vite.config (which has vinext() without disableAppRouter)
-    // and to prevent the multi-env environments config from overriding our SSR
-    // input and entryFileNames.
-    if (hasPagesDir()) {
+    if (isHybrid) {
+      // Hybrid app (both app/ and pages/ directories): also build the Pages Router
+      // SSR bundle so the prerender phase can render Pages Router routes.
+      // The App Router multi-env build (buildApp) doesn't include the Pages Router
+      // SSR entry, so we run it as a separate step here.
+      // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
+      // loading the user's vite.config (which has vinext() without disableAppRouter)
+      // and to prevent the multi-env environments config from overriding our SSR
+      // input and entryFileNames.
       console.log("  Building Pages Router server (hybrid)...");
       // Inherit transform plugins from the user's vite.config (e.g. SVG loaders,
       // CSS-in-JS) that vinext doesn't auto-register. We load the raw config via
@@ -608,6 +614,15 @@ async function buildApp() {
           }),
         },
       });
+    }
+  } finally {
+    if (pagesClientAssetsBuildSession) {
+      clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
+      if (
+        process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === pagesClientAssetsBuildSession
+      ) {
+        delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+      }
     }
   }
 
