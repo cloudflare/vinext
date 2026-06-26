@@ -55,6 +55,9 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets } from "./pages-client-assets.js";
+
+setPagesClientAssets(pagesClientAssets);
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
