@@ -2623,20 +2623,18 @@ async function performNavigation(
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
   }
-  let hybridOwner = window.__VINEXT_LINK_PREFETCH_ROUTES__?.length
-    ? resolveDirectHybridClientRouteOwner(resolved, __basePath)
-    : null;
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
-  if (
+  const hasClientRewrites =
     rewrites &&
     (rewrites.beforeFiles.length > 0 ||
       rewrites.afterFiles.length > 0 ||
-      rewrites.fallback.length > 0)
-  ) {
-    hybridOwner = (
-      await import("./internal/hybrid-client-route-owner.js")
-    ).resolveHybridClientRouteOwner(resolved, __basePath);
-  }
+      rewrites.fallback.length > 0);
+  const hybridOwner = hasClientRewrites
+    ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
+        resolved,
+        __basePath,
+      )
+    : resolveDirectHybridClientRouteOwner(resolved, __basePath);
   if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);

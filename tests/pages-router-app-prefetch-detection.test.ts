@@ -51,6 +51,7 @@ type FakeWindow = {
   }>;
   __VINEXT_PAGES_LINK_PREFETCH_ROUTES__?: Array<{
     canPrefetchLoadingShell: boolean;
+    documentOnly?: boolean;
     patternParts: string[];
     isDynamic: boolean;
   }>;
@@ -225,6 +226,24 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     void Router.push("/about");
 
     expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
+  });
+
+  it("hard-navigates pure-Pages document-only routes", async () => {
+    const fakeWindow = installFakeBrowserGlobals([]);
+    fakeWindow.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        documentOnly: true,
+        patternParts: ["api", ":slug"],
+        isDynamic: true,
+      },
+    ];
+
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+    void routerModule.default.push("/api/foo");
+
+    expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/api/foo"));
   });
 
   it.each([
