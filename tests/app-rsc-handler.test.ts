@@ -284,6 +284,42 @@ describe("createAppRscHandler", () => {
   );
 
   it.each(["afterFiles", "fallback"] as const)(
+    "allows out-of-basePath progressive Server Actions through %s rewrites",
+    async (phase) => {
+      const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles:
+            phase === "afterFiles"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+          fallback:
+            phase === "fallback"
+              ? [{ source: "/outside", destination: "/about", basePath: false }]
+              : [],
+        },
+        handleProgressiveActionRequest,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/outside", {
+          method: "POST",
+          headers: { "content-type": "multipart/form-data; boundary=vinext" },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("progressive-action");
+      expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ cleanPathname: "/about" }),
+      );
+    },
+  );
+
+  it.each(["afterFiles", "fallback"] as const)(
     "validates out-of-basePath RSC requests claimed by %s rewrites",
     async (phase) => {
       const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });

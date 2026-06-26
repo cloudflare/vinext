@@ -663,8 +663,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const actionId =
     request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
   const isPostRequest = request.method.toUpperCase() === "POST";
+  const contentType = request.headers.get("content-type") || "";
+  const isProgressiveActionRequest =
+    isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
   let resolvedLateRewritesForAction = false;
-  if (!outOfBasePathRequestClaimed && isPostRequest && actionId) {
+  if (!outOfBasePathRequestClaimed && (actionId || isProgressiveActionRequest)) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
     for (const rewrite of options.configRewrites.afterFiles) {
       const rewritten = await applyRewrite(
@@ -788,8 +791,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
-
-  const contentType = request.headers.get("content-type") || "";
 
   if (!outOfBasePathRequestClaimed && isPostRequest && actionId) {
     options.clearRequestContext();
