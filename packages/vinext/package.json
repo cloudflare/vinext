@@ -53,6 +53,10 @@
       "types": "./dist/server/pages-request-pipeline.d.ts",
       "import": "./dist/server/pages-request-pipeline.js"
     },
+    "./server/pages-client-assets": {
+      "types": "./dist/server/pages-client-assets.d.ts",
+      "import": "./dist/server/pages-client-assets.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"

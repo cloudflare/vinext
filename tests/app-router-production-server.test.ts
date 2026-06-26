@@ -5,6 +5,10 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  getPagesClientAssets,
+  setPagesClientAssets,
+} from "../packages/vinext/src/server/pages-client-assets.js";
 import { APP_FIXTURE_DIR } from "./helpers.js";
 
 function getStylesheetHrefs(html: string): string[] {
@@ -515,11 +519,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -601,6 +602,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -619,11 +621,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -702,6 +701,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -1120,11 +1120,8 @@ describe("App Router Production server (startProdServer)", () => {
       const fixtureRoot = path.join(tmpDir, "fixture");
       const ccOutDir = path.join(fixtureRoot, "dist");
       let ccServer: import("node:http").Server | undefined;
+      const previousPagesClientAssets = getPagesClientAssets();
       const prodGlobalKeys = [
-        "__VINEXT_CLIENT_ENTRY__",
-        "__VINEXT_DYNAMIC_PRELOADS__",
-        "__VINEXT_LAZY_CHUNKS__",
-        "__VINEXT_SSR_MANIFEST__",
         "__vite_rsc_client_require__",
         "__vite_rsc_require__",
         "__vite_rsc_server_require__",
@@ -1197,6 +1194,7 @@ describe("App Router Production server (startProdServer)", () => {
       } finally {
         delete process.env.__NEXT_CACHE_COMPONENTS;
         ccServer?.close();
+        setPagesClientAssets(previousPagesClientAssets);
         for (const [key, previous] of previousGlobals) {
           if (previous.exists) {
             Reflect.set(globalThis, key, previous.value);
@@ -1643,11 +1641,8 @@ describe("App Router production server entry module identity", () => {
     const outDir = path.join(fixtureRoot, "dist");
     let server: import("node:http").Server | undefined;
     const EVAL_COUNT_KEY = "__vinext_test_entry_evaluations__";
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -1740,6 +1735,7 @@ describe("App Router production server entry module identity", () => {
     } finally {
       server?.close();
       Reflect.deleteProperty(globalThis, EVAL_COUNT_KEY);
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);

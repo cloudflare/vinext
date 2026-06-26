@@ -156,14 +156,15 @@ import {
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
-import {
-  computeClientRuntimeMetadata,
-  buildRuntimeGlobalsScript,
-} from "./utils/client-runtime-metadata.js";
+import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
   type ClientEntryManifest,
 } from "./utils/client-entry-manifest.js";
+import {
+  PAGES_CLIENT_ASSETS_MODULE,
+  buildPagesClientAssetsModule,
+} from "./build/pages-client-assets-module.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
@@ -563,6 +564,8 @@ const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
 const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
+const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
+const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSETS;
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
@@ -896,6 +899,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  const pagesClientAssetsOutputDirs = new Set<string>();
+  let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
   const draftModeSecret = randomUUID();
 
@@ -2823,11 +2828,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+          if (cleanId === VIRTUAL_PAGES_CLIENT_ASSETS) {
+            if (this.environment?.config.command === "build") {
+              pagesClientAssetsOutputDirs.add(
+                path.resolve(
+                  this.environment.config.root ?? process.cwd(),
+                  this.environment.config.build.outDir,
+                ),
+              );
+              return { id: `./${PAGES_CLIENT_ASSETS_MODULE}`, external: true };
+            }
+            return RESOLVED_PAGES_CLIENT_ASSETS;
+          }
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY)) {
             return RESOLVED_CLIENT_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS)) {
+            if (this.environment?.config.command === "build") {
+              pagesClientAssetsOutputDirs.add(
+                path.resolve(
+                  this.environment.config.root ?? process.cwd(),
+                  this.environment.config.build.outDir,
+                ),
+              );
+              return { id: `./${PAGES_CLIENT_ASSETS_MODULE}`, external: true };
+            }
+            return RESOLVED_PAGES_CLIENT_ASSETS;
           }
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
@@ -2891,6 +2920,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         if (id === RESOLVED_CLIENT_ENTRY) {
           return await generateClientEntry();
+        }
+        if (id === RESOLVED_PAGES_CLIENT_ASSETS) {
+          return "export default { clientEntry: '/@id/__x00__virtual:vinext-client-entry' };";
         }
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
@@ -5397,6 +5429,54 @@ export const loadServerActionClient = ${
       };
     })(),
     {
+      name: "vinext:pages-client-assets",
+      apply: "build",
+      enforce: "post",
+      closeBundle: {
+        sequential: true,
+        order: "post",
+        handler() {
+          const envConfig = this.environment.config;
+          if (this.environment.name === "client") {
+            const buildRoot = envConfig.root ?? process.cwd();
+            const clientDir = path.resolve(buildRoot, envConfig.build.outDir);
+            const runtimeMetadata = computeClientRuntimeMetadata({
+              clientDir,
+              assetBase: envConfig.base ?? "/",
+              assetPrefix: nextConfig.assetPrefix,
+              includeClientEntry: !hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false,
+            });
+
+            let ssrManifest: Record<string, string[]> | undefined;
+            const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+            if (fs.existsSync(ssrManifestPath)) {
+              try {
+                ssrManifest = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
+              } catch {
+                // A malformed Vite manifest should not make the runtime descriptor invalid.
+              }
+            }
+
+            pagesClientAssetsModule = buildPagesClientAssetsModule({
+              clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
+              ssrManifest,
+              lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
+              dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
+            });
+          }
+
+          if (pagesClientAssetsModule === null) return;
+          for (const outputDir of pagesClientAssetsOutputDirs) {
+            fs.mkdirSync(outputDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(outputDir, PAGES_CLIENT_ASSETS_MODULE),
+              pagesClientAssetsModule,
+            );
+          }
+        },
+      },
+    },
+    {
       name: "vinext:inline-css-manifest",
       apply: "build",
       enforce: "post",
@@ -5423,19 +5503,8 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Cloudflare Workers production build integration:
-    // After all environments are built, compute dynamic chunk metadata from
-    // the client build manifest and inject globals into the worker entry.
-    //
-    // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
-    //   __VINEXT_LAZY_CHUNKS__, and __VINEXT_DYNAMIC_PRELOADS__ into the worker
-    //   entry (found via wrangler.json).
-    // App Router: the RSC plugin handles App hydration via
-    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__,
-    //   __VINEXT_DYNAMIC_PRELOADS__, and __VINEXT_SSR_MANIFEST__ into the worker
-    //   entry at dist/server/index.js. Mixed app+pages builds also inject
-    //   __VINEXT_CLIENT_ENTRY__ for Pages Router fallback routes.
-    // Both: generates _headers file for immutable asset caching.
+    // Cloudflare Workers production build integration. Generate immutable
+    // asset headers after the client environment builds.
     {
       name: "vinext:cloudflare-build",
       apply: "build",
@@ -5451,93 +5520,7 @@ export const loadServerActionClient = ${
           const envConfig = this.environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
-          const distDir = path.resolve(buildRoot, "dist");
-          if (!fs.existsSync(distDir)) return;
-
-          const clientDir = path.resolve(buildRoot, "dist", "client");
-          const clientBase = envConfig.base ?? "/";
-
-          // Compute runtime metadata from the client build manifest: lazy
-          // chunks, per-next/dynamic preload files, and (for Pages Router)
-          // the client entry file. This runs for BOTH App Router and Pages
-          // Router — clientEntryFile is only used by the Pages Router path
-          // below (App Router gets its client entry via the RSC plugin).
-          const runtimeMetadata = computeClientRuntimeMetadata({
-            clientDir,
-            assetBase: clientBase,
-            assetPrefix: nextConfig.assetPrefix,
-            includeClientEntry: !hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false,
-          });
-          const lazyChunksData: string[] | null = runtimeMetadata.lazyChunks ?? null;
-          const dynamicPreloadsData: Record<string, string[]> | null =
-            runtimeMetadata.dynamicPreloads ?? null;
-          let clientEntryFile: string | null = runtimeMetadata.clientEntryFile ?? null;
-
-          // Read SSR manifest for per-page CSS/JS injection
-          let ssrManifestData: Record<string, string[]> | null = null;
-          const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-          if (fs.existsSync(ssrManifestPath)) {
-            try {
-              ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-            } catch {
-              /* ignore parse errors */
-            }
-          }
-
-          if (hasAppDir) {
-            // App Router: the RSC plugin handles the App client bootstrap via
-            // loadBootstrapScriptContent(). In mixed app+pages builds, Pages
-            // fallback routes still render through the Pages entry and need
-            // the Pages client entry global.
-            const workerEntry = path.resolve(distDir, "server", "index.js");
-
-            if (fs.existsSync(workerEntry)) {
-              // `clientEntryFile` is only populated for mixed app+pages builds
-              // (computeClientRuntimeMetadata was asked for "pages-client-entry");
-              // pure App Router gets its client entry via the RSC plugin.
-              const script = buildRuntimeGlobalsScript({
-                clientEntryFile,
-                ssrManifest: ssrManifestData,
-                lazyChunks: lazyChunksData,
-                dynamicPreloads: dynamicPreloadsData,
-              });
-              if (script) {
-                const code = fs.readFileSync(workerEntry, "utf-8");
-                fs.writeFileSync(workerEntry, script + "\n" + code);
-              }
-            }
-          } else {
-            // Pages Router: find worker output by scanning dist/ for a
-            // directory containing wrangler.json (Cloudflare plugin default).
-            let workerOutDir: string | null = null;
-            for (const entry of fs.readdirSync(distDir)) {
-              const candidate = path.join(distDir, entry);
-              if (entry === "client") continue;
-              if (
-                fs.statSync(candidate).isDirectory() &&
-                fs.existsSync(path.join(candidate, "wrangler.json"))
-              ) {
-                workerOutDir = candidate;
-                break;
-              }
-            }
-            if (!workerOutDir) return;
-
-            const workerEntry = path.join(workerOutDir, "index.js");
-            if (!fs.existsSync(workerEntry)) return;
-
-            // Prepend globals to worker entry
-            const script = buildRuntimeGlobalsScript({
-              clientEntryFile,
-              ssrManifest: ssrManifestData,
-              lazyChunks: lazyChunksData,
-              dynamicPreloads: dynamicPreloadsData,
-            });
-            if (script) {
-              const code = fs.readFileSync(workerEntry, "utf-8");
-              fs.writeFileSync(workerEntry, script + "\n" + code);
-            }
-          }
+          const clientDir = path.resolve(buildRoot, envConfig.build.outDir);
 
           // Generate _headers file for Cloudflare Workers static asset caching.
           // Vite outputs content-hashed files (JS, CSS, fonts) to the assetsDir

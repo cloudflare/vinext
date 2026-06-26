@@ -312,6 +312,8 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
 }
 import { createAppRscHandler } from "vinext/server/app-rsc-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 ${
@@ -695,6 +697,7 @@ const rootParamNamesMap = {
 ${rootParamNameEntries.join("\n")}
 };
 
+__setPagesClientAssets(__pagesClientAssets);
 export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,

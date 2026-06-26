@@ -56,6 +56,7 @@ import {
   isAbsoluteAssetPrefix,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
+import { setPagesClientAssets } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -398,8 +399,10 @@ function installClientBuildManifestGlobals(
   assetPrefix: string,
 ): void {
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 }
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
@@ -1144,16 +1147,13 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
   return parsed;
 }
 
-function installPagesClientAssetGlobals(options: {
+function installPagesClientAssets(options: {
   clientDir: string;
   assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
 }): Record<string, string[]> {
   const ssrManifest = readSsrManifest(options.clientDir);
-  globalThis.__VINEXT_SSR_MANIFEST__ =
-    Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
-
   const metadata = computeClientRuntimeMetadata({
     clientDir: options.clientDir,
     assetBase: options.assetBase,
@@ -1162,9 +1162,12 @@ function installPagesClientAssetGlobals(options: {
       options.clientEntryLookup === "pages-client-entry" ? "pages-client-entry" : true,
   });
 
-  globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    clientEntry: metadata.clientEntryFile,
+    ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 
   return ssrManifest;
 }
@@ -1239,7 +1242,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
   const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
   if (appRouterHasPagesDir) {
-    installPagesClientAssetGlobals({
+    installPagesClientAssets({
       clientDir,
       assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
@@ -1573,7 +1576,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Load client asset metadata used by the Pages renderer. Prerendered HTML is
   // rendered through this Node server too, so it needs the same globals that
   // Cloudflare builds inject into the Worker entry at build time.
-  const ssrManifest = installPagesClientAssetGlobals({
+  const ssrManifest = installPagesClientAssets({
     clientDir,
     assetPrefix,
     assetBase,

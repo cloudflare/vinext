@@ -94,6 +94,7 @@ export async function generateClientEntry(
     : "";
 
   return `${userInstrumentationImport}
+import "@vitejs/plugin-react/preamble";
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
