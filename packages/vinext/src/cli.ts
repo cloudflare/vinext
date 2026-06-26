@@ -50,6 +50,7 @@ import {
 } from "./server/dev-lockfile.js";
 import { generateRouteTypes } from "./typegen.js";
 import { normalizePathSeparators } from "./utils/path.js";
+import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -315,8 +316,8 @@ async function dev() {
 
   const vite = await loadVite();
 
-  const port = parsed.port ?? 3000;
-  const host = parsed.hostname ?? "localhost";
+  const initialPort = parsed.port ?? 3000;
+  const initialHost = parsed.hostname ?? "localhost";
 
   // Acquire the dev lock file. If another live `vinext dev` is running in this
   // directory, print an actionable error (PID + URL) and exit. This is
@@ -334,14 +335,14 @@ async function dev() {
     // Substitute "localhost" for wildcard binds so the URL is actually
     // clickable when surfaced in the lock file before server.listen() has
     // had a chance to resolve the real URL.
-    const initialDisplayHost = host === "0.0.0.0" ? "localhost" : host;
+    const initialDisplayHost = initialHost === "0.0.0.0" ? "localhost" : initialHost;
     const acquired = tryAcquireLockfile({
       root,
       info: {
         pid: process.pid,
-        port,
-        hostname: host,
-        appUrl: `http://${initialDisplayHost}:${port}`,
+        port: initialPort,
+        hostname: initialHost,
+        appUrl: `http://${initialDisplayHost}:${initialPort}`,
         startedAt,
         cwd: root,
       },
@@ -363,9 +364,9 @@ async function dev() {
 
   console.log(`\n  vinext dev  (Vite ${getViteVersion()})\n`);
 
-  const config = buildViteConfig({
-    server: { port, host },
-  });
+  const config = buildViteConfig();
+  const plugins = (config.plugins ??= []) as import("vite").PluginOption[];
+  plugins.push(createDevServerConfigPlugin(parsed));
 
   // If anything between here and the first successful listen() throws (e.g.
   // strictPort and the port is taken), release the lock immediately so we
@@ -375,6 +376,18 @@ async function dev() {
   let server;
   try {
     server = await vite.createServer(config);
+    const port = server.config.server.port ?? 3000;
+    const host = normalizeDevServerHostname(server.config.server.host);
+
+    lockfile?.update({
+      pid: process.pid,
+      port,
+      hostname: host,
+      appUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
+      startedAt,
+      cwd: process.cwd(),
+    });
+
     await server.listen();
   } catch (err) {
     lockfile?.release();
@@ -391,8 +404,10 @@ async function dev() {
   // actually clickable. Fall back to httpServer.address() if Vite didn't
   // populate resolvedUrls for some reason.
   if (lockfile) {
+    const configuredPort = server.config.server.port ?? 3000;
+    const configuredHost = normalizeDevServerHostname(server.config.server.host);
     const resolved = server.resolvedUrls?.local[0];
-    let actualPort = port;
+    let actualPort = configuredPort;
     let appUrl: string;
     if (resolved) {
       appUrl = resolved.replace(/\/$/, "");
@@ -404,13 +419,13 @@ async function dev() {
       }
     } else {
       const address = server.httpServer?.address();
-      actualPort = typeof address === "object" && address ? address.port : port;
-      appUrl = `http://${host === "0.0.0.0" ? "localhost" : host}:${actualPort}`;
+      actualPort = typeof address === "object" && address ? address.port : configuredPort;
+      appUrl = `http://${configuredHost === "0.0.0.0" ? "localhost" : configuredHost}:${actualPort}`;
     }
     lockfile.update({
       pid: process.pid,
       port: actualPort,
-      hostname: host,
+      hostname: configuredHost,
       appUrl,
       // Preserve the original acquire-time startedAt rather than resetting
       // to "now". startedAt represents when the process started.
