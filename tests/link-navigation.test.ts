@@ -1307,30 +1307,6 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("starts viewport prefetches without waiting for an idle callback", async () => {
-    const observer = stubIntersectionObserver();
-    const requestIdleCallback = vi.fn(() => 1);
-    const result = await renderIsolatedLink({
-      href: "/viewport-prefetch-target",
-      nodeEnv: "production",
-      windowOverrides: { requestIdleCallback },
-    });
-
-    try {
-      observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
-
-      expect(requestIdleCallback).not.toHaveBeenCalled();
-      expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[0],
-        "/viewport-prefetch-target",
-        expect.objectContaining({ priority: "low" }),
-      );
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
   it("does not prefetch visible or hovered links for a bot user agent", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/app-prefetch/prefetching.test.ts
@@ -1439,6 +1415,7 @@ describe("Link prefetch scheduling", () => {
       intentResult.restoreNodeEnv();
     }
   });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 

@@ -381,16 +381,10 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  * stores it in an in-memory cache for instant use during navigation.
  * For Pages Router: injects a <link rel="prefetch"> for the page module.
  *
- * Low-priority prefetches default to `requestIdleCallback` (or a `setTimeout`
- * fallback), while callers can dispatch immediately when already off the
- * render path.
+ * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
+ * the main thread during initial page load.
  */
-function prefetchUrl(
-  href: string,
-  mode: LinkPrefetchMode,
-  priority: "low" | "high" = "low",
-  scheduling: "idle" | "immediate" = priority === "high" ? "immediate" : "idle",
-): void {
+function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "high" = "low"): void {
   if (typeof window === "undefined") return;
 
   const prefetchHref = getLinkPrefetchHref({
@@ -411,7 +405,7 @@ function prefetchUrl(
   }
 
   const schedule =
-    scheduling === "immediate"
+    priority === "high"
       ? (fn: () => void) => {
           fn();
         }
@@ -647,10 +641,7 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
     if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
-    // IntersectionObserver already moved this work off the render path. Start
-    // the request now so router-act can observe it during the same interaction,
-    // while retaining low network priority for viewport-driven prefetches.
-    prefetchUrl(instance.href, instance.mode, "low", "immediate");
+    prefetchUrl(instance.href, instance.mode, "low");
     instance.viewportPrefetched = true;
   } else {
     visibleLinkPrefetches.delete(instance);
