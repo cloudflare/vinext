@@ -165,7 +165,6 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
-  findCommonOutputDir,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
@@ -3148,14 +3147,9 @@ export const loadServerActionClient = ${
           const buildRoot = this.environment.config.root ?? process.cwd();
           const environmentOutDir = path.resolve(buildRoot, this.environment.config.build.outDir);
           const sidecarDir =
-            hasAppDir && this.environment.name !== "client"
-              ? findCommonOutputDir(
-                  path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server")),
-                  path.resolve(buildRoot, options.ssrOutDir ?? path.join("dist", "server", "ssr")),
-                )
-              : this.environment.name === "ssr"
-                ? path.dirname(environmentOutDir)
-                : environmentOutDir;
+            !hasAppDir && this.environment.name === "ssr"
+              ? path.dirname(environmentOutDir)
+              : environmentOutDir;
           let externalId = normalizePathSeparators(
             path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
           );
@@ -5506,6 +5500,17 @@ export const loadServerActionClient = ${
             );
           }
         },
+      },
+      buildApp() {
+        if (pagesClientAssetsModule === null) return Promise.resolve();
+        for (const outputDir of pagesClientAssetsOutputDirs) {
+          fs.mkdirSync(outputDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(outputDir, PAGES_CLIENT_ASSETS_MODULE),
+            pagesClientAssetsModule,
+          );
+        }
+        return Promise.resolve();
       },
     },
     {
