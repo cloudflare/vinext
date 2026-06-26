@@ -5,7 +5,7 @@
  *
  * The default export is the optimizer factory the generated
  * `virtual:vinext-image-adapters` registration imports; configure it from
- * vite.config via the {@link imageAdapter} builder in `./images-optimizer.ts`
+ * vite.config via the {@link imagesOptimizer} builder in `./images-optimizer.ts`
  * (which resolves this file to an absolute path). The factory reads the binding
  * from `env` at request time and throws a helpful error when it is missing — on
  * runtimes without a Cloudflare Images binding (Node.js / dev) the generated
@@ -29,8 +29,8 @@ type CloudflareImagesBinding = {
   };
 };
 
-/** Options accepted by the optimizer factory (mirrors `ImageAdapterOptions`). */
-type ImageAdapterOptions = {
+/** Options accepted by the optimizer factory (mirrors `ImagesOptimizerOptions`). */
+type ImagesOptimizerOptions = {
   binding?: string;
 };
 
@@ -40,7 +40,7 @@ const createCloudflareImageOptimizer = ({
   options,
 }: {
   env?: Record<string, unknown>;
-  options?: ImageAdapterOptions;
+  options?: ImagesOptimizerOptions;
 }): ImageOptimizer => {
   const binding = options?.binding ?? DEFAULT_BINDING;
   const images = env?.[binding] as CloudflareImagesBinding | undefined;

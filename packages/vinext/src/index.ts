@@ -155,7 +155,8 @@ import {
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
-import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
+import { hasWranglerConfig } from "./cloudflare/project.js";
+import { formatMissingCloudflarePluginError } from "./cloudflare/deploy-config.js";
 import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
@@ -847,9 +848,9 @@ export type VinextOptions = {
    * used by both built-in and custom worker entrypoints that forward `env`.
    *
    * @example
-   * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+   * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
    *
-   * vinext({ images: { optimizer: imageAdapter() } })
+   * vinext({ images: { optimizer: imagesOptimizer() } })
    */
   images?: VinextImageConfig;
   /**
@@ -1546,6 +1547,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // When false (default), remote image URLs with literal private-IP hostnames are blocked.
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
+        );
+        defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
+          String(nextConfig.images?.unoptimized === true),
         );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.

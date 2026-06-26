@@ -31,6 +31,7 @@ import {
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
+import { INIT_PLATFORMS, resolveInitPlatform } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -808,12 +809,16 @@ async function initCommand() {
   const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const platform = await resolveInitPlatform(rawArgs);
+  const platformOptions = await INIT_PLATFORMS[platform].options(rawArgs);
 
   await runInit({
     root: process.cwd(),
     port,
     skipCheck,
     force,
+    platform,
+    cloudflare: platform === "cloudflare" ? platformOptions : undefined,
   });
 }
 
@@ -916,7 +921,7 @@ function printHelp(cmd?: string) {
     vinext deploy                              Build and deploy to production
     vinext deploy --preview                    Deploy to a preview URL
     vinext deploy --env staging                Deploy using wrangler env.staging
-    vinext deploy --dry-run                    See what files would be generated
+    vinext deploy --dry-run                    Validate setup without building or deploying
     vinext deploy --name my-app                Deploy with a custom Worker name
     vinext deploy --experimental-tpr           Enable TPR during deploy
     vinext deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic
@@ -955,10 +960,20 @@ function printHelp(cmd?: string) {
     -p, --port <port>    Dev server port for the vinext script (default: 3001)
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
+    --platform <target>  Deployment target: cloudflare or node
+    --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
+    --image-optimization <type>
+                         Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
 
   Examples:
-    vinext init                   Migrate with defaults
+    vinext init                   Prompt for a deployment platform
+    vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=cloudflare --data-cache=kv
+                                Configure the default Cloudflare cache handlers
+    vinext init --platform=cloudflare --image-optimization=none
+                                Do not configure Cloudflare Images
+    vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
     vinext init --skip-check      Skip the compatibility report

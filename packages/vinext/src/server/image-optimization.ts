@@ -382,7 +382,7 @@ export async function handleImageOptimization(
 
 /**
  * A server-side image optimizer: the transform backend that resizes/transcodes
- * a source image. Produced by an adapter factory (e.g. `imageAdapter()` from
+ * a source image. Produced by an adapter factory (e.g. `imagesOptimizer()` from
  * `@vinext/cloudflare/images/images-optimizer`) and registered via
  * {@link setImageOptimizer}.
  */
@@ -408,10 +408,10 @@ const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptim
  *
  * ```ts
  * import { vinext } from "vinext";
- * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+ * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
  *
  * export default defineConfig({
- *   plugins: [vinext({ images: { optimizer: imageAdapter() } })],
+ *   plugins: [vinext({ images: { optimizer: imagesOptimizer() } })],
  * });
  * ```
  *

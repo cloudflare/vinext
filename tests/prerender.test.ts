@@ -1433,6 +1433,28 @@ describe("runPrerender — output: 'export' wiring", () => {
     ).rejects.toThrow(/Static export failed/);
   });
 
+  it("does not rewrite the Worker entry when prerender validation fails", async () => {
+    const workerEntry = path.join(PAGES_FIXTURE, "dist", "server", "index.js");
+    const source = 'export default { fetch() { return new Response("unchanged"); } };\n';
+    fs.mkdirSync(path.dirname(workerEntry), { recursive: true });
+    fs.writeFileSync(workerEntry, source, "utf-8");
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+      await expect(
+        runPrerender({
+          root: PAGES_FIXTURE,
+          nextConfigOverride: { output: "export" },
+          pagesBundlePath,
+        }),
+      ).rejects.toThrow(/Static export failed/);
+
+      expect(fs.readFileSync(workerEntry, "utf-8")).toBe(source);
+    } finally {
+      fs.rmSync(path.join(PAGES_FIXTURE, "dist"), { recursive: true, force: true });
+    }
+  });
+
   it("error message names the offending SSR route", async () => {
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
     await expect(
