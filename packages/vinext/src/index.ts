@@ -2830,13 +2830,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
           if (cleanId === VIRTUAL_PAGES_CLIENT_ASSETS) {
             if (this.environment?.config.command === "build") {
+              const externalId =
+                this.environment.name === "ssr"
+                  ? `../${PAGES_CLIENT_ASSETS_MODULE}`
+                  : `./${PAGES_CLIENT_ASSETS_MODULE}`;
               pagesClientAssetsOutputDirs.add(
                 path.resolve(
                   this.environment.config.root ?? process.cwd(),
-                  this.environment.config.build.outDir,
+                  this.environment.name === "ssr"
+                    ? path.dirname(this.environment.config.build.outDir)
+                    : this.environment.config.build.outDir,
                 ),
               );
-              return { id: `./${PAGES_CLIENT_ASSETS_MODULE}`, external: true };
+              return { id: externalId, external: true };
             }
             return RESOLVED_PAGES_CLIENT_ASSETS;
           }
@@ -2848,13 +2854,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS)) {
             if (this.environment?.config.command === "build") {
+              const externalId =
+                this.environment.name === "ssr"
+                  ? `../${PAGES_CLIENT_ASSETS_MODULE}`
+                  : `./${PAGES_CLIENT_ASSETS_MODULE}`;
               pagesClientAssetsOutputDirs.add(
                 path.resolve(
                   this.environment.config.root ?? process.cwd(),
-                  this.environment.config.build.outDir,
+                  this.environment.name === "ssr"
+                    ? path.dirname(this.environment.config.build.outDir)
+                    : this.environment.config.build.outDir,
                 ),
               );
-              return { id: `./${PAGES_CLIENT_ASSETS_MODULE}`, external: true };
+              return { id: externalId, external: true };
             }
             return RESOLVED_PAGES_CLIENT_ASSETS;
           }

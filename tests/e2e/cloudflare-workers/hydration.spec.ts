@@ -43,7 +43,7 @@ test.describe("Cloudflare Workers Hydration", () => {
       scripts.map((script) => script.getAttribute("src")).filter((src): src is string => !!src),
     );
 
-    const bootstrapScripts = page.locator('body script#_R[type="module"][src]');
+    const bootstrapScripts = page.locator('body script#_R_[type="module"][src]');
     await expect(bootstrapScripts).toHaveCount(1);
     const bootstrapSource = await bootstrapScripts.getAttribute("src");
     expect(bootstrapSource).toBeTruthy();
