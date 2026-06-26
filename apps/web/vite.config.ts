@@ -1,6 +1,7 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig({
@@ -8,6 +9,9 @@ export default defineConfig({
     vinext({
       cache: {
         data: kvDataAdapter(),
+      },
+      images: {
+        optimizer: imagesOptimizer(),
       },
     }),
     cloudflare({

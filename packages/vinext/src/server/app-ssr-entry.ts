@@ -3,6 +3,7 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
@@ -53,6 +54,11 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+// @ts-expect-error — resolved by the vinext build plugin in SSR environments.
+import pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
+
+setPagesClientAssets(pagesClientAssets as PagesClientAssets);
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -125,7 +131,7 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
       const reactDomPackageJson = require.resolve("react-dom/package.json");
       const reactDomDir = path.dirname(reactDomPackageJson);
       const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
-      const devRenderer: unknown = await import(devRendererPath);
+      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
       if (isStaticPrerenderModule(devRenderer)) {
         return devRenderer.prerender;
       }
@@ -415,6 +421,12 @@ export async function handleSsr(
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
+            preinitModule(moduleUrl, {
+              as: "script",
+              nonce: options?.scriptNonce,
+            });
+          }
           if (!flightRoot) {
             flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
           }

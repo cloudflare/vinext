@@ -229,7 +229,11 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result?.code).toContain(packageFont.toString("base64"));
   });
 
-  it.each(["og-helper", path.join("@scope", "og-helper")])(
+  // A scoped package name is always forward-slash (`@scope/og-helper`), even on
+  // Windows — it is an npm specifier, not a filesystem path, so it must not go
+  // through `path.join` (which would yield `@scope\og-helper`). `path.join`
+  // below still turns it into the right nested directory on disk.
+  it.each(["og-helper", "@scope/og-helper"])(
     "inlines assets contained within a linked workspace package (%s)",
     async (packageName) => {
       const projectRoot = path.join(tmpDir, "linked-workspace", "app");

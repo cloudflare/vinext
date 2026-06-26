@@ -1,3 +1,4 @@
+import path from "node:path";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import {
@@ -8,15 +9,20 @@ import {
   isIdentifierNamed,
   nodeArray,
 } from "./ast-utils.js";
+import {
+  collectDirectScopeBindings,
+  collectLoopScopeBindings,
+  collectSwitchScopeBindings,
+  collectVarScopeBindings,
+  createAstScope,
+  hasAstBinding,
+  isFunctionNode,
+  type AstScope,
+} from "./ast-scope.js";
 
 type WindowType = "object" | "undefined";
 
 type AstNode = Parameters<typeof forEachAstChild>[0];
-
-type Scope = {
-  parent: Scope | null;
-  bindings: Set<string>;
-};
 
 type EnvironmentLike = {
   config: {
@@ -24,72 +30,12 @@ type EnvironmentLike = {
   };
 };
 
-function createScope(parent: Scope | null): Scope {
-  return { parent, bindings: new Set() };
-}
-
-function hasBinding(scope: Scope, name: string): boolean {
-  for (let current: Scope | null = scope; current; current = current.parent) {
-    if (current.bindings.has(name)) return true;
-  }
-  return false;
-}
-
-function collectScopeBindings(node: AstNode, scope: Scope): void {
-  forEachAstChild(node, (child) => {
-    if (child.type === "ExportNamedDeclaration" || child.type === "ExportDefaultDeclaration") {
-      if (isAstRecord(child.declaration)) collectScopeBindings(child, scope);
-      return;
-    }
-    if (child.type === "FunctionDeclaration" || child.type === "ClassDeclaration") {
-      collectBindingNames(child.id, scope.bindings);
-      return;
-    }
-    if (child.type === "VariableDeclaration") {
-      for (const declaration of nodeArray(child.declarations)) {
-        if (isAstRecord(declaration)) collectBindingNames(declaration.id, scope.bindings);
-      }
-      return;
-    }
-    if (child.type === "ImportDeclaration") {
-      for (const specifier of nodeArray(child.specifiers)) {
-        if (isAstRecord(specifier)) collectBindingNames(specifier.local, scope.bindings);
-      }
-    }
-  });
-}
-
-function collectVarBindings(node: AstNode, scope: Scope, isRoot = true): void {
-  if (
-    !isRoot &&
-    (node.type === "FunctionDeclaration" ||
-      node.type === "FunctionExpression" ||
-      node.type === "ArrowFunctionExpression")
-  ) {
-    return;
-  }
-  if (node.type === "VariableDeclaration" && node.kind === "var") {
-    for (const declaration of nodeArray(node.declarations)) {
-      if (isAstRecord(declaration)) collectBindingNames(declaration.id, scope.bindings);
-    }
-  }
-  forEachAstChild(node, (child) => collectVarBindings(child, scope, false));
-}
-
-function isFunctionNode(node: AstNode): boolean {
-  return (
-    node.type === "FunctionDeclaration" ||
-    node.type === "FunctionExpression" ||
-    node.type === "ArrowFunctionExpression"
-  );
-}
-
-function createChildScope(node: AstNode, parent: Scope): Scope | null {
+function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
   if (
     node.type !== "Program" &&
     node.type !== "BlockStatement" &&
     node.type !== "StaticBlock" &&
-    node.type !== "SwitchStatement" &&
+    node.type !== "TSModuleBlock" &&
     node.type !== "CatchClause" &&
     node.type !== "ForStatement" &&
     node.type !== "ForInStatement" &&
@@ -100,17 +46,22 @@ function createChildScope(node: AstNode, parent: Scope): Scope | null {
     return null;
   }
 
-  const scope = createScope(parent);
+  const scope = createAstScope(parent);
   if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
     collectBindingNames(node.id, scope.bindings);
   } else if (node.type === "CatchClause") {
     collectBindingNames(node.param, scope.bindings);
   }
-  collectScopeBindings(node, scope);
-  if (node.type === "SwitchStatement") {
-    for (const switchCase of nodeArray(node.cases)) {
-      if (isAstRecord(switchCase)) collectScopeBindings(switchCase, scope);
-    }
+  collectDirectScopeBindings(node, scope);
+  if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
+    collectVarScopeBindings(node, scope);
+  }
+  if (
+    node.type === "ForStatement" ||
+    node.type === "ForInStatement" ||
+    node.type === "ForOfStatement"
+  ) {
+    collectLoopScopeBindings(node, scope);
   }
   return scope;
 }
@@ -128,7 +79,7 @@ function stringLiteralValue(node: unknown): string | null {
 function evaluateTypeofWindowComparison(
   node: unknown,
   replacement: WindowType,
-  scope: Scope,
+  scope: AstScope,
 ): boolean | null {
   if (!isAstRecord(node) || node.type !== "BinaryExpression") return null;
   if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
@@ -139,12 +90,12 @@ function evaluateTypeofWindowComparison(
     left?.type === "UnaryExpression" &&
     left.operator === "typeof" &&
     isIdentifierNamed(left.argument, "window") &&
-    !hasBinding(scope, "window");
+    !hasAstBinding(scope, "window");
   const rightIsTypeofWindow =
     right?.type === "UnaryExpression" &&
     right.operator === "typeof" &&
     isIdentifierNamed(right.argument, "window") &&
-    !hasBinding(scope, "window");
+    !hasAstBinding(scope, "window");
 
   const comparedValue = leftIsTypeofWindow
     ? stringLiteralValue(right)
@@ -157,12 +108,21 @@ function evaluateTypeofWindowComparison(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
-export function replaceTypeofWindow(code: string, replacement: WindowType) {
+export function replaceTypeofWindow(code: string, replacement: WindowType, id = "file.js") {
   if (!/typeof\s+window/.test(code)) return null;
 
+  const extension = path.extname(id.split("?", 1)[0]);
+  const lang =
+    extension === ".ts" || extension === ".mts" || extension === ".cts"
+      ? "ts"
+      : extension === ".tsx"
+        ? "tsx"
+        : extension === ".jsx"
+          ? "jsx"
+          : "js";
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code);
+    ast = parseAst(code, { lang });
   } catch {
     return null;
   }
@@ -171,13 +131,13 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
   let changed = false;
   if (!isAstRecord(ast)) return null;
 
-  const rootScope = createScope(null);
-  collectScopeBindings(ast, rootScope);
-  collectVarBindings(ast, rootScope);
+  const rootScope = createAstScope(null);
+  collectDirectScopeBindings(ast, rootScope);
+  collectVarScopeBindings(ast, rootScope);
 
-  function visit(node: AstNode, parentScope: Scope): void {
+  function visit(node: AstNode, parentScope: AstScope): void {
     if (isFunctionNode(node)) {
-      const parameterScope = createScope(parentScope);
+      const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
       for (const parameter of nodeArray(node.params)) {
         collectBindingNames(parameter, parameterScope.bindings);
@@ -186,12 +146,23 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
 
       if (isAstRecord(node.body)) {
         if (node.body.type === "BlockStatement") {
-          const bodyScope = createScope(parameterScope);
-          collectVarBindings(node.body, bodyScope);
+          const bodyScope = createAstScope(parameterScope);
+          collectDirectScopeBindings(node.body, bodyScope);
+          collectVarScopeBindings(node.body, bodyScope);
           visit(node.body, bodyScope);
         } else {
           visit(node.body, parameterScope);
         }
+      }
+      return;
+    }
+
+    if (node.type === "SwitchStatement") {
+      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
+      const switchScope = createAstScope(parentScope);
+      collectSwitchScopeBindings(node, switchScope);
+      for (const switchCase of nodeArray(node.cases)) {
+        if (isAstRecord(switchCase)) visit(switchCase, switchScope);
       }
       return;
     }
@@ -234,7 +205,7 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
       node.type === "UnaryExpression" &&
       node.operator === "typeof" &&
       isIdentifierNamed(node.argument, "window") &&
-      !hasBinding(scope, "window") &&
+      !hasAstBinding(scope, "window") &&
       hasRange(node)
     ) {
       output.overwrite(node.start, node.end, JSON.stringify(replacement));

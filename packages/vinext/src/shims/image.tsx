@@ -68,6 +68,7 @@ const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG =
  * are blocked to mitigate SSRF risk.
  */
 const __dangerouslyAllowLocalIP = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP === "true";
+const __globallyUnoptimized = process.env.__VINEXT_IMAGE_UNOPTIMIZED === "true";
 
 /**
  * Validate that a remote URL is allowed by the configured remote patterns.
@@ -475,7 +476,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         }
       : undefined;
 
-  if (_unoptimized === true) {
+  if (_unoptimized === true || __globallyUnoptimized) {
     // Unoptimized images are fetched directly by the browser, so intentionally
     // skip remote URL validation: there is no server-side optimizer fetch and
     // therefore no SSRF surface. This matches Next.js behavior.
@@ -750,7 +751,7 @@ export function getImageProps(props: ImageProps): {
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
   const shouldPreload = _preload === true || priority === true;
 
-  if (_unoptimized === true) {
+  if (_unoptimized === true || __globallyUnoptimized) {
     // As in the component path, unoptimized images never reach the server-side
     // optimizer, so remote URL validation is intentionally unnecessary.
     const renderedSrc = overrideSrc || src;

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   collectAppPageSearchParams,
+  resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -268,6 +269,41 @@ describe("app page head resolution", () => {
     });
   });
 
+  it("passes observed searchParams to primary and parallel page viewports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-search-params/
+    // app/search-params-used-generate-viewport/page.tsx
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-search-params/app/search-params-used-generate-viewport/page.tsx
+    const observeParamAccess = vi.fn();
+    const viewportColors: string[] = [];
+    const createPageModule = () => ({
+      async generateViewport({
+        searchParams,
+      }: {
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) {
+        const query = await searchParams;
+        viewportColors.push(typeof query.color === "string" ? query.color : "missing");
+        return { themeColor: typeof query.color === "string" ? query.color : "black" };
+      },
+    });
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: createPageModule(),
+      parallelRoutes: [{ pageModule: createPageModule(), routeSegments: ["dashboard"] }],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+      searchParams: new URLSearchParams("color=red"),
+      searchParamsObserver: { observeParamAccess },
+    });
+
+    expect(viewportColors).toEqual(["red", "red"]);
+    expect(observeParamAccess).toHaveBeenCalled();
+    expect(result.viewport.themeColor).toBe("red");
+  });
+
   it("bubbles layout metadata errors", async () => {
     await expect(
       resolveAppPageHead<Record<string, unknown>>({
@@ -359,6 +395,110 @@ describe("app page head resolution", () => {
         title: "Slot OG title",
       },
     });
+  });
+
+  it("includes nested active parallel route layout metadata", async () => {
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [
+            { metadata: { description: "slot root" } },
+            { metadata: { title: "nested slot layout" } },
+          ],
+          pageModule: { metadata: { openGraph: { title: "slot page" } } },
+          routeSegments: ["dashboard"],
+        },
+      ],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+    });
+
+    expect(result.metadata).toMatchObject({
+      description: "slot root",
+      title: "nested slot layout",
+      openGraph: { title: "slot page" },
+    });
+  });
+
+  it("uses mirrored slot params for parallel route metadata", () => {
+    const slotPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        params: { primary: "value" },
+        routeSegments: ["dashboard"],
+        slotParams: { sidebar: { member: "alice" } },
+        slots: { sidebar: { page: slotPage, routeSegments: ["[member]"] } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [],
+        layoutParams: [],
+        layoutTreePositions: [],
+        pageModule: slotPage,
+        params: { member: "alice" },
+        routeSegments: ["[member]"],
+      },
+    ]);
+  });
+
+  it("keeps slot-root layout head inputs for intercepted slots", () => {
+    const slotLayout = { metadata: { description: "slot root" } };
+    const interceptLayout = { metadata: { title: "intercept" } };
+    const interceptPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptLayouts: [interceptLayout],
+        interceptBranchSegments: ["[photo]", "[comment]"],
+        interceptLayoutSegments: [["[photo]"]],
+        interceptPage,
+        interceptParams: { locale: "en", photo: "42", comment: "7" },
+        interceptSlotKey: "modal",
+        layoutTreePositions: [1],
+        params: { locale: "en" },
+        routeSegments: ["[locale]", "photos"],
+        slots: { modal: { layout: slotLayout, layoutIndex: 0 } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [slotLayout, interceptLayout],
+        layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+        layoutTreePositions: [0, 2],
+        pageModule: interceptPage,
+        params: { locale: "en", photo: "42", comment: "7" },
+        routeSegments: ["[locale]", "photos"],
+      },
+    ]);
+  });
+
+  it("scopes parallel layout metadata params by tree position", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const makeLayout = () => ({
+      async generateMetadata({ params }: { params: Promise<Record<string, unknown>> }) {
+        seen.push(await params);
+        return null;
+      },
+    });
+
+    await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [makeLayout(), makeLayout()],
+          layoutTreePositions: [0, 1],
+          params: { owner: "root", team: "alpha", member: "bob" },
+          routeSegments: ["[team]", "[member]"],
+        },
+      ],
+      params: {},
+      routePath: "/alpha/bob",
+      routeSegments: [],
+    });
+
+    expect(seen).toEqual([{ owner: "root" }, { owner: "root", team: "alpha" }]);
   });
 
   // Regression: a `generateMetadata` that does not declare the `parent`

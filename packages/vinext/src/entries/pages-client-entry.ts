@@ -47,6 +47,7 @@ export async function generateClientEntry(
   options: {
     appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
     instrumentationClientPath?: string | null;
+    reactPreamble?: boolean;
   } = {},
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
@@ -92,8 +93,10 @@ export async function generateClientEntry(
   const userInstrumentationImport = instrumentationClientPath
     ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
     : "";
+  const reactPreambleImport =
+    options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';
 
-  return `${userInstrumentationImport}
+  return `${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";

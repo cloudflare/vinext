@@ -2,20 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import {
-  detectProject,
   deploy,
-  generateWranglerConfig,
-  generateAppRouterWorkerEntry,
-  generatePagesRouterWorkerEntry,
-  generateAppRouterViteConfig,
-  generatePagesRouterViteConfig,
-  getMissingDeps,
-  getFilesToGenerate,
-  ensureESModule,
-  renameCJSConfigs,
   buildNodeCliInvocation,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
@@ -24,35 +13,50 @@ import {
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
-  isPackageResolvable,
-  viteConfigHasCloudflarePlugin,
-  viteConfigHasCacheAdapter,
-  workerEntryHasCacheHandler,
-  hasWranglerConfig,
-  formatMissingCloudflarePluginError,
-  formatMissingCacheAdapterError,
-  injectPregeneratedConcretePaths,
 } from "../packages/vinext/src/deploy.js";
+import {
+  detectProject,
+  getMissingDeps,
+  hasWranglerConfig,
+  isPackageResolvable,
+} from "../packages/vinext/src/cloudflare/project.js";
+import {
+  formatMissingCacheAdapterError,
+  formatMissingCloudflarePluginError,
+  formatImageOptimizationHint,
+  viteConfigHasCacheAdapter,
+  viteConfigHasCloudflarePlugin,
+  viteConfigHasImageAdapter,
+  workerEntryHasCacheHandler,
+} from "../packages/vinext/src/cloudflare/deploy-config.js";
+import {
+  generateWranglerConfig,
+  generatePagesRouterWorkerEntry,
+  generateAppRouterViteConfig,
+  generatePagesRouterViteConfig,
+} from "../packages/vinext/src/init-cloudflare.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
   findInNodeModules,
+  ensureESModule,
+  renameCJSConfigs,
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
-import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import {
-  computeClientRuntimeMetadata,
-  buildRuntimeGlobalsScript,
-} from "../packages/vinext/src/utils/client-runtime-metadata.js";
+  buildPagesClientAssetsModule,
+  writePagesClientAssetsModuleIfMissing,
+} from "../packages/vinext/src/build/pages-client-assets-module.js";
 import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
+  finalizeMissingStaticAssetResponse,
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
-import { clearPregeneratedConcretePaths } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -178,6 +182,34 @@ describe("deploy environment validation", () => {
     expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
     expect(fs.existsSync(path.join(tmpDir, ".vinext"))).toBe(false);
   });
+
+  it("does not scaffold or mutate a project that has not run Cloudflare init", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.toThrow(
+      "Run `vinext init --platform=cloudflare` first.",
+    );
+
+    expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "worker"))).toBe(false);
+  });
+
+  it("does not require a custom Worker entry for App Router deployments", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"app"}\n');
+    writeFile(tmpDir, "app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(tmpDir, "vite.config.ts", "export default {};\n");
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    );
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.not.toThrow("Worker entry");
+  });
 });
 
 // ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────
@@ -298,7 +330,7 @@ describe("resolveWranglerBin", () => {
   });
 
   it("returns a clear fallback path when Wrangler is missing", () => {
-    expect(resolveWranglerBin(tmpDir)).toBe(
+    expect(resolveWranglerBin(tmpDir, () => null)).toBe(
       path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
   });
@@ -478,6 +510,14 @@ describe("detectProject", () => {
     expect(info.isPagesRouter).toBe(false);
   });
 
+  it("does not treat app or pages files as router directories", () => {
+    writeFile(tmpDir, "app", "not a directory");
+    writeFile(tmpDir, "pages", "not a directory");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(false);
+    expect(info.isPagesRouter).toBe(false);
+  });
+
   it("detects vite.config.ts", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "vite.config.ts", "export default {}");
@@ -510,6 +550,12 @@ describe("detectProject", () => {
     writeFile(tmpDir, "wrangler.toml", "[vars]");
     const info = detectProject(tmpDir);
     expect(info.hasWranglerConfig).toBe(true);
+  });
+
+  it("detects cloudflare.config.ts", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(detectProject(tmpDir).hasWranglerConfig).toBe(true);
   });
 
   it("detects worker/index.ts", () => {
@@ -572,11 +618,21 @@ describe("detectProject", () => {
     expect(info.hasISR).toBe(false);
   });
 
-  it("does not detect ISR for Pages Router", () => {
+  it("detects ISR for Pages Router getStaticProps", () => {
     mkdir(tmpDir, "pages");
-    writeFile(tmpDir, "pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "pages/index.tsx",
+      "export async function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+    );
     const info = detectProject(tmpDir);
-    expect(info.hasISR).toBe(false);
+    expect(info.hasISR).toBe(true);
+  });
+
+  it("detects caching from cacheComponents", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
+    expect(detectProject(tmpDir).hasISR).toBe(true);
   });
 });
 
@@ -591,7 +647,7 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
-    expect(parsed.main).toBe("./worker/index.ts");
+    expect(parsed.main).toBe("vinext/server/app-router-entry");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
       not_found_handling: "none",
@@ -610,7 +666,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.compatibility_date).toBe(today);
   });
 
-  it("includes KV namespace when ISR detected", () => {
+  it("includes the default KV namespace", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -625,11 +681,15 @@ describe("generateWranglerConfig", () => {
     expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
-  it("omits KV namespace when no ISR", () => {
+  it("omits KV namespace when KV caches are disabled", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/page.tsx", "export default function() { return <div/> }");
     const info = detectProject(tmpDir);
-    const config = generateWranglerConfig(info);
+    const config = generateWranglerConfig(info, {
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "cloudflare-images",
+    });
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeUndefined();
@@ -654,69 +714,6 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.images).toBeDefined();
     expect(parsed.images.binding).toBe("IMAGES");
-  });
-});
-
-// ─── Worker Entry Generation ─────────────────────────────────────────────────
-
-describe("generateAppRouterWorkerEntry", () => {
-  it("generates valid TypeScript", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
-    expect(content).toContain("Promise<Response>");
-  });
-
-  it("includes image optimization handler", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
-  });
-
-  it("threads configured image widths and qualities into the App Router worker", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
-    expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
-    expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
-    expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
-  });
-
-  it("declares Env interface with IMAGES binding", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
-    expect(content).toContain("ASSETS");
-  });
-
-  it("declares ExecutionContext interface", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("interface ExecutionContext");
-    expect(content).toContain("waitUntil");
-  });
-
-  it("passes image handlers inline to handleImageOptimization", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
-    expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
-  });
-
-  it("never wires a cache handler into the Worker entry", () => {
-    // Cache backends are configured declaratively via vinext({ cache }) in
-    // vite.config; the Worker entry must not scaffold setDataCacheHandler.
-    const content = generateAppRouterWorkerEntry();
-    expect(content).not.toContain("KVCacheHandler");
-    expect(content).not.toContain("setDataCacheHandler");
-    expect(content).not.toContain("setCdnCacheAdapter");
-    expect(content).not.toContain("VINEXT_KV_CACHE");
-  });
-
-  it("points users to the declarative cache config", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("vinext({ cache })");
   });
 });
 
@@ -825,6 +822,31 @@ describe("workerEntryHasCacheHandler", () => {
   });
 });
 
+describe("viteConfigHasImageAdapter", () => {
+  it("detects a configured image optimizer", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ images: { optimizer: imagesOptimizer() } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(true);
+  });
+
+  it("returns false when image optimization is omitted", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false for an explicitly disabled optimizer", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ images: { optimizer: undefined } })] };`,
+    );
+    expect(viteConfigHasImageAdapter(tmpDir)).toBe(false);
+  });
+});
+
 describe("formatMissingCacheAdapterError", () => {
   it("names the data adapter builder and the KV namespace command", () => {
     const msg = formatMissingCacheAdapterError({});
@@ -837,6 +859,15 @@ describe("formatMissingCacheAdapterError", () => {
     const msg = formatMissingCacheAdapterError({});
     expect(msg).not.toContain("cdnAdapter");
     expect(msg).not.toContain("cdn-adapter");
+  });
+});
+
+describe("formatImageOptimizationHint", () => {
+  it("points users to additive init configuration", () => {
+    const message = formatImageOptimizationHint();
+    expect(message).toContain("--image-optimization=cloudflare-images");
+    expect(message).toContain("imagesOptimizer()");
+    expect(message).toContain("IMAGES binding");
   });
 });
 
@@ -854,6 +885,13 @@ describe("scanPublicFileRoutes", () => {
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
+  it("renders without request-level development asset URLs", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
+    expect(content).not.toContain("clientEntryUrl");
+    expect(content).not.toContain("clientPreambleUrl");
+  });
+
   it("keeps Cloudflare dev _next/data URLs intact for Worker normalization", () => {
     const indexSource = fs.readFileSync(
       path.join(import.meta.dirname, "../packages/vinext/src/index.ts"),
@@ -1013,13 +1051,14 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("includes image optimization handler", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isImageOptimizationPath");
-    expect(content).toContain("handleImageOptimization");
+    expect(content).toContain("handleConfiguredImageOptimization");
+    expect(content).toContain("registerConfiguredImageOptimizer(env)");
   });
 
-  it("declares Env interface with IMAGES binding", () => {
+  it("does not declare an Images binding in the Worker", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("interface Env");
-    expect(content).toContain("IMAGES");
+    expect(content).not.toContain("IMAGES");
     expect(content).toContain("ASSETS");
   });
 
@@ -1030,12 +1069,11 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
-  it("passes image handlers inline to handleImageOptimization", () => {
+  it("delegates image transforms to the configured adapter", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("fetchAsset:");
-    expect(content).toContain("transformImage:");
+    expect(content).toContain("handleConfiguredImageOptimization(");
     expect(content).toContain("env.ASSETS.fetch");
-    expect(content).toContain("env.IMAGES");
+    expect(content).not.toContain("env.IMAGES");
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
@@ -1047,10 +1085,7 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("exports every vinext subpath imported by generated worker entries", () => {
     const exportsMap = readVinextPackageExports();
-    const generatedImports = [
-      ...extractVinextImportSubpaths(generateAppRouterWorkerEntry()),
-      ...extractVinextImportSubpaths(generatePagesRouterWorkerEntry()),
-    ];
+    const generatedImports = extractVinextImportSubpaths(generatePagesRouterWorkerEntry());
     const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
 
     expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
@@ -1065,7 +1100,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain("finalizeMissingStaticAssetResponse(result.response");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
@@ -1217,7 +1252,36 @@ describe("generatePagesRouterWorkerEntry", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return result.response");
+    expect(content).toContain(
+      "return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
+  });
+
+  it("finalizes only missing build-asset 404 responses", async () => {
+    let canceled = false;
+    const routed404 = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("rendered 404"));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+      { status: 404, headers: { "content-type": "text/html" } },
+    );
+
+    const finalized = finalizeMissingStaticAssetResponse(routed404, true);
+    expect(finalized.status).toBe(404);
+    expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(await finalized.text()).toBe("Not Found");
+    await vi.waitFor(() => expect(canceled).toBe(true));
+
+    const middlewareResponse = new Response("rewritten missing asset", { status: 200 });
+    expect(finalizeMissingStaticAssetResponse(middlewareResponse, true)).toBe(middlewareResponse);
+
+    const regular404 = new Response("rendered 404", { status: 404 });
+    expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -1309,7 +1373,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
-    expect(content).toContain("}, allowedWidths, imageConfig)");
+    expect(content).toContain("allowedWidths,");
+    expect(content).toContain("imageConfig,");
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
@@ -1321,11 +1386,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
-  // Regression for #1337: invalid `_next/static/*` paths must short-circuit
-  // with a plain-text 404 instead of falling through to renderPage (which
-  // would render the full HTML 404 page with bootstrap scripts + CSS).
-  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
-  it("short-circuits invalid `_next/static/*` paths with plain-text 404", () => {
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("runs middleware before finalizing missing `_next/static/*` responses", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain(
       'import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses"',
@@ -1334,15 +1397,23 @@ describe("generatePagesRouterWorkerEntry", () => {
       'import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix"',
     );
     expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
-    expect(content).toContain("isNextStaticPath(pathname, basePath, assetPathPrefix)");
-    expect(content).toContain("return notFoundStaticAssetResponse();");
+    expect(content).toContain(
+      "const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix)",
+    );
+    expect(content).toContain(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
 
-    // The short-circuit must fire BEFORE runPagesRequest (which invokes renderPage)
-    // so the rich HTML 404 is never rendered for asset misses.
+    // Detection happens before routing, but the response is finalized only
+    // after runPagesRequest has given middleware a chance to handle the miss.
     const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
     const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
+    const finalizePos = content.indexOf(
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+    );
     expect(staticPos).toBeGreaterThan(-1);
     expect(pipelinePos).toBeGreaterThan(staticPos);
+    expect(finalizePos).toBeGreaterThan(pipelinePos);
   });
 });
 
@@ -1417,7 +1488,7 @@ describe("generateAppRouterViteConfig", () => {
     const content = generateAppRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain("vinext()");
+    expect(content).toContain("vinext({");
     expect(content).toContain("cloudflare(");
   });
 
@@ -1433,7 +1504,7 @@ describe("generatePagesRouterViteConfig", () => {
     const content = generatePagesRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
-    expect(content).toContain("vinext()");
+    expect(content).toContain("vinext({");
     expect(content).toContain("cloudflare()");
     // Should NOT include RSC plugin
     expect(content).not.toContain("plugin-rsc");
@@ -1570,115 +1641,6 @@ describe("isPackageResolvable", () => {
   });
 });
 
-// ─── getFilesToGenerate ──────────────────────────────────────────────────────
-
-describe("getFilesToGenerate", () => {
-  it("generates all three files when nothing exists (App Router)", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).toContain("wrangler.jsonc");
-    expect(descriptions).toContain("worker/index.ts");
-    expect(descriptions).toContain("vite.config.ts");
-  });
-
-  it("generates all three files when nothing exists (Pages Router)", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-  });
-
-  it("skips wrangler.jsonc when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "wrangler.jsonc", "{}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("wrangler.jsonc");
-    expect(files).toHaveLength(2);
-  });
-
-  it("skips worker/index.ts when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "worker/index.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("worker/index.ts");
-  });
-
-  it("skips vite.config.ts when it already exists", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "vite.config.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).not.toContain("vite.config.ts");
-  });
-
-  it("generates nothing when all files exist", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "wrangler.jsonc", "{}");
-    writeFile(tmpDir, "worker/index.ts", "export default {}");
-    writeFile(tmpDir, "vite.config.ts", "export default {}");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(0);
-  });
-
-  it("generates App Router worker entry for App Router project", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile).toBeDefined();
-    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
-    expect(workerFile!.content).not.toContain("virtual:vinext-server-entry");
-  });
-
-  it("generates Pages Router worker entry for Pages Router project", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile).toBeDefined();
-    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
-    expect(workerFile!.content).not.toContain("viteRsc");
-  });
-
-  it("generates App Router vite config for App Router project", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const viteFile = files.find((f) => f.description === "vite.config.ts");
-    expect(viteFile).toBeDefined();
-    expect(viteFile!.content).toContain("vinext()");
-    expect(viteFile!.content).toContain("childEnvironments");
-  });
-
-  it("generates Pages Router vite config for Pages Router project", () => {
-    mkdir(tmpDir, "pages");
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    const viteFile = files.find((f) => f.description === "vite.config.ts");
-    expect(viteFile).toBeDefined();
-    expect(viteFile!.content).not.toContain("plugin-rsc");
-  });
-});
-
 // ─── viteConfigHasCloudflarePlugin ───────────────────────────────────────────
 
 describe("viteConfigHasCloudflarePlugin", () => {
@@ -1764,6 +1726,69 @@ export default { plugins: [cloudflare()] };
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
+  it("returns true for a CommonJS vite.config.cjs", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.cjs",
+      `const { cloudflare } = require("@cloudflare/vite-plugin");
+module.exports = { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
+  });
+
+  it.each(["cjs", "mts", "cts"])("detects a cache adapter in vite.config.%s", (extension) => {
+    writeFile(
+      tmpDir,
+      `vite.config.${extension}`,
+      `export default { plugins: [vinext({ cache: { data: kvDataAdapter() } })] };\n`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it.each(["cjs", "mts", "cts"])(
+    "detects a missing cache adapter in vite.config.%s",
+    (extension) => {
+      writeFile(tmpDir, `vite.config.${extension}`, `export default { plugins: [vinext()] };\n`);
+      expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+    },
+  );
+
+  it("returns false when cloudflare() only appears in a comment", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [] }; // cloudflare()
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+  });
+
+  it("returns false when an unrelated local cloudflare() function is called", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { cloudflare as cloudflarePlugin } from "@cloudflare/vite-plugin";
+const cloudflare = () => null;
+export default { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+  });
+
+  it("uses Vite config precedence when multiple configs exist", () => {
+    writeFile(tmpDir, "vite.config.ts", `// cloudflare()\n`);
+    writeFile(
+      tmpDir,
+      "vite.config.js",
+      `import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
+  });
+
   it("returns false when no vite config file exists", () => {
     // tmpDir has no vite config
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
@@ -1785,6 +1810,11 @@ describe("hasWranglerConfig", () => {
 
   it("returns true when wrangler.toml exists", () => {
     writeFile(tmpDir, "wrangler.toml", "");
+    expect(hasWranglerConfig(tmpDir)).toBe(true);
+  });
+
+  it("returns true when cloudflare.config.ts exists", () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
     expect(hasWranglerConfig(tmpDir)).toBe(true);
   });
 
@@ -2025,44 +2055,6 @@ describe("detectProject — src/ directory convention", () => {
     expect(info.hasMDX).toBe(true);
   });
 
-  it("generates correct files for src/app/ project", () => {
-    mkdir(tmpDir, "src/app");
-    writeFile(
-      tmpDir,
-      "src/app/page.tsx",
-      "export default function Home() { return <div>hi</div> }",
-    );
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-    const descriptions = files.map((f) => f.description);
-    expect(descriptions).toContain("wrangler.jsonc");
-    expect(descriptions).toContain("worker/index.ts");
-    expect(descriptions).toContain("vite.config.ts");
-
-    // Should generate App Router worker entry
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
-  });
-
-  it("generates correct files for src/pages/ project", () => {
-    mkdir(tmpDir, "src/pages");
-    writeFile(
-      tmpDir,
-      "src/pages/index.tsx",
-      "export default function Home() { return <div>hi</div> }",
-    );
-    const info = detectProject(tmpDir);
-    const files = getFilesToGenerate(info);
-
-    expect(files).toHaveLength(3);
-
-    // Should generate Pages Router worker entry
-    const workerFile = files.find((f) => f.description === "worker/index.ts");
-    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
-  });
-
   it("detects neither when no app/, pages/, src/app/, or src/pages/", () => {
     mkdir(tmpDir, "src/lib");
     const info = detectProject(tmpDir);
@@ -2180,7 +2172,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     const config = generateAppRouterViteConfig(info);
     // MDX is now handled by the vinext plugin's auto-injection at runtime,
     // not by a separate mdx() call in the generated config.
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("auto-injects @mdx-js/rollup");
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
   });
@@ -2194,7 +2186,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
     expect(config).not.toContain("remarkCodeHike");
     expect(config).not.toContain("recmaCodeHike");
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
   });
 
   it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
@@ -2226,7 +2218,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generateAppRouterViteConfig();
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare(");
     // Generated config no longer includes a separate mdx() import/call
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
@@ -2251,7 +2243,7 @@ describe("generatePagesRouterViteConfig — with project info", () => {
 
   it("still works without info (backward compatible)", () => {
     const config = generatePagesRouterViteConfig();
-    expect(config).toContain("vinext()");
+    expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare()");
     expect(config).not.toContain("resolve:");
   });
@@ -2309,24 +2301,6 @@ describe("detectProject on real fixtures", () => {
     expect(info.hasViteConfig).toBe(true);
     expect(info.hasWranglerConfig).toBe(true);
     expect(info.hasWorkerEntry).toBe(true);
-  });
-
-  it("generates zero files for fully-configured app-router-cloudflare", () => {
-    const cfApp = path.join(fixturesDir, "app-router-cloudflare");
-    if (!fs.existsSync(cfApp)) return;
-
-    const info = detectProject(cfApp);
-    const files = getFilesToGenerate(info);
-    expect(files).toHaveLength(0);
-  });
-
-  it("generates zero files for fully-configured pages-router-cloudflare", () => {
-    const cfPages = path.join(fixturesDir, "pages-router-cloudflare");
-    if (!fs.existsSync(cfPages)) return;
-
-    const info = detectProject(cfPages);
-    const files = getFilesToGenerate(info);
-    expect(files).toHaveLength(0);
   });
 
   it("would report missing deps for non-cloudflare fixture", () => {
@@ -2416,183 +2390,9 @@ describe("Cloudflare _headers file generation", () => {
   });
 });
 
-// ─── Cloudflare closeBundle: lazy chunk injection ────────────────────────────
-// These tests verify that the vinext:cloudflare-build closeBundle hook correctly
-// injects __VINEXT_LAZY_CHUNKS__ and other globals into the worker entry for
-// BOTH App Router and Pages Router builds. This was regressed by PR #358 which
-// added an early return for App Router builds, skipping lazy chunk injection.
+// ─── Client asset sidecar generation ────────────────────────────────────────
 
-describe("Cloudflare closeBundle lazy chunk injection", () => {
-  /**
-   * Replicates the closeBundle hook logic for App Router builds. Mirrors the
-   * REAL wiring in index.ts: it forwards the same `includeClientEntry` ternary
-   * and serializes globals via the shared `buildRuntimeGlobalsScript` helper, so
-   * the simulator cannot drift from production. `hasPagesDir` exercises the
-   * mixed app+pages branch (where the Pages client entry IS injected).
-   */
-  function simulateCloseBundleAppRouter(
-    buildRoot: string,
-    base = "/",
-    assetPrefix = "",
-    hasPagesDir = false,
-  ): void {
-    const distDir = path.resolve(buildRoot, "dist");
-    if (!fs.existsSync(distDir)) return;
-
-    const clientDir = path.resolve(buildRoot, "dist", "client");
-
-    const runtimeMetadata = computeClientRuntimeMetadata({
-      clientDir,
-      assetBase: base,
-      assetPrefix,
-      // index.ts: `!hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false`
-      includeClientEntry: hasPagesDir ? "pages-client-entry" : false,
-    });
-
-    // Read SSR manifest
-    let ssrManifestData: Record<string, string[]> | null = null;
-    const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-    if (fs.existsSync(ssrManifestPath)) {
-      try {
-        ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const workerEntry = path.resolve(distDir, "server", "index.js");
-    if (!fs.existsSync(workerEntry)) return;
-    const script = buildRuntimeGlobalsScript({
-      clientEntryFile: runtimeMetadata.clientEntryFile,
-      ssrManifest: ssrManifestData,
-      lazyChunks: runtimeMetadata.lazyChunks,
-      dynamicPreloads: runtimeMetadata.dynamicPreloads,
-    });
-    if (script) {
-      const code = fs.readFileSync(workerEntry, "utf-8");
-      fs.writeFileSync(workerEntry, script + "\n" + code);
-    }
-  }
-
-  /**
-   * Replicates the closeBundle hook logic for Pages Router builds. Mirrors the
-   * real index.ts wiring and serializes via the shared helper.
-   */
-  function simulateCloseBundlePagesRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
-    const distDir = path.resolve(buildRoot, "dist");
-    if (!fs.existsSync(distDir)) return;
-
-    const clientDir = path.resolve(buildRoot, "dist", "client");
-
-    const runtimeMetadata = computeClientRuntimeMetadata({
-      clientDir,
-      assetBase: base,
-      assetPrefix,
-      includeClientEntry: true,
-    });
-
-    // Find worker output directory (contains wrangler.json)
-    let workerOutDir: string | null = null;
-    for (const entry of fs.readdirSync(distDir)) {
-      const candidate = path.join(distDir, entry);
-      if (entry === "client") continue;
-      if (
-        fs.statSync(candidate).isDirectory() &&
-        fs.existsSync(path.join(candidate, "wrangler.json"))
-      ) {
-        workerOutDir = candidate;
-        break;
-      }
-    }
-    if (!workerOutDir) return;
-
-    const workerEntry = path.join(workerOutDir, "index.js");
-    if (!fs.existsSync(workerEntry)) return;
-
-    // Read SSR manifest
-    let ssrManifestData: Record<string, string[]> | null = null;
-    const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-    if (fs.existsSync(ssrManifestPath)) {
-      try {
-        ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const script = buildRuntimeGlobalsScript({
-      clientEntryFile: runtimeMetadata.clientEntryFile,
-      ssrManifest: ssrManifestData,
-      lazyChunks: runtimeMetadata.lazyChunks,
-      dynamicPreloads: runtimeMetadata.dynamicPreloads,
-    });
-    if (script) {
-      const code = fs.readFileSync(workerEntry, "utf-8");
-      fs.writeFileSync(workerEntry, script + "\n" + code);
-    }
-  }
-
-  /** Sets up a mock App Router build output directory structure. */
-  function setupAppRouterBuildOutput(
-    root: string,
-    manifest: Record<string, any>,
-    ssrManifest?: Record<string, string[]>,
-  ): void {
-    // dist/server/index.js — the RSC worker entry
-    fs.mkdirSync(path.join(root, "dist", "server"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "dist", "server", "index.js"),
-      "// RSC worker entry\nexport default { fetch() {} };",
-    );
-
-    // dist/client/.vite/manifest.json
-    fs.mkdirSync(path.join(root, "dist", "client", ".vite"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "dist", "client", ".vite", "manifest.json"),
-      JSON.stringify(manifest),
-    );
-
-    // dist/client/.vite/ssr-manifest.json (optional)
-    if (ssrManifest) {
-      fs.writeFileSync(
-        path.join(root, "dist", "client", ".vite", "ssr-manifest.json"),
-        JSON.stringify(ssrManifest),
-      );
-    }
-  }
-
-  /** Sets up a mock Pages Router build output directory structure. */
-  function setupPagesRouterBuildOutput(
-    root: string,
-    manifest: Record<string, any>,
-    ssrManifest?: Record<string, string[]>,
-  ): void {
-    // dist/worker/ with wrangler.json and index.js
-    const workerDir = path.join(root, "dist", "worker");
-    fs.mkdirSync(workerDir, { recursive: true });
-    fs.writeFileSync(path.join(workerDir, "wrangler.json"), "{}");
-    fs.writeFileSync(
-      path.join(workerDir, "index.js"),
-      "// Pages Router worker entry\nexport default { fetch() {} };",
-    );
-
-    // dist/client/.vite/manifest.json
-    fs.mkdirSync(path.join(root, "dist", "client", ".vite"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, "dist", "client", ".vite", "manifest.json"),
-      JSON.stringify(manifest),
-    );
-
-    // dist/client/.vite/ssr-manifest.json (optional)
-    if (ssrManifest) {
-      fs.writeFileSync(
-        path.join(root, "dist", "client", ".vite", "ssr-manifest.json"),
-        JSON.stringify(ssrManifest),
-      );
-    }
-  }
-
-  // A realistic manifest with both eager and lazy chunks
+describe("client asset sidecar generation", () => {
   const manifestWithLazyChunks = {
     "virtual:vinext-app-browser-entry": {
       file: "assets/app-entry.js",
@@ -2600,385 +2400,135 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       imports: ["node_modules/react/index.js"],
       dynamicImports: ["src/components/MermaidChart.tsx"],
     },
-    "node_modules/react/index.js": {
-      file: "assets/framework.js",
-    },
+    "node_modules/react/index.js": { file: "assets/framework.js" },
     "src/components/MermaidChart.tsx": {
       file: "assets/mermaid-chart.js",
       isDynamicEntry: true,
       imports: ["node_modules/mermaid/dist/mermaid.js"],
     },
-    "node_modules/mermaid/dist/mermaid.js": {
-      file: "assets/mermaid-vendor.js",
-    },
+    "node_modules/mermaid/dist/mermaid.js": { file: "assets/mermaid-vendor.js" },
   };
 
-  // ── App Router tests ──────────────────────────────────────────────────
+  function writeClientBuild(root: string, manifest: Record<string, unknown>): string {
+    const clientDir = path.join(root, "dist", "client");
+    fs.mkdirSync(path.join(clientDir, ".vite"), { recursive: true });
+    fs.writeFileSync(path.join(clientDir, ".vite", "manifest.json"), JSON.stringify(manifest));
+    return clientDir;
+  }
 
-  it("App Router: injects __VINEXT_LAZY_CHUNKS__ into dist/server/index.js", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+  function readGeneratedModule(filePath: string): Record<string, unknown> {
+    const source = fs.readFileSync(filePath, "utf-8");
+    return JSON.parse(source.slice("export default ".length, -2));
+  }
 
-    simulateCloseBundleAppRouter(tmpDir);
+  it("serializes runtime metadata as an importable module", () => {
+    const source = buildPagesClientAssetsModule({
+      clientEntry: "assets/entry.js",
+      appBootstrapPreinitModules: ["/assets/framework.js"],
+      ssrManifest: { "pages/index.tsx": ["assets/page.js"] },
+      lazyChunks: ["assets/lazy.js"],
+      dynamicPreloads: { "src/widget.tsx": ["assets/widget.js"] },
+    });
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
-
-    // Verify the lazy chunks are correct (mermaid-chart and mermaid-vendor are lazy)
-    const match = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(match).not.toBeNull();
-    const lazyChunks = JSON.parse(match![1]);
-    expect(lazyChunks).toContain("assets/mermaid-chart.js");
-    expect(lazyChunks).toContain("assets/mermaid-vendor.js");
-    // Eager chunks should NOT be in the lazy list
-    expect(lazyChunks).not.toContain("assets/app-entry.js");
-    expect(lazyChunks).not.toContain("assets/framework.js");
-  });
-
-  it("App Router: injects __VINEXT_DYNAMIC_PRELOADS__ into dist/server/index.js", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundleAppRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
-    expect(code).toContain(
-      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
+    expect(source).toBe(
+      'export default {"clientEntry":"assets/entry.js","appBootstrapPreinitModules":["/assets/framework.js"],"ssrManifest":{"pages/index.tsx":["assets/page.js"]},"lazyChunks":["assets/lazy.js"],"dynamicPreloads":{"src/widget.tsx":["assets/widget.js"]}};\n',
     );
-    expect(code).not.toContain(`"virtual:vinext-app-browser-entry"`);
   });
 
-  it("App Router: lazy chunks stay base-relative while only dynamic preloads take the assetPrefix", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+  it("serializes root-anchored App bootstrap preinit modules", () => {
+    const clientDir = writeClientBuild(tmpDir, manifestWithLazyChunks);
+    fs.writeFileSync(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({ appBrowserEntry: "assets/app-entry.js" }),
+    );
 
-    simulateCloseBundleAppRouter(tmpDir, "/docs/", "/cdn-prefix");
+    const metadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+    });
+    const sidecarPath = path.join(tmpDir, "vinext-client-assets.js");
+    fs.writeFileSync(sidecarPath, buildPagesClientAssetsModule(metadata));
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(lazyMatch).not.toBeNull();
-    const lazyChunks = JSON.parse(lazyMatch![1]);
-    // Lazy chunks must stay in the SSR-manifest key-space (basePath only) so the
-    // Pages Router modulepreload-exclusion membership test still matches.
-    expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
-    expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
-    expect(lazyChunks).not.toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
+    expect(readGeneratedModule(sidecarPath).appBootstrapPreinitModules).toEqual([
+      "/assets/framework.js",
+    ]);
+  });
 
-    // Dynamic preloads render real <link> hrefs, so they DO take the assetPrefix.
-    const preloadMatch = code.match(/globalThis\.__VINEXT_DYNAMIC_PRELOADS__\s*=\s*(\{.*?\});/);
-    expect(preloadMatch).not.toBeNull();
-    const dynamicPreloads = JSON.parse(preloadMatch![1]);
-    expect(dynamicPreloads["src/components/MermaidChart.tsx"]).toEqual([
+  it("keeps lazy chunks base-relative while applying assetPrefix to dynamic preloads", () => {
+    const clientDir = writeClientBuild(tmpDir, manifestWithLazyChunks);
+    const metadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/docs/",
+      assetPrefix: "/cdn-prefix",
+    });
+
+    expect(metadata.lazyChunks).toEqual([
+      "docs/assets/mermaid-chart.js",
+      "docs/assets/mermaid-vendor.js",
+    ]);
+    expect(metadata.dynamicPreloads?.["src/components/MermaidChart.tsx"]).toEqual([
       "cdn-prefix/_next/static/assets/mermaid-chart.js",
       "cdn-prefix/_next/static/assets/mermaid-vendor.js",
     ]);
   });
 
-  it("App Router: never emits an absolute-URL assetPrefix into lazy chunks (regression: modulepreload leak)", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+  it("writes a sidecar without mutating the worker entry", () => {
+    const workerDir = path.join(tmpDir, "dist", "worker");
+    fs.mkdirSync(workerDir, { recursive: true });
+    const workerEntry = path.join(workerDir, "index.js");
+    fs.writeFileSync(workerEntry, "// worker entry\nexport default { fetch() {} };");
 
-    simulateCloseBundleAppRouter(tmpDir, "/docs/", "https://cdn.example.com/assets");
+    const sidecarPath = path.join(workerDir, "vinext-client-assets.js");
+    fs.writeFileSync(sidecarPath, buildPagesClientAssetsModule({ lazyChunks: ["assets/lazy.js"] }));
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-
-    // Dynamic preloads get the absolute URL...
-    expect(code).toContain("https://cdn.example.com/assets/_next/static/assets/mermaid-chart.js");
-
-    // ...but lazy chunks MUST stay base-relative. An absolute URL here would
-    // never match the base-relative SSR-manifest values, so the Pages Router
-    // would fail to exclude lazy chunks and leak them into <link rel=modulepreload>.
-    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(lazyMatch).not.toBeNull();
-    const lazyChunks = JSON.parse(lazyMatch![1]) as string[];
-    expect(lazyChunks).toEqual(["docs/assets/mermaid-chart.js", "docs/assets/mermaid-vendor.js"]);
-    expect(lazyChunks.some((c) => c.startsWith("https://"))).toBe(false);
+    expect(fs.readFileSync(workerEntry, "utf-8")).toBe(
+      "// worker entry\nexport default { fetch() {} };",
+    );
+    expect(readGeneratedModule(sidecarPath)).toEqual({ lazyChunks: ["assets/lazy.js"] });
   });
 
-  it("App Router (mixed app+pages): injects __VINEXT_CLIENT_ENTRY__ for the Pages fallback entry", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-    // A real mixed app+pages build emits a Pages client entry chunk. Place one
-    // on disk so the (recursive) on-disk fallback resolves it under chunks/.
-    const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+  it("does not let a later server environment overwrite client asset metadata", () => {
+    const outputDir = path.join(tmpDir, "dist", "server");
+    const sidecarPath = path.join(outputDir, "vinext-client-assets.js");
+    const clientModule = buildPagesClientAssetsModule({
+      clientEntry: "_next/static/chunks/index-abcd.js",
+    });
+
+    writePagesClientAssetsModuleIfMissing(outputDir, clientModule);
+    writePagesClientAssetsModuleIfMissing(outputDir, buildPagesClientAssetsModule({}));
+
+    expect(fs.readFileSync(sidecarPath, "utf-8")).toBe(clientModule);
+  });
+
+  it("resolves the Pages client entry for mixed app+pages builds", () => {
+    const clientDir = writeClientBuild(tmpDir, manifestWithLazyChunks);
+    const chunksDir = path.join(clientDir, "_next", "static", "chunks");
     fs.mkdirSync(chunksDir, { recursive: true });
     fs.writeFileSync(path.join(chunksDir, "vinext-client-entry-abcd.js"), "");
 
-    // hasPagesDir = true → includeClientEntry: "pages-client-entry"
-    simulateCloseBundleAppRouter(tmpDir, "/", "", true);
+    const metadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: "pages-client-entry",
+    });
 
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    expect(code).toContain(
-      'globalThis.__VINEXT_CLIENT_ENTRY__ = "_next/static/chunks/vinext-client-entry-abcd.js";',
-    );
+    expect(metadata.clientEntryFile).toBe("_next/static/chunks/vinext-client-entry-abcd.js");
   });
 
-  it("App Router: dynamic preloads avoid double-prefixing a realistic (already-prefixed) manifest", () => {
-    // A real assetPrefix build bakes the prefix into the manifest `file` fields
-    // (build.assetsDir = `<prefix>/_next/static`). Both lazy chunks and dynamic
-    // preloads must then resolve to the SAME single-prefixed URL.
-    const prefixedManifest = {
-      "virtual:vinext-app-browser-entry": {
-        file: "cdn/_next/static/chunks/app-entry-abc.js",
-        isEntry: true,
-        imports: ["node_modules/react/index.js"],
-        dynamicImports: ["src/components/MermaidChart.tsx"],
-      },
-      "node_modules/react/index.js": { file: "cdn/_next/static/chunks/framework-def.js" },
-      "src/components/MermaidChart.tsx": {
-        file: "cdn/_next/static/chunks/mermaid-chart-ghi.js",
-        isDynamicEntry: true,
-      },
-    };
-    setupAppRouterBuildOutput(tmpDir, prefixedManifest);
+  it("does not invent a Pages client entry for a pure App Router build", () => {
+    const clientDir = writeClientBuild(tmpDir, manifestWithLazyChunks);
+    const metadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: false,
+    });
 
-    simulateCloseBundleAppRouter(tmpDir, "/", "/cdn");
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    const lazyChunks = JSON.parse(lazyMatch![1]) as string[];
-    expect(lazyChunks).toEqual(["cdn/_next/static/chunks/mermaid-chart-ghi.js"]);
-    // No `cdn/_next/static/cdn/...` double prefix.
-    expect(code).not.toContain("cdn/_next/static/cdn/");
-    expect(code).toContain(
-      `"src/components/MermaidChart.tsx":["cdn/_next/static/chunks/mermaid-chart-ghi.js"]`,
-    );
-  });
-
-  it("App Router: does NOT inject __VINEXT_CLIENT_ENTRY__", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundleAppRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    // RSC plugin handles client entry via loadBootstrapScriptContent()
-    expect(code).not.toContain("__VINEXT_CLIENT_ENTRY__");
-  });
-
-  it("App Router: injects __VINEXT_SSR_MANIFEST__ when present", () => {
-    const ssrManifest = {
-      "src/app/page.tsx": ["/assets/page.js", "/assets/page.css"],
-    };
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks, ssrManifest);
-
-    simulateCloseBundleAppRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
-    expect(code).toContain("src/app/page.tsx");
-  });
-
-  it("App Router: preserves original worker entry code after injection", () => {
-    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundleAppRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    // Original code should still be present after the injected globals
-    expect(code).toContain("// RSC worker entry");
-    expect(code).toContain("export default { fetch() {} };");
-  });
-
-  it("App Router: skips injection when no lazy chunks and no SSR manifest", () => {
-    // Manifest with only eager (statically imported) chunks
-    const eagerOnlyManifest = {
-      "src/entry.ts": {
-        file: "assets/entry.js",
-        isEntry: true,
-        imports: ["src/utils.ts"],
-      },
-      "src/utils.ts": {
-        file: "assets/utils.js",
-      },
-    };
-    setupAppRouterBuildOutput(tmpDir, eagerOnlyManifest);
-
-    simulateCloseBundleAppRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    // No globals should be injected since there are no lazy chunks, no dynamic
-    // preload entries, and no SSR manifest
-    expect(code).not.toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
-    expect(code).not.toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
-    expect(code).not.toContain("globalThis.__VINEXT_SSR_MANIFEST__");
-    // Original code untouched
-    expect(code).toBe("// RSC worker entry\nexport default { fetch() {} };");
-  });
-
-  it("App Router: handles missing dist/server/index.js gracefully", () => {
-    // Only set up client manifest, no server output
-    fs.mkdirSync(path.join(tmpDir, "dist", "client", ".vite"), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, "dist", "client", ".vite", "manifest.json"),
-      JSON.stringify(manifestWithLazyChunks),
-    );
-
-    // Should not throw
-    expect(() => simulateCloseBundleAppRouter(tmpDir)).not.toThrow();
-  });
-
-  // ── Pages Router tests ────────────────────────────────────────────────
-
-  it("Pages Router: injects all runtime globals into worker entry", () => {
-    const ssrManifest = {
-      "pages/index.tsx": ["/assets/page-index.js", "/assets/page-index.css"],
-    };
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks, ssrManifest);
-
-    simulateCloseBundlePagesRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.__VINEXT_CLIENT_ENTRY__");
-    expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
-    expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
-    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
-  });
-
-  it("Pages Router: injects correct lazy chunks", () => {
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundlePagesRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    const match = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(match).not.toBeNull();
-    const lazyChunks = JSON.parse(match![1]);
-    expect(lazyChunks).toContain("assets/mermaid-chart.js");
-    expect(lazyChunks).toContain("assets/mermaid-vendor.js");
-    expect(lazyChunks).not.toContain("assets/app-entry.js");
-    expect(lazyChunks).not.toContain("assets/framework.js");
-  });
-
-  it("Pages Router: injects __VINEXT_DYNAMIC_PRELOADS__ into worker entry", () => {
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundlePagesRouter(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
-    expect(code).toContain(
-      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
-    );
-  });
-
-  it("Pages Router: prefixes client entry and lazy chunks with basePath", () => {
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundlePagesRouter(tmpDir, "/docs/");
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    expect(code).toContain('globalThis.__VINEXT_CLIENT_ENTRY__ = "docs/assets/app-entry.js";');
-
-    const match = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(match).not.toBeNull();
-    const lazyChunks = JSON.parse(match![1]);
-    expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
-    expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
-    expect(code).toContain(
-      `"src/components/MermaidChart.tsx":["docs/assets/mermaid-chart.js","docs/assets/mermaid-vendor.js"]`,
-    );
-  });
-
-  it("Pages Router: lazy chunks stay base-relative while only dynamic preloads take the assetPrefix", () => {
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundlePagesRouter(tmpDir, "/docs/", "/cdn-prefix");
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
-    expect(lazyMatch).not.toBeNull();
-    const lazyChunks = JSON.parse(lazyMatch![1]);
-    // Pages Router is the actual consumer: lazy chunks MUST stay base-relative so
-    // collectAssetTags' modulepreload-exclusion membership test matches.
-    expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
-    expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
-    expect(lazyChunks).not.toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
-    // Dynamic preloads still take the assetPrefix.
-    expect(code).toContain(
-      `"src/components/MermaidChart.tsx":["cdn-prefix/_next/static/assets/mermaid-chart.js","cdn-prefix/_next/static/assets/mermaid-vendor.js"]`,
-    );
-  });
-
-  it("Pages Router: finds worker entry via wrangler.json directory scan", () => {
-    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
-
-    simulateCloseBundlePagesRouter(tmpDir);
-
-    // Worker entry should have been modified
-    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
-    expect(code).toContain("globalThis.");
-    expect(code).toContain("// Pages Router worker entry");
-  });
-
-  it("Pages Router: skips client dir when no wrangler.json found", () => {
-    // Set up worker dir without wrangler.json
-    const workerDir = path.join(tmpDir, "dist", "worker");
-    fs.mkdirSync(workerDir, { recursive: true });
-    fs.writeFileSync(path.join(workerDir, "index.js"), "// unmodified");
-    fs.mkdirSync(path.join(tmpDir, "dist", "client", ".vite"), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, "dist", "client", ".vite", "manifest.json"),
-      JSON.stringify(manifestWithLazyChunks),
-    );
-
-    simulateCloseBundlePagesRouter(tmpDir);
-
-    // Worker entry should NOT have been modified (no wrangler.json found)
-    const code = fs.readFileSync(path.join(workerDir, "index.js"), "utf-8");
-    expect(code).toBe("// unmodified");
-  });
-
-  // ── Shared behavior tests ─────────────────────────────────────────────
-
-  it("both routers: computeLazyChunks correctly identifies dynamic-only chunks", () => {
-    const lazy = computeLazyChunks(manifestWithLazyChunks);
-    // mermaid-chart.js and mermaid-vendor.js are only reachable via dynamicImports
-    expect(lazy).toContain("assets/mermaid-chart.js");
-    expect(lazy).toContain("assets/mermaid-vendor.js");
-    // app-entry.js (entry) and framework.js (static import) are eager
-    expect(lazy).not.toContain("assets/app-entry.js");
-    expect(lazy).not.toContain("assets/framework.js");
-  });
-
-  it("both routers: mermaid-like deep dynamic chains are fully lazy", () => {
-    // Simulates a real-world case: mermaid imports d3 which imports d3-selection etc.
-    const deepDynamicManifest = {
-      "virtual:vinext-app-browser-entry": {
-        file: "assets/entry.js",
-        isEntry: true,
-        imports: ["node_modules/react/index.js"],
-        dynamicImports: ["src/components/Chart.tsx"],
-      },
-      "node_modules/react/index.js": {
-        file: "assets/framework.js",
-      },
-      "src/components/Chart.tsx": {
-        file: "assets/chart.js",
-        isDynamicEntry: true,
-        imports: ["node_modules/mermaid/dist/mermaid.js"],
-      },
-      "node_modules/mermaid/dist/mermaid.js": {
-        file: "assets/mermaid.js",
-        imports: ["node_modules/d3/src/index.js"],
-      },
-      "node_modules/d3/src/index.js": {
-        file: "assets/d3.js",
-        imports: ["node_modules/d3-selection/src/index.js"],
-      },
-      "node_modules/d3-selection/src/index.js": {
-        file: "assets/d3-selection.js",
-      },
-    };
-
-    const lazy = computeLazyChunks(deepDynamicManifest);
-    // All chunks behind the dynamic boundary should be lazy
-    expect(lazy).toContain("assets/chart.js");
-    expect(lazy).toContain("assets/mermaid.js");
-    expect(lazy).toContain("assets/d3.js");
-    expect(lazy).toContain("assets/d3-selection.js");
-    // Entry and framework are eager
-    expect(lazy).not.toContain("assets/entry.js");
-    expect(lazy).not.toContain("assets/framework.js");
+    expect(metadata.clientEntryFile).toBeUndefined();
   });
 });
-
-// ─── detectPackageManager ────────────────────────────────────────────────────
 
 describe("detectPackageManager", () => {
   it("detects pnpm from pnpm-lock.yaml", () => {
@@ -3251,171 +2801,5 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.kvNamespaceId).toBe("abc123");
-  });
-});
-
-describe("injectPregeneratedConcretePaths", () => {
-  it("second call replaces first injection", () => {
-    const sourceCode = `import { handler } from "vinext/server/app-router-entry";\n`;
-    const manifestA = {
-      buildId: "build-a",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-      ],
-    };
-    const manifestB = {
-      buildId: "build-b",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-b",
-          revalidate: 60,
-        },
-      ],
-    };
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifestA));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const afterA = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(afterA).toContain("post-a");
-    expect(afterA).not.toContain("post-b");
-
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifestB));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const afterB = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(afterB).toContain("post-b");
-    expect(afterB).not.toContain("post-a");
-    expect(afterB).toContain('import { handler } from "vinext/server/app-router-entry"');
-  });
-
-  it("missing manifest strips prior injection", () => {
-    const priorInjection = [
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-      'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-      'import { handler } from "vinext/server/app-router-entry";',
-      "",
-    ].join("\n");
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", priorInjection);
-
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const after = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(after).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(after).toContain('import { handler } from "vinext/server/app-router-entry"');
-  });
-
-  it("excludes fallback-shell placeholder paths from injection", () => {
-    const sourceCode = 'export default { fetch(request) { return new Response("ok"); } };\n';
-    const manifest = {
-      buildId: "test",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/[slug]",
-          revalidate: 60,
-          fallback: true,
-        },
-      ],
-    };
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifest));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const code = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    const match = code.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
-    expect(match).not.toBeNull();
-    const table: unknown = JSON.parse(match![1]);
-    expect(table).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
-  });
-
-  it("hydrates the concrete-path registry when the generated Worker entry is imported", async () => {
-    const registryModuleUrl = pathToFileURL(
-      path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
-    ).href;
-    const sourceCode = [
-      `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
-      "initPregeneratedPathsFromGlobals();",
-      'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
-      'export default { fetch(request) { return new Response("ok"); } };',
-      "",
-    ].join("\n");
-    const manifest = {
-      buildId: "test",
-      routes: [
-        {
-          route: "/blog/:slug",
-          status: "rendered",
-          router: "app",
-          path: "/blog/post-a",
-          revalidate: 60,
-        },
-      ],
-    };
-
-    clearPregeneratedConcretePaths();
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", sourceCode);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", JSON.stringify(manifest));
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const entryUrl = pathToFileURL(path.join(tmpDir, "dist/server/index.js")).href;
-    const workerEntry: unknown = await import(`${entryUrl}?t=${Date.now()}`);
-
-    expect(workerEntry).toMatchObject({
-      renderedPaths: ["/blog/post-a"],
-    });
-  });
-
-  it("corrupt manifest strips prior injection", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const priorInjection = [
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-      'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/",["/"]]];',
-      "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-      'export default { fetch(request) { return new Response("ok"); } };',
-      "",
-    ].join("\n");
-
-    mkdir(tmpDir, "dist/server");
-    writeFile(tmpDir, "dist/server/index.js", priorInjection);
-    writeFile(tmpDir, "dist/server/vinext-prerender.json", "{invalid json}");
-
-    injectPregeneratedConcretePaths(tmpDir);
-
-    const after = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(after).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(after).toContain('export default { fetch(request) { return new Response("ok"); } }');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("[vinext] Failed to read prerender manifest"),
-      expect.any(SyntaxError),
-    );
-    warnSpy.mockRestore();
   });
 });

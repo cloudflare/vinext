@@ -1,0 +1,192 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`init — generated project snapshots > snapshots a fresh Cloudflare App Router init 1`] = `
+"--- .gitignore ---
+/dist/
+.vinext/
+.wrangler/
+
+--- app/layout.tsx ---
+export default function Layout({ children }) { return <html><body>{children}</body></html> }
+
+--- app/page.tsx ---
+export default function Home() { return <div>hi</div> }
+
+--- package.json ---
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "next": "^15.0.0"
+  },
+  "type": "module",
+  "scripts": {
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "vinext build",
+    "start:vinext": "vinext start"
+  }
+}
+
+--- vite.config.ts ---
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      cache: { data: kvDataAdapter() },
+      images: { optimizer: imagesOptimizer() },
+    }),
+    cloudflare({
+      viteEnvironment: {
+        name: "rsc",
+        childEnvironments: ["ssr"],
+      },
+    }),
+  ],
+});
+
+--- wrangler.jsonc ---
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "test-project",
+  "compatibility_date": "2026-06-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "main": "vinext/server/app-router-entry",
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "VINEXT_KV_CACHE",
+      "id": "<your-kv-namespace-id>"
+    }
+  ]
+}"
+`;
+
+exports[`init — generated project snapshots > snapshots a fresh Node Pages Router init 1`] = `
+"--- .gitignore ---
+/dist/
+.vinext/
+
+--- package.json ---
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "next": "^15.0.0"
+  },
+  "type": "module",
+  "scripts": {
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "vinext build",
+    "start:vinext": "vinext start"
+  }
+}
+
+--- pages/index.tsx ---
+export default function Home() { return <div>hi</div> }
+
+--- vite.config.ts ---
+import vinext from "vinext";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [vinext()],
+});"
+`;
+
+exports[`init — generated project snapshots > snapshots an AST update to an existing Vite config 1`] = `
+"--- .gitignore ---
+/dist/
+.vinext/
+.wrangler/
+
+--- app/layout.tsx ---
+export default function Layout({ children }) { return <html><body>{children}</body></html> }
+
+--- app/page.tsx ---
+export default function Home() { return <div>hi</div> }
+
+--- package.json ---
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "next": "^15.0.0"
+  },
+  "type": "module",
+  "scripts": {
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "vinext build",
+    "start:vinext": "vinext start"
+  }
+}
+
+--- vite.config.ts ---
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import custom from "./custom.js";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+import { cloudflare } from "@cloudflare/vite-plugin";
+
+export default defineConfig({
+  plugins: [
+    custom(),
+    vinext({
+      cache: { data: kvDataAdapter() },
+      images: { optimizer: imagesOptimizer() },
+    }),
+    cloudflare({
+      viteEnvironment: {
+        name: "rsc",
+        childEnvironments: ["ssr"],
+      },
+    }),
+  ],
+  server: { port: 4321 },
+});
+
+--- wrangler.jsonc ---
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "test-project",
+  "compatibility_date": "2026-06-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "main": "vinext/server/app-router-entry",
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "VINEXT_KV_CACHE",
+      "id": "<your-kv-namespace-id>"
+    }
+  ]
+}"
+`;

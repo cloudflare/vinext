@@ -6,7 +6,6 @@
  */
 
 import { detectPackageManager, findDir } from "./utils/project.js";
-import { normalizePathSeparators } from "./utils/path.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "node:path";
@@ -184,7 +183,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   headers: { status: "supported" },
   i18n: { status: "supported", detail: "path-prefix routing; domain routing for Pages Router" },
   env: { status: "supported" },
-  images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
+  images: {
+    status: "partial",
+    detail:
+      "remotePatterns validated; on-the-fly optimization via images.optimizer (Cloudflare Images), passthrough otherwise",
+  },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
   output: {
     status: "supported",
@@ -240,6 +243,42 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.cachedNavigations": {
     status: "partial",
     detail: "config recognized; vinext does not implement navigation result caching",
+  },
+  "experimental.middlewarePrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyPrefetch": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.middlewareClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.proxyClientMaxBodySize": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalMiddlewareRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.externalProxyRewritesResolve": {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  "experimental.instrumentationHook": {
+    status: "unsupported",
+    detail: "not recognized; instrumentation files are enabled automatically",
+  },
+  skipMiddlewareUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
+  },
+  skipProxyUrlNormalize: {
+    status: "unsupported",
+    detail: "not recognized; use of this option is ignored",
   },
   "i18n.domains": {
     status: "partial",
@@ -308,6 +347,11 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
 
 /**
  * Recursively find all source files in a directory.
+ *
+ * `dir` must be forward-slash, and the returned paths are forward-slash too:
+ * each entry is joined with `path.posix.join`, which only stays canonical when
+ * the base already is. This keeps downstream substring checks (e.g.
+ * `f.includes("/api/")`) and reported paths consistent across platforms.
  */
 function findSourceFiles(
   dir: string,
@@ -318,10 +362,7 @@ function findSourceFiles(
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
-    // Forward slashes so downstream substring checks (e.g. `f.includes("/api/")`)
-    // and reported paths are consistent across platforms — path.join yields
-    // backslashes on Windows, which would break those checks.
-    const fullPath = normalizePathSeparators(path.join(dir, entry.name));
+    const fullPath = path.posix.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (
         entry.name === "node_modules" ||
@@ -568,6 +609,10 @@ export function hasFreeCjsGlobal(content: string): boolean {
 
 /**
  * Scan source files for `import ... from 'next/...'` statements.
+ *
+ * `root` must be forward-slash: it is passed to `findSourceFiles` (which
+ * requires it) and used as the base of `path.posix.relative`, which only yields
+ * a canonical relative path when both operands are forward-slash.
  */
 export function scanImports(root: string): CheckItem[] {
   const files = findSourceFiles(root);
@@ -596,7 +641,7 @@ export function scanImports(root: string): CheckItem[] {
         // Normalize: next/font/google -> next/font/google
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
-        const relFile = normalizePathSeparators(path.relative(root, file));
+        const relFile = path.posix.relative(root, file);
         const usedInFiles = importUsage.get(normalized) ?? [];
         if (!usedInFiles.includes(relFile)) {
           usedInFiles.push(relFile);
@@ -817,6 +862,9 @@ function collectConfigKeys(source: string): ConfigKeys {
 
 /**
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`. Only called
+ * from `runCheck`, which normalizes it.
  */
 export function analyzeConfig(root: string): CheckItem[] {
   // Mirror the Next.js-compatible set in shims/constants.ts. Accepts both
@@ -831,7 +879,7 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
   let configPath: string | null = null;
   for (const f of configFiles) {
-    const p = path.join(root, f);
+    const p = path.posix.join(root, f);
     if (fs.existsSync(p)) {
       configPath = p;
       break;
@@ -870,6 +918,8 @@ export function analyzeConfig(root: string): CheckItem[] {
     "webpack",
     "reactStrictMode",
     "poweredByHeader",
+    "skipMiddlewareUrlNormalize",
+    "skipProxyUrlNormalize",
   ];
 
   for (const opt of configOptions) {
@@ -900,9 +950,12 @@ export function analyzeConfig(root: string): CheckItem[] {
 
 /**
  * Check package.json dependencies for known libraries.
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`. Only called
+ * from `runCheck`, which normalizes it.
  */
 export function checkLibraries(root: string): CheckItem[] {
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
 
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -927,24 +980,27 @@ export function checkLibraries(root: string): CheckItem[] {
 
 /**
  * Check file conventions (pages, app directory, middleware, etc.)
+ *
+ * `root` must be forward-slash — joined with `path.posix.join`, passed to
+ * `findDir`, and used as the base of `path.posix.relative`. Only called from
+ * `runCheck`, which normalizes it.
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
 
   // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = findDir(root, "pages", path.join("src", "pages"));
-  const appDirPath = findDir(root, "app", path.join("src", "app"));
+  const pagesDir = findDir(root, "pages", "src/pages");
+  const appDirPath = findDir(root, "app", "src/app");
 
-  const hasPages = pagesDir !== null;
-  const hasApp = appDirPath !== null;
   const hasProxy =
-    fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
+    fs.existsSync(path.posix.join(root, "proxy.ts")) ||
+    fs.existsSync(path.posix.join(root, "proxy.js"));
   const hasMiddleware =
-    fs.existsSync(path.join(root, "middleware.ts")) ||
-    fs.existsSync(path.join(root, "middleware.js"));
+    fs.existsSync(path.posix.join(root, "middleware.ts")) ||
+    fs.existsSync(path.posix.join(root, "middleware.js"));
 
   if (pagesDir !== null) {
-    const isSrc = pagesDir.includes(path.join("src", "pages"));
+    const isSrc = pagesDir.includes("src/pages");
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
@@ -975,7 +1031,7 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   if (appDirPath !== null) {
-    const isSrc = appDirPath.includes(path.join("src", "app"));
+    const isSrc = appDirPath.includes("src/app");
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
@@ -1009,7 +1065,7 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
   }
 
-  if (!hasPages && !hasApp) {
+  if (pagesDir === null && appDirPath === null) {
     items.push({
       name: "No pages/ or app/ directory found",
       status: "unsupported",
@@ -1018,7 +1074,7 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   // Check for "type": "module" in package.json
-  const pkgPath = path.join(root, "package.json");
+  const pkgPath = path.posix.join(root, "package.json");
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
     if (pkg.type !== "module") {
@@ -1043,7 +1099,7 @@ export function checkConventions(root: string): CheckItem[] {
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
-    const rel = normalizePathSeparators(path.relative(root, file));
+    const rel = path.posix.relative(root, file);
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);
@@ -1066,7 +1122,7 @@ export function checkConventions(root: string): CheckItem[] {
   // Check PostCSS config for string-form plugins
   const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
   for (const configFile of postcssConfigs) {
-    const configPath = path.join(root, configFile);
+    const configPath = path.posix.join(root, configFile);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf-8");
       // Detect string-form plugins where the first array element is a bare string
@@ -1111,6 +1167,10 @@ export function checkConventions(root: string): CheckItem[] {
 
 /**
  * Run the full compatibility check.
+ *
+ * `root` must be forward-slash — callers normalize it at the CLI entry, and it
+ * is forwarded to `scanImports` / `checkConventions` / `findDir`, which build
+ * paths with `path.posix.*`.
  */
 export function runCheck(root: string): CheckResult {
   const imports = scanImports(root);

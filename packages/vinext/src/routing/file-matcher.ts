@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
 import { escapeRegExp } from "../utils/regex.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -91,6 +92,9 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
+ *
+ * `dir` must be forward-slash. The returned path is built with `path.posix.join`,
+ * so it is forward-slash too.
  */
 export function findFileWithExts(
   dir: string,
@@ -163,6 +167,11 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
 
 /**
  * Use function-form exclude for Node < 22.14 compatibility.
+ *
+ * Yields forward-slash relative paths: node's glob emits native (backslash)
+ * separators on Windows, so each match is normalized — this is the entry point
+ * that lets downstream consumers treat the scanned paths as canonical
+ * forward-slash ids.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -175,6 +184,6 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield file;
+    yield normalizePathSeparators(file);
   }
 }

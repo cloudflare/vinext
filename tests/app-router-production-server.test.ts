@@ -5,6 +5,10 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  getPagesClientAssets,
+  setPagesClientAssets,
+} from "../packages/vinext/src/server/pages-client-assets.js";
 import { APP_FIXTURE_DIR } from "./helpers.js";
 
 function getStylesheetHrefs(html: string): string[] {
@@ -247,6 +251,50 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain("<script");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("contains dynamic = 'error' failures without terminating later App Router requests", async () => {
+    const errorRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-dynamic-error/static-bailout-1`,
+    );
+    expect(errorRes.status).toBe(500);
+
+    const forceStaticRes = await fetch(
+      `${baseUrl}/nextjs-compat/app-static-force-static/static-bailout-1`,
+      {
+        headers: {
+          cookie: "app-static-dynamic=hidden",
+          "x-app-static": "hidden",
+        },
+      },
+    );
+    expect(forceStaticRes.status).toBe(200);
+    const forceStaticHtml = await forceStaticRes.text();
+    expect(forceStaticHtml).toContain("/nextjs-compat/app-static-force-static");
+    expect(forceStaticHtml).toContain("static-bailout-1");
+    expect(forceStaticHtml).toContain('<p id="headers">[]</p>');
+    expect(forceStaticHtml).toContain('<p id="cookies">[]</p>');
+
+    const homeRes = await fetch(`${baseUrl}/`);
+    expect(homeRes.status).toBe(200);
+    expect(await homeRes.text()).toContain("Welcome to App Router");
+  });
+
+  // Next.js v16.2.6 only selects NOT_FOUND fallback when dynamicParams is explicitly false:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/static-paths/app.ts
+  it("matches dynamic = 'error' dynamicParams admission semantics", async () => {
+    for (const route of ["dynamic-error", "dynamic-error-true"]) {
+      const unknown = await fetch(`${baseUrl}/layout-segment-config/${route}/unknown`);
+      expect(unknown.status).toBe(200);
+    }
+
+    const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/known`);
+    expect(known.status).toBe(200);
+
+    const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/unknown`);
+    expect(unknown.status).toBe(404);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
   //
@@ -471,11 +519,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -557,6 +602,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -575,11 +621,8 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -658,6 +701,7 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);
@@ -787,6 +831,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toHaveProperty("message");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  it("lets route handlers synchronously catch updateTag errors without crashing", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/update-tag-error`);
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("updateTag can only be called from within a Server Action"),
+    });
+
+    const healthRes = await fetch(`${baseUrl}/api/hello`);
+    expect(healthRes.status).toBe(200);
   });
 
   it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {
@@ -1063,11 +1120,8 @@ describe("App Router Production server (startProdServer)", () => {
       const fixtureRoot = path.join(tmpDir, "fixture");
       const ccOutDir = path.join(fixtureRoot, "dist");
       let ccServer: import("node:http").Server | undefined;
+      const previousPagesClientAssets = getPagesClientAssets();
       const prodGlobalKeys = [
-        "__VINEXT_CLIENT_ENTRY__",
-        "__VINEXT_DYNAMIC_PRELOADS__",
-        "__VINEXT_LAZY_CHUNKS__",
-        "__VINEXT_SSR_MANIFEST__",
         "__vite_rsc_client_require__",
         "__vite_rsc_require__",
         "__vite_rsc_server_require__",
@@ -1140,6 +1194,7 @@ describe("App Router Production server (startProdServer)", () => {
       } finally {
         delete process.env.__NEXT_CACHE_COMPONENTS;
         ccServer?.close();
+        setPagesClientAssets(previousPagesClientAssets);
         for (const [key, previous] of previousGlobals) {
           if (previous.exists) {
             Reflect.set(globalThis, key, previous.value);
@@ -1586,11 +1641,8 @@ describe("App Router production server entry module identity", () => {
     const outDir = path.join(fixtureRoot, "dist");
     let server: import("node:http").Server | undefined;
     const EVAL_COUNT_KEY = "__vinext_test_entry_evaluations__";
+    const previousPagesClientAssets = getPagesClientAssets();
     const prodGlobalKeys = [
-      "__VINEXT_CLIENT_ENTRY__",
-      "__VINEXT_DYNAMIC_PRELOADS__",
-      "__VINEXT_LAZY_CHUNKS__",
-      "__VINEXT_SSR_MANIFEST__",
       "__vite_rsc_client_require__",
       "__vite_rsc_require__",
       "__vite_rsc_server_require__",
@@ -1683,6 +1735,7 @@ describe("App Router production server entry module identity", () => {
     } finally {
       server?.close();
       Reflect.deleteProperty(globalThis, EVAL_COUNT_KEY);
+      setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
         if (previous.exists) {
           Reflect.set(globalThis, key, previous.value);

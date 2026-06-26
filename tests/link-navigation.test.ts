@@ -383,6 +383,85 @@ afterEach(() => {
 });
 
 describe("Link App Router navigation scheduling", () => {
+  it.each([
+    { locationMethod: "assign" as const, replace: false },
+    { locationMethod: "replace" as const, replace: true },
+  ])(
+    "uses document navigation in App-only builds when replace=$replace",
+    async ({ replace, locationMethod }) => {
+      const previousHasPagesRouter = process.env.__VINEXT_HAS_PAGES_ROUTER;
+      process.env.__VINEXT_HAS_PAGES_ROUTER = "false";
+      vi.resetModules();
+
+      try {
+        let capturedAnchorProps: CapturedAnchorProps | undefined;
+        mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({
+          captureAnchor(type, props) {
+            if (type === "a" && props !== null && typeof props === "object") {
+              capturedAnchorProps = props;
+            }
+          },
+        });
+
+        const pushState = vi.fn();
+        const replaceState = vi.fn();
+        const dispatchEvent = vi.fn();
+        const locationAssign = vi.fn();
+        const locationReplace = vi.fn();
+        vi.stubGlobal("window", {
+          addEventListener: vi.fn(),
+          dispatchEvent,
+          history: { pushState, replaceState },
+          location: {
+            assign: locationAssign,
+            href: "https://example.com/current",
+            origin: "https://example.com",
+            replace: locationReplace,
+          },
+          scrollTo: vi.fn(),
+        });
+
+        const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+        const React = await vi.importActual<typeof import("react")>("react");
+        ReactDOMServer.renderToString(
+          React.createElement(
+            IsolatedLink,
+            { href: "/target", prefetch: false, replace },
+            "target",
+          ),
+        );
+
+        const onClick = capturedAnchorProps?.onClick;
+        if (onClick === undefined) {
+          throw new Error("Expected rendered Link anchor to expose an onClick handler");
+        }
+        const clickEvent = {
+          button: 0,
+          currentTarget: { hasAttribute: () => false, target: "" },
+          defaultPrevented: false,
+          preventDefault() {
+            this.defaultPrevented = true;
+          },
+        };
+        await onClick(clickEvent);
+
+        expect(clickEvent.defaultPrevented).toBe(true);
+        expect(
+          { assign: locationAssign, replace: locationReplace }[locationMethod],
+        ).toHaveBeenCalledWith("/target");
+        expect(pushState).not.toHaveBeenCalled();
+        expect(replaceState).not.toHaveBeenCalled();
+        expect(dispatchEvent).not.toHaveBeenCalled();
+      } finally {
+        if (previousHasPagesRouter === undefined) {
+          delete process.env.__VINEXT_HAS_PAGES_ROUTER;
+        } else {
+          process.env.__VINEXT_HAS_PAGES_ROUTER = previousHasPagesRouter;
+        }
+      }
+    },
+  );
+
   it("clicking an RSC Link starts app-router navigation inside a React transition", async () => {
     vi.resetModules();
 
@@ -1228,6 +1307,115 @@ describe("Link prefetch scheduling", () => {
       );
     } finally {
       result.restoreNodeEnv();
+    }
+  });
+
+  it("does not prefetch visible or hovered links for a bot user agent", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch/prefetching.test.ts
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        navigator: {
+          userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        },
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("preserves Pages Router viewport, explicit, and intent prefetches for a bot user agent", async () => {
+    const botWindowOverrides = {
+      __NEXT_DATA__: {
+        __vinext: {
+          pageModuleUrl: "/_next/static/chunks/pages/current.js",
+        },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    };
+
+    const defaultViewportObserver = stubIntersectionObserver();
+    const defaultViewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-default-viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      defaultViewportObserver.dispatchIntersectingEntry(defaultViewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(defaultViewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-default-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      defaultViewportResult.restoreNodeEnv();
+    }
+
+    const explicitViewportObserver = stubIntersectionObserver();
+    const viewportResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-explicit-viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      explicitViewportObserver.dispatchIntersectingEntry(viewportResult.anchor);
+      await flushPrefetchTasks();
+
+      expect(viewportResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-explicit-viewport-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      viewportResult.restoreNodeEnv();
+    }
+
+    const intentResult = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-bot-intent-prefetch-target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: botWindowOverrides,
+    });
+
+    try {
+      intentResult.capturedAnchorProps.onMouseEnter?.({ currentTarget: intentResult.anchor });
+      await flushPrefetchTasks();
+
+      expect(intentResult.pagePrefetchLinks).toEqual([
+        {
+          as: "document",
+          href: "/pages-bot-intent-prefetch-target",
+          rel: "prefetch",
+        },
+      ]);
+    } finally {
+      intentResult.restoreNodeEnv();
     }
   });
 

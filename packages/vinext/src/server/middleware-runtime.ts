@@ -321,6 +321,12 @@ export async function executeMiddleware(
     options.trailingSlash,
     hadBasePath,
   );
+  if (options.isDataRequest) {
+    Object.defineProperty(nextRequest, "__isData", {
+      enumerable: false,
+      value: true,
+    });
+  }
   const fetchEvent = new NextFetchEvent({ page: removeTrailingSlash(matchPathname) });
 
   let response: Response | undefined | void;

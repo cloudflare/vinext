@@ -98,4 +98,19 @@ test.describe("interception-dynamic-single-segment", () => {
     await expect(page.locator("#modal")).toContainText("Modal: New User Form");
     await expect(page.locator("#children")).toContainText("Admin Dashboard - Users");
   });
+
+  test("prefers a nested static interception over a broad dynamic interception", async ({
+    page,
+  }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    // https://github.com/vercel/next.js/blob/ee6e79b1792a4d401ddf2480f40a83549fe8e722/test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
+    await page.goto(`${BASE}/interception-dyn-single`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#nested-static-link");
+
+    await expect(page.locator("#modal")).toContainText("Modal: Nested static interception");
+    await expect(page.locator("#modal")).not.toContainText("Modal: Dynamic fallback");
+  });
 });

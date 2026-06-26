@@ -56,6 +56,7 @@ import {
   isAbsoluteAssetPrefix,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
+import { setPagesClientAssets } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -398,8 +399,11 @@ function installClientBuildManifestGlobals(
   assetPrefix: string,
 ): void {
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 }
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
@@ -439,7 +443,7 @@ function logProdServerStarted(host: string, port: number, purpose: ProdServerOpt
  * arguments in (headers, response) order. The request path now calls
  * `runPagesRequest`, which uses `mergeHeaders` directly; this wrapper is retained
  * only for its existing tests and any external callers, so there is a single
- * implementation to keep in sync. (deploy.ts still emits its own generated copy.)
+ * implementation to keep in sync. The init-owned Cloudflare Worker template delegates here.
  */
 function mergeWebResponse(
   middlewareHeaders: Record<string, string | string[]>,
@@ -1144,16 +1148,13 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
   return parsed;
 }
 
-function installPagesClientAssetGlobals(options: {
+function installPagesClientAssets(options: {
   clientDir: string;
   assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
 }): Record<string, string[]> {
   const ssrManifest = readSsrManifest(options.clientDir);
-  globalThis.__VINEXT_SSR_MANIFEST__ =
-    Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
-
   const metadata = computeClientRuntimeMetadata({
     clientDir: options.clientDir,
     assetBase: options.assetBase,
@@ -1162,9 +1163,13 @@ function installPagesClientAssetGlobals(options: {
       options.clientEntryLookup === "pages-client-entry" ? "pages-client-entry" : true,
   });
 
-  globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;
-  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+  setPagesClientAssets({
+    clientEntry: metadata.clientEntryFile,
+    appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
+    ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
+    lazyChunks: metadata.lazyChunks,
+    dynamicPreloads: metadata.dynamicPreloads,
+  });
 
   return ssrManifest;
 }
@@ -1189,18 +1194,6 @@ function installPagesClientAssetGlobals(options: {
 async function startAppRouterServer(options: AppRouterServerOptions) {
   const { port, host, clientDir, rscEntryPath, compress, purpose } = options;
 
-  // Load image config written at build time by vinext:image-config plugin.
-  // This provides SVG/security header settings for the image optimization endpoint.
-  let imageConfig: ImageConfig | undefined;
-  const imageConfigPath = path.join(path.dirname(rscEntryPath), "image-config.json");
-  if (fs.existsSync(imageConfigPath)) {
-    try {
-      imageConfig = JSON.parse(fs.readFileSync(imageConfigPath, "utf-8"));
-    } catch {
-      /* ignore parse errors */
-    }
-  }
-
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
   const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
@@ -1224,6 +1217,23 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
+  const appImageAllowedWidths: number[] = Array.isArray(rscModule.__imageAllowedWidths)
+    ? rscModule.__imageAllowedWidths
+    : [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+  let imageConfig: ImageConfig | undefined =
+    typeof rscModule.__imageConfig === "object" && rscModule.__imageConfig !== null
+      ? (rscModule.__imageConfig as ImageConfig)
+      : undefined;
+  if (imageConfig === undefined) {
+    const imageConfigPath = path.join(path.dirname(rscEntryPath), "image-config.json");
+    if (fs.existsSync(imageConfigPath)) {
+      try {
+        imageConfig = JSON.parse(fs.readFileSync(imageConfigPath, "utf-8"));
+      } catch {
+        /* Older or malformed build sidecar: fall back to defaults. */
+      }
+    }
+  }
   globalThis.__VINEXT_INLINE_CSS__ = appRouterInlineCss
     ? collectInlineCssManifest(clientDir, appRouterAssetPrefix)
     : undefined;
@@ -1234,7 +1244,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
   const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
   if (appRouterHasPagesDir) {
-    installPagesClientAssetGlobals({
+    installPagesClientAssets({
       clientDir,
       assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
@@ -1318,10 +1328,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // Cloudflare's ASSETS binding serves these directly in Workers; this
     // branch is the Node fallback.
     //
-    // Asset-shaped requests that don't find a file return a plain-text 404
-    // instead of falling through to the RSC handler (which would render
-    // the full HTML 404 page). Matches Next.js's behaviour in
-    // packages/next/src/server/lib/router-server.ts.
+    // Existing build assets bypass middleware. Missing asset-shaped requests
+    // must still reach middleware so it can rewrite or respond; if routing
+    // ultimately returns 404, convert it back to the canonical plain-text
+    // static-file response below.
+    let missingBuildAsset = false;
     {
       const assetLookupPath = resolveAppRouterAssetPath(
         pathname,
@@ -1332,9 +1343,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
         }
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
-        return;
+        missingBuildAsset = true;
       }
     }
 
@@ -1342,11 +1351,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // serves the original file with cache headers and security headers)
     if (isImageOptimizationPath(pathname)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const allowedWidths = [
-        ...(imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-        ...(imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-      ];
-      const params = parseImageParams(parsedUrl, allowedWidths, imageConfig?.qualities);
+      const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
@@ -1432,6 +1437,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           res,
           compress,
         );
+        return;
+      }
+
+      if (missingBuildAsset && response.status === 404) {
+        cancelResponseBody(response);
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
         return;
       }
 
@@ -1523,6 +1535,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   } = serverEntry;
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
+  const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
@@ -1565,7 +1578,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Load client asset metadata used by the Pages renderer. Prerendered HTML is
   // rendered through this Node server too, so it needs the same globals that
   // Cloudflare builds inject into the Worker entry at build time.
-  const ssrManifest = installPagesClientAssetGlobals({
+  const ssrManifest = installPagesClientAssets({
     clientDir,
     assetPrefix,
     assetBase,
@@ -1659,19 +1672,17 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // `staticLookupPath` is still computed because non-asset paths below
     // (image-optimization, SSR routing) match against the basePath-stripped form.
     //
-    // Asset-shaped requests that don't find a file return a plain-text 404
-    // instead of falling through to the SSR/render handler (which would
-    // render the full HTML 404 page). Matches Next.js's behaviour in
-    // packages/next/src/server/lib/router-server.ts.
+    // Existing build assets bypass middleware. Missing asset-shaped requests
+    // must still reach middleware so it can rewrite or respond; if routing
+    // ultimately returns 404, convert it back to the canonical plain-text
+    // static-file response below.
     const staticLookupPath = stripBasePath(pathname, basePath);
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
+    const missingBuildAsset = pagesAssetLookup !== null;
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;
       }
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
-      return;
     }
 
     // ── Image optimization passthrough ──────────────────────────────
@@ -1789,6 +1800,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         hadBasePath,
         isDataReq,
         isDataRequest,
+        hasMiddleware,
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
@@ -1856,6 +1868,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       if (result.type === "response") {
         const { response } = result;
+        if (missingBuildAsset && response.status === 404) {
+          cancelResponseBody(response);
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not Found");
+          return;
+        }
         const shouldStream = isVinextStreamedHtmlResponse(response);
         // Passthrough responses (middleware short-circuits, external proxies, redirects)
         // carry no defaultContentType — send them verbatim without injecting a

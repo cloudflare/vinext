@@ -69,38 +69,14 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
-  "next-form-parity-dev": {
-    testDir: "./tests/e2e/next-form-parity",
-    use: { baseURL: "http://localhost:4192" },
-    server: {
-      command:
-        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && vp dev --port 4192",
-      cwd: "./tests/fixtures/next-form-parity",
-      port: 4192,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-    },
-  },
-  "next-form-parity-prod": {
-    testDir: "./tests/e2e/next-form-parity",
-    use: { baseURL: "http://localhost:4191" },
-    server: {
-      command:
-        "(test -e node_modules || test -L node_modules || ln -s ../app-basic/node_modules node_modules) && ./start-prod.sh",
-      cwd: "./tests/fixtures/next-form-parity",
-      port: 4191,
-      reuseExistingServer: !process.env.CI,
-      timeout: 60_000,
-    },
-  },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
-    use: { baseURL: "http://localhost:4193" },
+    use: { baseURL: "http://localhost:4185" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4193",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
       cwd: "./tests/fixtures/global-not-found-basic",
-      port: 4193,
+      port: 4185,
       reuseExistingServer: false,
       timeout: 60_000,
     },
@@ -226,9 +202,11 @@ const projectServers = {
     use: { baseURL: "http://localhost:4182" },
     server: {
       // Build vinext CLI, then build the fixture, then start the standalone
-      // server. The standalone server.js reads PORT from the environment.
+      // server from an isolated temp directory. Moving it outside the repo
+      // prevents Node from resolving missing externals from workspace
+      // node_modules and verifies the standalone package is self-contained.
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
+        'npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && standalone_dir="$(mktemp -d)" && cp -R dist/standalone/. "$standalone_dir" && PORT=4182 node "$standalone_dir/server.js"',
       cwd: "./tests/fixtures/standalone-output",
       port: 4182,
       reuseExistingServer: !process.env.CI,

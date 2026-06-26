@@ -2,8 +2,8 @@ import type { Plugin } from "vite";
 import { normalizePathSeparators } from "../utils/path.js";
 
 /**
- * Allow `import 'server-only'` from middleware (and any module reachable
- * from middleware) in the SSR environment.
+ * Allow `import 'server-only'` from neutral server targets (and any module
+ * reachable from them) in the SSR environment.
  *
  * Background: middleware runs server-side, so importing `server-only` is
  * semantically correct. However, vinext bundles middleware into the SSR
@@ -13,9 +13,9 @@ import { normalizePathSeparators } from "../utils/path.js";
  *
  *   'server-only' cannot be imported in client build ('ssr' environment)
  *
- * Next.js solves this with webpack `issuerLayer` rules: middleware (and
- * `instrumentation`) sit in the `neutralTarget` layer where `server-only`
- * is aliased to a no-op while `client-only` still errors. See
+ * Next.js solves this with webpack `issuerLayer` rules: middleware,
+ * instrumentation, and Pages API routes sit in server-only or neutral layers
+ * where `server-only` is aliased to a no-op while `client-only` still errors. See
  *   packages/next/src/build/webpack-config.ts ("Alias server-only and
  *   client-only to proper exports based on bundling layers")
  *
@@ -23,7 +23,8 @@ import { normalizePathSeparators } from "../utils/path.js";
  * the behavior with import-chain taint tracking:
  *
  *   1. Seed a `tainted` set with the middleware entry path (and its
- *      canonical realpath).
+ *      canonical realpath), and recognize other neutral server entry modules
+ *      such as Pages API routes through `isNeutralServerModule`.
  *   2. For every resolveId call from a tainted importer, resolve the import
  *      via `this.resolve(..., { skipSelf: true })` and add the resolved id
  *      to the tainted set. This propagates the taint along the import graph
@@ -47,6 +48,7 @@ import { normalizePathSeparators } from "../utils/path.js";
 export function createMiddlewareServerOnlyPlugin(options: {
   getMiddlewarePath: () => string | null;
   getCanonicalMiddlewarePath: () => string | null;
+  isNeutralServerModule?: (id: string) => boolean;
   serverOnlyShimPath: string;
 }): Plugin {
   // Tracks module IDs reachable from the middleware entry. The set is
@@ -113,7 +115,9 @@ export function createMiddlewareServerOnlyPlugin(options: {
         // and plugin-rsc's validator allows it there.
         if (this.environment?.name === "rsc") return;
         if (!importer) return;
-        if (!isTainted(importer)) return;
+        if (!isTainted(importer) && !options.isNeutralServerModule?.(canonicalizeId(importer))) {
+          return;
+        }
 
         // server-only from a tainted importer → swap in the no-op shim
         // path before plugin-rsc's pre-resolveId can claim it as the

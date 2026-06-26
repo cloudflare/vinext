@@ -153,8 +153,18 @@ export function createRscOnErrorHandler(
       return String(error.digest);
     }
 
-    if (nodeEnv === "production" && error) {
-      return errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+    if (error) {
+      const digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+      if (error instanceof Error) {
+        try {
+          Object.assign(error, { digest });
+        } catch {
+          // Digest attachment is best-effort. User code can throw frozen or
+          // otherwise non-extensible Error instances, and the onError handler
+          // must not replace the original failure with a mutation TypeError.
+        }
+      }
+      return digest;
     }
 
     return undefined;

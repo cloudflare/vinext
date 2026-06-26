@@ -4,6 +4,8 @@
  * The default export is the request handler. Named exports `__assetPrefix`
  * and `__basePath` are inlined string literals from next.config, while
  * `__hasPagesDir` exposes whether the build includes a Pages Router surface.
+ * `__imageAllowedWidths` / `__imageConfig` carry the next.config `images`
+ * settings so the Cloudflare worker entry can run `/_next/image` optimization.
  * See `entries/app-rsc-entry.ts` for the generator that emits these.
  */
 declare module "virtual:vinext-rsc-entry" {
@@ -15,4 +17,12 @@ declare module "virtual:vinext-rsc-entry" {
   export const __assetPrefix: string;
   export const __basePath: string;
   export const __hasPagesDir: boolean;
+  export const __imageAllowedWidths: number[];
+  export const __imageConfig: {
+    qualities?: number[];
+    dangerouslyAllowSVG?: boolean;
+    dangerouslyAllowLocalIP?: boolean;
+    contentDispositionType?: "inline" | "attachment";
+    contentSecurityPolicy?: string;
+  };
 }

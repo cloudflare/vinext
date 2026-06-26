@@ -31,6 +31,7 @@ import {
 } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
@@ -200,6 +201,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+      expect(result.environments.ssr.resolve.external).toContain("typescript");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
+      expect(result.resolve.alias["vinext/server/pages-client-assets"]).toMatch(
+        /server\/pages-client-assets\.ts$/,
+      );
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -318,6 +324,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
       for (const shimExclude of rscClientShimExcludes) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
@@ -810,6 +817,7 @@ describe("treeshake config integration", () => {
 
       // treeshake should NOT be set for SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.ssr.external).toContain("typescript");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -827,8 +835,7 @@ describe("treeshake config integration", () => {
     );
     const clientAssetsDefaultsPlugin = plugins.find(
       (p: any) =>
-        p.name === "vinext:client-css-url-assets-defaults" &&
-        typeof p.configEnvironment === "function",
+        p.name === "vinext:css-url-assets-defaults" && typeof p.configEnvironment === "function",
     );
     expect(mainPlugin).toBeDefined();
     expect(clientAssetsDefaultsPlugin).toBeDefined();
@@ -886,6 +893,39 @@ describe("treeshake config integration", () => {
       });
       expect(
         (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+            },
+          },
+        },
+      });
+      const customAssetFileNames = "custom/[name][extname]";
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: { output: { assetFileNames: customAssetFileNames } },
+            },
+          },
+          { command: "build" },
+        ),
+      ).toBeNull();
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: {
+                output: [{ entryFileNames: "first.js" }, { chunkFileNames: "second.js" }],
+              },
+            },
+          },
+          { command: "build" },
+        ),
       ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -2101,14 +2141,11 @@ describe("collectAssetTags lazy chunk filtering", () => {
   // Drive the REAL exported `collectAssetTags` (server/pages-asset-tags.ts) so
   // these tests can't drift from production. The thin adapter keeps the original
   // `(ssrManifestFiles, lazyChunks) -> string[]` shape: it wires the lazy set
-  // through the `globalThis.__VINEXT_LAZY_CHUNKS__` global the function actually
-  // reads, feeds the files as a single page module, and disables optimized
+  // through the runtime asset registry the function actually reads, feeds the
+  // files as a single page module, and disables optimized
   // loading (no `defer`) to match the legacy assertions.
   function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
-    const prevLazy = globalThis.__VINEXT_LAZY_CHUNKS__;
-    const prevEntry = globalThis.__VINEXT_CLIENT_ENTRY__;
-    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-    delete globalThis.__VINEXT_CLIENT_ENTRY__;
+    setPagesClientAssets({ lazyChunks });
     try {
       const html = collectAssetTags({
         manifest: { "page.js": ssrManifestFiles },
@@ -2117,9 +2154,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
       });
       return html ? html.split("\n  ") : [];
     } finally {
-      if (prevLazy === undefined) delete globalThis.__VINEXT_LAZY_CHUNKS__;
-      else globalThis.__VINEXT_LAZY_CHUNKS__ = prevLazy;
-      if (prevEntry !== undefined) globalThis.__VINEXT_CLIENT_ENTRY__ = prevEntry;
+      setPagesClientAssets(undefined);
     }
   }
 
@@ -2299,7 +2334,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
   });
 
   it("deduplicates entries when SSR manifest has leading slashes and client entry does not", () => {
-    // The client entry (from __VINEXT_CLIENT_ENTRY__) uses values without
+    // The client entry from the Pages client asset descriptor uses values without
     // leading slashes ("assets/entry.js"), while SSR manifest values have
     // them ("/assets/entry.js"). After normalization, both should resolve
     // to the same key and the entry should appear only once.

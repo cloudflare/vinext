@@ -202,6 +202,8 @@ import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReady
 import { _runWithCacheState } from "vinext/shims/cache-request-state";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import "vinext/router-state";
@@ -238,7 +240,7 @@ export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(request, buildId);
 }
-const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
+export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -345,6 +347,7 @@ export function matchApiRoute(url, request) {
 // All next/*-derived values are passed as closures so the handler module
 // stays importable in test environments (the root vite.config.ts only
 // aliases vinext/shims/*, not next/*).
+__setPagesClientAssets(__pagesClientAssets);
 const _renderPage = __createPagesPageHandler({
   pageRoutes,
   errorPageRoute: _errorPageRoute,
@@ -360,7 +363,7 @@ const _renderPage = __createPagesPageHandler({
     disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
   },
   buildId,
-  hasMiddleware: __hasMiddleware,
+  hasMiddleware,
   appAssetPath: _appAssetPath,
   hasRewrites:
     vinextConfig.rewrites.beforeFiles.length > 0 ||

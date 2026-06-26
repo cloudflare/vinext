@@ -39,6 +39,7 @@ import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -100,6 +101,7 @@ export type PagesPipelineDeps = {
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
+  hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
@@ -109,7 +111,10 @@ export type PagesPipelineDeps = {
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?:
-    | ((pathname: string, request: Request) => { route: { isDynamic: boolean } } | null)
+    | ((
+        pathname: string,
+        request: Request,
+      ) => { route: { isDynamic: boolean; pattern?: string } } | null)
     | null;
   runMiddleware?:
     | ((
@@ -417,6 +422,17 @@ export async function runPagesRequest(
 
   const matchResolvedPathname = (p: string): string =>
     i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+  const matchedPathnameForRoute = (routePattern: string | undefined): string => {
+    const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
+    if (!i18nConfig) return matchedPathname;
+    const resolvedLocale = resolvedPathname.split("/", 3)[1];
+    if (resolvedLocale && i18nConfig.locales.includes(resolvedLocale)) {
+      return matchedPathname === "/"
+        ? `/${resolvedLocale}`
+        : `/${resolvedLocale}${matchedPathname}`;
+    }
+    return matchResolvedPathname(matchedPathname);
+  };
 
   // Step 7: Config headers staging
   if (configHeaders.length) {
@@ -656,6 +672,9 @@ export async function runPagesRequest(
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
         if (fallbackApiResult) return fallbackApiResult;
+        renderPageMatch = deps.matchPageRoute
+          ? deps.matchPageRoute(resolvedPathname, request)
+          : null;
         response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
@@ -667,7 +686,34 @@ export async function runPagesRequest(
       response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
     }
 
-    const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+    const matchedPathHeaders = { ...middlewareHeaders };
+    if (
+      (isDataReq || isDataRequest) &&
+      deps.hasMiddleware &&
+      !renderPageMatch &&
+      response.status === 404 &&
+      (middlewareStatus === undefined || middlewareStatus === 200 || middlewareStatus === 404)
+    ) {
+      const headers = new Headers(response.headers);
+      headers.set("content-type", "application/json");
+      headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
+      const notFoundResponse = new Response("{}", { status: 200, headers });
+      return {
+        type: "response",
+        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        defaultContentType: "application/json",
+      };
+    }
+    if (
+      (isDataReq || isDataRequest) &&
+      renderPageMatch &&
+      (middlewareStatus ?? response.status) === 200
+    ) {
+      matchedPathHeaders["x-nextjs-matched-path"] = matchedPathnameForRoute(
+        renderPageMatch?.route.pattern,
+      );
+    }
+    const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.

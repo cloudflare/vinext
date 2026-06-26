@@ -1,4 +1,4 @@
-const isWindows = process.platform === "win32";
+export const isWindows = process.platform === "win32";
 
 /**
  * Convert Windows-style backslash path separators to forward slashes.
