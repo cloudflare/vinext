@@ -179,8 +179,11 @@ for (const clickMode of ["playwright", "javascript"] as const) {
       await expect(page).toHaveURL(`${app.baseUrl}/css-module/0`);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
     } finally {
-      await app.server.close();
-      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      try {
+        await stopChildProductionServer(app.server);
+      } finally {
+        await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      }
     }
   });
 }
