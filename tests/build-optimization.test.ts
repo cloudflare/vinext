@@ -203,6 +203,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
       expect(result.environments.ssr.resolve.external).toContain("typescript");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
+      expect(result.resolve.alias["vinext/server/pages-client-assets"]).toMatch(
+        /server\/pages-client-assets\.ts$/,
+      );
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

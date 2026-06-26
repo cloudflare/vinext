@@ -610,15 +610,14 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
  * the `id.startsWith(_shimsDir)` checks would never match.
  */
 const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
+const _serverDir = normalizePathSeparators(path.resolve(__dirname, "server"));
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 const _appBrowserServerActionClientPath = resolveShimModulePath(
-  normalizePathSeparators(path.resolve(__dirname, "server")),
+  _serverDir,
   "app-browser-server-action-client",
 );
-const _appRscHandlerPath = resolveShimModulePath(
-  normalizePathSeparators(path.resolve(__dirname, "server")),
-  "app-rsc-handler",
-);
+const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
+const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
@@ -2128,6 +2127,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...tsconfigPathAliases,
               ...nextConfig.aliases,
               ...nextShimMap,
+              "vinext/server/pages-client-assets": _pagesClientAssetsPath,
             },
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency

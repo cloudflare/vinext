@@ -12,7 +12,6 @@ export function setPagesClientAssets(assets: PagesClientAssets | undefined): voi
   pagesClientAssets = assets ?? {};
 }
 
-
 export function getPagesClientAssets(): PagesClientAssets {
   return pagesClientAssets;
 }
