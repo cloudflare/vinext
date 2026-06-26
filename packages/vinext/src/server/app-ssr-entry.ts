@@ -54,10 +54,11 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+// @ts-expect-error — resolved by the vinext build plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
-import { setPagesClientAssets } from "./pages-client-assets.js";
+import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
 
-setPagesClientAssets(pagesClientAssets);
+setPagesClientAssets(pagesClientAssets as PagesClientAssets);
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
