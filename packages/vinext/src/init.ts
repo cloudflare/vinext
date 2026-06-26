@@ -4,12 +4,12 @@
  * Automates the steps needed to run a Next.js app under vinext:
  *
  *   1. Run `vinext check` to show compatibility report
- *   2. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
- *   3. Add "type": "module" to package.json
- *   4. Rename CJS config files to .cjs
- *   5. Add vinext scripts to package.json
- *   6. Generate vite.config.ts
- *   7. Update .gitignore to include /dist/ and .vinext/
+ *   2. Add "type": "module" to package.json
+ *   3. Rename CJS config files to .cjs
+ *   4. Add vinext scripts to package.json
+ *   5. Generate vite.config.ts and platform files
+ *   6. Update .gitignore to include /dist/ and .vinext/
+ *   7. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   8. Print summary
  *
  * Non-destructive: does NOT modify next.config, tsconfig, or source files.
@@ -347,7 +347,48 @@ export async function init(options: InitOptions): Promise<InitResult> {
     console.log(); // blank line before migration steps
   }
 
-  // ── Step 2: Install dependencies ───────────────────────────────────────
+  // ── Step 2: Add "type": "module" ───────────────────────────────────────
+
+  // Rename CJS configs first (before adding "type": "module") to avoid breakage.
+  // vite.config.js is intentionally handled here rather than in the generic list
+  // because its module syntax is detected with the same AST parser used for edits.
+  const renamedConfigs = renameCJSConfigs(root);
+  if (
+    existingViteConfigPath?.endsWith("vite.config.js") &&
+    usesCommonJsViteConfig(existingViteConfigPath, fs.readFileSync(existingViteConfigPath, "utf-8"))
+  ) {
+    const renamedPath = existingViteConfigPath.replace(/\.js$/, ".cjs");
+    fs.renameSync(existingViteConfigPath, renamedPath);
+    renamedConfigs.push([path.basename(existingViteConfigPath), path.basename(renamedPath)]);
+    existingViteConfigPath = renamedPath;
+  }
+  const addedTypeModule = ensureESModule(root);
+
+  // ── Step 3: Add scripts ────────────────────────────────────────────────
+
+  const addedScripts = addScripts(root, port);
+
+  // ── Step 4: Generate vite.config.ts ────────────────────────────────────
+
+  const setupContext: PlatformSetupContext = {
+    root,
+    isAppRouter: isApp,
+    existingViteConfigPath,
+    viteConfigExists,
+    force: options.force ?? false,
+    today: options._today,
+  };
+  const platformSetup =
+    platform === "cloudflare"
+      ? setupCloudflarePlatform(setupContext, options.cloudflare!)
+      : setupNodePlatform(setupContext);
+  const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
+
+  // ── Step 5: Update .gitignore ──────────────────────────────────────────
+
+  const updatedGitignore = updateGitignore(root);
+
+  // ── Step 6: Install dependencies last ──────────────────────────────────
 
   const neededDeps = getInitDeps(isApp, platform);
   const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
@@ -371,47 +412,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
     installDeps(root, missingDeps, exec);
     console.log();
   }
-
-  // ── Step 3: Add "type": "module" ───────────────────────────────────────
-
-  // Rename CJS configs first (before adding "type": "module") to avoid breakage.
-  // vite.config.js is intentionally handled here rather than in the generic list
-  // because its module syntax is detected with the same AST parser used for edits.
-  const renamedConfigs = renameCJSConfigs(root);
-  if (
-    existingViteConfigPath?.endsWith("vite.config.js") &&
-    usesCommonJsViteConfig(existingViteConfigPath, fs.readFileSync(existingViteConfigPath, "utf-8"))
-  ) {
-    const renamedPath = existingViteConfigPath.replace(/\.js$/, ".cjs");
-    fs.renameSync(existingViteConfigPath, renamedPath);
-    renamedConfigs.push([path.basename(existingViteConfigPath), path.basename(renamedPath)]);
-    existingViteConfigPath = renamedPath;
-  }
-  const addedTypeModule = ensureESModule(root);
-
-  // ── Step 4: Add scripts ────────────────────────────────────────────────
-
-  const addedScripts = addScripts(root, port);
-
-  // ── Step 5: Generate vite.config.ts ────────────────────────────────────
-
-  const setupContext: PlatformSetupContext = {
-    root,
-    isAppRouter: isApp,
-    existingViteConfigPath,
-    viteConfigExists,
-    force: options.force ?? false,
-    today: options._today,
-  };
-  const platformSetup =
-    platform === "cloudflare"
-      ? setupCloudflarePlatform(setupContext, options.cloudflare!)
-      : setupNodePlatform(setupContext);
-  const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
-
-  // ── Step 6: Update .gitignore ───────────────────────────────────────
-
-  const updatedGitignore = updateGitignore(root);
 
   // ── Step 7: Print summary ──────────────────────────────────────────────
 

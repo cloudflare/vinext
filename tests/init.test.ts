@@ -743,6 +743,67 @@ describe("init — CJS config renaming", () => {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
+  it("writes all project setup before invoking the package manager", async () => {
+    setupProject(tmpDir, { router: "app" });
+    const setupAtInstall: Array<{
+      scripts: Record<string, string>;
+      viteConfigExists: boolean;
+      wranglerConfigExists: boolean;
+      gitignore: string;
+    }> = [];
+
+    await runInit(tmpDir, {
+      _exec: () => {
+        const packageJson = JSON.parse(readFile(tmpDir, "package.json"));
+        setupAtInstall.push({
+          scripts: packageJson.scripts,
+          viteConfigExists: fs.existsSync(path.join(tmpDir, "vite.config.ts")),
+          wranglerConfigExists: fs.existsSync(path.join(tmpDir, "wrangler.jsonc")),
+          gitignore: readFile(tmpDir, ".gitignore"),
+        });
+      },
+    });
+
+    expect(setupAtInstall.length).toBeGreaterThan(0);
+    for (const setup of setupAtInstall) {
+      expect(setup.scripts).toMatchObject({
+        "dev:vinext": "vinext dev --port 3001",
+        "build:vinext": "vinext build",
+        "start:vinext": "vinext start",
+      });
+      expect(setup.viteConfigExists).toBe(true);
+      expect(setup.wranglerConfigExists).toBe(true);
+      expect(setup.gitignore).toContain(".vinext/");
+      expect(setup.gitignore).toContain("dist/");
+    }
+  });
+
+  it("leaves the project fully configured when dependency installation fails", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await expect(
+      runInit(tmpDir, {
+        _exec: () => {
+          throw new Error("dependency install requires script approval");
+        },
+      }),
+    ).rejects.toThrow("dependency install requires script approval");
+
+    const packageJson = JSON.parse(readFile(tmpDir, "package.json"));
+    expect(packageJson).toMatchObject({
+      type: "module",
+      scripts: {
+        "dev:vinext": "vinext dev --port 3001",
+        "build:vinext": "vinext build",
+        "start:vinext": "vinext start",
+      },
+    });
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(true);
+    expect(readFile(tmpDir, ".gitignore")).toContain(".vinext/");
+    expect(readFile(tmpDir, ".gitignore")).toContain("dist/");
+  });
+
   it("detects missing vinext and vite dependencies and installs them", async () => {
     setupProject(tmpDir, { router: "app" });
 
