@@ -13,6 +13,8 @@ export function applyDevServerDefaults(server: ServerOptions, options: DevServer
 export function createDevServerConfigPlugin(options: DevServerCliOptions): Plugin {
   return {
     name: "vinext:dev-server-config",
+    // Both levels are required: `enforce` places this after the user's normal
+    // plugins, while the hook `order` places it after their config handlers.
     enforce: "post",
     config: {
       order: "post",
