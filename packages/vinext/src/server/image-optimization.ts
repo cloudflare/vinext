@@ -119,7 +119,7 @@ export function parseImageParams(
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
   // parameters so semantically identical transforms cannot occupy distinct
   // cache keys and amplify image transformation work.
-  const allowedParamNames = new Set(["url", "w", "q"]);
+  const allowedParamNames = new Set(["url", "w", "q", "dpl"]);
   for (const name of url.searchParams.keys()) {
     if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
   }

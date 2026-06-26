@@ -176,13 +176,10 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
 
 async function flushPrefetchTasks(): Promise<void> {
   // requestIdleCallback is mocked as sync, then prefetchUrl enters an async
-  // IIFE with awaited request-header hashing and cache writes. These ticks
-  // drain the current chain; update this helper if the async depth grows.
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  // IIFE that may resolve lazy runtime modules before hashing headers and
+  // writing caches. Dynamic imports can cross a macrotask boundary, so drain
+  // one event-loop turn rather than relying on a fixed microtask depth.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function waitForFetchCalls(

@@ -29,7 +29,7 @@ import {
   subscribeOverlay,
   updateOverlayErrorStack,
 } from "./dev-error-overlay-store.js";
-import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "./dev-stack-sourcemap-endpoint.js";
+import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
 
 // Re-export so callers (e.g. the HMR rsc:update handler) can clear the
 // overlay when a new payload lands.

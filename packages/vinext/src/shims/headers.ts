@@ -14,7 +14,7 @@ import {
   NEXT_HTML_REQUEST_ID_HEADER,
   NEXT_REQUEST_ID_HEADER,
 } from "../server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   serializeSetCookie,

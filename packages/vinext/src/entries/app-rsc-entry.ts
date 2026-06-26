@@ -31,7 +31,7 @@ const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
 const middlewareRequestHeadersPath = resolveEntryPath(
-  "../server/middleware-request-headers.js",
+  "../utils/middleware-request-headers.js",
   import.meta.url,
 );
 const normalizePathModulePath = resolveEntryPath("../server/normalize-path.js", import.meta.url);
@@ -748,18 +748,32 @@ export default createAppRscHandler({
     const PageComponent = route.page?.default;
     const __segmentConfig = __resolveAppPageSegmentConfig({
       layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
       page: route.page,
+      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+        layout: slot.layout,
+        configLayouts: slot.configLayouts,
+        configLayoutTreePositions: slot.configLayoutTreePositions,
+        page: slot.page ?? slot.default,
+        routeSegments: slot.routeSegments,
+      })),
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
-      parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
-        slot.layout,
-        ...(slot.configLayouts ?? []),
-        slot.page ?? slot.default,
-      ]),
+      routeSegments: route.routeSegments,
     });
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
+      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+        layout: slot.layout,
+        configLayouts: slot.configLayouts,
+        configLayoutTreePositions: slot.configLayoutTreePositions,
+        page: slot.page ?? slot.default,
+        paramNames: slot.slotParamNames,
+        patternParts: slot.slotPatternParts,
+        routeSegments: slot.routeSegments,
+      })),
+      routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
     const _asyncRouteParams = makeThenableParams(params);
