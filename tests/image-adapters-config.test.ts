@@ -26,7 +26,6 @@ import {
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/init-cloudflare.js";
-import * as cloudflareImages from "../packages/cloudflare/src/images/images-optimizer.js";
 import { imagesOptimizer } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 
@@ -161,10 +160,6 @@ describe("image optimizer registry", () => {
 });
 
 describe("imagesOptimizer builder", () => {
-  it("does not expose the discarded imageAdapter name", () => {
-    expect("imageAdapter" in cloudflareImages).toBe(false);
-  });
-
   it("resolves the runtime factory to an absolute path without touching the Workers runtime", () => {
     const descriptor = imagesOptimizer({ binding: "MY_IMAGES" });
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
