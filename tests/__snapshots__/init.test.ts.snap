@@ -4,6 +4,7 @@ exports[`init — generated project snapshots > snapshots a fresh Cloudflare App
 "--- .gitignore ---
 /dist/
 .vinext/
+.wrangler/
 
 --- app/layout.tsx ---
 export default function Layout({ children }) { return <html><body>{children}</body></html> }
@@ -114,6 +115,7 @@ exports[`init — generated project snapshots > snapshots an AST update to an ex
 "--- .gitignore ---
 /dist/
 .vinext/
+.wrangler/
 
 --- app/layout.tsx ---
 export default function Layout({ children }) { return <html><body>{children}</body></html> }

@@ -1464,6 +1464,22 @@ describe("updateGitignore", () => {
     const content = readFile(tmpDir, ".gitignore");
     expect(content).toBe("node_modules/\n/dist/\n/.vinext/\n");
   });
+
+  it("adds .wrangler/ for the Cloudflare platform", () => {
+    const result = updateGitignore(tmpDir, "cloudflare");
+
+    expect(result).toBe(true);
+    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n.wrangler/\n");
+  });
+
+  it("does not duplicate an existing Wrangler directory entry", () => {
+    writeFile(tmpDir, ".gitignore", "/dist/\n.vinext/\n/.wrangler/\n");
+
+    const result = updateGitignore(tmpDir, "cloudflare");
+
+    expect(result).toBe(false);
+    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n/.wrangler/\n");
+  });
 });
 
 // ─── Integration: init updates .gitignore ────────────────────────────────────
@@ -1478,11 +1494,20 @@ describe("init — .gitignore", () => {
     const content = readFile(tmpDir, ".gitignore");
     expect(content).toContain("/dist/");
     expect(content).toContain(".vinext/");
+    expect(content).toContain(".wrangler/");
+  });
+
+  it("does not add .wrangler/ for the Node platform", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, { platform: "node" });
+
+    expect(readFile(tmpDir, ".gitignore")).not.toContain(".wrangler/");
   });
 
   it("does not duplicate entries if already in .gitignore", async () => {
     setupProject(tmpDir, { router: "app" });
-    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n");
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n.wrangler/\n");
 
     const { result } = await runInit(tmpDir);
 
@@ -1493,6 +1518,8 @@ describe("init — .gitignore", () => {
     expect(matches.length).toBe(1);
     const vinextMatches = content.split("\n").filter((l: string) => l.trim() === ".vinext/");
     expect(vinextMatches.length).toBe(1);
+    const wranglerMatches = content.split("\n").filter((l: string) => l.trim() === ".wrangler/");
+    expect(wranglerMatches.length).toBe(1);
   });
 
   it("preserves existing .gitignore entries when adding vinext output directories", async () => {

@@ -263,7 +263,7 @@ async function installDeps(
  * Creates the file if it doesn't exist. Returns true if the file was modified
  * (or created), false if all entries were already present.
  */
-export function updateGitignore(root: string): boolean {
+export function updateGitignore(root: string, platform: InitPlatform = "node"): boolean {
   const gitignorePath = path.join(root, ".gitignore");
   const entries = [
     {
@@ -274,6 +274,14 @@ export function updateGitignore(root: string): boolean {
       entry: ".vinext/",
       coveredBy: new Set(["/.vinext/", "/.vinext", ".vinext/", ".vinext"]),
     },
+    ...(platform === "cloudflare"
+      ? [
+          {
+            entry: ".wrangler/",
+            coveredBy: new Set(["/.wrangler/", "/.wrangler", ".wrangler/", ".wrangler"]),
+          },
+        ]
+      : []),
   ];
 
   let content = "";
@@ -468,7 +476,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
-  const updatedGitignore = updateGitignore(root);
+  const updatedGitignore = updateGitignore(root, platform);
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
