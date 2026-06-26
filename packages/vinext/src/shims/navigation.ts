@@ -49,13 +49,13 @@ import {
 } from "./url-utils.js";
 import { navigationPlanner } from "../server/navigation-planner.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
-import { shouldPrefetchForUserAgent } from "./internal/prefetch-user-agent.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -1849,7 +1849,7 @@ const _appRouter: AppRouterInstance = {
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    if (!shouldPrefetchForUserAgent()) return;
+    if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
     // Validate the URL is parseable. Mirrors Next.js's createPrefetchURL:
     // `packages/next/src/client/components/app-router-utils.ts` — when the URL
     // cannot be converted, Next.js throws so the call site (and its surrounding

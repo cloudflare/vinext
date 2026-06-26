@@ -953,6 +953,14 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
     );
+    expect(code).toContain("parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({");
+    expect(code).toContain("paramNames: slot.slotParamNames");
+    expect(code).toContain("patternParts: slot.slotPatternParts");
+    expect(code).toContain("layout: slot.layout");
+    expect(code).toContain("configLayouts: slot.configLayouts");
+    expect(code).toContain("configLayoutTreePositions: slot.configLayoutTreePositions");
+    expect(code).toContain("routeSegments: slot.routeSegments");
+    expect(code).toContain("routePatternParts: route.patternParts");
     expect(code).toContain("slot.page ?? slot.default");
     expect(code).toContain("...(slot.configLayouts ?? [])");
     expect(code).toContain("interceptLayoutSegments:");
@@ -1147,6 +1155,31 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("vinext/instrumentation-client");
       // No spurious bare imports referring to a non-existent project file.
       expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the React preamble when the React plugin is disabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-preamble-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { reactPreamble: false },
+      );
+
+      expect(code).not.toContain("@vitejs/plugin-react/preamble");
+      expect(code).toContain("hydrateRoot(");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

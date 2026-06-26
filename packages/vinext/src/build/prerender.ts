@@ -23,6 +23,7 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -1644,6 +1645,7 @@ export function writePrerenderIndex(
     ...(buildId ? { buildId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
+    pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
   };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),

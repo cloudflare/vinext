@@ -4830,7 +4830,7 @@ describe("next/cache shim", () => {
     // Simulate a route handler phase
     const previousPhase = setHeadersAccessPhase("route-handler");
     try {
-      await expect(updateTag("some-tag")).rejects.toThrow(
+      expect(() => updateTag("some-tag")).toThrow(
         /updateTag can only be called from within a Server Action/,
       );
     } finally {
@@ -4844,7 +4844,7 @@ describe("next/cache shim", () => {
 
     const previousPhase = setHeadersAccessPhase("render");
     try {
-      await expect(updateTag("some-tag")).rejects.toThrow(
+      expect(() => updateTag("some-tag")).toThrow(
         /updateTag can only be called from within a Server Action/,
       );
     } finally {
@@ -10350,6 +10350,10 @@ describe("matchConfigPattern", () => {
     });
     // Regex-group pattern with a trailing slash.
     expect(matchConfigPattern("/123/", "/:id(\\d+)")).toEqual({ id: "123" });
+    // Next.js appends an optional trailing-slash matcher even when the source
+    // itself ends in `/`, so both canonical forms match the same rule.
+    expect(matchConfigPattern("/en/", "/:lang(en|es)/")).toEqual({ lang: "en" });
+    expect(matchConfigPattern("/en", "/:lang(en|es)/")).toBeNull();
   });
 
   it("preserves the root path and catch-all semantics under trailing slash", async () => {
@@ -10627,6 +10631,20 @@ describe("matchRedirect locale-static index", () => {
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("/en/security-dest");
     expect(result!.permanent).toBe(false);
+  });
+
+  it("matches a slash-ending source against a canonical slashed pathname", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/:lang(en|es)/",
+        destination: "/:lang/legacy/",
+        permanent: false,
+      },
+    ];
+
+    expect(matchRedirect("/en/", redirects, emptyCtx)?.destination).toBe("/en/legacy/");
+    expect(matchRedirect("/en", redirects, emptyCtx)).toBeNull();
   });
 
   it("matches a locale-prefixed pathname (locale omitted)", async () => {
@@ -11187,6 +11205,10 @@ describe("matchHeaders", () => {
         source: "/api/:path*",
         headers: [{ key: "x-api-header", value: "1" }],
       },
+      {
+        source: "/docs/",
+        headers: [{ key: "x-docs-header", value: "1" }],
+      },
     ];
 
     const aboutMatched = matchHeaders("/about/", rules, makeCtx());
@@ -11194,6 +11216,9 @@ describe("matchHeaders", () => {
 
     const apiMatched = matchHeaders("/api/users/", rules, makeCtx());
     expect(apiMatched).toEqual([{ key: "x-api-header", value: "1" }]);
+    const docsMatched = matchHeaders("/docs/", rules, makeCtx());
+    expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
+    expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
   });
 });
 
@@ -11998,6 +12023,17 @@ describe("next/form shim", () => {
     expect(typeof mod.useActionState).toBe("function");
   });
 
+  it("prefetches the App Router loading shell for form navigation", async () => {
+    const source = await readFile(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/form.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL");
+    expect(source).toContain("cacheForNavigation: false");
+    expect(source).toContain("optimisticRouteShell: true");
+  });
+
   it("renders a form element with string action in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -12070,6 +12106,40 @@ describe("next/form shim", () => {
     );
     expect(html).toContain('class="search-form"');
     expect(html).toContain('id="main-search"');
+  });
+
+  it("preserves the absolute form target so basePath normalization runs once", async () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { location: { href: "https://example.com/base/forms/basic" } },
+    });
+
+    try {
+      const { createFormSubmitDestinationUrl } =
+        await import("../packages/vinext/src/shims/form.js");
+      const formData = new FormData();
+      formData.set("query", "my search");
+      const form = {} as HTMLFormElement;
+      const formDataSpy = vi
+        .spyOn(globalThis, "FormData")
+        .mockImplementation(function MockFormData() {
+          return formData;
+        } as unknown as typeof FormData);
+
+      expect(createFormSubmitDestinationUrl("/base/search", form, null)).toBe(
+        "https://example.com/base/search?query=my+search",
+      );
+
+      formDataSpy.mockRestore();
+    } finally {
+      if (previousWindowDescriptor) {
+        Object.defineProperty(globalThis, "window", previousWindowDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "window");
+      }
+    }
   });
 });
 
@@ -18179,7 +18249,7 @@ describe("next/image enhancements", () => {
     // Local images now route through the optimization endpoint
     expect(result.props.src).toContain("/_next/image");
     expect(result.props.src).toContain("url=%2Fphoto.jpg");
-    expect(result.props.src).toContain("w=800");
+    expect(result.props.src).toContain("w=1920");
     expect(result.props.alt).toBe("Test");
     expect(result.props.width).toBe(800);
     expect(result.props.height).toBe(600);
@@ -18206,7 +18276,7 @@ describe("next/image enhancements", () => {
     });
     expect(result.props.src).toContain("/_next/image");
     expect(result.props.src).toContain("url=%2Fimported.jpg");
-    expect(result.props.src).toContain("w=1200");
+    expect(result.props.src).toContain("w=3840");
     expect(result.props.width).toBe(1200);
     expect(result.props.height).toBe(800);
   });
@@ -18224,6 +18294,22 @@ describe("next/image enhancements", () => {
     expect(result.props.srcSet).toContain("/_next/image");
     expect(result.props.srcSet).toContain("url=%2Fphoto.jpg");
     expect(result.props.srcSet).toContain("w");
+  });
+
+  it("getImageProps uses Next.js width candidates for responsive sizes", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Responsive",
+      width: 500,
+      height: 300,
+      sizes: "(max-width: 768px) 100vw, 50vw",
+    });
+
+    expect(result.props.src).toContain("w=3840");
+    expect(result.props.srcSet).toContain("w=384");
+    expect(result.props.srcSet).toContain("w=3840");
+    expect(result.props.srcSet).not.toContain("w=256");
   });
 
   it("getImageProps does not generate srcSet for fill images", async () => {
@@ -21387,6 +21473,34 @@ describe("cache scope guards for dynamic APIs", () => {
 
     await expect(cached()).resolves.toBe(true);
     expect(observed).toBe(true);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("unstable_cache bypasses reads and writes while draft mode is enabled", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    let calls = 0;
+    const cached = unstable_cache(async () => ++calls, ["test-draftmode-cache-bypass"]);
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map(), draftModeSecret: "secret" });
+    await expect(cached()).resolves.toBe(1);
+    await expect(cached()).resolves.toBe(1);
+
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=secret" }),
+      cookies: new Map([["__prerender_bypass", "secret"]]),
+      draftModeSecret: "secret",
+    });
+    await expect(cached()).resolves.toBe(2);
+    await expect(cached()).resolves.toBe(3);
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map(), draftModeSecret: "secret" });
+    await expect(cached()).resolves.toBe(1);
 
     setHeadersContext(null);
     setCacheHandler(new MemoryCacheHandler());

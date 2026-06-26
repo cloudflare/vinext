@@ -45,10 +45,10 @@ beforeEach(async () => {
       hash: "",
       href: "http://localhost/",
     },
+    navigator: { userAgent: "Mozilla/5.0" },
     addEventListener: () => {},
     history: { pushState: () => {}, replaceState: () => {}, state: null },
     dispatchEvent: () => {},
-    navigator: { userAgent: "Mozilla/5.0" },
   };
   vi.resetModules();
   const nav = await import("../packages/vinext/src/shims/navigation.js");
@@ -120,10 +120,11 @@ async function waitForPrefetchSetup(isReady: () => boolean = () => true): Promis
 }
 
 describe("prefetch cache eviction", () => {
-  it("router.prefetch does not fetch for bot user agents", async () => {
+  it("router.prefetch does not fetch for a bot user agent", async () => {
     const fetch = vi.fn();
     (globalThis as any).fetch = fetch;
-    (globalThis as any).window.navigator.userAgent = "Googlebot/2.1";
+    (globalThis as any).window.navigator.userAgent =
+      "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 
     appRouterInstance.prefetch("/dashboard");
     await waitForPrefetchSetup();

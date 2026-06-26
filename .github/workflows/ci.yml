@@ -216,7 +216,7 @@ jobs:
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
-        run: vp exec vinext init --skip-check
+        run: vp exec vinext init --skip-check --platform=node
 
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
@@ -258,6 +258,67 @@ jobs:
 
           echo "Server did not respond with HTTP 200 before the retry limit"
           exit 1
+
+  create-next-app-cloudflare:
+    name: create-next-app (cloudflare init)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Build packages
+        run: vp run build
+
+      - name: Pack vinext packages for local install
+        working-directory: packages/vinext
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../cloudflare
+          vp pm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Scaffold a fresh create-next-app project
+        run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-cloudflare" --yes
+
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Allow required native dependency builds
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n  workerd: true\n";
+            fs.writeFileSync(f, y);
+          '
+
+      - name: Install local vinext packages
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+
+      - name: Run Cloudflare init
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: >-
+          vp exec vinext init --skip-check --platform=cloudflare
+          --data-cache=kv
+          --image-optimization=cloudflare-images
+
+      - name: Build generated Cloudflare project
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: vp exec vinext build
 
   e2e:
     name: E2E (${{ matrix.label }})

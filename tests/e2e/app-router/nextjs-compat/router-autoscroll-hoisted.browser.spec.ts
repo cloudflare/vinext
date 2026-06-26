@@ -3,8 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
-import type { ViteDevServer } from "vite";
 import { waitForAppRouterHydration } from "../../helpers";
+import {
+  startChildViteDevServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -87,27 +91,13 @@ export default defineConfig({
 async function startHoistedScrollFixture(): Promise<{
   baseUrl: string;
   fixtureRoot: string;
-  server: ViteDevServer;
+  server: ChildProductionServer;
 }> {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-hoisted-scroll-"));
   await writeHoistedScrollFixture(fixtureRoot);
 
-  const { createServer } = await import("vite");
-  const server = await createServer({
-    root: fixtureRoot,
-    configFile: path.join(fixtureRoot, "vite.config.ts"),
-    logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  await server.listen();
-
-  const baseUrl = server.resolvedUrls?.local[0];
-  if (!baseUrl) {
-    await server.close();
-    throw new Error("Vite did not expose a local fixture URL");
-  }
-
-  return { baseUrl: baseUrl.replace(/\/$/, ""), fixtureRoot, server };
+  const server = await startChildViteDevServer(fixtureRoot);
+  return { baseUrl: `http://127.0.0.1:${server.port}`, fixtureRoot, server };
 }
 
 test.setTimeout(60_000);
@@ -126,7 +116,10 @@ test("does not scroll to top when React hoists the route's first DOM node", asyn
     await expect(page.locator("#hoisted-page")).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.scrollY)).not.toBe(0);
   } finally {
-    await app.server.close();
-    await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    try {
+      await stopChildProductionServer(app.server);
+    } finally {
+      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    }
   }
 });

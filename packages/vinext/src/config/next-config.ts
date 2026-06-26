@@ -189,13 +189,16 @@ export type NextConfig = {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
-    remotePatterns?: Array<{
-      protocol?: string;
-      hostname: string;
-      port?: string;
-      pathname?: string;
-      search?: string;
-    }>;
+    remotePatterns?: Array<
+      | URL
+      | {
+          protocol?: string;
+          hostname: string;
+          port?: string;
+          pathname?: string;
+          search?: string;
+        }
+    >;
     domains?: string[];
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
@@ -1642,6 +1645,23 @@ export async function resolveNextConfig(
     };
   }
 
+  const images = config.images
+    ? {
+        ...config.images,
+        remotePatterns: config.images.remotePatterns?.map((pattern) =>
+          pattern instanceof URL
+            ? {
+                protocol: pattern.protocol.slice(0, -1),
+                hostname: pattern.hostname,
+                port: pattern.port,
+                pathname: pattern.pathname,
+                search: pattern.search,
+              }
+            : { ...pattern },
+        ),
+      }
+    : undefined;
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -1663,7 +1683,7 @@ export async function resolveNextConfig(
     redirects,
     rewrites,
     headers,
-    images: config.images,
+    images,
     i18n,
     mdx,
     aliases,
