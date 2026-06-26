@@ -2836,18 +2836,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
           const resolvePagesClientAssetsId = () => {
             if (this.environment?.config.command === "build") {
-              const externalId =
-                this.environment.name === "ssr"
-                  ? `../${PAGES_CLIENT_ASSETS_MODULE}`
-                  : `./${PAGES_CLIENT_ASSETS_MODULE}`;
-              pagesClientAssetsOutputDirs.add(
-                path.resolve(
-                  this.environment.config.root ?? process.cwd(),
-                  this.environment.name === "ssr"
-                    ? path.dirname(this.environment.config.build.outDir)
-                    : this.environment.config.build.outDir,
-                ),
+              const buildRoot = this.environment.config.root ?? process.cwd();
+              const environmentOutDir = path.resolve(
+                buildRoot,
+                this.environment.config.build.outDir,
               );
+              const sidecarDir =
+                this.environment.name === "ssr"
+                  ? hasAppDir
+                    ? path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server"))
+                    : path.dirname(environmentOutDir)
+                  : environmentOutDir;
+              let externalId = normalizePathSeparators(
+                path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
+              );
+              if (!externalId.startsWith(".")) externalId = `./${externalId}`;
+              pagesClientAssetsOutputDirs.add(sidecarDir);
               return { id: externalId, external: true };
             }
             return RESOLVED_PAGES_CLIENT_ASSETS;
@@ -5467,9 +5471,27 @@ export const loadServerActionClient = ${
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
             });
+
+            // Vite clones plugin instances per environment, so the client
+            // environment cannot rely on the server environment's resolveId
+            // hook having populated this set. Write the deterministic Node
+            // destinations while the descriptor is available here.
+            if (!hasCloudflarePlugin && !hasNitroPlugin) {
+              if (hasAppDir) {
+                pagesClientAssetsOutputDirs.add(
+                  path.resolve(buildRoot, options.rscOutDir ?? path.join("dist", "server")),
+                );
+              }
+              if (hasPagesDir) {
+                pagesClientAssetsOutputDirs.add(path.resolve(buildRoot, "dist"));
+              }
+            }
           }
 
-          if (pagesClientAssetsModule === null) return;
+          if (pagesClientAssetsModule === null) {
+            if (pagesClientAssetsOutputDirs.size === 0) return;
+            pagesClientAssetsModule = buildPagesClientAssetsModule({});
+          }
           if (hasCloudflarePlugin) {
             const buildRoot = envConfig.root ?? process.cwd();
             for (const outputDir of findCloudflareWorkerOutputDirs(buildRoot)) {
