@@ -166,6 +166,7 @@ import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
   findCloudflareWorkerOutputDirs,
+  writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
@@ -5490,7 +5491,11 @@ export const loadServerActionClient = ${
 
           if (pagesClientAssetsModule === null) {
             if (pagesClientAssetsOutputDirs.size === 0) return;
-            pagesClientAssetsModule = buildPagesClientAssetsModule({});
+            const emptyModule = buildPagesClientAssetsModule({});
+            for (const outputDir of pagesClientAssetsOutputDirs) {
+              writePagesClientAssetsModuleIfMissing(outputDir, emptyModule);
+            }
+            return;
           }
           if (hasCloudflarePlugin) {
             const buildRoot = envConfig.root ?? process.cwd();

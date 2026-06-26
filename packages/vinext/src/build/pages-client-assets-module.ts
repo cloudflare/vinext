@@ -8,6 +8,16 @@ export function buildPagesClientAssetsModule(assets: PagesClientAssets): string 
   return `export default ${JSON.stringify(assets)};\n`;
 }
 
+export function writePagesClientAssetsModuleIfMissing(
+  outputDir: string,
+  moduleSource: string,
+): void {
+  const outputPath = path.join(outputDir, PAGES_CLIENT_ASSETS_MODULE);
+  if (fs.existsSync(outputPath)) return;
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(outputPath, moduleSource);
+}
+
 export function findCloudflareWorkerOutputDirs(buildRoot: string): string[] {
   const distDir = path.resolve(buildRoot, "dist");
   if (!fs.existsSync(distDir)) return [];

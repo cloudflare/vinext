@@ -49,6 +49,7 @@ import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/clien
 import {
   buildPagesClientAssetsModule,
   findCloudflareWorkerOutputDirs,
+  writePagesClientAssetsModuleIfMissing,
 } from "../packages/vinext/src/build/pages-client-assets-module.js";
 import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -2486,6 +2487,19 @@ describe("Cloudflare client asset sidecar generation", () => {
       "// worker entry\nexport default { fetch() {} };",
     );
     expect(readGeneratedModule(sidecarPath)).toEqual({ lazyChunks: ["assets/lazy.js"] });
+  });
+
+  it("does not let a later server environment overwrite client asset metadata", () => {
+    const outputDir = path.join(tmpDir, "dist", "server");
+    const sidecarPath = path.join(outputDir, "vinext-client-assets.js");
+    const clientModule = buildPagesClientAssetsModule({
+      clientEntry: "_next/static/chunks/index-abcd.js",
+    });
+
+    writePagesClientAssetsModuleIfMissing(outputDir, clientModule);
+    writePagesClientAssetsModuleIfMissing(outputDir, buildPagesClientAssetsModule({}));
+
+    expect(fs.readFileSync(sidecarPath, "utf-8")).toBe(clientModule);
   });
 
   it("discovers final Cloudflare Worker outputs and skips the client assets directory", () => {
