@@ -1328,6 +1328,42 @@ function discoverSlotSubRoutes(
  */
 type SlotSubPageEntry = { relativePath: string; pagePath: string };
 
+// Per-scan memo of raw directory reads (withFileTypes). Inherited parallel-slot
+// discovery walks every ancestor directory of a route and reads it with
+// `fs.readdirSync` to look for `@slot` directories; because routes share
+// ancestors, the same directory is otherwise read once per descendant route
+// (super-linear: a route dir with N siblings is read O(N) times across the
+// scan). Keyed by the per-scan matcher clone (like `findSlotSubPagesCache`
+// below) so it is scoped to a single scan and collected afterwards — no
+// cross-scan pollution in long-lived dev servers.
+const dirEntriesCache = new WeakMap<ValidFileMatcher, Map<string, fs.Dirent[]>>();
+
+function readDirEntriesCached(dir: string, matcher: ValidFileMatcher): fs.Dirent[] {
+  let perMatcher = dirEntriesCache.get(matcher);
+  if (!perMatcher) {
+    perMatcher = new Map();
+    dirEntriesCache.set(matcher, perMatcher);
+  }
+  let entries = perMatcher.get(dir);
+  if (entries === undefined) {
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      // Only a *missing* directory is an expected empty result — this replaces
+      // the prior `fs.existsSync(dir)` guard, and caching [] keeps a known-absent
+      // dir from being re-probed for every descendant route. Any other fault
+      // (EACCES, EMFILE/ENFILE, …) is real: rethrow it like the original
+      // unguarded `readdirSync` did, rather than silently caching an empty
+      // listing that would drop routes/slots for the rest of the scan.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      entries = [];
+    }
+    perMatcher.set(dir, entries);
+  }
+  return entries;
+}
+
 // Per-scan memo: a slot directory's sub-pages depend only on the directory
 // contents and the matcher's accepted extensions. Inherited slots get scanned
 // once per descendant route, so without memoization a route N segments deep
@@ -2136,12 +2172,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
   if (directPage) return directPage;
 
   // Walk route-group subdirectories (transparent in the URL).
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(slotDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
+  const entries = readDirEntriesCached(slotDir, matcher);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
@@ -2167,9 +2198,7 @@ function discoverParallelSlots(
   matcher: ValidFileMatcher,
   includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
-  if (!fs.existsSync(dir)) return [];
-
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const entries = readDirEntriesCached(dir, matcher);
   const slots: AppRouteGraphParallelSlot[] = [];
 
   for (const entry of entries) {
