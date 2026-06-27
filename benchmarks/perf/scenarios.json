@@ -3,6 +3,17 @@
     { "command": ["vp", "run", "build"] },
     { "command": ["node", "benchmarks/generate-app.mjs"], "trusted": true },
     {
+      "command": [
+        "node",
+        "benchmarks/generate-app.mjs",
+        "--extra",
+        "5000",
+        "--target",
+        "vinext-large"
+      ],
+      "trusted": true
+    },
+    {
       "command": ["npm", "install"],
       "cwd": "benchmarks/nextjs",
       "implementationId": "nextjs"
@@ -54,6 +65,23 @@
           "profile": true,
           "compareBase": true,
           "command": ["node", "benchmarks/perf/build-time.mjs", "vinext"]
+        }
+      ]
+    },
+    {
+      "id": "production-build-large",
+      "suite": "Build",
+      "label": "Production build time (5000 routes)",
+      "description": "Clean production build of a generated 5000-route app. Stress scenario that surfaces super-linear build-time effects (e.g. route-graph scanning) which are invisible at the default app size. vinext only; uses a separate fixture so the headline comparison is unaffected.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "vinext-large",
+          "label": "vinext",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/build-time.mjs", "vinext-large"]
         }
       ]
     },

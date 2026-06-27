@@ -25,15 +25,16 @@ function targetEnvironment() {
   };
 }
 
-if (framework !== "vinext" && framework !== "nextjs") {
-  console.error("Usage: node benchmarks/perf/build-time.mjs <vinext|nextjs>");
+const isVinext = framework === "vinext" || framework === "vinext-large";
+if (!isVinext && framework !== "nextjs") {
+  console.error("Usage: node benchmarks/perf/build-time.mjs <vinext|vinext-large|nextjs>");
   process.exit(1);
 }
 
 const projectDir = join(benchmarkDir, framework);
 
 async function cleanBuildOutput() {
-  const outputDirectory = join(projectDir, framework === "vinext" ? "dist" : ".next");
+  const outputDirectory = join(projectDir, isVinext ? "dist" : ".next");
   await mkdir(outputDirectory, { recursive: true });
   const entries = await readdir(outputDirectory);
   await Promise.all(
@@ -43,7 +44,7 @@ async function cleanBuildOutput() {
 
 function buildCommand() {
   let command;
-  if (framework === "vinext") {
+  if (isVinext) {
     const vpPath = profiling
       ? join(projectDir, "node_modules/vite-plus/bin/vp")
       : execFileSync("which", ["vp"], { encoding: "utf8" }).trim();

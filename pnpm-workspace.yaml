@@ -13,6 +13,7 @@ packages:
   - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
+  - benchmarks/vinext-large
 
 catalog:
   "@cloudflare/kumo": ^2.2.0

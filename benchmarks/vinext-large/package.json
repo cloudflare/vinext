@@ -1,0 +1,22 @@
+{
+  "name": "benchmark-vinext-large",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

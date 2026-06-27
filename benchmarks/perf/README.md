@@ -86,3 +86,24 @@ the pull request head SHA as their identity for dashboard history and comments.
 CI sets `CODSPEED_SKIP_UPLOAD=true`. Results and profiles remain local to the
 GitHub runner, are normalized into the owned payload format, and are uploaded
 only to the vinext dashboard.
+
+## Scaling the benchmark app
+
+The shared benchmark app defaults to 33 routes. At that size some build-time
+effects are smaller than run-to-run noise, even with the paired AB/BA rounds.
+Set `VINEXT_BENCH_EXTRA_ROUTES=<n>` when generating the app to append `n`
+additional realistic routes (server pages with `next/link`, shared client
+components, and `.js` utilities), which makes per-module build costs large
+enough to measure:
+
+```bash
+# moderate scale (~1k routes) — surfaces per-module costs
+VINEXT_BENCH_EXTRA_ROUTES=1000 node benchmarks/generate-app.mjs
+
+# stress scale (~10k routes) — surfaces super-linear costs in scanning/graph work
+VINEXT_BENCH_EXTRA_ROUTES=10000 node benchmarks/generate-app.mjs
+```
+
+The default (`0`) keeps the canonical 33-route app, so this is opt-in and does
+not change existing benchmark numbers. Larger scales are useful for catching
+super-linear regressions that are invisible at small route counts.

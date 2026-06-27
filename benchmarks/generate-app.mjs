@@ -559,6 +559,123 @@ export default function ${title}Page() {
   );
 }
 
+// ─── Large-scale volume (opt-in via VINEXT_BENCH_EXTRA_ROUTES) ──────────────────
+// Generates N additional realistic routes so the benchmark can surface build-time
+// effects that are invisible at the default 33-route scale. Each generated route is
+// a server page that links via next/link, renders a shared client component, and
+// imports a plain-.js utility — exercising the RSC/SSR/client boundary scan and the
+// per-module transform pipeline at scale. Default 0 keeps the canonical 33-route app.
+const cliArgs = process.argv.slice(2);
+const getCliArg = (name) => {
+  const i = cliArgs.indexOf(name);
+  return i >= 0 ? cliArgs[i + 1] : undefined;
+};
+// Scale via `--extra <n>` (or VINEXT_BENCH_EXTRA_ROUTES) and emit to a single
+// project via `--target <name>` (default: both nextjs + vinext). Setup steps
+// pass argv, so CLI flags are the supported path there.
+const EXTRA = Number.parseInt(
+  getCliArg("--extra") ?? process.env.VINEXT_BENCH_EXTRA_ROUTES ?? "0",
+  10,
+);
+const targetArg = getCliArg("--target");
+if (Number.isFinite(EXTRA) && EXTRA > 0) {
+  const NUM_CLIENT = Math.max(8, Math.floor(EXTRA / 8));
+  const NUM_UTIL = Math.max(8, Math.floor(EXTRA / 8));
+  for (let i = 0; i < NUM_CLIENT; i++) {
+    write(
+      `_gen/widget-${i}.tsx`,
+      `
+"use client";
+import { useState } from "react";
+export function Widget${i}({ label = "W${i}" }: { label?: string }) {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(v => v + 1)}>{label}: {n}</button>;
+}
+`,
+    );
+  }
+  for (let i = 0; i < NUM_UTIL; i++) {
+    write(
+      `_gen/util-${i}.js`,
+      `
+export function compute${i}(a, b) {
+  const r = a * ${i + 1} + b;
+  return r > 0 ? r : -r;
+}
+export const LABEL_${i} = "util-${i}";
+`,
+    );
+  }
+  for (let i = 0; i < EXTRA; i++) {
+    const w0 = i % NUM_CLIENT;
+    const w1 = (i + 1) % NUM_CLIENT;
+    const w2 = (i + 2) % NUM_CLIENT;
+    const u = i % NUM_UTIL;
+    write(
+      `gen/r${i}/page.tsx`,
+      `
+import Link from "next/link";
+import { Widget${w0} } from "../../_gen/widget-${w0}";
+import { Widget${w1} } from "../../_gen/widget-${w1}";
+import { Widget${w2} } from "../../_gen/widget-${w2}";
+import { compute${u}, LABEL_${u} } from "../../_gen/util-${u}";
+
+export const metadata = { title: "Gen ${i}", description: "Generated route ${i} for build benchmarking" };
+
+interface Row { id: number; name: string; value: number; tag: string; }
+
+const rows: Row[] = Array.from({ length: 24 }, (_, k) => ({
+  id: k,
+  name: \`Item \${k} of route ${i}\`,
+  value: compute${u}(${i} + k, k * 3),
+  tag: k % 2 === 0 ? "even" : "odd",
+}));
+
+function Section({ title, rows }: { title: string; rows: Row[] }) {
+  return (
+    <section style={{ marginBottom: "1rem" }}>
+      <h2>{title}</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Value</th><th>Tag</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td>{r.id}</td><td>{r.name}</td><td>{r.value}</td><td>{r.tag}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+export default function Gen${i}Page() {
+  const total = rows.reduce((acc, r) => acc + r.value, 0);
+  return (
+    <div>
+      <h1>Generated route ${i} — {LABEL_${u}} (total {total})</h1>
+      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. Route ${i}.</p>
+      <nav style={{ display: "flex", gap: "0.5rem" }}>
+        <Link href={\`/gen/r${(i + 1) % EXTRA}\`}>next</Link>
+        <Link href={\`/gen/r${(i + 2) % EXTRA}\`}>skip</Link>
+        <Link href="/">home</Link>
+      </nav>
+      <Section title="Primary" rows={rows.slice(0, 12)} />
+      <Section title="Secondary" rows={rows.slice(12)} />
+      <div style={{ display: "flex", gap: "0.5rem" }}>
+        <Widget${w0} label="A${i}" />
+        <Widget${w1} label="B${i}" />
+        <Widget${w2} label="C${i}" />
+      </div>
+    </div>
+  );
+}
+`,
+    );
+  }
+  console.log(`  + ${EXTRA} extra routes, ${NUM_CLIENT} client widgets, ${NUM_UTIL} .js utils`);
+}
+
 // Count results
 function countFiles(dir, name) {
   let count = 0;
@@ -578,7 +695,8 @@ console.log(
 
 // Copy to each benchmark project (symlinks don't work with Turbopack)
 const BASE = benchmarkRoot;
-for (const project of ["nextjs", "vinext"]) {
+const copyTargets = targetArg ? [targetArg] : ["nextjs", "vinext"];
+for (const project of copyTargets) {
   const dest = join(BASE, project, "app");
   rmSync(dest, { recursive: true, force: true });
   cpSync(APP, dest, { recursive: true });
