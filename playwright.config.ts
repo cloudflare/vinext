@@ -45,9 +45,22 @@ const projectServers = {
   "app-router": {
     testDir: "./tests/e2e",
     testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
-    testIgnore: appRouterBrowserSpecificTests,
+    testIgnore: [appRouterBrowserSpecificTests, "**/app-router/nextjs-compat/client-cache.spec.ts"],
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
+  },
+  "app-router-client-cache": {
+    testDir: "./tests/e2e/app-router/nextjs-compat",
+    testMatch: "client-cache.spec.ts",
+    use: { baseURL: "http://localhost:4191" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4191",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4191,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
   },
   "app-router-chrome-browser-specific": {
     testDir: "./tests/e2e",

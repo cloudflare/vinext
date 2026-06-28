@@ -14,7 +14,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
   MIDDLEWARE_SET_COOKIE_HEADER,
 } from "../server/headers.js";
-import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
+import { encodeMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";

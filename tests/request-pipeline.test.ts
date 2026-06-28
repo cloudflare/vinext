@@ -19,7 +19,7 @@ import {
   VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "../packages/vinext/src/server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/server/middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 

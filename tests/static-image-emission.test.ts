@@ -347,13 +347,14 @@ async function assertStaticImageProductionParity(
     const src = getAttribute(html, id, "src");
     const srcset = getAttribute(html, id, "srcset");
     const managedUrl = `${effectiveAssetPrefix}/_next/static/media/${expectedImage}`;
-    const managedSourceUrl = options.deploymentId
-      ? `${managedUrl}?dpl=${options.deploymentId}`
-      : managedUrl;
-    expect(new URL(src, "http://vinext.test").searchParams.get("url")).toBe(managedSourceUrl);
+    expect(new URL(src, "http://vinext.test").searchParams.get("url")).toBe(managedUrl);
+    expect(new URL(src, "http://vinext.test").searchParams.get("dpl")).toBe(
+      options.deploymentId ?? null,
+    );
     expect(src).toContain("q=85");
     expect(src).not.toContain("data%3Aimage");
-    expect(srcset).toContain(`url=${encodeURIComponent(managedSourceUrl)}`);
+    expect(srcset).toContain(`url=${encodeURIComponent(managedUrl)}`);
+    if (options.deploymentId) expect(srcset).toContain(`dpl=${options.deploymentId}`);
     expect(srcset).not.toContain("data%3Aimage");
   }
 
