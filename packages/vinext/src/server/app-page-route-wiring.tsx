@@ -686,13 +686,13 @@ export function buildAppPageElements<
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     const templateElement = templateDependency ? (
       renderWithAppDependencyBarrier(
-        <TemplateComponent params={options.matchedParams}>
+        <TemplateComponent>
           <Children />
         </TemplateComponent>,
         templateDependency,
       )
     ) : (
-      <TemplateComponent params={options.matchedParams}>
+      <TemplateComponent>
         <Children />
       </TemplateComponent>
     );

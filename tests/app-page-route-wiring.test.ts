@@ -278,7 +278,10 @@ function RootTemplate(props: Record<string, unknown>) {
   return createElement("div", { "data-template": "root" }, readChildren(props.children));
 }
 
+let lastGroupTemplateProps: Record<string, unknown> | null = null;
+
 function GroupTemplate(props: Record<string, unknown>) {
+  lastGroupTemplateProps = props;
   return createElement("div", { "data-template": "group" }, readChildren(props.children));
 }
 
@@ -460,7 +463,7 @@ describe("app page route wiring helpers", () => {
         parts: ["a", "b"],
         slug: "post",
       }),
-    ).toEqual(["blog", "post", "a/b"]);
+    ).toEqual(["blog", "post", "a/b", "__PAGE__"]);
   });
 
   it("builds layout entries from tree paths instead of visible URL segments", () => {
@@ -571,6 +574,7 @@ describe("app page route wiring helpers", () => {
   });
 
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
+    lastGroupTemplateProps = null;
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -628,6 +632,7 @@ describe("app page route wiring helpers", () => {
 
     const html = await renderRouteEntry(elements, "route:/blog/post");
 
+    expect(lastGroupTemplateProps).not.toHaveProperty("params");
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="group"');
     expect(html).toContain('data-template="group"');

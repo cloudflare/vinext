@@ -7,6 +7,7 @@ type AppRouteSegmentConfigModule = {
   dynamic?: unknown;
   dynamicParams?: unknown;
   fetchCache?: unknown;
+  generateStaticParams?: unknown;
   revalidate?: unknown;
   runtime?: unknown;
   unstable_dynamicStaleTime?: unknown;
@@ -21,11 +22,22 @@ type EffectiveAppPageSegmentConfig = {
   runtime?: "edge" | "experimental-edge" | "nodejs";
 };
 
+type ParallelAppPageSegmentConfigBranch = {
+  configLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
+  layout?: AppRouteSegmentConfigModule | null;
+  page?: AppRouteSegmentConfigModule | null;
+  routeSegments?: readonly string[] | null;
+};
+
 type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
+  layoutTreePositions?: readonly number[];
   page?: AppRouteSegmentConfigModule | null;
+  parallelBranches?: readonly (ParallelAppPageSegmentConfigBranch | null | undefined)[];
   parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   parallelSegments?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
+  routeSegments?: readonly string[];
 };
 
 const DYNAMIC_VALUES = new Set<unknown>(["auto", "error", "force-dynamic", "force-static"]);
@@ -83,6 +95,102 @@ function resolveDynamicStaleTimeSeconds(
   return current === undefined ? value : Math.min(current, value);
 }
 
+function isDynamicSegment(segment: string): boolean {
+  return segment.startsWith("[") && segment.endsWith("]");
+}
+
+function getParallelSegments(
+  options: ResolveAppPageSegmentConfigOptions,
+): readonly (AppRouteSegmentConfigModule | null | undefined)[] {
+  if (!options.parallelBranches) return options.parallelSegments ?? [];
+  return options.parallelBranches.flatMap((branch) =>
+    branch ? [branch.layout, ...(branch.configLayouts ?? []), branch.page] : [],
+  );
+}
+
+function resolveDynamicParamsConfig(
+  options: ResolveAppPageSegmentConfigOptions,
+): boolean | undefined {
+  const parallelSegments = getParallelSegments(options);
+  const segments = [...(options.layouts ?? []), options.page, ...parallelSegments];
+  let dynamicParamsConfig: boolean | undefined;
+
+  for (const segment of segments) {
+    if (segment?.dynamicParams === false) {
+      dynamicParamsConfig = false;
+    } else if (segment?.dynamicParams === true && dynamicParamsConfig !== false) {
+      dynamicParamsConfig = true;
+    }
+  }
+
+  if (dynamicParamsConfig !== false || !options.routeSegments) {
+    return dynamicParamsConfig;
+  }
+
+  let lastDynamicPosition = -1;
+  for (let index = options.routeSegments.length - 1; index >= 0; index--) {
+    if (isDynamicSegment(options.routeSegments[index])) {
+      lastDynamicPosition = index;
+      break;
+    }
+  }
+  if (lastDynamicPosition < 0) return dynamicParamsConfig;
+
+  const layouts = options.layouts ?? [];
+  const layoutPositions = options.layoutTreePositions ?? [];
+  let lastDynamicSegmentIsStaticOnly = false;
+  let lastDynamicSegmentHasStaticParams = false;
+
+  layouts.forEach((layout, index) => {
+    const ownerPosition = (layoutPositions[index] ?? 0) - 1;
+    if (ownerPosition !== lastDynamicPosition) return;
+    if (layout?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+    if (typeof layout?.generateStaticParams === "function") {
+      lastDynamicSegmentHasStaticParams = true;
+    }
+  });
+
+  if (options.page?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+  if (typeof options.page?.generateStaticParams === "function") {
+    lastDynamicSegmentHasStaticParams = true;
+  }
+
+  for (const branch of options.parallelBranches ?? []) {
+    if (!branch) continue;
+    const branchStartPosition = options.routeSegments.length - (branch.routeSegments?.length ?? 0);
+    const checkSegment = (
+      segment: AppRouteSegmentConfigModule | null | undefined,
+      ownerPosition: number,
+    ) => {
+      if (ownerPosition !== lastDynamicPosition) return;
+      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+      if (typeof segment?.generateStaticParams === "function") {
+        lastDynamicSegmentHasStaticParams = true;
+      }
+    };
+
+    checkSegment(branch.layout, branchStartPosition - 1);
+    branch.configLayouts?.forEach((layout, index) => {
+      checkSegment(
+        layout,
+        branchStartPosition + (branch.configLayoutTreePositions?.[index] ?? 0) - 1,
+      );
+    });
+    checkSegment(branch.page, branchStartPosition + (branch.routeSegments?.length ?? 0) - 1);
+  }
+
+  if (!options.parallelBranches) {
+    for (const segment of parallelSegments) {
+      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
+      if (typeof segment?.generateStaticParams === "function") {
+        lastDynamicSegmentHasStaticParams = true;
+      }
+    }
+  }
+
+  return lastDynamicSegmentIsStaticOnly || lastDynamicSegmentHasStaticParams ? false : undefined;
+}
+
 function isCacheFetchCacheMode(value: FetchCacheMode): boolean {
   return value === "default-cache" || value === "force-cache" || value === "only-cache";
 }
@@ -103,6 +211,7 @@ export function resolveAppPageSegmentConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): EffectiveAppPageSegmentConfig {
   const segments = [...(options.layouts ?? []), options.page];
+  const parallelSegments = getParallelSegments(options);
   // Reduction strategies differ by field:
   // - dynamic: child segments override parents.
   // - dynamicParams: false is sticky across the route tree.
@@ -111,6 +220,7 @@ export function resolveAppPageSegmentConfig(
   const config: EffectiveAppPageSegmentConfig = {
     revalidateSeconds: null,
   };
+  config.dynamicParamsConfig = resolveDynamicParamsConfig(options);
   let hasForceCache = false;
   let hasForceNoStore = false;
   let hasOnlyCache = false;
@@ -130,12 +240,6 @@ export function resolveAppPageSegmentConfig(
 
     if (isRouteSegmentRuntime(segment.runtime)) {
       config.runtime = segment.runtime;
-    }
-
-    if (segment.dynamicParams === false) {
-      config.dynamicParamsConfig = false;
-    } else if (segment.dynamicParams === true && config.dynamicParamsConfig !== false) {
-      config.dynamicParamsConfig = true;
     }
 
     if (isRouteSegmentFetchCache(segment.fetchCache)) {
@@ -180,7 +284,7 @@ export function resolveAppPageSegmentConfig(
     );
   }
 
-  for (const segment of options.parallelSegments ?? []) {
+  for (const segment of parallelSegments) {
     if (!segment) continue;
 
     // Next.js traverses every parallel branch. Vinext's flattened route graph
@@ -193,12 +297,6 @@ export function resolveAppPageSegmentConfig(
       config.dynamicConfig = "force-dynamic";
     } else if (config.dynamicConfig === undefined && isRouteSegmentDynamic(segment.dynamic)) {
       config.dynamicConfig = segment.dynamic;
-    }
-
-    if (segment.dynamicParams === false) {
-      config.dynamicParamsConfig = false;
-    } else if (segment.dynamicParams === true && config.dynamicParamsConfig === undefined) {
-      config.dynamicParamsConfig = true;
     }
 
     if (config.runtime === undefined && isRouteSegmentRuntime(segment.runtime)) {
@@ -256,14 +354,6 @@ export function resolveAppPageSegmentConfig(
     if (config.dynamicConfig === "error") {
       config.fetchCache = "only-cache";
     }
-  }
-
-  // Static-only dynamic modes change the default, but explicit dynamicParams wins.
-  if (
-    config.dynamicParamsConfig === undefined &&
-    (config.dynamicConfig === "error" || config.dynamicConfig === "force-static")
-  ) {
-    config.dynamicParamsConfig = false;
   }
 
   return config;

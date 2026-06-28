@@ -2,7 +2,7 @@ import {
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_REQUEST_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
-} from "./headers.js";
+} from "./protocol-headers.js";
 const CREDENTIAL_REQUEST_HEADERS = ["authorization", "cookie"] as const;
 
 type MiddlewareHeaderValue = string | string[];

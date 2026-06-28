@@ -55,12 +55,12 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
-} from "../packages/vinext/src/server/dev-error-overlay.js";
+} from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
   reportToOverlay,
   subscribeOverlay,
-} from "../packages/vinext/src/server/dev-error-overlay-store.js";
+} from "../packages/vinext/src/client/dev-error-overlay-store.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../packages/vinext/src/utils/dev-error-recovery-event.js";
 import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,

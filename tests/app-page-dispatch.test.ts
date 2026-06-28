@@ -269,6 +269,7 @@ type CreateDispatchOptionsOverrides = {
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
+  dynamicParamsConfig?: DispatchOptions["dynamicParamsConfig"];
   findIntercept?: DispatchOptions["findIntercept"];
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
@@ -332,6 +333,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     },
     draftModeSecret: "draft-secret",
     dynamicConfig: overrides.dynamicConfig,
+    dynamicParamsConfig: overrides.dynamicParamsConfig,
     ensureRouteLoaded: overrides.ensureRouteLoaded,
     findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
@@ -1867,6 +1869,61 @@ describe("app page dispatch", () => {
       ...options,
       dynamicParamsConfig: false,
     });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("This page could not be found");
+  });
+
+  it('renders dynamic = "error" routes without generateStaticParams', async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      dynamicConfig: "error",
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalled();
+  });
+
+  for (const dynamicParamsConfig of [undefined, true] as const) {
+    it(`renders unknown generated params under dynamic = "error" when dynamicParams is ${
+      dynamicParamsConfig === undefined ? "implicit" : "true"
+    }`, async () => {
+      const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        dynamicConfig: "error",
+        dynamicParamsConfig,
+        async generateStaticParams() {
+          return [{ slug: "known" }];
+        },
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(buildPageElement).toHaveBeenCalled();
+    });
+  }
+
+  it('returns not found for unknown generated params under dynamic = "error" when dynamicParams is false', async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      dynamicConfig: "error",
+      dynamicParamsConfig: false,
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toBe("This page could not be found");

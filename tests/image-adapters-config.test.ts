@@ -7,7 +7,7 @@
  *    descriptor options and the double-registration guard.
  *  - The image optimizer registry in server/image-optimization.ts
  *    (setImageOptimizer / getImageOptimizer / handleConfiguredImageOptimization).
- *  - The Cloudflare image adapter: its config-time builder (imageAdapter) and its
+ *  - The Cloudflare image optimizer: its config-time builder (imagesOptimizer) and its
  *    runtime factory default export.
  *  - Registration wiring into the Pages worker entry + App Router RSC entry image
  *    config exports.
@@ -25,8 +25,8 @@ import {
   type ImageOptimizer,
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
-import { imageAdapter } from "../packages/cloudflare/src/images/images-optimizer.js";
+import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/init-cloudflare.js";
+import { imagesOptimizer } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 
 describe("generateImageAdaptersModule", () => {
@@ -159,18 +159,18 @@ describe("image optimizer registry", () => {
   });
 });
 
-describe("imageAdapter builder", () => {
+describe("imagesOptimizer builder", () => {
   it("resolves the runtime factory to an absolute path without touching the Workers runtime", () => {
-    const descriptor = imageAdapter({ binding: "MY_IMAGES" });
+    const descriptor = imagesOptimizer({ binding: "MY_IMAGES" });
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("images-optimizer.runtime.js")).toBe(true);
     expect(descriptor.options).toEqual({ binding: "MY_IMAGES" });
-    expect(imageAdapter().options).toBeUndefined();
+    expect(imagesOptimizer().options).toBeUndefined();
   });
 
   it("validates the binding option at config time", () => {
     // @ts-expect-error — binding must be a string
-    expect(() => imageAdapter({ binding: 123 })).toThrow(/binding/);
+    expect(() => imagesOptimizer({ binding: 123 })).toThrow(/binding/);
   });
 });
 

@@ -24,6 +24,10 @@ import type { ViteDevServer } from "vite-plus";
 import { startFixtureServer, fetchHtml } from "../helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "../fixtures/global-not-found-basic");
+const NOT_PRESENT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/global-not-found-not-present",
+);
 
 /**
  * Extract the href of every `<link rel="stylesheet">` tag in the SSR markup,
@@ -144,5 +148,40 @@ describe("Next.js compat: global-not-found (basic)", () => {
     // global-not-found document must NOT be used for page-call notFound().
     expect(html).not.toContain('data-global-not-found="true"');
     expect(html).not.toContain('id="global-error-title"');
+  });
+});
+
+describe("Next.js compat: global-not-found (not present)", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(NOT_PRESENT_FIXTURE_DIR, {
+      appRouter: true,
+    }));
+  }, 60_000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/global-not-found/not-present/not-present.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/global-not-found/not-present/not-present.test.ts
+  it("renders the default 404 for a route miss when global-not-found is absent", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/does-not-exist");
+    expect(res.status).toBe(404);
+    expect(html).toContain("404");
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("not-found.js");
+    expect(html).not.toContain('lang="en"');
+    expect((html.match(/<html/gi) ?? []).length).toBe(1);
+    expect((html.match(/<body/gi) ?? []).length).toBe(1);
+  });
+
+  it("keeps the root not-found boundary for explicit notFound()", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/call-not-found");
+    expect(res.status).toBe(404);
+    expect(html).toContain('lang="en"');
+    expect(html).toContain("not-found.js");
   });
 });

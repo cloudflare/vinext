@@ -136,7 +136,7 @@ export default defineConfig({
       "Add the Cloudflare Vite plugin, Workers KV caching, and Cloudflare Images optimization.",
     code: `import { cloudflare } from "@cloudflare/vite-plugin";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
-import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { defineConfig } from "vite";
 import vinext from "vinext";
 
@@ -147,7 +147,7 @@ export default defineConfig({
         data: kvDataAdapter(),
       },
       images: {
-        optimizer: imageAdapter(),
+        optimizer: imagesOptimizer(),
       },
     }),
     cloudflare({

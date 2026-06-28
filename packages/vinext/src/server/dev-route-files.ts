@@ -59,6 +59,19 @@ function isRootGlobalError(parts: readonly string[], matcher: ValidFileMatcher):
 function isMetadataRouteFile(parts: readonly string[]): boolean {
   const fileName = parts[parts.length - 1];
   if (!fileName) return false;
+
+  // `opengraph-image.alt.txt` / `twitter-image.alt.txt` supply alt text for a
+  // static social image. They are not standalone routes, but scanMetadataFiles
+  // folds them into the image route's `altFilePath` via an existsSync probe, so
+  // adding/removing one must also invalidate the cached metadata scan in dev.
+  if (fileName.endsWith(".alt.txt")) {
+    const imageBaseName = fileName.slice(0, -".alt.txt".length);
+    return (
+      matchMetadataFileBaseName("opengraph-image", imageBaseName) !== null ||
+      matchMetadataFileBaseName("twitter-image", imageBaseName) !== null
+    );
+  }
+
   const { baseName, extension } = stripLastExtension(fileName);
   if (!extension) return false;
 

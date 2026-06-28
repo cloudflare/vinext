@@ -129,6 +129,7 @@ export type PendingNavigationCommit = {
   previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
+  restoredHistorySnapshot?: boolean;
   skippedLayoutIds: readonly string[];
 };
 
@@ -406,7 +407,9 @@ function createMountedParallelSlotSnapshots(
 
 function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(state.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
+  const matchedUrl =
+    state.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: state.interception,
@@ -429,9 +432,9 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
 
 function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshot {
   const displayUrl = createSnapshotPathAndSearch(pending.action.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
-    pending.action.navigationSnapshot.pathname,
-  );
+  const matchedUrl =
+    pending.action.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(pending.action.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: pending.action.interception,
@@ -505,6 +508,7 @@ function planPendingRootBoundaryFlightResponse(options: {
       kind: "flightResponseArrived",
       result: {
         ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
+        ...(options.pending.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
         // Approval call sites must pass the executor's targetHref so the
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition

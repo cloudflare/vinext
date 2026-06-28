@@ -10,6 +10,7 @@ packages:
   - packages/*
   - examples/*
   - tests/fixtures/*
+  - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
 
@@ -62,6 +63,7 @@ catalog:
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   "@mswjs/interceptors": ^0.41.3
+  am-i-vibing: ^0.5.0
   msw: ^2.14.6
   ms: 3.0.0-canary.1
   next: 16.2.7
