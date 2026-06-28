@@ -912,7 +912,7 @@ export function buildAppPageElements<
   }
 
   let routeChildren: ReactNode = (
-    <LayoutSegmentProvider segmentMap={{ children: [] }}>
+    <LayoutSegmentProvider segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}>
       <Slot id={pageId} />
     </LayoutSegmentProvider>
   );
