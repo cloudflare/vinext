@@ -82,6 +82,18 @@ test.describe("Parallel Routes", () => {
     const response = await page.goto(`${BASE}/dashboard/team`);
     expect(response?.status()).toBe(404);
   });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/parallel-routes-leaf-segments.no-build-error.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/parallel-routes-leaf-segments.no-build-error.test.ts
+  test("slot-only leaf route renders the children default", async ({ page }) => {
+    await page.goto(`${BASE}/parallel-leaf-default/other`);
+
+    await expect(page.getByTestId("parallel-leaf-slot")).toHaveText("Parallel leaf other slot");
+    await expect(page.getByTestId("parallel-leaf-children")).toHaveText(
+      "Parallel leaf children default",
+    );
+  });
 });
 
 test.describe("Intercepting Routes", () => {

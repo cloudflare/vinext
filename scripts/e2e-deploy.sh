@@ -643,7 +643,7 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
+run_pnpm exec vinext init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
 
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 

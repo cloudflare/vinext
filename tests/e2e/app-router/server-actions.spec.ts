@@ -323,6 +323,27 @@ test.describe("Server Actions", () => {
     );
   });
 
+  // Matches Next.js v16.2.6 action rerender ordering in action-handler.ts:
+  // synchronize mutable cookies, update workStore.isDraftMode, then rerender.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/action-handler.ts
+  test("same-route action rerenders apply draft mode before rebuilding cache context", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/action-draft-cache`);
+    await waitForAppRouterHydration(page);
+
+    const initialCachedData = await page.locator("#cached-data").textContent();
+    await expect(page.locator("#draft-mode-enabled")).toHaveText("false");
+
+    await page.click("#enable-draft");
+    await expect(page.locator("#draft-mode-enabled")).toHaveText("true");
+    await expect(page.locator("#cached-data")).not.toHaveText(initialCachedData ?? "");
+
+    await page.click("#disable-draft");
+    await expect(page.locator("#draft-mode-enabled")).toHaveText("false");
+    await expect(page.locator("#cached-data")).toHaveText(initialCachedData ?? "");
+  });
+
   test("action-redirect-test page SSR renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");

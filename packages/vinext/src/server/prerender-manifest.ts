@@ -8,12 +8,14 @@ type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
+  headers?: Record<string, string>;
 };
 
-type PrerenderManifest = {
+export type PrerenderManifest = {
   buildId?: string;
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
+  pregeneratedConcretePaths?: Array<[string, string[]]>;
 };
 
 export function readPrerenderManifest(manifestPath: string): PrerenderManifest | null {

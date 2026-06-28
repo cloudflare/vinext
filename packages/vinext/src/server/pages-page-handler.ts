@@ -48,6 +48,7 @@ import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js"
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +89,15 @@ type VinextConfigSubset = {
   clientTraceMetadata?: readonly string[];
   disableOptimizedLoading: boolean;
 };
+
+export function shouldEmitPagesClientTraceMetadata(
+  pageModule: PagesPageModule,
+  appComponent: unknown,
+): boolean {
+  if (typeof pageModule.getServerSideProps === "function") return true;
+  if (typeof pageModule.getStaticProps === "function") return false;
+  return hasPagesGetInitialProps(pageModule.default) || hasPagesGetInitialProps(appComponent);
+}
 
 /**
  * Options accepted by `createPagesPageHandler`.
@@ -734,7 +744,9 @@ export function createPagesPageHandler(
           getFontLinks,
           getFontStyles,
           getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-          clientTraceMetadata: vinextConfig.clientTraceMetadata,
+          clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
+            ? vinextConfig.clientTraceMetadata
+            : undefined,
           gsspRes,
           isrCacheKey: pageIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,

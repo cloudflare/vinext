@@ -51,6 +51,7 @@ import {
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
+  APP_PAGE_SEGMENT_KEY,
   resolveAppPageChildSegments,
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
@@ -389,6 +390,15 @@ export function createAppPageSourcePage(
   return `/${[...(routeSegments ?? []), "page"].join("/")}`;
 }
 
+function resolveAppPageLayoutSegmentProviderSegments(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): string[] {
+  const segments = resolveAppPageChildSegments(routeSegments, treePosition, params);
+  return segments.at(-1) === APP_PAGE_SEGMENT_KEY ? segments.slice(0, -1) : segments;
+}
+
 function createAppPageErrorEntries<TErrorModule extends AppPageErrorModule>(
   route: Pick<
     AppPageRouteWiringRoute<AppPageModule, TErrorModule>,
@@ -432,7 +442,7 @@ function createAppPageParallelSlotEntries<
     const routeSegments =
       resolveSlotOverride(slotKey, slotName)?.routeSegments ?? slot.routeSegments;
     const slotSegments = routeSegments
-      ? resolveAppPageChildSegments(routeSegments, 0, slotParams)
+      ? resolveAppPageLayoutSegmentProviderSegments(routeSegments, 0, slotParams)
       : [];
     parallelSlots[slotName] = (
       <LayoutSegmentProvider segmentMap={{ children: slotSegments }}>
@@ -694,13 +704,13 @@ export function buildAppPageElements<
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     const templateElement = templateDependency ? (
       renderWithAppDependencyBarrier(
-        <TemplateComponent params={options.matchedParams}>
+        <TemplateComponent>
           <Children />
         </TemplateComponent>,
         templateDependency,
       )
     ) : (
-      <TemplateComponent params={options.matchedParams}>
+      <TemplateComponent>
         <Children />
       </TemplateComponent>
     );
@@ -1086,7 +1096,7 @@ export function buildAppPageElements<
     const layoutHasElement = getDefaultExport(layoutEntry.layoutModule) !== null;
     const layoutIndex = layoutIndicesByTreePosition.get(treePosition) ?? -1;
     const segmentMap: { children: string[] } & Record<string, string[]> = {
-      children: resolveAppPageChildSegments(
+      children: resolveAppPageLayoutSegmentProviderSegments(
         options.route.childrenRouteSegments ?? routeSegments,
         layoutEntry.treePosition,
         options.matchedParams,
@@ -1111,7 +1121,7 @@ export function buildAppPageElements<
       }
       const slotRouteSegments = slotOverride?.routeSegments ?? slot.routeSegments;
       segmentMap[slotName] = slotRouteSegments
-        ? resolveAppPageChildSegments(slotRouteSegments, 0, slotParams)
+        ? resolveAppPageLayoutSegmentProviderSegments(slotRouteSegments, 0, slotParams)
         : [];
     }
 

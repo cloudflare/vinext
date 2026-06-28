@@ -55,12 +55,12 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
-} from "../packages/vinext/src/server/dev-error-overlay.js";
+} from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
   reportToOverlay,
   subscribeOverlay,
-} from "../packages/vinext/src/server/dev-error-overlay-store.js";
+} from "../packages/vinext/src/client/dev-error-overlay-store.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../packages/vinext/src/utils/dev-error-recovery-event.js";
 import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
@@ -88,6 +88,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
+  isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
@@ -1996,11 +1997,12 @@ describe("app browser entry state helpers", () => {
     ]);
   });
 
-  it("does not classify unproofed payload metadata as cache-restorable", () => {
+  it("classifies complete dynamic payload metadata as client-cacheable", () => {
     const elements = createResolvedElements("route:/dashboard/settings", "/", null, {
       "page:/dashboard/settings": React.createElement("main", null, "settings"),
     });
 
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(true);
     expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
@@ -2018,7 +2020,7 @@ describe("app browser entry state helpers", () => {
       [layoutId],
     );
 
-    expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
+    expect(isCompleteAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
 
   it("traces unknown root-layout identity without preserving absent slots", async () => {
@@ -3891,6 +3893,107 @@ describe("app browser navigation controller", () => {
 });
 
 describe("app browser navigation lifecycle settlement", () => {
+  it("lets an authoritative payload replace a detached commit from the same navigation", async () => {
+    const { controller, detach, stateRef } = createControllerHarness();
+
+    try {
+      const navId = controller.beginNavigation();
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "optimistic"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "detached",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "optimistic" },
+      });
+
+      void controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "authoritative"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "authoritative",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "authoritative" },
+      });
+      expect(stateRef.current.activeOperation).toMatchObject({
+        navigationId: navId,
+        state: "committed",
+      });
+
+      const lateDetachedOutcome = controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/items?filter=active",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/items", "/", null, {
+            "page:/items": React.createElement("main", null, "late detached"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/items?filter=active",
+        navId,
+        navigationCommitKind: "detached",
+      });
+
+      await expect(lateDetachedOutcome).resolves.toBe("no-commit");
+      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+        props: { children: "authoritative" },
+      });
+    } finally {
+      detach();
+    }
+  });
+
   it("most recent navigation commits when three are started and payloads resolve in reverse order", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
     let resolveA!: (elements: AppElements) => void;

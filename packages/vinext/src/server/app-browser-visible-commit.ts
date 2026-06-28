@@ -92,6 +92,10 @@ function commitOperationRecord(
   return {
     id: operation.id,
     lane: operation.lane,
+    ...(operation.navigationCommitKind !== undefined
+      ? { navigationCommitKind: operation.navigationCommitKind }
+      : {}),
+    ...(operation.navigationId !== undefined ? { navigationId: operation.navigationId } : {}),
     startedVisibleCommitVersion: operation.startedVisibleCommitVersion,
     state: "committed",
     visibleCommitVersion,
@@ -423,6 +427,8 @@ export async function resolveAndClassifyNavigationCommit(options: {
 }): Promise<ClassifiedPendingNavigationCommit> {
   const pending = await createPendingNavigationCommit({
     currentState: options.currentState,
+    navigationCommitKind: undefined,
+    navigationId: options.startedNavigationId,
     nextElements: options.nextElements,
     navigationSnapshot: options.navigationSnapshot,
     operationLane: options.operationLane,

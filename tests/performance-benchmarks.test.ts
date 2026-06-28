@@ -937,6 +937,7 @@ process.stdout.write(JSON.stringify(response));
       env: {
         ...process.env,
         PATH: `${directory}:${process.env.PATH}`,
+        GITHUB_REPOSITORY: "cloudflare/vinext",
         GITHUB_TOKEN: "test",
         VINEXT_PERF_SOURCE_EVENT: sourceEvent,
         VINEXT_PERF_SOURCE_RUN_ID: "123",

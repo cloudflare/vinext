@@ -953,6 +953,14 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
     );
+    expect(code).toContain("parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({");
+    expect(code).toContain("paramNames: slot.slotParamNames");
+    expect(code).toContain("patternParts: slot.slotPatternParts");
+    expect(code).toContain("layout: slot.layout");
+    expect(code).toContain("configLayouts: slot.configLayouts");
+    expect(code).toContain("configLayoutTreePositions: slot.configLayoutTreePositions");
+    expect(code).toContain("routeSegments: slot.routeSegments");
+    expect(code).toContain("routePatternParts: route.patternParts");
     expect(code).toContain("slot.page ?? slot.default");
     expect(code).toContain("...(slot.configLayouts ?? [])");
     expect(code).toContain("interceptLayoutSegments:");
@@ -977,6 +985,7 @@ describe("App Router entry templates", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
     // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
       globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
     });
 
@@ -989,9 +998,23 @@ describe("App Router entry templates", () => {
   });
 
   it("generateRscEntry emits a null global-not-found loader when no path is provided", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
+    });
 
     expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: true");
+    expect(code).not.toContain("global-not-found.tsx");
+  });
+
+  it("generateRscEntry ignores global-not-found modules when the feature is disabled", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: false,
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: false");
     expect(code).not.toContain("global-not-found.tsx");
   });
 
@@ -1147,6 +1170,31 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("vinext/instrumentation-client");
       // No spurious bare imports referring to a non-existent project file.
       expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the React preamble when the React plugin is disabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-preamble-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { reactPreamble: false },
+      );
+
+      expect(code).not.toContain("@vitejs/plugin-react/preamble");
+      expect(code).toContain("hydrateRoot(");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
