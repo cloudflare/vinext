@@ -108,6 +108,18 @@ describe("resolveMiddlewareRewriteNavigationInterceptionContext", () => {
     ).toBe("/interception-mw/en");
   });
 
+  it("uses the middleware-matched source pathname from the current route state", () => {
+    expect(
+      resolveMiddlewareRewriteNavigationInterceptionContext({
+        basePath: "",
+        currentMatchedPathname: "/interception-mw/en",
+        currentPathname: "/interception-mw",
+        routeManifest: createRouteManifest([localePhotoInterception]),
+        targetPathname: "/interception-mw/foo/p/1",
+      }),
+    ).toBe("/interception-mw/en");
+  });
+
   it("does not infer fallback context when the target cannot be an intercepted route", () => {
     expect(
       resolveMiddlewareRewriteNavigationInterceptionContext({

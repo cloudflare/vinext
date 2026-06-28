@@ -164,6 +164,17 @@ ensure_python_command_for_native_builds() {
   echo "Added python -> ${python3_bin} shim for native addon builds" >> "${BUILD_LOG}"
 }
 
+detach_symlinked_node_modules() {
+  if [ ! -L "node_modules" ]; then
+    return
+  fi
+
+  local target
+  target="$(readlink "node_modules" || true)"
+  rm -f "node_modules"
+  echo "Detached symlinked node_modules${target:+ -> ${target}} before install; pnpm will create a local modules directory." >> "${BUILD_LOG}"
+}
+
 read_build_id() {
   if [ -f "dist/server/BUILD_ID" ]; then
     cat "dist/server/BUILD_ID"
@@ -619,6 +630,7 @@ ensure_python_command_for_native_builds
 # written to node_modules — but the exit code is 1. Tolerate this by
 # verifying that the vinext local package was linked into node_modules.
 INSTALL_LOG="$(mktemp)"
+detach_symlinked_node_modules
 run_pnpm install --strict-peer-dependencies=false --no-frozen-lockfile > "${INSTALL_LOG}" 2>&1 || true
 # Dependency-manager deprecation summaries describe the deploy harness's own
 # transitive dependencies, not the application under test. Keep the rest of
@@ -643,7 +655,7 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-run_pnpm exec vinext init --skip-check --force >> "${BUILD_LOG}" 2>&1
+run_pnpm exec vinext init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
 
 run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
 

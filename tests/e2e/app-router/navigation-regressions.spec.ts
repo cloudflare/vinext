@@ -146,8 +146,11 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     // Cross-route: list -> query-sync
     await page.click("#to-query-sync");
     await expect(page.locator("#query-title")).toHaveText("Search", { timeout: 10_000 });
+    await expect(page.locator("#query-loading")).toBeVisible();
 
-    // Same-route: change query param
+    // Start the same-route navigation while the committed cross-route RSC
+    // stream is still resolving its Suspense boundary. Superseding the request
+    // must not abort a stream that already owns the mounted tree.
     await page.click("#link-react");
     await expect(page.locator("#query-title")).toHaveText("Search: react", { timeout: 10_000 });
     await expect(page.locator("#hook-query")).toHaveText("q: react");

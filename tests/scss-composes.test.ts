@@ -29,7 +29,7 @@
  */
 
 import { describe, it, expect } from "vite-plus/test";
-import { build } from "vite-plus";
+import { build, createBuilder } from "vite-plus";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -111,6 +111,33 @@ async function buildAndCollect(tmpDir: string): Promise<{ css: string; js: strin
   }
 }
 
+async function buildHybridAndCollect(tmpDir: string): Promise<{ css: string; js: string }> {
+  const builder = await createBuilder({
+    root: tmpDir,
+    configFile: false,
+    plugins: [vinext({ appDir: tmpDir })],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+  const clientDir = path.join(tmpDir, "dist", "client");
+  const files = await fs.readdir(clientDir, { withFileTypes: true, recursive: true });
+  const cssFiles = files.filter((entry) => entry.isFile() && entry.name.endsWith(".css"));
+  const jsFiles = files.filter((entry) => entry.isFile() && entry.name.endsWith(".js"));
+  const readOutput = async (entries: typeof files) =>
+    (
+      await Promise.all(
+        entries.map((entry) => {
+          const parent =
+            (entry as { parentPath?: string; path?: string }).parentPath ??
+            (entry as { path?: string }).path ??
+            clientDir;
+          return fs.readFile(path.join(parent, entry.name), "utf8");
+        }),
+      )
+    ).join("\n");
+  return { css: await readOutput(cssFiles), js: await readOutput(jsFiles) };
+}
+
 const PAGE = [
   'import styles from "../styles/index.module.scss";',
   "export default function Home() {",
@@ -120,6 +147,32 @@ const PAGE = [
 ].join("\n");
 
 describe("SCSS CSS-module composes (production build)", () => {
+  // Ported from Next.js: test/e2e/app-dir/scss/nm-module/nm-module.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/scss/nm-module/nm-module.test.ts
+  it("emits a directly imported .module.scss from node_modules in hybrid builds (nm-module)", async () => {
+    const tmpDir = await makeFixture({
+      "app/layout.tsx":
+        "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+      "pages/index.js": [
+        'import * as classes from "example/index.module.scss";',
+        "export default function Home() {",
+        '  return <div className={classes["red-text"]}>node module</div>;',
+        "}",
+        "",
+      ].join("\n"),
+      "node_modules/example/package.json": JSON.stringify({ name: "example", version: "1.0.0" }),
+      "node_modules/example/index.module.scss": "$var: red;\n.red-text {\n  color: $var;\n}\n",
+    });
+    try {
+      const { css, js } = await buildHybridAndCollect(tmpDir);
+      expect(css).not.toContain("$var");
+      expect(css).toContain("color:red");
+      expect(js).toMatch(/_red-text_[\w-]+/);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+
   it("composes from an external .module.scss containing SCSS syntax (composes-external)", async () => {
     const tmpDir = await makeFixture({
       "pages/index.tsx": PAGE,
