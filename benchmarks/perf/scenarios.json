@@ -17,6 +17,23 @@
       "command": ["npm", "install"],
       "cwd": "benchmarks/nextjs",
       "implementationId": "nextjs"
+    },
+    {
+      "command": [
+        "node",
+        "benchmarks/generate-app.mjs",
+        "--extra",
+        "5000",
+        "--target",
+        "nextjs-large"
+      ],
+      "trusted": true,
+      "implementationId": "nextjs-large"
+    },
+    {
+      "command": ["npm", "install"],
+      "cwd": "benchmarks/nextjs-large",
+      "implementationId": "nextjs-large"
     }
   ],
   "scenarios": [
@@ -72,10 +89,17 @@
       "id": "production-build-large",
       "suite": "Build",
       "label": "Production build time (5000 routes)",
-      "description": "Clean production build of a generated 5000-route app. Stress scenario that surfaces super-linear build-time effects (e.g. route-graph scanning) which are invisible at the default app size. vinext only; uses a separate fixture so the headline comparison is unaffected.",
+      "description": "Clean production build of a generated 5000-route app. Stress scenario that surfaces super-linear build-time effects (e.g. route-graph scanning) invisible at the default app size, and compares vinext vs Next.js (Turbopack) at scale. Uses separate fixtures so the headline default-size comparison is unaffected.",
       "unit": "ms",
       "lowerIsBetter": true,
       "implementations": [
+        {
+          "id": "nextjs-large",
+          "label": "Next.js",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/build-time.mjs", "nextjs-large"]
+        },
         {
           "id": "vinext-large",
           "label": "vinext",

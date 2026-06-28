@@ -1,0 +1,14 @@
+{
+  "name": "benchmark-nextjs-large",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --turbopack",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.2.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  }
+}

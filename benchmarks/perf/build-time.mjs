@@ -26,8 +26,11 @@ function targetEnvironment() {
 }
 
 const isVinext = framework === "vinext" || framework === "vinext-large";
-if (!isVinext && framework !== "nextjs") {
-  console.error("Usage: node benchmarks/perf/build-time.mjs <vinext|vinext-large|nextjs>");
+const isNext = framework === "nextjs" || framework === "nextjs-large";
+if (!isVinext && !isNext) {
+  console.error(
+    "Usage: node benchmarks/perf/build-time.mjs <vinext|vinext-large|nextjs|nextjs-large>",
+  );
   process.exit(1);
 }
 

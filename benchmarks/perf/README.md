@@ -107,3 +107,11 @@ VINEXT_BENCH_EXTRA_ROUTES=10000 node benchmarks/generate-app.mjs
 The default (`0`) keeps the canonical 33-route app, so this is opt-in and does
 not change existing benchmark numbers. Larger scales are useful for catching
 super-linear regressions that are invisible at small route counts.
+
+The CI workflow runs a fixed **5000-route** stress scenario
+("Production build time (5000 routes)") against the separate
+`benchmarks/vinext-large` and `benchmarks/nextjs-large` fixtures
+(`generate-app.mjs --extra 5000 --target <name>`), comparing vinext against
+Next.js (Turbopack) at scale without touching the default-size scenarios. Like
+the default Next.js benchmark, the Turbopack side runs on `main` and is skipped
+on pull requests unless its inputs change.
