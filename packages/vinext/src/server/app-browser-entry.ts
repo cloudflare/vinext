@@ -2134,6 +2134,9 @@ function bootstrapHydration(
                     ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
                     : {}),
                 }),
+            // A navigation that consumes prefetched Flight data keeps that
+            // prefetch freshness window when committed, matching Next's
+            // segment-cache handoff instead of recomputing dynamic freshness.
             ...(navResponseExpiresAt !== undefined ? { expiresAt: navResponseExpiresAt } : {}),
             mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
           };

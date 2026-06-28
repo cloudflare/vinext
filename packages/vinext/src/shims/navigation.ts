@@ -366,7 +366,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   }
   const seconds = cached.dynamicStaleTimeSeconds;
   if (!isDynamicStaleTimeSeconds(seconds)) {
-    return timestamp + fallbackTtlMs;
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   return timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
 }

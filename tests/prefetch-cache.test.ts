@@ -465,7 +465,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
-  it("honors an explicit fallback stale window for prefetched responses", async () => {
+  it("honors an explicit fallback stale window above the minimum for prefetched responses", async () => {
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/auto-full.rsc";
@@ -476,11 +476,32 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { fallbackTtlMs: DYNAMIC_NAVIGATION_CACHE_TTL },
+      { fallbackTtlMs: 60_000 },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
-    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + DYNAMIC_NAVIGATION_CACHE_TTL);
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 60_000);
+  });
+
+  it("floors explicit fallback stale windows for prefetched responses", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/short-static-stale-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 5_000 },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    // Ported from Next.js segment-cache prefetch behavior:
+    // packages/next/src/client/components/segment-cache/cache.ts:getStaleTimeMs
+    // clamps all configured prefetch stale times to at least 30s.
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
   it("uses Next.js's minimum prefetch stale window for server stale time zero", async () => {
@@ -510,6 +531,9 @@ describe("prefetch cache eviction", () => {
     // clamps prefetch stale time to at least 30s so too-short server stale
     // times do not prevent prefetching from being useful.
     expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+
+    const consumed = consumePrefetchResponse(rscUrl, null, null);
+    expect(consumed?.expiresAt).toBe(now + 30_000);
   });
 
   it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {

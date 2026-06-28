@@ -71,6 +71,28 @@ describe("visited response cache freshness", () => {
     );
   });
 
+  it("inherits the expiry carried by a consumed prefetch snapshot", () => {
+    const now = 1_000_000;
+    const prefetchedExpiresAt = now + 30_000;
+    const entry = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: {},
+      response: createCachedResponse({
+        dynamicStaleTimeSeconds: 0,
+        expiresAt: prefetchedExpiresAt,
+      }),
+    });
+
+    expect(entry.expiresAt).toBe(prefetchedExpiresAt);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "navigate",
+        now: now + 29_999,
+      }),
+    ).toBe(true);
+  });
+
   it("retains decoded committed elements for partial Flight payload reuse", () => {
     // Ported from Next.js: test/e2e/app-dir/app-client-cache/client-cache.original.test.ts
     const elements = { "page:/dynamic": "cached page" } satisfies AppElements;
