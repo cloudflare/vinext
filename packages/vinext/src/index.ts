@@ -109,7 +109,7 @@ import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 
-import { scanMetadataFiles } from "./server/metadata-routes.js";
+import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
 import {
   runPagesRequest,
@@ -3500,6 +3500,7 @@ export const loadServerActionClient = ${
 
         function invalidateAppRoutingModules() {
           invalidateAppRouteCache();
+          invalidateMetadataFileCache();
           invalidateRscEntryModule();
           invalidateRootParamsModule();
         }
