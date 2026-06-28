@@ -14,8 +14,6 @@
  * `entries/pages-client-entry.ts`). Hybrid builds expose both globals; a
  * single-router build only sets its own.
  */
-import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
-import { compareHybridRoutePatterns } from "../../routing/utils.js";
 import {
   isExternalUrl,
   matchRewrite,
@@ -23,21 +21,19 @@ import {
   type RequestContext,
 } from "../../config/config-matchers.js";
 import type { NextRewrite } from "../../config/next-config.js";
-import { stripBasePath } from "../../utils/base-path.js";
-import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import { mergeRewriteQuery } from "../../utils/query.js";
-import type {
-  VinextLinkPrefetchRoute,
-  VinextPagesLinkPrefetchRoute,
-} from "../../client/vinext-next-data.js";
+import {
+  matchDirectHybridClientRoutes,
+  resolveSameOriginPathname,
+  resolveMatchedHybridClientRouteOwner,
+  type HybridClientOwner,
+} from "./hybrid-client-route-owner-direct.js";
 
-export type HybridClientOwner = "app" | "document" | "pages";
+export type { HybridClientOwner } from "./hybrid-client-route-owner-direct.js";
 
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
   interface Window {
-    __VINEXT_LINK_PREFETCH_ROUTES__?: VinextLinkPrefetchRoute[];
-    __VINEXT_PAGES_LINK_PREFETCH_ROUTES__?: VinextPagesLinkPrefetchRoute[];
     __VINEXT_CLIENT_REWRITES__?: {
       afterFiles: NextRewrite[];
       beforeFiles: NextRewrite[];
@@ -84,64 +80,6 @@ function resolveClientRewrite(
   return matched ? { href: currentHref, kind: "rewrite" } : null;
 }
 
-const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
-const pagesRouteTrieCache = createRouteTrieCache<VinextPagesLinkPrefetchRoute>();
-
-/**
- * Build a `/`-joined pattern from a manifest's `patternParts`. Mirrors the
- * server-side route-graph shape (`{ pattern: string }`) so the
- * `compareHybridRoutePatterns` segment-rank comparator can score both Pages
- * and App patterns. The
- * `patternParts` array never includes an empty string for the static `/`
- * route (the App catch-all handles the bare path), so the simple join is
- * safe for everything the route trie actually matches.
- */
-function patternFromParts(parts: readonly string[]): string {
-  return "/" + parts.join("/");
-}
-
-function resolveSameOriginPathname(href: string, basePath: string): string | null {
-  if (typeof window === "undefined") return null;
-  let url: URL;
-  try {
-    url = new URL(href, window.location.href);
-  } catch {
-    return null;
-  }
-  if (url.origin !== window.location.origin) return null;
-  const pathname = stripBasePath(url.pathname, basePath);
-  const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
-  if (!locale) return pathname;
-  const localePrefixLength = locale.length + 1;
-  return pathname.length === localePrefixLength ? "/" : pathname.slice(localePrefixLength);
-}
-
-function matchAppRoute(
-  href: string,
-  basePath: string,
-  routes: readonly VinextLinkPrefetchRoute[],
-): VinextLinkPrefetchRoute | null {
-  const pathname = resolveSameOriginPathname(href, basePath);
-  if (pathname === null) return null;
-  return (
-    matchRouteWithTrie(pathname, routes as VinextLinkPrefetchRoute[], appRouteTrieCache)?.route ??
-    null
-  );
-}
-
-function matchPagesRoute(
-  href: string,
-  basePath: string,
-  routes: readonly VinextPagesLinkPrefetchRoute[],
-): VinextPagesLinkPrefetchRoute | null {
-  const pathname = resolveSameOriginPathname(href, basePath);
-  if (pathname === null) return null;
-  return (
-    matchRouteWithTrie(pathname, routes as VinextPagesLinkPrefetchRoute[], pagesRouteTrieCache)
-      ?.route ?? null
-  );
-}
-
 /**
  * Decide which router should own a soft-navigated URL. Returns:
  *   - "app"    → the App Router runtime handles the navigation (RSC fetch).
@@ -160,8 +98,6 @@ export function resolveHybridClientRouteOwner(
 ): HybridClientOwner | null {
   if (typeof window === "undefined") return null;
 
-  const appRoutes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  const pagesRoutes = window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__;
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
 
   if (rewrites) {
@@ -170,46 +106,33 @@ export function resolveHybridClientRouteOwner(
     if (beforeFilesRewrite?.kind === "rewrite") href = beforeFilesRewrite.href;
   }
 
-  let appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-  let pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
+  let matches = matchDirectHybridClientRoutes(href, basePath);
 
   if (
     rewrites &&
-    (appMatch === null || appMatch.isDynamic) &&
-    (pagesMatch === null || pagesMatch.isDynamic)
+    (matches.appMatch === null || matches.appMatch.isDynamic) &&
+    (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
   ) {
     for (const rewrite of rewrites.afterFiles) {
       const afterFilesRewrite = resolveClientRewrite(href, basePath, [rewrite]);
       if (afterFilesRewrite?.kind === "document") return "document";
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       href = afterFilesRewrite.href;
-      appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-      pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
-      if (appMatch || pagesMatch) break;
+      matches = matchDirectHybridClientRoutes(href, basePath);
+      if (matches.appMatch || matches.pagesMatch) break;
     }
   }
 
-  if (rewrites && appMatch === null && pagesMatch === null) {
+  if (rewrites && matches.appMatch === null && matches.pagesMatch === null) {
     for (const rewrite of rewrites.fallback) {
       const fallbackRewrite = resolveClientRewrite(href, basePath, [rewrite]);
       if (fallbackRewrite?.kind === "document") return "document";
       if (fallbackRewrite?.kind !== "rewrite") continue;
       href = fallbackRewrite.href;
-      appMatch = appRoutes ? matchAppRoute(href, basePath, appRoutes) : null;
-      pagesMatch = pagesRoutes ? matchPagesRoute(href, basePath, pagesRoutes) : null;
-      if (appMatch || pagesMatch) break;
+      matches = matchDirectHybridClientRoutes(href, basePath);
+      if (matches.appMatch || matches.pagesMatch) break;
     }
   }
 
-  if (appMatch === null && pagesMatch === null) return null;
-  if (pagesMatch === null) return appMatch!.documentOnly ? "document" : "app";
-  if (appMatch === null) return pagesMatch.documentOnly ? "document" : "pages";
-  const owner = compareHybridRoutePatterns(
-    patternFromParts(pagesMatch.patternParts),
-    pagesMatch.isDynamic,
-    patternFromParts(appMatch.patternParts),
-    appMatch.isDynamic,
-  );
-  const winningRoute = owner === "app" ? appMatch : pagesMatch;
-  return winningRoute.documentOnly ? "document" : owner;
+  return resolveMatchedHybridClientRouteOwner(matches);
 }

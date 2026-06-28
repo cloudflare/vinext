@@ -33,6 +33,7 @@ import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
+import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
@@ -383,6 +384,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `or remove \`output: "export"\` from next.config.js.`,
     );
   }
+
+  injectPregeneratedConcretePaths(root);
 
   return {
     routes: allRoutes,

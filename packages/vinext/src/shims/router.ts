@@ -37,7 +37,7 @@ import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
 } from "./internal/app-route-detection.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -2097,8 +2097,8 @@ async function navigateClient(
       // routeUrl === url (no mask), behaviour is unchanged.
       let dataTarget = resolvePagesDataNavigationTarget(routeUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
-      if (!dataTarget) {
-        let middlewareEffect: MiddlewareDataEffect | null;
+      let middlewareEffect: MiddlewareDataEffect | null = null;
+      if (hasVinextMiddleware(window.__NEXT_DATA__)) {
         try {
           middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
         } catch (err: unknown) {
@@ -2108,21 +2108,31 @@ async function navigateClient(
           throw err;
         }
         assertStillCurrent();
-        const redirectLocation = middlewareEffect?.redirectLocation ?? null;
-        if (redirectLocation) {
-          const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
-          if (!redirectedUrl) {
-            scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
-          }
-          window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-          routerRuntimeState.lastPathnameAndSearch =
-            window.location.pathname + window.location.search;
-          routerRuntimeState.lastHash = window.location.hash;
-          browserUrl = redirectedUrl;
-          htmlFetchUrl = redirectedUrl;
-        } else if (middlewareEffect?.rewriteTarget) {
+      }
+      const redirectLocation = middlewareEffect?.redirectLocation ?? null;
+      if (redirectLocation) {
+        const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
+        if (!redirectedUrl) {
+          scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
+        }
+        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+        routerRuntimeState.lastPathnameAndSearch =
+          window.location.pathname + window.location.search;
+        routerRuntimeState.lastHash = window.location.hash;
+        browserUrl = redirectedUrl;
+        htmlFetchUrl = redirectedUrl;
+      } else if (middlewareEffect) {
+        // A masked navigation probes middleware using the browser-visible URL but must fetch page
+        // data using the route URL. Without a rewrite header those are different requests, so do
+        // not reuse the probe response even though that means one extra request for this rare path.
+        if (middlewareEffect.rewriteTarget || routeUrl === url) {
+          middlewareDataResponse = middlewareEffect.response;
+        }
+        // App Router rewrite targets intentionally have no Pages data target. Keep the original
+        // source target so navigateClientData sees the rewrite header, fails target resolution,
+        // and schedules a hard navigation that boots the App Router at the visible URL.
+        if (!dataTarget && middlewareEffect.rewriteTarget) {
           dataTarget = resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
-          if (dataTarget) middlewareDataResponse = middlewareEffect.response;
         }
       }
 
@@ -2616,10 +2626,26 @@ async function performNavigation(
   const appPathNorm = appPath !== null ? removeTrailingSlash(appPath) : null;
   const appPathEntry =
     appPathNorm !== null ? getPagesRouterComponentsMap()[appPathNorm] : undefined;
-  const appRouteDetected =
-    (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) ||
-    ["app", "document"].includes(resolveHybridClientRouteOwner(resolved, __basePath) ?? "");
-  if (appRouteDetected) {
+  const hasAppRouteMarker =
+    appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter;
+  if (hasAppRouteMarker) {
+    if (mode === "push") window.location.assign(full);
+    else window.location.replace(full);
+    return new Promise<boolean>(() => {});
+  }
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  const hasClientRewrites =
+    rewrites &&
+    (rewrites.beforeFiles.length > 0 ||
+      rewrites.afterFiles.length > 0 ||
+      rewrites.fallback.length > 0);
+  const hybridOwner = hasClientRewrites
+    ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
+        resolved,
+        __basePath,
+      )
+    : resolveDirectHybridClientRouteOwner(resolved, __basePath);
+  if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
@@ -2704,7 +2730,7 @@ async function prefetchUrl(url: string): Promise<void> {
   // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
   // the Next.js deploy test reads `window.next.router.components[<path>]` to
   // assert prefetch detection. See issue #1526.
-  markAppRouteDetectedOnPrefetch(url, __basePath);
+  await markAppRouteDetectedOnPrefetch(url, __basePath);
 
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels

@@ -4,6 +4,12 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 
 describe("Next.js deploy harness logging", () => {
+  it("initializes fixtures for the Node deployment platform", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain("vinext init --platform=node --skip-check --force");
+  });
+
   it("removes install-time deprecation noise from application cliOutput", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 

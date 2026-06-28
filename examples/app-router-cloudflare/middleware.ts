@@ -11,6 +11,12 @@ export function middleware(request: NextRequest) {
   }
 
   const response = NextResponse.next();
+  if (request.nextUrl.searchParams.has("csp-nonce")) {
+    response.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+  }
   response.headers.set("x-mw-ran", "true");
   return response;
 }
