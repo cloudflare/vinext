@@ -156,24 +156,49 @@ function reduceApprovedVisibleCommitState(
     case "traverse":
     case "navigate":
     case "replace": {
-      const preserveElementIds =
+      const bfcacheCompatiblePreserveElementIds =
         action.reuseCurrentBfcacheIds && action.operation.lane !== "refresh"
           ? commit.decision.preserveElementIds.filter((id) => {
               const previousBfcacheId = state.bfcacheIds[id];
               return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
             })
           : [];
-      const preservedElementIdSet = new Set(preserveElementIds);
+      const preservedSlotOwnerElementIdSet = new Set(bfcacheCompatiblePreserveElementIds);
       const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
         ? commit.decision.preservePreviousSlotIds.filter((slotId) => {
             const targetBinding = action.slotBindings.find((binding) => binding.slotId === slotId);
             return (
               targetBinding?.ownerLayoutId !== null &&
               targetBinding?.ownerLayoutId !== undefined &&
-              preservedElementIdSet.has(targetBinding.ownerLayoutId)
+              preservedSlotOwnerElementIdSet.has(targetBinding.ownerLayoutId)
             );
           })
         : [];
+      const hmrPreservedSlotOwnerLayoutIds =
+        action.operation.lane === "hmr"
+          ? bfcacheCompatiblePreserveElementIds.filter((id) =>
+              preservePreviousSlotIds.some((slotId) => {
+                const targetBinding = action.slotBindings.find(
+                  (binding) => binding.slotId === slotId,
+                );
+                return targetBinding?.ownerLayoutId === id;
+              }),
+            )
+          : [];
+      const hmrPreserveElementIds =
+        action.operation.lane === "hmr" &&
+        state.routeId === action.routeId &&
+        Object.hasOwn(state.elements, state.routeId)
+          ? [state.routeId, ...hmrPreservedSlotOwnerLayoutIds]
+          : hmrPreservedSlotOwnerLayoutIds;
+      const hmrUniquePreserveElementIds =
+        hmrPreserveElementIds.length > 1
+          ? [...new Set(hmrPreserveElementIds)]
+          : hmrPreserveElementIds;
+      const preserveElementIds =
+        action.operation.lane === "hmr"
+          ? hmrUniquePreserveElementIds
+          : bfcacheCompatiblePreserveElementIds;
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,

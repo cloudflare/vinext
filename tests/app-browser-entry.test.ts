@@ -2443,9 +2443,78 @@ describe("app browser entry state helpers", () => {
     ).toThrow("[vinext] HMR visible commit approval requires an HMR pending operation");
   });
 
+  it("refreshes planner-approved layout elements across HMR replacement", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeId = AppElementsWire.encodeRouteId("/dev-overlay-layout-hmr-toggle", null);
+    const currentRootLayout = React.createElement("section", null, "layout hmr clean");
+    const nextRootLayout = React.createElement("section", null, "layout hmr throw");
+    const currentRouteShell = React.createElement("div", null, "current route shell");
+    const nextRouteShell = React.createElement("div", null, "next route shell");
+    const currentState = createState({
+      bfcacheIds: {
+        [rootLayoutId]: "0",
+      },
+      elements: createResolvedElements(
+        routeId,
+        "/",
+        null,
+        {
+          [rootLayoutId]: currentRootLayout,
+          [routeId]: currentRouteShell,
+          "page:/dev-overlay-layout-hmr-toggle": React.createElement("main", null, "page"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/dev-overlay-layout-hmr-toggle",
+        {},
+      ),
+      routeId,
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          routeId,
+          "/",
+          null,
+          {
+            [rootLayoutId]: nextRootLayout,
+            [routeId]: nextRouteShell,
+            "page:/dev-overlay-layout-hmr-toggle": React.createElement("main", null, "page"),
+          },
+          [rootLayoutId],
+        ),
+      ),
+      navigationSnapshot: currentState.navigationSnapshot,
+      operationLane: "hmr",
+      renderId: 15,
+      type: "replace",
+    });
+
+    const approval = approveHmrVisibleCommit({
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      targetHref: "https://example.com/dev-overlay-layout-hmr-toggle",
+    });
+    const approvedCommit = approval.approvedCommit;
+    expect(approvedCommit).not.toBeNull();
+    if (!approvedCommit) throw new Error("Expected HMR visible commit approval");
+    expect(approval.decision.preserveElementIds).toEqual([rootLayoutId]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
+    expect(nextState.elements[routeId]).toBe(currentRouteShell);
+    expect(nextState.elements[rootLayoutId]).toBe(nextRootLayout);
+  });
+
   it("preserves planner-approved named slot state across HMR replacement", async () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const authSlotId = AppElementsWire.encodeSlotId("auth", "/");
+    const currentRootLayout = React.createElement("section", null, "current root layout");
+    const nextRootLayout = React.createElement("section", null, "next root layout");
     const currentSlot = React.createElement("aside", null, "reset");
     const currentBindings = [
       {
@@ -2471,7 +2540,7 @@ describe("app browser entry state helpers", () => {
         "route:/parallel-selected-segment/foo",
         "/",
         null,
-        { [authSlotId]: currentSlot },
+        { [authSlotId]: currentSlot, [rootLayoutId]: currentRootLayout },
         [rootLayoutId],
         currentBindings,
       ),
@@ -2491,7 +2560,10 @@ describe("app browser entry state helpers", () => {
           "route:/parallel-selected-segment/foo",
           "/",
           null,
-          { [authSlotId]: React.createElement("aside", null, "default") },
+          {
+            [authSlotId]: React.createElement("aside", null, "default"),
+            [rootLayoutId]: nextRootLayout,
+          },
           [rootLayoutId],
           targetBindings,
         ),
@@ -2514,6 +2586,7 @@ describe("app browser entry state helpers", () => {
     expect(approvedCommit.decision.preservePreviousSlotIds).toEqual([authSlotId]);
 
     const nextState = applyApprovedVisibleCommit(currentState, approvedCommit);
+    expect(nextState.elements[rootLayoutId]).toBe(currentRootLayout);
     expect(nextState.elements[authSlotId]).toBe(currentSlot);
     expect(nextState.slotBindings).toEqual(currentBindings);
   });
