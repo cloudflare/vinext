@@ -223,23 +223,6 @@ declare global {
   // oxlint-disable-next-line no-var
   var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
 
-  // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
-  //
-  // These are injected into the Worker entry at build time by
-  // `vinext:cloudflare-build`, or set at Node.js server startup by
-  // `server/prod-server.ts`.  They are read during SSR by `collectAssetTags()`
-  // in `index.ts`.
-
-  /**
-   * Vite SSR manifest injected into the Cloudflare Worker entry at build time.
-   * Maps module file paths (relative to the project root) to the list of
-   * associated JS / CSS asset filenames.
-   * Read by `collectAssetTags()` to inject `<link rel="modulepreload">` and
-   * `<link rel="stylesheet">` tags into the SSR HTML.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_SSR_MANIFEST__: Record<string, string[]> | undefined;
-
   /**
    * Maps emitted CSS asset hrefs to file contents when next.config enables
    * `experimental.inlineCss`. Injected into edge bundles at build time and
@@ -247,35 +230,6 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_INLINE_CSS__: Record<string, string> | undefined;
-
-  /**
-   * Array of chunk filenames that are only reachable via dynamic `import()`.
-   * These chunks must NOT receive `<link rel="modulepreload">` tags because
-   * they are fetched on demand (e.g. behind `React.lazy` / `next/dynamic`).
-   * Injected into the Worker entry at build time; also set at Node.js server
-   * startup by `server/prod-server.ts`.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_LAZY_CHUNKS__: string[] | undefined;
-
-  /**
-   * Per-module preload files for rendered `next/dynamic()` boundaries.
-   * Keys are root-relative module IDs injected by vinext's dynamic metadata
-   * transform. Values are JS/CSS files from Vite's build manifest, with any
-   * configured base path / asset prefix already applied.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_DYNAMIC_PRELOADS__: Record<string, string[]> | undefined;
-
-  /**
-   * The client entry JS filename (e.g. `"_next/static/entry-abc123.js"`) for Pages
-   * Router builds.
-   * Injected into the Worker entry at build time for Pages Router only.
-   * App Router uses the RSC plugin's `loadBootstrapScriptContent` mechanism
-   * instead.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_CLIENT_ENTRY__: string | undefined;
 
   /**
    * Current active locale, set on `globalThis` for server-side SSR rendering
@@ -508,6 +462,12 @@ declare module "node:http" {
 
 declare module "virtual:vinext-cache-adapters" {
   export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
+}
+
+declare module "virtual:vinext-pages-client-assets" {
+  import type { PagesClientAssets } from "vinext/server/pages-client-assets";
+  const assets: PagesClientAssets;
+  export default assets;
 }
 
 // ---------------------------------------------------------------------------

@@ -78,6 +78,7 @@ describe("emitStandaloneOutput", () => {
 
     writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
+    writeFile(appRoot, "dist/vinext-client-assets.js", "export default {};\n");
     // The externals manifest is written by vinext:server-externals-manifest at build time.
     // It contains only the packages the server bundle actually imports at runtime.
     writeFile(
@@ -142,6 +143,9 @@ describe("emitStandaloneOutput", () => {
       fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/_next/static/main.js")),
     ).toBe(true);
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/server/entry.js"))).toBe(true);
+    expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/vinext-client-assets.js"))).toBe(
+      true,
+    );
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/public/robots.txt"))).toBe(true);
 
     expect(
