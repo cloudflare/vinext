@@ -733,6 +733,7 @@ describe("app page route wiring helpers", () => {
     );
 
     expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+    expect(provider?.props.providerId).toBe("layout:/");
   });
 
   it("omits mounted unmatched named-slot state without default.tsx from providers", () => {
@@ -780,6 +781,7 @@ describe("app page route wiring helpers", () => {
     );
 
     expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+    expect(provider?.props.providerId).toBe("layout:/");
   });
 
   it("renders nested active slot layouts inside the slot root layout", async () => {
@@ -1036,6 +1038,7 @@ describe("app page route wiring helpers", () => {
     );
 
     expect(provider?.props.segmentMap).toEqual({ children: [], modal: ["foo", "1"] });
+    expect(provider?.props.providerId).toBe("layout:/");
   });
 
   it("uses intercepted override segments for named slot reset boundaries", async () => {

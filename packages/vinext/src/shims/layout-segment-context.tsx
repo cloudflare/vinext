@@ -19,6 +19,8 @@
 import { createElement, useEffect, useRef, type ReactNode } from "react";
 import { getLayoutSegmentContext, type SegmentMap } from "./navigation-server.js";
 
+const committedSegmentMapsByProviderId = new Map<string, SegmentMap>();
+
 export function mergeLayoutSegmentMap(previous: SegmentMap | null, next: SegmentMap): SegmentMap {
   if (!previous) return next;
   return { ...previous, ...next };
@@ -36,18 +38,26 @@ export function mergeLayoutSegmentMap(previous: SegmentMap | null, next: Segment
  * to read the segments for a specific parallel route.
  */
 export function LayoutSegmentProvider({
+  providerId,
   segmentMap,
   children,
 }: {
+  providerId?: string;
   segmentMap: SegmentMap;
   children: ReactNode;
 }) {
   const previousSegmentMap = useRef<SegmentMap | null>(null);
   const ctx = getLayoutSegmentContext();
-  const mergedSegmentMap = mergeLayoutSegmentMap(previousSegmentMap.current, segmentMap);
+  const previousSegmentMapForProvider =
+    previousSegmentMap.current ??
+    (providerId ? (committedSegmentMapsByProviderId.get(providerId) ?? null) : null);
+  const mergedSegmentMap = mergeLayoutSegmentMap(previousSegmentMapForProvider, segmentMap);
   useEffect(() => {
     previousSegmentMap.current = mergedSegmentMap;
-  }, [mergedSegmentMap]);
+    if (providerId) {
+      committedSegmentMapsByProviderId.set(providerId, mergedSegmentMap);
+    }
+  }, [mergedSegmentMap, providerId]);
   if (!ctx) {
     // No context available — expected only in RSC environment, not SSR/browser.
     return children;

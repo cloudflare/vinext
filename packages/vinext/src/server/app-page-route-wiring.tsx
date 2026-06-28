@@ -450,7 +450,7 @@ function createAppPageParallelSlotEntries<
       ? resolveAppPageLayoutSegmentProviderSegments(routeSegments, 0, slotParams)
       : [];
     parallelSlots[slotName] = (
-      <LayoutSegmentProvider segmentMap={{ children: slotSegments }}>
+      <LayoutSegmentProvider providerId={slotId} segmentMap={{ children: slotSegments }}>
         <Slot id={slotId} />
       </LayoutSegmentProvider>
     );
@@ -928,7 +928,10 @@ export function buildAppPageElements<
   }
 
   let routeChildren: ReactNode = (
-    <LayoutSegmentProvider segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}>
+    <LayoutSegmentProvider
+      providerId={pageElementId}
+      segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
+    >
       <Slot id={pageElementId} />
     </LayoutSegmentProvider>
   );
@@ -1142,7 +1145,7 @@ export function buildAppPageElements<
     }
 
     routeChildren = (
-      <LayoutSegmentProvider segmentMap={segmentMap}>
+      <LayoutSegmentProvider providerId={layoutEntry.id} segmentMap={segmentMap}>
         {layoutHasElement ? (
           <Slot
             id={layoutEntry.id}

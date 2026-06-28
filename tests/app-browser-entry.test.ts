@@ -7675,6 +7675,7 @@ describe("mounted slot helpers", () => {
   it("collects only mounted slot ids", () => {
     const elements: AppElements = createResolvedElements("route:/dashboard", "/", null, {
       "layout:/": React.createElement("div", null, "layout"),
+      "slot:children:/dashboard": React.createElement("div", null, "children"),
       "slot:modal:/": React.createElement("div", null, "modal"),
       "slot:sidebar:/": React.createElement("div", null, "sidebar"),
       "slot:ghost:/": null,

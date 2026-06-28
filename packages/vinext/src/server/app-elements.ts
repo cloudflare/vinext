@@ -43,8 +43,10 @@ export function getMountedSlotIds(elements: AppElements): string[] {
   return Object.keys(elements)
     .filter((key) => {
       const value = elements[key];
+      const parsed = AppElementsWire.parseElementKey(key);
       return (
-        AppElementsWire.isSlotId(key) &&
+        parsed?.kind === "slot" &&
+        parsed.name !== "children" &&
         value !== null &&
         value !== undefined &&
         value !== UNMATCHED_SLOT
