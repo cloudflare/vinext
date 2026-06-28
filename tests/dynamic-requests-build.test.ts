@@ -45,26 +45,37 @@ async function buildApp(root: string) {
   await builder.buildApp();
 }
 
-function writeAppFixture(root: string, options: { dependency?: boolean } = {}) {
+function writeAppFixture(root: string, options: { dependency?: boolean; jsxInJs?: boolean } = {}) {
   fs.symlinkSync(ROOT_NODE_MODULES, path.join(root, "node_modules"), "junction");
   writeFixtureFile(
     root,
     "package.json",
     JSON.stringify({ name: "dynamic-requests", private: true, type: "module" }),
   );
-  writeFixtureFile(
-    root,
-    "app/layout.tsx",
-    `import type { ReactNode } from "react";
+  if (options.jsxInJs) {
+    writeFixtureFile(
+      root,
+      "app/layout.js",
+      `export default function Layout({ children }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+    );
+  } else {
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `import type { ReactNode } from "react";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return <html><body>{children}</body></html>;
 }
 `,
-  );
+    );
+  }
   writeFixtureFile(
     root,
-    "app/page.tsx",
+    `app/page.${options.jsxInJs ? "js" : "tsx"}`,
     `${options.dependency ? 'import { runDynamicRequests } from "dynamic-request-dependency";\n\n' : ""}export default function Page() {
   if (Math.random() < 0) dynamic();
   ${options.dependency ? "if (Math.random() < 0) runDynamicRequests();" : ""}
@@ -769,6 +780,13 @@ function withDeclaration(value = require(request)) {
   it("builds guarded fully dynamic requests in pages and route handlers", async () => {
     await withTempDir(async (root) => {
       writeAppFixture(root, { dependency: true });
+      await expect(buildApp(root)).resolves.not.toThrow();
+    });
+  });
+
+  it("builds JS files that contain JSX and guarded fully dynamic requests", async () => {
+    await withTempDir(async (root) => {
+      writeAppFixture(root, { jsxInJs: true });
       await expect(buildApp(root)).resolves.not.toThrow();
     });
   });
