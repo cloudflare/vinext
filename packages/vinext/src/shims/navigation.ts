@@ -229,6 +229,7 @@ export const PREFETCH_CACHE_TTL = resolveClientRouterStaleTime(
   process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME,
   30_000,
 );
+const MIN_PREFETCH_STALE_TIME_MS = 30_000;
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
@@ -353,6 +354,21 @@ export function resolveCachedRscResponseExpiresAt(
     return cached.expiresAt;
   }
   return timestamp + resolveCachedRscResponseTtlMs(cached, fallbackTtlMs);
+}
+
+function resolvePrefetchedRscResponseExpiresAt(
+  timestamp: number,
+  cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt">,
+  fallbackTtlMs: number,
+): number {
+  if (isCacheExpiresAt(cached.expiresAt)) {
+    return cached.expiresAt;
+  }
+  const seconds = cached.dynamicStaleTimeSeconds;
+  if (!isDynamicStaleTimeSeconds(seconds)) {
+    return timestamp + fallbackTtlMs;
+  }
+  return timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -793,7 +809,7 @@ export function prefetchRscResponse(
     .then(async (response) => {
       if (response.ok) {
         entry.snapshot = await snapshotRscResponse(response);
-        entry.expiresAt = resolveCachedRscResponseExpiresAt(
+        entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,

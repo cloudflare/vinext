@@ -465,7 +465,7 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
-  it("uses the dynamic stale window for automatic full prefetches", async () => {
+  it("honors an explicit fallback stale window for prefetched responses", async () => {
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const rscUrl = "/auto-full.rsc";
@@ -481,6 +481,35 @@ describe("prefetch cache eviction", () => {
     await getPrefetchCache().get(rscUrl)?.pending;
 
     expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + DYNAMIC_NAVIGATION_CACHE_TTL);
+  });
+
+  it("uses Next.js's minimum prefetch stale window for server stale time zero", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/zero-stale-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: PREFETCH_CACHE_TTL },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    // Ported from Next.js segment-cache prefetch behavior:
+    // packages/next/src/client/components/segment-cache/cache.ts:getStaleTimeMs
+    // clamps prefetch stale time to at least 30s so too-short server stale
+    // times do not prevent prefetching from being useful.
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
   it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {

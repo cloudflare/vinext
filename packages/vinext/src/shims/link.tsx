@@ -438,7 +438,6 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           getMountedSlotsHeader,
           hasPrefetchCacheEntryForNavigation,
           prefetchRscResponse,
-          DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
         const { createRscRequestHeaders, createRscRequestUrl } = rscCacheBusting;
@@ -550,7 +549,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
-            fallbackTtlMs: mode === "full" ? PREFETCH_CACHE_TTL : DYNAMIC_NAVIGATION_CACHE_TTL,
+            fallbackTtlMs: PREFETCH_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
