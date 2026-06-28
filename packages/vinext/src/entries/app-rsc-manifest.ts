@@ -337,6 +337,7 @@ ${interceptEntries.join(",\n")}
     slots: {
 ${slotEntries.join(",\n")}
     },
+    childrenSlot: ${JSON.stringify(route.childrenSlot ?? null)},
     siblingIntercepts: [
 ${siblingInterceptEntries.join(",\n")}
     ],

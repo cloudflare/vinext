@@ -126,6 +126,12 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /** Stable implicit children-slot identity for parallel-slot sub-route families. */
+  childrenSlot?: {
+    id: string;
+    ownerTreePath: string;
+    state: "active" | "default" | "unmatched";
+  };
   /**
    * Interception markers not wrapped in an `@slot` directory.
    * On soft-nav, the intercepting page replaces the entire page response.
@@ -453,6 +459,26 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       slotIds: route.parallelSlots.map((slot) => slot.id).sort(compareStableStrings),
     });
 
+    if (route.childrenSlot) {
+      const ownerLayoutId = findRouteManifestOwnerLayoutIdByTreePath(
+        route,
+        route.childrenSlot.ownerTreePath,
+      );
+      routeEntries.get(route.ids.route)!.slotIds = [
+        ...routeEntries.get(route.ids.route)!.slotIds,
+        route.childrenSlot.id,
+      ].sort(compareStableStrings);
+      slotBindings.set(`${route.ids.route}::${route.childrenSlot.id}`, {
+        id: `${route.ids.route}::${route.childrenSlot.id}`,
+        routeId: route.ids.route,
+        slotId: route.childrenSlot.id,
+        ownerLayoutId,
+        state: route.childrenSlot.state,
+        defaultId: null,
+        routeSegments: null,
+      });
+    }
+
     if (route.ids.page) {
       pages.set(route.ids.page, {
         id: route.ids.page,
@@ -644,6 +670,16 @@ function findRouteManifestOwnerLayoutId(
   treePosition: number,
 ): string | null {
   const layoutIndex = route.layoutTreePositions.indexOf(treePosition);
+  return route.ids.layouts[layoutIndex] ?? null;
+}
+
+function findRouteManifestOwnerLayoutIdByTreePath(
+  route: AppRouteGraphRoute,
+  treePath: string,
+): string | null {
+  const layoutIndex = route.layoutTreePositions.findIndex(
+    (treePosition) => createAppRouteGraphTreePath(route.routeSegments, treePosition) === treePath,
+  );
   return route.ids.layouts[layoutIndex] ?? null;
 }
 
@@ -1197,6 +1233,15 @@ function discoverSlotSubRoutes(
 
     if (subPathMap.size === 0) continue;
 
+    const childrenOwnerTreePath = parentRoute.parallelSlots.find(
+      (slot) => path.dirname(slot.ownerDir) === parentPageDir,
+    )?.ownerTreePath;
+    if (!childrenOwnerTreePath) {
+      throw new Error(
+        `[vinext] App route graph invariant violated: missing children slot owner for ${parentRoute.pattern}`,
+      );
+    }
+
     // Find the default.tsx for the children slot at the parent directory.
     // When the parent route has a children page, a default.tsx is required so
     // the synthetic sub-route has a fallback for the children slot. Layout-only
@@ -1204,6 +1249,38 @@ function discoverSlotSubRoutes(
     // never occupied at the parent level, so the sub-route simply renders null.
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
+    const childrenSlotId = createAppRouteGraphSlotId("children", childrenOwnerTreePath);
+    if (parentRoute.pagePath) {
+      parentRoute.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
+    for (const route of routes) {
+      if (!route.pagePath || route === parentRoute) continue;
+      const relativePageDir = path.relative(parentPageDir, path.dirname(route.pagePath));
+      if (
+        relativePageDir === "" ||
+        relativePageDir === ".." ||
+        relativePageDir.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePageDir)
+      ) {
+        continue;
+      }
+      const existingOwnerDepth = route.childrenSlot?.ownerTreePath
+        .split("/")
+        .filter(Boolean).length;
+      const candidateOwnerDepth = childrenOwnerTreePath.split("/").filter(Boolean).length;
+      if (existingOwnerDepth !== undefined && existingOwnerDepth >= candidateOwnerDepth) {
+        continue;
+      }
+      route.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
 
     // When a slot sub-route has no children page of its own (no page.tsx for
     // the sub-path and no default.tsx for the children slot), Next.js falls
@@ -1303,6 +1380,11 @@ function discoverSlotSubRoutes(
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
         parallelSlots: subSlots,
+        childrenSlot: {
+          id: childrenSlotId,
+          ownerTreePath: childrenOwnerTreePath,
+          state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
+        },
         loadingPath: parentRoute.loadingPath,
         errorPath: parentRoute.errorPath,
         layoutErrorPaths: parentRoute.layoutErrorPaths,

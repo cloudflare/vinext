@@ -101,6 +101,7 @@ test.describe("parallel routes useSelectedLayoutSegment", () => {
       await page.goto(BASE);
       await waitForAppRouterHydration(page);
       await page.locator('a[href="/parallel-selected-segment/reset"]').click();
+      await expectSegments(page, { nav: "", auth: "reset", route: "" });
       await page.locator('a[href="/parallel-selected-segment/foo"]').click();
       await expectSegments(page, { nav: "", auth: "reset", route: "foo" });
 
