@@ -33,6 +33,43 @@ type PrefetchTestWindow = Window & {
 };
 
 test.describe("Next.js compat: prefetch (browser)", () => {
+  test("reuses a full App Router prefetch across a parallel layout", async ({ page }) => {
+    const clientCachePath = "/nextjs-compat/client-cache";
+    const rscRequests: Array<{ pathname: string; prefetch: string | undefined }> = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
+      rscRequests.push({
+        pathname: url.pathname,
+        prefetch: request.headers()["next-router-prefetch"],
+      });
+    });
+
+    await page.goto(`${BASE}${clientCachePath}`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#client-cache-home")).toBeVisible();
+    await page.evaluate((href) => {
+      const router = (window as PrefetchTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(href);
+    }, `${clientCachePath}/0`);
+    await expect
+      .poll(() =>
+        rscRequests.some(
+          (request) =>
+            request.pathname === `${clientCachePath}/0` && request.prefetch === undefined,
+        ),
+      )
+      .toBe(true);
+
+    rscRequests.length = 0;
+    await page.click("#client-cache-full");
+    await expect(page.locator("#client-cache-id")).toHaveText("0");
+    expect(rscRequests.filter((request) => request.pathname === `${clientCachePath}/0`)).toEqual(
+      [],
+    );
+  });
+
   // Next.js: 'should navigate when prefetch is false'
   test("should navigate when prefetch is false", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);

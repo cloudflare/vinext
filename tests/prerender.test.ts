@@ -74,6 +74,10 @@ function runtimeRscDoneScript(): string {
   return `<script>${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
 }
 
+function runtimeRscDoneScriptWithCacheMetadata(): string {
+  return `<script>Object.assign(${RSC_RUNTIME_BOOTSTRAP_EXPRESSION},{"initialCacheKind":"static"});${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
+}
+
 function legacyRscChunkScript(chunk: string | [3, string]): string {
   return (
     "<script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];" +
@@ -106,6 +110,16 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
       "</body></html>";
 
     expect(decodeExtractedPayload(html)).toBe(chunks.join(""));
+  });
+
+  it("reconstructs chunks when cache metadata precedes the done marker", () => {
+    const html =
+      "<html><body>" +
+      runtimeRscChunkScript("0:[]\n") +
+      runtimeRscDoneScriptWithCacheMetadata() +
+      "</body></html>";
+
+    expect(decodeExtractedPayload(html)).toBe("0:[]\n");
   });
 
   it("keeps parsing legacy streamed RSC chunk scripts", () => {
@@ -754,6 +768,23 @@ describe("prerenderApp — default mode (app-basic)", () => {
   it("renders ISR page with revalidate=60", () => {
     const r = findRoute(results, "/revalidate-test");
     expect(r).toMatchObject({ route: "/revalidate-test", status: "rendered", revalidate: 60 });
+  });
+
+  it("records App Router preload Link headers for cache seeding", () => {
+    const r = findRoute(results, "/nextjs-compat/react-max-headers-length");
+    expect(r).toMatchObject({
+      status: "rendered",
+      headers: { link: expect.stringContaining("rel=preload") },
+    });
+
+    const indexPath = path.join(outDir, "vinext-prerender.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const manifestRoute = index.routes.find(
+      (route: { route: string }) => route.route === "/nextjs-compat/react-max-headers-length",
+    );
+    expect(manifestRoute).toMatchObject({
+      headers: { link: expect.stringContaining("rel=preload") },
+    });
   });
 
   it("uses the rendered cacheLife expire value for App Router ISR prerender entries", () => {
@@ -1431,6 +1462,28 @@ describe("runPrerender — output: 'export' wiring", () => {
         pagesBundlePath,
       }),
     ).rejects.toThrow(/Static export failed/);
+  });
+
+  it("does not rewrite the Worker entry when prerender validation fails", async () => {
+    const workerEntry = path.join(PAGES_FIXTURE, "dist", "server", "index.js");
+    const source = 'export default { fetch() { return new Response("unchanged"); } };\n';
+    fs.mkdirSync(path.dirname(workerEntry), { recursive: true });
+    fs.writeFileSync(workerEntry, source, "utf-8");
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+      await expect(
+        runPrerender({
+          root: PAGES_FIXTURE,
+          nextConfigOverride: { output: "export" },
+          pagesBundlePath,
+        }),
+      ).rejects.toThrow(/Static export failed/);
+
+      expect(fs.readFileSync(workerEntry, "utf-8")).toBe(source);
+    } finally {
+      fs.rmSync(path.join(PAGES_FIXTURE, "dist"), { recursive: true, force: true });
+    }
   });
 
   it("error message names the offending SSR route", async () => {

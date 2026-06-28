@@ -94,3 +94,15 @@ describe("process.env.NEXT_DEPLOYMENT_ID is inlined via Vite define", () => {
     }
   }, 15000);
 });
+
+describe("image optimization define", () => {
+  it("inlines global unoptimized mode from next.config", async () => {
+    const tmpDir = await setupTmpProject(`export default { images: { unoptimized: true } };`);
+    try {
+      const define = await runConfig(tmpDir);
+      expect(define["process.env.__VINEXT_IMAGE_UNOPTIMIZED"]).toBe('"true"');
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+});
