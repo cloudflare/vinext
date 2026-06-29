@@ -63,6 +63,7 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
+import { extractMiddlewareMatcherConfig } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
@@ -1027,6 +1028,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
+      middlewareMatcher: middlewarePath
+        ? extractMiddlewareMatcherConfig(middlewarePath)
+        : undefined,
       reactPreamble: options.react !== false,
     });
   }

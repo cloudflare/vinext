@@ -1464,6 +1464,14 @@ type PagesDataResponse = {
   [key: string]: unknown;
 };
 
+type PagesComponent = ComponentType<Record<string, unknown>> & {
+  getInitialProps?: (ctx: unknown) => unknown;
+};
+
+type PagesAppComponent = NonNullable<Window["__VINEXT_APP__"]> & {
+  getInitialProps?: (ctx: unknown) => unknown;
+};
+
 function isPageComponent(value: unknown): value is ComponentType<Record<string, unknown>> {
   if (typeof value === "function") return true;
   if (!isUnknownRecord(value)) return false;
@@ -1537,6 +1545,97 @@ function hasVinextMiddleware(nextData: unknown): boolean {
   if (!isUnknownRecord(nextData)) return false;
   const vinext = nextData.__vinext;
   return isUnknownRecord(vinext) && vinext.hasMiddleware === true;
+}
+
+type ClientMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: unknown[];
+  missing?: unknown[];
+};
+
+function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
+  if (!isUnknownRecord(value)) return false;
+  if (typeof value.source !== "string") return false;
+  if (value.locale !== undefined && value.locale !== false) return false;
+  if (value.has !== undefined && !Array.isArray(value.has)) return false;
+  if (value.missing !== undefined && !Array.isArray(value.missing)) return false;
+  return true;
+}
+
+function stripLocaleForMiddlewareMatcher(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales || locales.length === 0 || pathname === "/") return pathname;
+  const firstSegment = pathname.split("/")[1];
+  if (!firstSegment || !locales.includes(firstSegment)) return pathname;
+  return "/" + pathname.split("/").slice(2).join("/");
+}
+
+function clientMiddlewareSourceMatches(pathname: string, source: string): boolean {
+  if (!/[\\():*+?]/.test(source)) {
+    return removeTrailingSlash(pathname) === removeTrailingSlash(source);
+  }
+
+  // Raw regex/constraint matchers can be request-heavy and potentially
+  // expensive. Probe conservatively and let the server matcher decide.
+  if (source.includes("(") || source.includes("\\")) return true;
+
+  const sourceParts = source.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  let pathIndex = 0;
+
+  for (const sourcePart of sourceParts) {
+    if (sourcePart.startsWith(":")) {
+      if (sourcePart.endsWith("*")) return true;
+      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
+      if (pathIndex >= pathParts.length) return false;
+      pathIndex++;
+      continue;
+    }
+
+    if (pathParts[pathIndex] !== sourcePart) return false;
+    pathIndex++;
+  }
+
+  return pathIndex === pathParts.length;
+}
+
+function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boolean {
+  if (matcher === undefined) return true;
+  if (typeof matcher === "string") {
+    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher);
+  }
+  if (!Array.isArray(matcher)) return true;
+
+  for (const item of matcher) {
+    if (typeof item === "string") {
+      if (clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), item)) {
+        return true;
+      }
+      continue;
+    }
+    if (!isClientMiddlewareMatcherObject(item)) return true;
+    const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
+    if (clientMiddlewareSourceMatches(candidate, item.source)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function shouldProbePagesMiddleware(browserUrl: string): boolean {
+  if (!hasVinextMiddleware(window.__NEXT_DATA__)) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(browserUrl, window.location.href);
+  } catch {
+    return false;
+  }
+  if (parsed.origin !== getWindowOrigin()) return false;
+
+  const pathname = stripBasePath(parsed.pathname, __basePath);
+  return clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__);
 }
 
 function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
@@ -1627,6 +1726,198 @@ function handleDataRedirect(
   void performNavigation(destination, undefined, { locale: false }, mode);
 }
 
+async function loadTargetPageModule(
+  target: PagesDataTarget,
+  url: string,
+  failurePrefix: string,
+): Promise<{ default?: unknown; [key: string]: unknown }> {
+  try {
+    return await target.loader();
+  } catch (err) {
+    console.error("[vinext] Page loader threw during navigation:", err);
+    scheduleHardNavigationAndThrow(url, `${failurePrefix}: page loader threw`);
+  }
+}
+
+async function loadPagesAppComponent(): Promise<PagesAppComponent | undefined> {
+  let AppComponent = window.__VINEXT_APP__ as PagesAppComponent | undefined;
+  if (!AppComponent && typeof window.__VINEXT_APP_LOADER__ === "function") {
+    try {
+      const appModule = await window.__VINEXT_APP_LOADER__();
+      AppComponent = isAppComponent(appModule.default)
+        ? (appModule.default as PagesAppComponent)
+        : undefined;
+      if (AppComponent) window.__VINEXT_APP__ = AppComponent;
+    } catch {
+      // _app load failed — fall through and render without it. This matches
+      // the HTML path which also tolerates a missing _app gracefully.
+    }
+  }
+  return AppComponent;
+}
+
+function buildPagesNavigationNextData(
+  target: PagesDataTarget,
+  props: Record<string, unknown>,
+): NonNullable<Window["__NEXT_DATA__"]> & VinextNextData {
+  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
+  const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
+  const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
+  const nextLocale = hasI18n
+    ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
+    : (prev as VinextNextData | undefined)?.locale;
+
+  return {
+    ...prev,
+    props,
+    page: target.pattern,
+    query: mergedQuery,
+    buildId: target.buildId,
+    isFallback: false,
+    ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
+  } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
+}
+
+function propsObject(value: unknown): Record<string, unknown> {
+  return isUnknownRecord(value) ? value : {};
+}
+
+async function loadComponentOnlyProps(
+  PageComponent: PagesComponent,
+  AppComponent: PagesAppComponent | undefined,
+  target: PagesDataTarget,
+  asPath: string,
+): Promise<Record<string, unknown>> {
+  const query = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
+  const ctx = {
+    pathname: target.pattern,
+    query,
+    asPath,
+    locale: target.locale ?? window.__VINEXT_LOCALE__,
+    locales: window.__VINEXT_LOCALES__,
+    defaultLocale: window.__VINEXT_DEFAULT_LOCALE__,
+  };
+
+  if (typeof AppComponent?.getInitialProps === "function") {
+    const AppTree = (appProps: Record<string, unknown>) =>
+      createElement(AppComponent as ComponentType<Record<string, unknown>>, {
+        ...appProps,
+        Component: PageComponent,
+        router: Router,
+      });
+    return propsObject(
+      await AppComponent.getInitialProps({
+        Component: PageComponent,
+        AppTree,
+        ctx,
+        router: Router,
+      }),
+    );
+  }
+
+  if (typeof PageComponent.getInitialProps === "function") {
+    return { pageProps: propsObject(await PageComponent.getInitialProps(ctx)) };
+  }
+
+  return { pageProps: {} };
+}
+
+async function renderPagesNavigationTarget(
+  url: string,
+  target: PagesDataTarget,
+  props: Record<string, unknown>,
+  options: NavigateClientOptions,
+  assertStillCurrent: () => void,
+  preloaded?: {
+    appComponent?: PagesAppComponent;
+    pageModule?: { default?: unknown; [key: string]: unknown };
+  },
+): Promise<void> {
+  const pageModule =
+    preloaded?.pageModule ?? (await loadTargetPageModule(target, url, "Navigation failed"));
+  assertStillCurrent();
+
+  const PageComponent = pageModule.default;
+  if (!isPageComponent(PageComponent)) {
+    scheduleHardNavigationAndThrow(
+      url,
+      "Navigation failed: page module default export is not a component",
+    );
+  }
+
+  const AppComponent = preloaded?.appComponent ?? (await loadPagesAppComponent());
+  assertStillCurrent();
+
+  const React = (await import("react")).default;
+  assertStillCurrent();
+
+  const rawPageProps = props.pageProps;
+  const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+
+  let element: ReactElement;
+  if (AppComponent) {
+    element = React.createElement(AppComponent, {
+      ...props,
+      Component: PageComponent,
+      pageProps: rawPageProps,
+      router: Router,
+    });
+  } else {
+    element = React.createElement(PageComponent, pageProps);
+  }
+
+  const nextData = buildPagesNavigationNextData(target, props);
+  window.__NEXT_DATA__ = nextData;
+  applyVinextLocaleGlobals(window, nextData);
+  await renderPagesRouterElement(element, options.scroll);
+  assertStillCurrent();
+}
+
+async function navigateClientNoData(
+  url: string,
+  target: PagesDataTarget,
+  controller: AbortController,
+  assertStillCurrent: () => void,
+  options: NavigateClientOptions = {},
+): Promise<void> {
+  const root = window.__VINEXT_ROOT__;
+  if (!root) {
+    window.location.href = url;
+    return;
+  }
+
+  if (controller.signal.aborted) {
+    throw new NavigationCancelledError(url);
+  }
+
+  const pageModule = await loadTargetPageModule(target, url, "Navigation failed");
+  assertStillCurrent();
+
+  const PageComponent = pageModule.default;
+  if (!isPageComponent(PageComponent)) {
+    scheduleHardNavigationAndThrow(
+      url,
+      "Navigation failed: page module default export is not a component",
+    );
+  }
+
+  const AppComponent = await loadPagesAppComponent();
+  assertStillCurrent();
+
+  const props = await loadComponentOnlyProps(
+    PageComponent as PagesComponent,
+    AppComponent,
+    target,
+    url,
+  );
+  assertStillCurrent();
+
+  await renderPagesNavigationTarget(url, target, props, options, assertStillCurrent, {
+    appComponent: AppComponent,
+    pageModule,
+  });
+}
+
 /**
  * Perform client-side navigation via the `/_next/data/<id>/<page>.json`
  * endpoint. Used when `__VINEXT_PAGE_LOADERS__` has a matching code-split
@@ -1679,8 +1970,8 @@ async function navigateClientData(
       };
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
-      const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(initialTarget.pattern) === true;
-      const dataFetch = isSsg ? fetchStaticPagesData : dedupedPagesDataFetch;
+      const dataFetch =
+        initialTarget.dataKind === "static" ? fetchStaticPagesData : dedupedPagesDataFetch;
       res = await dataFetch(initialTarget.dataHref, {
         headers,
         signal: controller.signal,
@@ -1761,106 +2052,7 @@ async function navigateClientData(
     throw new NavigationCancelledError(url);
   }
 
-  // Load the page module via the registered code-split loader. Vite has
-  // already split each page into its own chunk; the loader is just the
-  // `import()` thunk the build generated.
-  let pageModule: { default?: unknown; [key: string]: unknown };
-  try {
-    pageModule = await target.loader();
-  } catch (err) {
-    console.error("[vinext] Page loader threw during navigation:", err);
-    scheduleHardNavigationAndThrow(url, "Data navigation failed: page loader threw");
-  }
-  assertStillCurrent();
-
-  const PageComponent = pageModule.default;
-  if (!isPageComponent(PageComponent)) {
-    scheduleHardNavigationAndThrow(
-      url,
-      "Data navigation failed: page module default export is not a component",
-    );
-  }
-
-  // Lazy-load `_app` if we have an app loader and haven't cached it yet.
-  let AppComponent = window.__VINEXT_APP__;
-  if (!AppComponent && typeof window.__VINEXT_APP_LOADER__ === "function") {
-    try {
-      const appModule = await window.__VINEXT_APP_LOADER__();
-      AppComponent = isAppComponent(appModule.default) ? appModule.default : undefined;
-      if (AppComponent) window.__VINEXT_APP__ = AppComponent;
-    } catch {
-      // _app load failed — fall through and render without it. This matches
-      // the HTML path which also tolerates a missing _app gracefully.
-    }
-  }
-  assertStillCurrent();
-
-  // Import React (already evaluated; this is a cached re-import).
-  const React = (await import("react")).default;
-  assertStillCurrent();
-
-  let element: ReactElement;
-  if (AppComponent) {
-    element = React.createElement(AppComponent, {
-      ...props,
-      Component: PageComponent,
-      pageProps: rawPageProps,
-      router: Router,
-    });
-  } else {
-    element = React.createElement(PageComponent, pageProps);
-  }
-  // Build the updated __NEXT_DATA__. The JSON envelope is the full Pages
-  // props object, so preserve it while synthesising the surrounding fields
-  // from the matched pattern, params, and previous nextData's buildId/locale
-  // state. This keeps
-  // `useRouter()`, `getPagesNavigationContext()`, and any code reading
-  // `window.__NEXT_DATA__` in sync after a JSON navigation — mirroring
-  // what the HTML path produces.
-  //
-  // The cast through `unknown` is unavoidable: the upstream `NEXT_DATA`
-  // type defines `query` as `ParsedUrlQuery` which is structurally
-  // identical to our `Record<string, string | string[]>` but nominally
-  // disjoint, so TypeScript rejects the direct assignment. We spread the
-  // previous nextData first to inherit locale/locales/defaultLocale/
-  // domainLocales unchanged, then override the per-navigation fields.
-  // Mirror Next.js' `__NEXT_DATA__.query`: search params + dynamic route params
-  // merged in one object, with route params winning on key collision (so
-  // `/posts/123?id=456` still exposes `id: "123"`). Without this, code reading
-  // `window.__NEXT_DATA__.query` directly would see only the dynamic params.
-  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
-
-  const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
-  // Locale-prefixed URLs change the active locale; the JSON envelope itself
-  // has no locale metadata, so derive it from the URL we navigated to.
-  // `target.locale` is `undefined` when the URL is unprefixed — that means
-  // either no i18n config (keep `prev.locale`) or the default locale
-  // (override `prev.locale` so locale transitions back to default land
-  // correctly). The locales list / defaultLocale / domainLocales are
-  // build-time config and don't change between pages, so they spread through
-  // from `prev` unchanged.
-  const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
-  const nextLocale = hasI18n
-    ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
-    : (prev as VinextNextData | undefined)?.locale;
-  const nextData = {
-    ...prev,
-    props,
-    page: target.pattern,
-    query: mergedQuery,
-    buildId: target.buildId,
-    isFallback: false,
-    ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
-  } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
-
-  // INVARIANT: __NEXT_DATA__ is mutated only after all pre-render async work
-  // has passed assertStillCurrent(). The post-render await below waits for the
-  // stable Pages Router commit boundary before routeChangeComplete, matching
-  // Next.js's client Root callback without remounting the page tree.
-  window.__NEXT_DATA__ = nextData;
-  applyVinextLocaleGlobals(window, nextData);
-  await renderPagesRouterElement(element, options.scroll);
-  assertStillCurrent();
+  await renderPagesNavigationTarget(url, target, props, options, assertStillCurrent);
 }
 
 /**
@@ -2110,7 +2302,7 @@ async function navigateClient(
       let dataTarget = resolvePagesDataNavigationTarget(routeUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
       let middlewareEffect: MiddlewareDataEffect | null = null;
-      if (hasVinextMiddleware(window.__NEXT_DATA__)) {
+      if (shouldProbePagesMiddleware(browserUrl)) {
         try {
           middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
         } catch (err: unknown) {
@@ -2140,15 +2332,19 @@ async function navigateClient(
         if (middlewareEffect.rewriteTarget || routeUrl === url) {
           middlewareDataResponse = middlewareEffect.response;
         }
-        // App Router rewrite targets intentionally have no Pages data target. Keep the original
-        // source target so navigateClientData sees the rewrite header, fails target resolution,
-        // and schedules a hard navigation that boots the App Router at the visible URL.
-        if (!dataTarget && middlewareEffect.rewriteTarget) {
-          dataTarget = resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
+        if (middlewareEffect.rewriteTarget) {
+          const rewrittenTarget = resolvePagesDataNavigationTarget(
+            middlewareEffect.rewriteTarget,
+            __basePath,
+          );
+          if (!rewrittenTarget) {
+            scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
+          }
+          dataTarget = rewrittenTarget;
         }
       }
 
-      if (dataTarget) {
+      if (dataTarget?.dataKind === "static" || dataTarget?.dataKind === "server") {
         await navigateClientData(
           browserUrl,
           dataTarget,
@@ -2158,6 +2354,8 @@ async function navigateClient(
           options,
           middlewareDataResponse,
         );
+      } else if (dataTarget) {
+        await navigateClientNoData(browserUrl, dataTarget, controller, assertStillCurrent, options);
       } else {
         await navigateClientHtml(
           browserUrl,

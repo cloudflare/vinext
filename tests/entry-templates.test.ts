@@ -1208,6 +1208,33 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/local-alias","/ssg"]');
+      expect(code).toContain('window.__VINEXT_PAGES_SSP_PATTERNS__ = ["/dynamic"]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeds the Pages middleware matcher in the client entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-mw-matcher-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { middlewareMatcher: ["/ssr", { source: "/api/:path*" }] },
+      );
+
+      expect(code).toContain(
+        'window.__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr",{"source":"/api/:path*"}]',
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

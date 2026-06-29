@@ -24,7 +24,7 @@ import type {
 } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { normalizePathSeparators } from "../utils/path.js";
-import { hasExportedName } from "../build/report.js";
+import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 
 /**
  * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
@@ -46,6 +46,10 @@ async function hasGetStaticPropsExport(filePath: string): Promise<boolean> {
   return hasExportedName(await readFile(filePath, "utf8"), "getStaticProps");
 }
 
+async function hasGetServerSidePropsExport(filePath: string): Promise<boolean> {
+  return hasExportedName(await readFile(filePath, "utf8"), "getServerSideProps");
+}
+
 export async function generateClientEntry(
   pagesDir: string,
   nextConfig: ResolvedNextConfig,
@@ -53,6 +57,7 @@ export async function generateClientEntry(
   options: {
     appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
     instrumentationClientPath?: string | null;
+    middlewareMatcher?: StaticMiddlewareMatcher | undefined;
     reactPreamble?: boolean;
   } = {},
 ): Promise<string> {
@@ -70,6 +75,15 @@ export async function generateClientEntry(
     await Promise.all(
       pageRoutes.map(async (route) =>
         (await hasGetStaticPropsExport(route.filePath))
+          ? pagesPatternToNextFormat(route.pattern)
+          : null,
+      ),
+    )
+  ).filter((pattern): pattern is string => pattern !== null);
+  const pagesSspPatterns = (
+    await Promise.all(
+      pageRoutes.map(async (route) =>
+        (await hasGetServerSidePropsExport(route.filePath))
           ? pagesPatternToNextFormat(route.pattern)
           : null,
       ),
@@ -148,6 +162,8 @@ const appLoader = undefined;
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
 window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
+window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
+window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
 window.__VINEXT_APP_LOADER__ = appLoader;
 // Expose the App Router prefetch manifest so Pages Router \`<Link>\`s and
 // \`Router.prefetch\` can detect when a prefetch target is actually an App

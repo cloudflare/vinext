@@ -13,6 +13,7 @@ describe("prefetchPagesData", () => {
     vi.stubGlobal("window", {
       location: { href: "http://localhost/", origin: "http://localhost" },
       __VINEXT_PAGES_SSG_PATTERNS__: [],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
     });
   });
 
@@ -35,6 +36,7 @@ describe("prefetchPagesData", () => {
 
     prefetchPagesData({
       buildId: "build-id",
+      dataKind: "static",
       dataHref: "/_next/data/build-id/about.json",
       loader,
       locale: undefined,
@@ -68,6 +70,7 @@ describe("prefetchPagesData", () => {
 
     prefetchPagesData({
       buildId: "build-id",
+      dataKind: "static",
       dataHref: "/_next/data/build-id/ssg.json",
       loader,
       locale: undefined,
@@ -78,6 +81,7 @@ describe("prefetchPagesData", () => {
     });
     prefetchPagesData({
       buildId: "build-id",
+      dataKind: "server",
       dataHref: "/_next/data/build-id/dynamic.json",
       loader,
       locale: undefined,

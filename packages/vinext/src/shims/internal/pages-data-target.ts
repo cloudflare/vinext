@@ -23,6 +23,8 @@ export type PagesDataTarget = {
   params: Record<string, string | string[]>;
   /** Code-split loader thunk for the matched route's page module. */
   loader: () => Promise<{ default?: unknown; [key: string]: unknown }>;
+  /** Next.js data-fetch mode for this route. Plain pages are component-only. */
+  dataKind: "none" | "server" | "static";
   /** Current buildId snapshot, used by the data URL and consistency checks. */
   buildId: string;
   /** Locale-prefixed (server-routable) page path. */
@@ -93,12 +95,25 @@ export function resolvePagesDataNavigationTarget(
 
   const loader = loaders[match.pattern];
   if (!loader) return null;
+  const ssgPatterns = window.__VINEXT_PAGES_SSG_PATTERNS__;
+  const sspPatterns = window.__VINEXT_PAGES_SSP_PATTERNS__;
+  const dataKind = ssgPatterns?.includes(match.pattern)
+    ? "static"
+    : sspPatterns?.includes(match.pattern)
+      ? "server"
+      : // Older generated entries only exposed the SSG manifest. Preserve the
+        // previous safe behaviour with those entries; fresh builds expose both
+        // manifests and can distinguish plain pages from GSSP pages.
+        ssgPatterns === undefined || sspPatterns === undefined
+        ? "server"
+        : "none";
 
   return {
     dataHref: buildPagesDataHref(basePath, buildId, pagePath, parsed.search),
     pattern: match.pattern,
     params: match.params,
     loader,
+    dataKind,
     buildId,
     pagePath,
     search: parsed.search,
@@ -124,8 +139,7 @@ export function prefetchPagesData(target: PagesDataTarget): void {
 
   void target.loader().catch(() => {});
 
-  const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(target.pattern) === true;
-  if (!isSsg) return;
+  if (target.dataKind !== "static") return;
 
   const headers: Record<string, string> = {
     Accept: "application/json",

@@ -17658,6 +17658,7 @@ describe("Pages Router _next/data client navigation", () => {
       locale?: string;
       loaders?: Record<string, () => Promise<unknown>>;
       ssgPatterns?: string[];
+      sspPatterns?: string[];
       appLoader?: () => Promise<unknown>;
       /** Initial pathname for window.location. */
       pathname?: string;
@@ -17706,6 +17707,8 @@ describe("Pages Router _next/data client navigation", () => {
       __VINEXT_PAGE_LOADERS__: opts.loaders,
       __VINEXT_PAGE_PATTERNS__: opts.loaders ? Object.keys(opts.loaders) : undefined,
       __VINEXT_PAGES_SSG_PATTERNS__: opts.ssgPatterns,
+      __VINEXT_PAGES_SSP_PATTERNS__: opts.sspPatterns,
+      __VINEXT_MIDDLEWARE_MATCHER__: undefined,
       __VINEXT_APP_LOADER__: opts.appLoader,
     };
 
@@ -17756,6 +17759,7 @@ describe("Pages Router _next/data client navigation", () => {
     const loaderAbout = vi.fn(async () => makePageModule("about"));
     const { win, buildId } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
+      sspPatterns: ["/about"],
     });
     (globalThis as any).window = win;
     vi.resetModules();
@@ -17793,6 +17797,272 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("renders plain pages from the page chunk without fetching /_next/data", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/about?tab=plain");
+
+      expect(result).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/about",
+        query: { tab: "plain" },
+        props: { pageProps: {} },
+      });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("skips middleware data probes when the client matcher excludes the page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/about");
+
+      expect(result).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("keeps middleware data probes for pages matched by the client matcher", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/about"];
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response("{}"),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/about");
+
+      expect(result).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toBe(`/_next/data/${buildId}/about.json`);
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("matches middleware probes for path parameters, locale=false entries, and regex fallbacks", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderApiPath = vi.fn(async () => makePageModule("apiPath"));
+    const loaderLocalized = vi.fn(async () => makePageModule("localized"));
+    const loaderRegex = vi.fn(async () => makePageModule("regex"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/api/[...path]": loaderApiPath,
+        "/localized": loaderLocalized,
+        "/regex": loaderRegex,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = [
+      "/api/:path*",
+      { source: "/en/localized", locale: false },
+      "/regex/(.*)",
+    ];
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response("{}"),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/api/hello/world");
+      await Router.push("/en/localized");
+      await Router.push("/regex");
+
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        `/_next/data/${buildId}/api/hello/world.json`,
+        `/_next/data/${buildId}/en/localized.json`,
+        `/_next/data/${buildId}/regex.json`,
+      ]);
+      expect(loaderApiPath).toHaveBeenCalledTimes(1);
+      expect(loaderLocalized).toHaveBeenCalledTimes(1);
+      expect(loaderRegex).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("reuses cached SSG data across repeated navigations", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": aboutLoader,
+      },
+      ssgPatterns: ["/about"],
+      sspPatterns: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { cached: true } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/about");
+      await Router.push("/");
+      await Router.push("/about");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const calledInput = fetchMock.mock.calls[0][0];
+      const calledUrl =
+        typeof calledInput === "string"
+          ? calledInput
+          : calledInput instanceof URL
+            ? calledInput.href
+            : calledInput.url;
+      expect(calledUrl).toContain("/_next/data/");
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/about",
+        props: { pageProps: { cached: true } },
+      });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("does not persist completed GSSP data across repeated navigations", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": aboutLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: ["/about"],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    let hit = 0;
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { hit: ++hit } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/about");
+      await Router.push("/");
+      await Router.push("/about");
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/about",
+        props: { pageProps: { hit: 2 } },
+      });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("dedupes deferred identical pushes while cancelling only the stale navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -17800,6 +18070,7 @@ describe("Pages Router _next/data client navigation", () => {
     const slowLoader = vi.fn(async () => makePageModule("slow"));
     const { win, render, pushState } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/slow": slowLoader },
+      sspPatterns: ["/slow"],
     });
     (globalThis as any).window = win;
     vi.resetModules();
@@ -17862,6 +18133,7 @@ describe("Pages Router _next/data client navigation", () => {
     const { win, render } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
       appLoader,
+      sspPatterns: ["/about"],
     });
     (globalThis as any).window = win;
     vi.resetModules();
@@ -17916,6 +18188,7 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/about": vi.fn(async () => makePageModule("about")),
       },
+      sspPatterns: ["/about"],
     });
     (globalThis as any).window = win;
     const hrefAssignments = trackHrefAssignmentsLocal(win);
@@ -17955,6 +18228,7 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/about": vi.fn(async () => makePageModule("about")),
       },
+      sspPatterns: ["/about"],
     });
     (globalThis as any).window = win;
     const hrefAssignments = trackHrefAssignmentsLocal(win);
@@ -18032,6 +18306,7 @@ describe("Pages Router _next/data client navigation", () => {
     const blogLoader = vi.fn(async () => makePageModule("blog"));
     const { win, buildId } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/blog/[slug]": blogLoader },
+      sspPatterns: ["/blog/[slug]"],
     });
     (globalThis as any).window = win;
     vi.resetModules();
@@ -18072,6 +18347,7 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/blog/[slug]": vi.fn(async () => makePageModule("blog")),
       },
+      sspPatterns: ["/blog/[slug]"],
     });
     (globalThis as any).window = win;
     vi.resetModules();
@@ -18114,6 +18390,7 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/about": vi.fn(async () => makePageModule("about")),
       },
+      sspPatterns: ["/about"],
     });
     (globalThis as any).window = win;
     const hrefAssignments = trackHrefAssignmentsLocal(win);
@@ -18154,6 +18431,7 @@ describe("Pages Router _next/data client navigation", () => {
     const { win, buildId } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": aboutLoader },
       ssgPatterns: ["/about"],
+      sspPatterns: [],
     });
     (globalThis as any).window = win;
 
@@ -18219,6 +18497,7 @@ describe("Pages Router _next/data client navigation", () => {
     const { win } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": aboutLoader },
       ssgPatterns: [],
+      sspPatterns: [],
     });
     (globalThis as any).window = win;
     (globalThis as any).document = {
@@ -18301,6 +18580,7 @@ describe("Pages Router _next/data client navigation", () => {
         "/about": loaderAbout,
       },
       locale: "en",
+      sspPatterns: ["/about"],
     });
     (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
@@ -18359,6 +18639,7 @@ describe("Pages Router _next/data client navigation", () => {
       },
       locale: "fr",
       pathname: "/fr",
+      sspPatterns: ["/about"],
     });
     (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";

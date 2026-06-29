@@ -99,6 +99,17 @@ declare global {
     /** Pages Router patterns whose modules export `getStaticProps`. */
     __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
 
+    /** Pages Router patterns whose modules export `getServerSideProps`. */
+    __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
+
+    /**
+     * Static `middleware/proxy` matcher config embedded for client-side Pages
+     * Router middleware-effect probes. `undefined` means "match all", matching
+     * Next.js's default when middleware has no matcher or the config was too
+     * dynamic to statically serialize.
+     */
+    __VINEXT_MIDDLEWARE_MATCHER__: unknown;
+
     /**
      * Pages Router `_app` loader. Dynamic `import()` thunk for the user's
      * `pages/_app.tsx` module, or `undefined` when the app has no `_app`.

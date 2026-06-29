@@ -2161,6 +2161,7 @@ describe("Link prefetch scheduling", () => {
       },
       __VINEXT_PAGE_PATTERNS__: ["/about"],
       __VINEXT_PAGES_SSG_PATTERNS__: [],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
     };
     const result = await renderIsolatedLink({
       appNavigation: false,
