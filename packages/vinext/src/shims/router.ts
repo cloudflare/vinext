@@ -1727,6 +1727,27 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
+function clientConfigRedirectCouldMatch(href: string): boolean {
+  const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
+  if (!redirects || redirects.length === 0) return false;
+
+  const routeContext = getClientConfigRouteContext(href);
+  if (!routeContext) return false;
+
+  for (const redirect of redirects) {
+    if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
+      continue;
+    }
+    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, redirect.source)) {
+      continue;
+    }
+    const params = matchSimpleClientConfigPattern(routeContext.pathname, redirect.source);
+    if (params !== null) return true;
+  }
+
+  return false;
+}
+
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
   if (!rewrites) return null;
@@ -2418,9 +2439,10 @@ async function navigateClient(
     } else {
       let browserUrl = url;
       let htmlFetchUrl = fetchUrl;
-      const configRedirect = hasClientRedirectRules()
-        ? await resolveClientConfigRedirect(browserUrl)
-        : null;
+      const configRedirect =
+        hasClientRedirectRules() && clientConfigRedirectCouldMatch(browserUrl)
+          ? await resolveClientConfigRedirect(browserUrl)
+          : null;
       if (configRedirect) {
         const redirectedUrl = resolveLocalRedirectUrl(configRedirect);
         if (!redirectedUrl) {

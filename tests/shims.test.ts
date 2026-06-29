@@ -17880,6 +17880,57 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("does not delay data fetch startup for nonmatching config redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const slowLoader = vi.fn(async () => makePageModule("slow"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/gssp-dedup-slow": slowLoader,
+      },
+      sspPatterns: ["/gssp-dedup-slow"],
+    });
+    (win as any).__VINEXT_CLIENT_REDIRECTS__ = [
+      { source: "/old-about", destination: "/about", permanent: true },
+      { source: "/repeat-redirect/:id", destination: "/docs/:id/:id", permanent: false },
+    ];
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    let resolveResponse: (response: Response) => void = () => {};
+    const response = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) => response);
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const navigation = Router.push("/gssp-dedup-slow?key=query-one");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl] = fetchMock.mock.calls[0]!;
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/gssp-dedup-slow.json?key=query-one`);
+
+      resolveResponse(
+        new Response(JSON.stringify({ pageProps: { key: "query-one" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      await expect(navigation).resolves.toBe(true);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("uses beforeFiles rewrites for plain pages while preserving the visible URL", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
