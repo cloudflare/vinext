@@ -9,6 +9,7 @@
     "directory": "packages/cloudflare"
   },
   "bin": {
+    "@vinext/cloudflare": "dist/cli.js",
     "vinext-cloudflare": "dist/cli.js"
   },
   "files": [

@@ -1,5 +1,5 @@
 /**
- * @vinext/cloudflare deploy — one-command Cloudflare Workers deployment.
+ * vinext-cloudflare deploy — one-command Cloudflare Workers deployment.
  *
  * Takes any Next.js app and deploys it to Cloudflare Workers:
  *
@@ -308,7 +308,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const root = path.resolve(options.root);
   loadDotenv({ root, mode: "production" });
 
-  console.log("\n  @vinext/cloudflare deploy\n");
+  console.log("\n  vinext-cloudflare deploy\n");
 
   // Step 1: Detect project structure
   const info = detectProject(root);
@@ -316,7 +316,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
     console.error(
-      "  @vinext/cloudflare deploy requires a Next.js project with an app/ or pages/ directory",
+      "  vinext-cloudflare deploy requires a Next.js project with an app/ or pages/ directory",
     );
     console.error("  (also checks src/app/ and src/pages/).\n");
     process.exit(1);

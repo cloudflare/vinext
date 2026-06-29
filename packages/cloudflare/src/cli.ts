@@ -16,9 +16,13 @@ function printHelp(commandName?: string): void {
   }
 
   console.log(`
-  @vinext/cloudflare v${VERSION}
+  vinext-cloudflare v${VERSION}
 
-  Usage: @vinext/cloudflare <command> [options]
+  Usage: vinext-cloudflare <command> [options]
+
+  Vite+:
+    vpx @vinext/cloudflare <command>       Run by package name
+    vp exec vinext-cloudflare <command>    Run the locally installed bin
 
   Commands:
     deploy   Deploy to Cloudflare Workers
@@ -53,7 +57,7 @@ async function deployCommand(): Promise<void> {
 }
 
 if (command === "--version" || command === "-v") {
-  console.log(`@vinext/cloudflare v${VERSION}`);
+  console.log(`vinext-cloudflare v${VERSION}`);
   process.exit(0);
 }
 

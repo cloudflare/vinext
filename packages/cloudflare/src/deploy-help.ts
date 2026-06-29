@@ -1,8 +1,8 @@
 export function formatDeployHelp(): string {
   return `
-  @vinext/cloudflare deploy - Deploy to Cloudflare Workers
+  vinext-cloudflare deploy - Deploy to Cloudflare Workers
 
-  Usage: @vinext/cloudflare deploy [options]
+  Usage: vinext-cloudflare deploy [options]
 
   One-command deployment to Cloudflare Workers. Automatically:
     - Detects App Router or Pages Router
@@ -35,14 +35,16 @@ export function formatDeployHelp(): string {
   CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
 
   Examples:
-    npx @vinext/cloudflare deploy                              Build and deploy to production
-    npx @vinext/cloudflare deploy --preview                    Deploy to a preview URL
-    npx @vinext/cloudflare deploy --env staging                Deploy using wrangler env.staging
-    npx @vinext/cloudflare deploy --dry-run                    Validate setup without building or deploying
-    npx @vinext/cloudflare deploy --name my-app                Deploy with a custom Worker name
-    npx @vinext/cloudflare deploy --experimental-tpr           Enable TPR during deploy
-    npx @vinext/cloudflare deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic
-    npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500     Cap at 500 pages
+    npx @vinext/cloudflare deploy                                      Build and deploy to production
+    vpx @vinext/cloudflare deploy                                      Build and deploy with Vite+
+    vp exec vinext-cloudflare deploy                                   Run the locally installed Vite+ bin
+    vinext-cloudflare deploy --preview                                 Deploy to a preview URL
+    vinext-cloudflare deploy --env staging                             Deploy using wrangler env.staging
+    vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
+    vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
+    vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
+    vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
+    vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages
 `;
 }
 

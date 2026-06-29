@@ -784,9 +784,9 @@ async function deployCommand() {
     return;
   }
 
+  printDeployDeprecationWarning();
   await loadVite();
   console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
-  printDeployDeprecationWarning();
 
   await runDeploy({
     root: process.cwd(),
@@ -805,9 +805,9 @@ async function deployCommand() {
 }
 
 function printDeployDeprecationWarning(): void {
-  console.warn(
-    "  ⚠️  Warning: `vinext deploy` has moved to `@vinext/cloudflare deploy`.\n" +
-      "  Please switch to `npx @vinext/cloudflare deploy`; this compatibility command will be removed in a future release.\n",
+  console.log(
+    "  ⚠️  Warning: `vinext deploy` has moved to the `@vinext/cloudflare` package.\n" +
+      "  Please switch to `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`; this compatibility command will be removed in a future release.\n",
   );
 }
 
@@ -1020,7 +1020,6 @@ function printHelp(cmd?: string) {
     dev      Start development server
     build    Build for production
     start    Start production server
-    deploy   ⚠️  Deprecated Cloudflare deploy shim; use npx @vinext/cloudflare deploy
     typegen  Generate App Router route helper types
     init     Migrate a Next.js project to vinext
     check    Scan Next.js app for compatibility
@@ -1031,15 +1030,16 @@ function printHelp(cmd?: string) {
     --version      Show version
 
   Examples:
-    vinext dev                  Start dev server on port 3000
-    vinext dev -p 4000          Start dev server on port 4000
-    vinext build                Build for production
-    vinext typegen              Generate route helper types
-    vinext start                Start production server
-    npx @vinext/cloudflare deploy  Deploy to Cloudflare Workers
-    vinext init                 Migrate a Next.js project
-    vinext check                Check compatibility
-    vinext lint                 Run linter
+    vinext dev                         Start dev server on port 3000
+    vinext dev -p 4000                 Start dev server on port 4000
+    vinext build                       Build for production
+    vinext typegen                     Generate route helper types
+    vinext start                       Start production server
+    vinext init                        Migrate a Next.js project
+    vinext check                       Check compatibility
+    vinext lint                        Run linter
+    npx @vinext/cloudflare deploy      Deploy to Cloudflare Workers
+    vp exec vinext-cloudflare deploy   Deploy to Cloudflare Workers with Vite+
 
   vinext is a drop-in replacement for the \`next\` CLI.
   No vite.config.ts needed — just run \`vinext dev\` in your Next.js project.

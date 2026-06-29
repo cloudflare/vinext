@@ -777,7 +777,7 @@ const DEFAULT_REVALIDATE_SECONDS = 3600;
  * Run the TPR pipeline: query traffic, select routes, pre-render, upload.
  *
  * Designed to be called between the build step and wrangler deploy in the
- * `@vinext/cloudflare deploy` pipeline. Gracefully skips (never errors) when
+ * `vinext-cloudflare deploy` pipeline. Gracefully skips (never errors) when
  * the prerequisites aren't met.
  */
 export async function runTPR(options: TPROptions): Promise<TPRResult> {

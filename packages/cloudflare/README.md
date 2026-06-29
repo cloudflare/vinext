@@ -39,3 +39,6 @@ Deploy Cloudflare Workers projects with the package CLI:
 ```sh
 npx @vinext/cloudflare deploy
 ```
+
+With Vite+, use `vpx @vinext/cloudflare deploy`, or
+`vp exec vinext-cloudflare deploy` when running the locally installed bin.

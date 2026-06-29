@@ -52,21 +52,25 @@ vinext build        # Production build
 npx @vinext/cloudflare deploy  # Build and deploy to Cloudflare Workers
 ```
 
+With Vite+, use `vpx @vinext/cloudflare deploy`, or
+`vp exec vinext-cloudflare deploy` when running the locally installed bin.
+
 vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
 
 Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is. Run `vinext check` first to scan for known compatibility issues, or use `vinext init` to [automate the full migration](#migrating-an-existing-nextjs-project).
 
 ### CLI reference
 
-| Command                         | Description                                                             |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `vinext dev`                    | Start dev server with HMR                                               |
-| `vinext build`                  | Production build (multi-environment for App Router: RSC + SSR + client) |
-| `vinext start`                  | Start local production server for testing                               |
-| `npx @vinext/cloudflare deploy` | Build and deploy to Cloudflare Workers                                  |
-| `vinext init`                   | Migrate a Next.js project to run under vinext                           |
-| `vinext check`                  | Scan your Next.js app for compatibility issues before migrating         |
-| `vinext lint`                   | Delegate to eslint or oxlint                                            |
+| Command                            | Description                                                             |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `vinext dev`                       | Start dev server with HMR                                               |
+| `vinext build`                     | Production build (multi-environment for App Router: RSC + SSR + client) |
+| `vinext start`                     | Start local production server for testing                               |
+| `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                  |
+| `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
+| `vinext init`                      | Migrate a Next.js project to run under vinext                           |
+| `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
+| `vinext lint`                      | Delegate to eslint or oxlint                                            |
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
@@ -134,7 +138,7 @@ Vite has become the default build tool for modern web frameworks — fast HMR, a
 
 vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes.
 
-vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vinext/cloudflare deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
+vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Alternatives worth knowing about:**
 
@@ -181,7 +185,7 @@ Both. File-system routing, SSR, client hydration, and deployment to Cloudflare W
 Next.js 16.x. No support for deprecated APIs from older versions.
 
 **Can I deploy to AWS/Netlify/other platforms?**
-Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`npx @vinext/cloudflare deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
+Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **What happens when Next.js releases a new feature?**
 We track the public Next.js API surface and add support for new stable features. Experimental or unstable Next.js features are lower priority. The plan is to add commit-level tracking of the Next.js repo so we can stay current as new versions are released.
@@ -226,7 +230,9 @@ thin request forwarder; image optimization is not implemented or generated by `@
 
 ```bash
 npx @vinext/cloudflare deploy
+vp exec vinext-cloudflare deploy
 npx @vinext/cloudflare deploy --env staging
+vp exec vinext-cloudflare deploy --env staging
 ```
 
 Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
@@ -278,6 +284,7 @@ TPR queries Cloudflare zone analytics at deploy time to find which pages actuall
 
 ```bash
 npx @vinext/cloudflare deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
+vp exec vinext-cloudflare deploy --experimental-tpr                 # Same, with Vite+
 npx @vinext/cloudflare deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
 npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
 npx @vinext/cloudflare deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
@@ -340,7 +347,7 @@ NITRO_PRESET=netlify npx vite build
 NITRO_PRESET=deno_deploy npx vite build
 ```
 
-> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`npx @vinext/cloudflare deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
+> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`npx @vinext/cloudflare deploy`, `vp exec vinext-cloudflare deploy`, and `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
 
 <details>
 <summary>Vercel</summary>
