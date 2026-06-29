@@ -169,7 +169,7 @@ export function generateWranglerConfig(
     : fs.existsSync(path.join(info.root, "worker", "index.js"))
       ? "./worker/index.js"
       : undefined;
-  const workerEntry = customWorkerEntry ?? "vinext/server/entry";
+  const workerEntry = customWorkerEntry ?? "vinext/server/fetch-handler";
 
   const config: Record<string, unknown> = {
     $schema: "node_modules/wrangler/config-schema.json",

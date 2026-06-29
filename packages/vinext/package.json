@@ -57,9 +57,9 @@
       "types": "./dist/server/pages-client-assets.d.ts",
       "import": "./dist/server/pages-client-assets.js"
     },
-    "./server/entry": {
-      "types": "./dist/server/entry.d.ts",
-      "import": "./dist/server/entry.js"
+    "./server/fetch-handler": {
+      "types": "./dist/server/fetch-handler.d.ts",
+      "import": "./dist/server/fetch-handler.js"
     },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",

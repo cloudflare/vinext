@@ -5,7 +5,7 @@ import { createServer, type ViteDevServer } from "vite-plus";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
-async function loadUnifiedWorkerEntry(root: string): Promise<string> {
+async function loadUnifiedFetchHandler(root: string): Promise<string> {
   let server: ViteDevServer | undefined;
   try {
     server = await createServer({
@@ -26,9 +26,9 @@ async function loadUnifiedWorkerEntry(root: string): Promise<string> {
   }
 }
 
-describe("unified Cloudflare Worker entry", () => {
+describe("unified Cloudflare fetch handler", () => {
   it("delegates App Router apps to the App Router worker entry", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-worker-entry-app-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-fetch-handler-app-"));
     try {
       fs.mkdirSync(path.join(root, "app"), { recursive: true });
       fs.writeFileSync(
@@ -36,7 +36,7 @@ describe("unified Cloudflare Worker entry", () => {
         "export default function Page() { return <div>app</div>; }\n",
       );
 
-      await expect(loadUnifiedWorkerEntry(root)).resolves.toBe(
+      await expect(loadUnifiedFetchHandler(root)).resolves.toBe(
         'export { default } from "vinext/server/app-router-entry";',
       );
     } finally {
@@ -45,7 +45,7 @@ describe("unified Cloudflare Worker entry", () => {
   });
 
   it("delegates Pages Router apps to the Pages Router worker entry", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-worker-entry-pages-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-fetch-handler-pages-"));
     try {
       fs.mkdirSync(path.join(root, "pages"), { recursive: true });
       fs.writeFileSync(
@@ -53,7 +53,7 @@ describe("unified Cloudflare Worker entry", () => {
         "export default function Page() { return <div>pages</div>; }\n",
       );
 
-      await expect(loadUnifiedWorkerEntry(root)).resolves.toBe(
+      await expect(loadUnifiedFetchHandler(root)).resolves.toBe(
         'export { default } from "vinext/server/pages-router-entry";',
       );
     } finally {

@@ -66,7 +66,7 @@ namespace binding — both are configured there.
 
    ```jsonc
    {
-     "main": "vinext/server/entry"
+     "main": "vinext/server/fetch-handler"
    }
    ```
 

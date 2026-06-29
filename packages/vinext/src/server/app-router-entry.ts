@@ -2,7 +2,7 @@
  * Router-specific Cloudflare Worker entry point for vinext App Router.
  *
  * New projects should usually use the router-selected entry in wrangler.jsonc:
- *   "main": "vinext/server/entry"
+ *   "main": "vinext/server/fetch-handler"
  *
  * This App Router entry remains available for existing configs and for custom
  * workers that need to opt into the App Router handler explicitly:
