@@ -4,7 +4,7 @@ import MagicString from "magic-string";
 import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
-import { detectProject } from "./cloudflare/project.js";
+import { detectProject } from "./utils/project.js";
 
 export type CloudflareProjectInfo = {
   root: string;

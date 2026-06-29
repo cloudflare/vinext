@@ -6,7 +6,7 @@
  *   vinext dev     Start development server (Vite)
  *   vinext build   Build for production
  *   vinext start   Start production server
- *   vinext deploy  Deploy to Cloudflare Workers
+ *   vinext deploy  Deprecated Cloudflare deploy shim
  *   vinext typegen Generate App Router route helper types
  *   vinext lint    Run linter (delegates to eslint/oxlint)
  *
@@ -28,7 +28,8 @@ import {
   hasAppDir,
   hasViteConfig,
 } from "./utils/project.js";
-import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
+import { deploy as runDeploy, parseDeployArgs } from "@vinext/cloudflare/internal/deploy";
+import { printDeployHelp } from "@vinext/cloudflare/internal/deploy-help";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { INIT_PLATFORMS, resolveInitPlatform } from "./init-platform.js";
@@ -777,8 +778,13 @@ async function lint() {
 
 async function deployCommand() {
   const parsed = parseDeployArgs(rawArgs);
-  if (parsed.help) return printHelp("deploy");
+  if (parsed.help) {
+    printDeployDeprecationWarning();
+    printDeployHelp();
+    return;
+  }
 
+  printDeployDeprecationWarning();
   await loadVite();
   console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
 
@@ -796,6 +802,13 @@ async function deployCommand() {
     tprLimit: parsed.tprLimit,
     tprWindow: parsed.tprWindow,
   });
+}
+
+function printDeployDeprecationWarning(): void {
+  console.log(
+    "  ⚠️  Warning: `vinext deploy` has moved to the `@vinext/cloudflare` package.\n" +
+      "  Please switch to `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`; this compatibility command will be removed in a future release.\n",
+  );
 }
 
 async function check() {
@@ -911,52 +924,8 @@ function printHelp(cmd?: string) {
   }
 
   if (cmd === "deploy") {
-    console.log(`
-  vinext deploy - Deploy to Cloudflare Workers
-
-  Usage: vinext deploy [options]
-
-  One-command deployment to Cloudflare Workers. Automatically:
-    - Detects App Router or Pages Router
-    - Generates wrangler.jsonc and vite.config.ts if missing
-    - Installs @cloudflare/vite-plugin and wrangler if needed
-    - Builds the project with Vite
-    - Deploys via wrangler
-
-  Options:
-    --preview                Deploy to preview environment (same as --env preview)
-    --env <name>             Deploy using wrangler env.<name>
-    --name <name>            Custom Worker name (default: from package.json)
-    --skip-build             Skip the build step (use existing dist/)
-    --dry-run                Generate config files without building or deploying
-    --prerender-all          Pre-render discovered routes after building (future
-                             releases will auto-populate the remote cache)
-    --prerender-concurrency <count>
-                             Maximum number of routes to pre-render in parallel
-    -h, --help               Show this help
-
-  Experimental:
-    --experimental-tpr               Enable Traffic-aware Pre-Rendering
-    --tpr-coverage <pct>             Traffic coverage target, 0–100 (default: 90)
-    --tpr-limit <count>              Hard cap on pages to pre-render (default: 1000)
-    --tpr-window <hours>             Analytics lookback window in hours (default: 24)
-
-  TPR (Traffic-aware Pre-Rendering) uses Cloudflare zone analytics to determine
-  which pages get the most traffic and pre-renders them into KV cache during
-  deploy. This feature is experimental and must be explicitly enabled. Requires
-  a custom domain (zone analytics are unavailable on *.workers.dev) and the
-  CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
-
-  Examples:
-    vinext deploy                              Build and deploy to production
-    vinext deploy --preview                    Deploy to a preview URL
-    vinext deploy --env staging                Deploy using wrangler env.staging
-    vinext deploy --dry-run                    Validate setup without building or deploying
-    vinext deploy --name my-app                Deploy with a custom Worker name
-    vinext deploy --experimental-tpr           Enable TPR during deploy
-    vinext deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic
-    vinext deploy --experimental-tpr --tpr-limit 500     Cap at 500 pages
-`);
+    printDeployDeprecationWarning();
+    printDeployHelp();
     return;
   }
 
@@ -1051,7 +1020,6 @@ function printHelp(cmd?: string) {
     dev      Start development server
     build    Build for production
     start    Start production server
-    deploy   Deploy to Cloudflare Workers
     typegen  Generate App Router route helper types
     init     Migrate a Next.js project to vinext
     check    Scan Next.js app for compatibility
@@ -1062,15 +1030,16 @@ function printHelp(cmd?: string) {
     --version      Show version
 
   Examples:
-    vinext dev                  Start dev server on port 3000
-    vinext dev -p 4000          Start dev server on port 4000
-    vinext build                Build for production
-    vinext typegen              Generate route helper types
-    vinext start                Start production server
-    vinext deploy               Deploy to Cloudflare Workers
-    vinext init                 Migrate a Next.js project
-    vinext check                Check compatibility
-    vinext lint                 Run linter
+    vinext dev                         Start dev server on port 3000
+    vinext dev -p 4000                 Start dev server on port 4000
+    vinext build                       Build for production
+    vinext typegen                     Generate route helper types
+    vinext start                       Start production server
+    vinext init                        Migrate a Next.js project
+    vinext check                       Check compatibility
+    vinext lint                        Run linter
+    npx @vinext/cloudflare deploy      Deploy to Cloudflare Workers
+    vp exec vinext-cloudflare deploy   Deploy to Cloudflare Workers with Vite+
 
   vinext is a drop-in replacement for the \`next\` CLI.
   No vite.config.ts needed — just run \`vinext dev\` in your Next.js project.

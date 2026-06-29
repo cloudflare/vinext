@@ -1,5 +1,5 @@
 /**
- * vinext deploy — one-command Cloudflare Workers deployment.
+ * vinext-cloudflare deploy — one-command Cloudflare Workers deployment.
  *
  * Takes any Next.js app and deploys it to Cloudflare Workers:
  *
@@ -14,26 +14,29 @@ import { createRequire } from "node:module";
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { findInNodeModules as _findInNodeModules } from "./utils/project.js";
-import { runTPR } from "./cloudflare/tpr.js";
-import { runPrerender } from "./build/run-prerender.js";
-import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
-import { parsePositiveIntegerArg } from "./cli-args.js";
-import { detectProject, getMissingDeps, type ProjectInfo } from "./cloudflare/project.js";
+import { runPrerender } from "vinext/internal/build/run-prerender";
+import { loadDotenv } from "vinext/internal/config/dotenv";
+import { loadNextConfig, resolveNextConfig } from "vinext/internal/config/next-config";
+import {
+  detectProject,
+  findInNodeModules,
+  formatMissingCloudflarePluginError,
+  getMissingDeps,
+  type ProjectInfo,
+} from "vinext/internal/utils/project";
+import { runTPR } from "./tpr.js";
 import {
   formatMissingCacheAdapterError,
-  formatMissingCloudflarePluginError,
   formatImageOptimizationHint,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
-} from "./cloudflare/deploy-config.js";
+} from "./deploy-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type DeployOptions = {
+export type DeployOptions = {
   /** Project root directory */
   root: string;
   /** Deploy to preview environment (default: production) */
@@ -59,6 +62,17 @@ type DeployOptions = {
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
 };
+
+function parsePositiveIntegerArg(raw: string, flag: string): number {
+  if (raw === "") {
+    throw new Error(`${flag} requires a value, but none was provided.`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flag} expects a positive integer, but got "${raw}".`);
+  }
+  return parsed;
+}
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
@@ -214,7 +228,7 @@ export function resolveWranglerBin(
     try {
       return createRequire(path.join(projectRoot, "package.json")).resolve("wrangler/package.json");
     } catch {
-      return _findInNodeModules(projectRoot, "wrangler/package.json");
+      return findInNodeModules(projectRoot, "wrangler/package.json");
     }
   },
 ): string {
@@ -294,14 +308,16 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const root = path.resolve(options.root);
   loadDotenv({ root, mode: "production" });
 
-  console.log("\n  vinext deploy\n");
+  console.log("\n  vinext-cloudflare deploy\n");
 
   // Step 1: Detect project structure
   const info = detectProject(root);
 
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
-    console.error("  vinext deploy requires a Next.js project with an app/ or pages/ directory");
+    console.error(
+      "  vinext-cloudflare deploy requires a Next.js project with an app/ or pages/ directory",
+    );
     console.error("  (also checks src/app/ and src/pages/).\n");
     process.exit(1);
   }

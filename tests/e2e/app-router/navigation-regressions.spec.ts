@@ -5,6 +5,7 @@ import { waitForAppRouterHydration } from "../helpers";
 // this directory (navigation.spec.ts, server-client-only.spec.ts, after.spec.ts,
 // etc.). Port 4174 is the vite preview default for the app-basic fixture.
 const BASE = "http://localhost:4174";
+const SLOW_SEARCH_RESOLUTION_WAIT_MS = 5_500;
 
 type RouterSideEffectWindow = Window & {
   __APP_ROUTER_HISTORY_MARKER__?: string;
@@ -143,8 +144,9 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     await waitForAppRouterHydration(page);
     await expect(page.locator("#list-title")).toHaveText("Nav Flash List");
 
-    // Cross-route: list -> query-sync
-    await page.click("#to-query-sync");
+    // Use the slow fixture entry so the Suspense fallback is still mounted when
+    // the same-route navigation supersedes the cross-route stream.
+    await page.click("#to-query-sync-slow");
     await expect(page.locator("#query-title")).toHaveText("Search", { timeout: 10_000 });
     await expect(page.locator("#query-loading")).toBeVisible();
 
@@ -155,6 +157,10 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     await expect(page.locator("#query-title")).toHaveText("Search: react", { timeout: 10_000 });
     await expect(page.locator("#hook-query")).toHaveText("q: react");
     expect(page.url()).toContain("q=react");
+
+    await page.waitForTimeout(SLOW_SEARCH_RESOLUTION_WAIT_MS);
+    await expect(page.locator("#query-title")).toHaveText("Search: react");
+    await expect(page.locator("#hook-query")).toHaveText("q: react");
   });
 
   test("usePathname reflects correct value during cross-route navigation", async ({ page }) => {

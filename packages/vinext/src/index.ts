@@ -122,7 +122,11 @@ import {
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
-import { detectPackageManager } from "./utils/project.js";
+import {
+  detectPackageManager,
+  formatMissingCloudflarePluginError,
+  hasWranglerConfig,
+} from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
@@ -157,8 +161,6 @@ import {
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
-import { hasWranglerConfig } from "./cloudflare/project.js";
-import { formatMissingCloudflarePluginError } from "./cloudflare/deploy-config.js";
 import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
