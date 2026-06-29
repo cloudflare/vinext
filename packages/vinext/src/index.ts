@@ -911,6 +911,17 @@ type NitroSetupContext = {
   };
 };
 
+const CLOUDFLARE_SERVER_EXPORT_CONDITIONS = [
+  "workerd",
+  "worker",
+  "edge",
+  "edge-light",
+  "node",
+  "import",
+  "module",
+  "default",
+];
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
@@ -2409,7 +2420,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteConfig.environments = {
             rsc: {
               ...(hasCloudflarePlugin || hasNitroPlugin
-                ? {}
+                ? hasCloudflarePlugin
+                  ? { resolve: { conditions: CLOUDFLARE_SERVER_EXPORT_CONDITIONS } }
+                  : {}
                 : {
                     resolve: {
                       // Externalize native/heavy packages so the RSC environment
@@ -2466,7 +2479,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             ssr: {
               ...(hasCloudflarePlugin || hasNitroPlugin
-                ? {}
+                ? hasCloudflarePlugin
+                  ? { resolve: { conditions: CLOUDFLARE_SERVER_EXPORT_CONDITIONS } }
+                  : {}
                 : {
                     resolve: {
                       external:
@@ -2635,6 +2650,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             ssr: {
               resolve: {
+                conditions: CLOUDFLARE_SERVER_EXPORT_CONDITIONS,
                 external: [
                   "react",
                   "react-dom",

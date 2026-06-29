@@ -151,6 +151,32 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-sentry-app": {
+    testDir: "./tests/e2e",
+    testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],
+    use: { baseURL: "http://localhost:4193" },
+    server: {
+      command:
+        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4193/1 npx vp build && npx wrangler dev --port 4193",
+      cwd: "./tests/fixtures/cf-sentry-app",
+      port: 4193,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
+  "cloudflare-sentry-pages": {
+    testDir: "./tests/e2e",
+    testMatch: ["**/cloudflare-sentry-pages/**/*.spec.ts"],
+    use: { baseURL: "http://localhost:4194" },
+    server: {
+      command:
+        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4194/1 npx vp build && npx wrangler dev --port 4194",
+      cwd: "./tests/fixtures/cf-sentry-pages",
+      port: 4194,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-dev": {
     testDir: "./tests/e2e",
     testMatch: [
