@@ -107,7 +107,9 @@ export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Prom
         throw error;
       });
     staticDataSources.set(key, cached);
-    staticDataCache[key] = cached.then((response) => response.clone());
+    const publicCached = cached.then((response) => response.clone());
+    publicCached.catch(() => {});
+    staticDataCache[key] = publicCached;
   }
   return cloneStaticResponse(cached, init?.signal ?? undefined);
 }
