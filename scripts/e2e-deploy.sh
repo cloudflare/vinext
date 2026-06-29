@@ -304,6 +304,24 @@ const workspaceConfig = fs.readFileSync(
   'utf8',
 )
 
+// The deploy adapter always installs with pnpm below. Some Next.js fixtures pin
+// packageManager to npm/yarn/bun to exercise Next's own install command, but
+// pnpm refuses to run in those projects before it can link vinext.
+const originalPackageManager =
+  typeof pkg.packageManager === 'string' && pkg.packageManager.length > 0
+    ? pkg.packageManager
+    : null
+const harnessPackageManager =
+  typeof rootPkg.packageManager === 'string' && rootPkg.packageManager.length > 0
+    ? rootPkg.packageManager
+    : 'pnpm@11.1.1'
+if (originalPackageManager && !originalPackageManager.startsWith('pnpm@')) {
+  pkg.packageManager = harnessPackageManager
+  console.log(
+    `Replaced packageManager ${originalPackageManager} with ${harnessPackageManager} for vinext deploy harness pnpm install`,
+  )
+}
+
 // Minimal YAML parser for the pnpm workspace catalog. Assumes the simple
 // block mapping format used in this repo's pnpm-workspace.yaml (2-space
 // indent, no flow syntax, no nested catalogs). This avoids pulling in a
@@ -642,6 +660,11 @@ if [ ! -d "node_modules/vinext" ]; then
   echo "pnpm install failed: node_modules/vinext not found" >&2
   exit 1
 fi
+VINEXT_BIN="./node_modules/.bin/vinext"
+if [ ! -x "${VINEXT_BIN}" ]; then
+  echo "pnpm install failed: ${VINEXT_BIN} not found or not executable" >&2
+  exit 1
+fi
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
   run_pnpm run setup >> "${BUILD_LOG}" 2>&1
 fi
@@ -655,9 +678,9 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-run_pnpm exec vinext init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
+"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
 
-run_pnpm exec vinext build --prerender-all >> "${BUILD_LOG}" 2>&1
+"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests
 # (e.g. test/e2e/prerender) assert these strings appear in the build output,
@@ -684,7 +707,7 @@ BUILD_ID="$(read_build_id)"
 
 echo "${PORT}" > "${PORT_FILE}"
 
-run_pnpm exec vinext start --port "${PORT}" --hostname 127.0.0.1 >> "${SERVER_LOG}" 2>&1 &
+"${VINEXT_BIN}" start --port "${PORT}" --hostname 127.0.0.1 >> "${SERVER_LOG}" 2>&1 &
 SERVER_PID="$!"
 echo "${SERVER_PID}" > "${PID_FILE}"
 

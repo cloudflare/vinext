@@ -7,7 +7,27 @@ describe("Next.js deploy harness logging", () => {
   it("initializes fixtures for the Node deployment platform", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
-    expect(script).toContain("vinext init --platform=node --skip-check --force");
+    expect(script).toContain('"${VINEXT_BIN}" init --platform=node --skip-check --force');
+  });
+
+  it("runs the installed vinext binary directly after pnpm install", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain('VINEXT_BIN="./node_modules/.bin/vinext"');
+    expect(script).toContain('if [ ! -x "${VINEXT_BIN}" ]; then');
+    expect(script).toContain('"${VINEXT_BIN}" build --prerender-all');
+    expect(script).toContain('"${VINEXT_BIN}" start --port "${PORT}" --hostname 127.0.0.1');
+    expect(script).not.toContain("run_pnpm exec vinext");
+  });
+
+  it("normalizes non-pnpm packageManager pins before pnpm install", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain(
+      "originalPackageManager && !originalPackageManager.startsWith('pnpm@')",
+    );
+    expect(script).toContain("pkg.packageManager = harnessPackageManager");
+    expect(script).toContain("for vinext deploy harness pnpm install");
   });
 
   it("removes install-time deprecation noise from application cliOutput", () => {
