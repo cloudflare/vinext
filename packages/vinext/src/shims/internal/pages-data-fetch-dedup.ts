@@ -23,10 +23,10 @@
  *   directly by anyone, which keeps subsequent clones legal even after one
  *   caller has consumed its copy.
  *
- * - Each caller owns one waiter. Cancelling a waiter leaves the shared request
- *   alive while another waiter remains; cancelling the final waiter aborts the
- *   underlying fetch and evicts the entry immediately so a replacement caller
- *   can retry without joining a doomed request.
+ * - Each caller owns one waiter. Cancelling a waiter rejects only that caller;
+ *   the shared request continues and self-evicts when it settles. This mirrors
+ *   Next.js: a superseded data request may still reach the server, but its
+ *   result is ignored by the cancelled navigation.
  *
  * - The map is module-scoped (one per realm). The Pages Router runs in the
  *   browser only, so a single `Map` is sufficient.
@@ -133,29 +133,25 @@ function cloneSharedResponse(
 
   return new Promise<Response>((resolve, reject) => {
     let released = false;
-    const release = (cancelled: boolean) => {
+    const release = () => {
       if (released) return;
       released = true;
       entry.waiters -= 1;
-      if (cancelled && entry.waiters === 0 && !entry.settled) {
-        if (inflight.get(key) === entry) inflight.delete(key);
-        entry.controller.abort();
-      }
     };
     const abort = () => {
-      release(true);
+      release();
       reject(new DOMException("Aborted", "AbortError"));
     };
     signal?.addEventListener("abort", abort, { once: true });
     entry.promise.then(
       (response) => {
         signal?.removeEventListener("abort", abort);
-        release(false);
+        release();
         resolve(response.clone());
       },
       (error: unknown) => {
         signal?.removeEventListener("abort", abort);
-        release(false);
+        release();
         reject(error);
       },
     );
