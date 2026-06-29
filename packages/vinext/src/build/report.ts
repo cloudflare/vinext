@@ -59,7 +59,7 @@ type PropertyKey = ESTree.PropertyKey;
 type Statement = ESTree.Statement;
 type VariableDeclarator = ESTree.VariableDeclarator;
 
-export type StaticMiddlewareMatcherObject = {
+type StaticMiddlewareMatcherObject = {
   source: string;
   locale?: false;
   has?: Array<Record<string, string>>;
