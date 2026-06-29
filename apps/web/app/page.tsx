@@ -65,7 +65,7 @@ const PILLARS = [
     icon: PlugsIcon,
     title: "Deploy anywhere",
     description:
-      "Cloudflare Workers is the first deployment target, with one-command deploys via vinext deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
+      "Cloudflare Workers is the first deployment target, with one-command deploys via npx @vinext/cloudflare deploy. Vercel, Netlify, AWS, Deno Deploy, and more, work through Nitro, and standalone Node bundles are emitted on demand.",
   },
 ] as const;
 

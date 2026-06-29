@@ -26,10 +26,7 @@ afterEach(() => {
 
 describe("injectPregeneratedConcretePaths", () => {
   it("replaces an earlier injection", () => {
-    writeFile(
-      "dist/server/index.js",
-      'import { handler } from "vinext/server/app-router-entry";\n',
-    );
+    writeFile("dist/server/index.js", 'import { handler } from "vinext/server/fetch-handler";\n');
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -51,7 +48,7 @@ describe("injectPregeneratedConcretePaths", () => {
     const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
     expect(output).toContain("post-b");
     expect(output).not.toContain("post-a");
-    expect(output).toContain('import { handler } from "vinext/server/app-router-entry"');
+    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
   });
 
   it("strips an earlier injection when the manifest is missing", () => {
@@ -61,7 +58,7 @@ describe("injectPregeneratedConcretePaths", () => {
         "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
         'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
         "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-        'import { handler } from "vinext/server/app-router-entry";',
+        'import { handler } from "vinext/server/fetch-handler";',
         "",
       ].join("\n"),
     );
@@ -70,7 +67,7 @@ describe("injectPregeneratedConcretePaths", () => {
 
     const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
     expect(output).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(output).toContain('import { handler } from "vinext/server/app-router-entry"');
+    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
   });
 
   it("uses the concrete-path table stored in the prerender manifest", () => {

@@ -3,11 +3,11 @@ import { parseSync } from "vite";
 import {
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
-  generatePagesRouterWorkerEntry,
   getWranglerImagesBinding,
   updateViteConfigForCloudflare,
   updateWranglerConfigForCloudflare,
 } from "../packages/vinext/src/init-cloudflare.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
 function expectValidConfig(output: string): void {
   const parsed = parseSync("vite.config.ts", output, {
@@ -556,7 +556,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
   });
 
   it("keeps Pages Router adapter plumbing independent of the selected backend", () => {
-    const output = generatePagesRouterWorkerEntry();
+    const output = readPagesRouterEntrySource();
     expect(output).not.toContain("IMAGES");
     expect(output).not.toContain("handleImageOptimization");
     expect(output).toContain("handleConfiguredImageOptimization");

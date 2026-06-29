@@ -1,6 +1,6 @@
 /**
  * Shared prerender runner used by both `vinext build` (cli.ts) and
- * `vinext deploy --prerender-all` (deploy.ts).
+ * `vinext-cloudflare deploy --prerender-all` (deploy.ts).
  *
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
  * and result summarisation.

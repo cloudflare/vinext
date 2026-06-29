@@ -21,6 +21,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runCheck, formatReport } from "./check.js";
 import {
+  detectProject,
   ensureESModule,
   renameCJSConfigs,
   detectPackageManager,
@@ -33,7 +34,6 @@ import {
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
-import { detectProject } from "./cloudflare/project.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -57,8 +57,9 @@ function isApproveBuildsError(error: unknown): boolean {
     typeof error === "object" && error && "stdout" in error ? String(error.stdout) : "",
     typeof error === "object" && error && "stderr" in error ? String(error.stderr) : "",
   ].join("\n");
-  return /approve-builds|ignored build scripts|blocked build scripts|ERR_PNPM_.*BUILD/i.test(
-    details,
+  return (
+    /approve-builds|ERR_PNPM_.*BUILD/i.test(details) ||
+    (/pnpm/i.test(details) && /(ignored build scripts|blocked build scripts)/i.test(details))
   );
 }
 

@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/init-cloudflare.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
 type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
@@ -142,12 +142,12 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     //
     // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
     // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
   });
 });

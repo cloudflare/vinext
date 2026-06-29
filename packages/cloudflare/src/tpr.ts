@@ -23,9 +23,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
-import { VINEXT_REVALIDATE_HEADER } from "../server/headers.js";
-import { isrCacheKey } from "../server/isr-cache.js";
-import { buildAppPageCacheTags } from "../server/app-page-cache.js";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import { VINEXT_REVALIDATE_HEADER } from "vinext/internal/server/headers";
+import { isrCacheKey } from "vinext/internal/server/isr-cache";
+import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -609,20 +611,16 @@ async function prerenderRoutes(
 
 /**
  * Spawn a subprocess running the vinext production server.
- * Uses the same Node.js binary and resolves prod-server.js relative
- * to the current module (works whether vinext is installed or linked).
+ * Uses the same Node.js binary and resolves vinext from the project root so
+ * linked/package-manager-managed installs use the app's vinext peer.
  */
 function startLocalServer(root: string, port: number): ChildProcess {
-  const prodServerPath = path.resolve(import.meta.dirname, "..", "server", "prod-server.js");
+  const prodServerPath = resolveVinextProdServerPath(root);
   const outDir = path.join(root, "dist");
 
-  // Escape backslashes for Windows paths inside the JS string
-  const escapedProdServer = prodServerPath.replace(/\\/g, "\\\\");
-  const escapedOutDir = outDir.replace(/\\/g, "\\\\");
-
   const script = [
-    `import("file://${escapedProdServer}")`,
-    `.then(m => m.startProdServer({ port: ${port}, host: "127.0.0.1", outDir: "${escapedOutDir}" }))`,
+    `import(${JSON.stringify(pathToFileURL(prodServerPath).href)})`,
+    `.then(m => m.startProdServer({ port: ${port}, host: "127.0.0.1", outDir: ${JSON.stringify(outDir)} }))`,
     `.catch(e => { console.error("[vinext-tpr] Server failed to start:", e); process.exit(1); });`,
   ].join("");
 
@@ -639,6 +637,10 @@ function startLocalServer(root: string, port: number): ChildProcess {
   });
 
   return proc;
+}
+
+export function resolveVinextProdServerPath(root: string): string {
+  return createRequire(path.join(root, "package.json")).resolve("vinext/server/prod-server");
 }
 
 /** Poll the local server until it responds or the timeout is reached. */
@@ -774,8 +776,8 @@ const DEFAULT_REVALIDATE_SECONDS = 3600;
 /**
  * Run the TPR pipeline: query traffic, select routes, pre-render, upload.
  *
- * Designed to be called between the build step and wrangler deploy in
- * the `vinext deploy` pipeline. Gracefully skips (never errors) when
+ * Designed to be called between the build step and wrangler deploy in the
+ * `vinext-cloudflare deploy` pipeline. Gracefully skips (never errors) when
  * the prerequisites aren't met.
  */
 export async function runTPR(options: TPROptions): Promise<TPRResult> {

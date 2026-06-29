@@ -4,13 +4,12 @@ import path from "node:path";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
-vi.mock("../packages/vinext/src/build/run-prerender.js", () => ({
+vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
 }));
 
-vi.mock("../packages/vinext/src/cloudflare/project.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../packages/vinext/src/cloudflare/project.js")>();
+vi.mock("vinext/internal/utils/project", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../packages/vinext/src/utils/project.js")>();
   return {
     ...actual,
     getMissingDeps: vi.fn(() => []),
@@ -75,7 +74,7 @@ describe("deploy prerender config wiring", () => {
 
   it("runs prerender during deploy when vinext config uses the true shorthand", async () => {
     writeProject("true");
-    const { deploy } = await import("../packages/vinext/src/deploy.js");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
 
@@ -84,7 +83,7 @@ describe("deploy prerender config wiring", () => {
 
   it("runs prerender during deploy when vinext config uses routes star", async () => {
     writeProject('{ routes: "*" }');
-    const { deploy } = await import("../packages/vinext/src/deploy.js");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
 
@@ -93,7 +92,7 @@ describe("deploy prerender config wiring", () => {
 
   it("passes deploy prerender concurrency through config-triggered prerender", async () => {
     writeProject('{ routes: "*" }');
-    const { deploy } = await import("../packages/vinext/src/deploy.js");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true, prerenderConcurrency: 3 });
 

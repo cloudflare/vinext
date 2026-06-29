@@ -240,7 +240,7 @@ cleanup_on_error() {
 
   {
     echo
-    echo "=== vinext deploy debug ==="
+    echo "=== vinext e2e deploy debug ==="
     if [ -f "${BUILD_LOG}" ]; then
       echo "--- last 80 lines of ${BUILD_LOG} ---"
       tail -80 "${BUILD_LOG}" 2>/dev/null || true
@@ -251,7 +251,7 @@ cleanup_on_error() {
       tail -40 "${SERVER_LOG}" 2>/dev/null || true
       echo "--- end ${SERVER_LOG} (persisted to ${DEBUG_RUN_DIR}/${SERVER_LOG}) ---"
     fi
-    echo "=== end vinext deploy debug ==="
+    echo "=== end vinext e2e deploy debug ==="
     echo
   } >&2
 }
@@ -318,7 +318,7 @@ const harnessPackageManager =
 if (originalPackageManager && !originalPackageManager.startsWith('pnpm@')) {
   pkg.packageManager = harnessPackageManager
   console.log(
-    `Replaced packageManager ${originalPackageManager} with ${harnessPackageManager} for vinext deploy harness pnpm install`,
+    `Replaced packageManager ${originalPackageManager} with ${harnessPackageManager} for vinext e2e deploy harness pnpm install`,
   )
 }
 

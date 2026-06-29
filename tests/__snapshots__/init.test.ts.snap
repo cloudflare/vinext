@@ -59,7 +59,7 @@ export default defineConfig({
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "main": "vinext/server/app-router-entry",
+  "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",
@@ -173,7 +173,7 @@ export default defineConfig({
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "main": "vinext/server/app-router-entry",
+  "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",

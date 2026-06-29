@@ -883,6 +883,9 @@ importers:
 
   examples/tpr-demo:
     dependencies:
+      '@vinext/cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/cloudflare
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))
