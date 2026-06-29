@@ -92,12 +92,20 @@ jobs:
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
           '
 
+      - name: Build generated Cloudflare project
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: test -f dist/server/wrangler.json
+
       - name: Deploy generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec vinext-cloudflare deploy
+        run: vp exec vinext-cloudflare deploy --skip-build
 
       - name: Smoke test generated Cloudflare deployment
         run: |
