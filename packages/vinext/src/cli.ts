@@ -52,6 +52,12 @@ import {
 import { generateRouteTypes } from "./typegen.js";
 import { normalizePathSeparators } from "./utils/path.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
+import {
+  findVinextPrerenderConfigInPlugins,
+  formatVinextPrerenderLabel,
+  resolveVinextPrerenderDecision,
+  type ResolvedVinextPrerenderConfig,
+} from "./config/prerender.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -219,8 +225,16 @@ function hasPagesDir(): boolean {
   );
 }
 
-async function loadBuildEmptyOutDir(vite: ViteModule, root: string): Promise<boolean | undefined> {
-  if (!hasViteConfig(root)) return undefined;
+type BuildViteConfigMetadata = {
+  emptyOutDir?: boolean;
+  prerenderConfig: ResolvedVinextPrerenderConfig | null;
+};
+
+async function loadBuildViteConfigMetadata(
+  vite: ViteModule,
+  root: string,
+): Promise<BuildViteConfigMetadata> {
+  if (!hasViteConfig(root)) return { prerenderConfig: null };
 
   // Read the raw user config before the multi-environment build so
   // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
@@ -230,7 +244,10 @@ async function loadBuildEmptyOutDir(vite: ViteModule, root: string): Promise<boo
     root,
   );
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
-  return typeof emptyOutDir === "boolean" ? emptyOutDir : undefined;
+  return {
+    emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
+    prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+  };
 }
 
 /**
@@ -543,10 +560,12 @@ async function buildApp() {
     }
   }
 
+  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
+
   cleanBuildOutput({
     root,
     outDir: distDir,
-    emptyOutDir: await loadBuildEmptyOutDir(vite, root),
+    emptyOutDir: buildConfigMetadata.emptyOutDir,
   });
 
   // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
@@ -654,9 +673,13 @@ async function buildApp() {
   }
 
   let prerenderResult;
-  const shouldPrerender = parsed.prerenderAll || resolvedNextConfig.output === "export";
+  const prerenderDecision = resolveVinextPrerenderDecision({
+    prerenderAllFlag: parsed.prerenderAll,
+    vinextPrerenderConfig: buildConfigMetadata.prerenderConfig,
+    nextOutput: resolvedNextConfig.output,
+  });
 
-  if (shouldPrerender) {
+  if (prerenderDecision) {
     // Enable Node.js built-in sourcemap support so prerender error stack
     // traces resolve through the server bundle's sourcemaps to show original
     // source files. Matches Next.js's enablePrerenderSourceMaps default.
@@ -664,11 +687,8 @@ async function buildApp() {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    const label = parsed.prerenderAll
-      ? "Pre-rendering all routes..."
-      : "Pre-rendering all routes (output: 'export')...";
     process.stdout.write("\x1b[0m");
-    console.log(`  ${label}`);
+    console.log(`  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     prerenderResult = await runPrerender({
       root: normalizePathSeparators(process.cwd()),
       concurrency: parsed.prerenderConcurrency,
@@ -882,8 +902,8 @@ function printHelp(cmd?: string) {
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
-    --prerender-all      Pre-render discovered routes after building (future releases
-                         will serve these files in vinext start)
+    --prerender-all      Pre-render discovered routes after building. Equivalent
+                         to vinext({ prerender: true }) and takes priority.
     --prerender-concurrency <count>
                          Maximum number of routes to pre-render in parallel
     --precompress        Precompress static assets at build time (.br, .gz, .zst)
@@ -929,8 +949,8 @@ function printHelp(cmd?: string) {
     --name <name>            Custom Worker name (default: from package.json)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Generate config files without building or deploying
-    --prerender-all          Pre-render discovered routes after building (future
-                             releases will auto-populate the remote cache)
+    --prerender-all          Pre-render discovered routes after building. Equivalent
+                             to vinext({ prerender: true }) and takes priority.
     --prerender-concurrency <count>
                              Maximum number of routes to pre-render in parallel
     -h, --help               Show this help

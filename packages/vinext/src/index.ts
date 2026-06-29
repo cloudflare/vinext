@@ -227,6 +227,11 @@ import {
   getViteMajorVersion,
   serializeViteDefine,
 } from "./utils/vite-version.js";
+import {
+  normalizeVinextPrerenderConfig,
+  VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY,
+  type VinextPrerenderConfig,
+} from "./config/prerender.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -855,6 +860,26 @@ export type VinextOptions = {
    */
   precompress?: boolean;
   /**
+   * Pre-render routes after `vinext build` without passing
+   * `--prerender-all`.
+   *
+   * Use `true` as shorthand for `{ routes: "*" }`. The object form is
+   * available so future releases can support narrower route selections, but
+   * currently only `"*"` is supported.
+   *
+   * The `vinext build --prerender-all` and `vinext deploy --prerender-all`
+   * flags still work and take priority when present.
+   *
+   * @example
+   * vinext({ prerender: true })
+   *
+   * @example
+   * vinext({ prerender: { routes: "*" } })
+   *
+   * @default undefined
+   */
+  prerender?: VinextPrerenderConfig;
+  /**
    * Configure cache handlers declaratively, so you don't need a custom worker
    * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`. Each slot
    * is a `{ adapter, options }` descriptor pointing at an adapter module whose
@@ -908,6 +933,7 @@ type NitroSetupContext = {
 };
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
+  const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
@@ -1330,6 +1356,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:config",
       enforce: "pre",
+      ...({ [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]: prerenderConfig } as Record<
+        string,
+        unknown
+      >),
 
       async config(config, env) {
         root = normalizePathSeparators(config.root ?? process.cwd());
