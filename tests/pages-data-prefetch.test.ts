@@ -99,6 +99,37 @@ describe("prefetchPagesData", () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
+  it("prefetches middleware effects for matched non-SSG pages", async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response('{"pageProps":{}}'),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const loader = vi.fn(async () => ({ default: null }));
+
+    prefetchPagesData({
+      buildId: "build-id",
+      dataKind: "server",
+      dataHref: "/_next/data/build-id/dynamic.json",
+      loader,
+      locale: undefined,
+      middlewareDataHref: "/_next/data/build-id/dynamic.json",
+      pagePath: "/dynamic",
+      params: {},
+      pattern: "/dynamic",
+      search: "",
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(Object.keys(getPagesStaticDataCache())).toEqual([]);
+    expect(fetchMock.mock.calls[0][0]).toBe("/_next/data/build-id/dynamic.json");
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Accept: "application/json",
+      purpose: "prefetch",
+      "x-nextjs-data": "1",
+    });
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
   it("evicts static data responses that opt out of middleware caching", async () => {
     vi.stubGlobal(
       "fetch",

@@ -31,17 +31,6 @@ import {
 
 export type { HybridClientOwner } from "./hybrid-client-route-owner-direct.js";
 
-declare global {
-  // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
-  interface Window {
-    __VINEXT_CLIENT_REWRITES__?: {
-      afterFiles: NextRewrite[];
-      beforeFiles: NextRewrite[];
-      fallback: NextRewrite[];
-    };
-  }
-}
-
 function resolveClientRewrite(
   href: string,
   basePath: string,

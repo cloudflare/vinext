@@ -28,11 +28,11 @@ import {
 } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
 import {
+  getPagesMiddlewareDataHref,
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
   type PagesDataTarget,
 } from "./internal/pages-data-target.js";
-import { buildPagesDataHref } from "./internal/pages-data-url.js";
 import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
@@ -55,7 +55,7 @@ import {
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
-import { stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import {
   addLocalePrefix,
   getDomainLocaleUrl,
@@ -65,6 +65,7 @@ import {
 import {
   addQueryParam,
   appendSearchParamsToUrl,
+  mergeRewriteQuery,
   mergeRouteParamsIntoQuery,
   parseQueryString,
   type UrlQuery,
@@ -85,6 +86,14 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
+import {
+  matchRedirect,
+  matchRewrite,
+  parseCookies,
+  preserveRedirectDestinationQuery,
+  type RequestContext,
+} from "../config/config-matchers.js";
+import type { NextRewrite } from "../config/next-config.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -1541,119 +1550,114 @@ function resolveLocalRedirectUrl(location: string): string | null {
   );
 }
 
-function hasVinextMiddleware(nextData: unknown): boolean {
-  if (!isUnknownRecord(nextData)) return false;
-  const vinext = nextData.__vinext;
-  return isUnknownRecord(vinext) && vinext.hasMiddleware === true;
-}
-
-type ClientMiddlewareMatcherObject = {
-  source: string;
-  locale?: false;
-  has?: unknown[];
-  missing?: unknown[];
-};
-
-function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
-  if (!isUnknownRecord(value)) return false;
-  if (typeof value.source !== "string") return false;
-  if (value.locale !== undefined && value.locale !== false) return false;
-  if (value.has !== undefined && !Array.isArray(value.has)) return false;
-  if (value.missing !== undefined && !Array.isArray(value.missing)) return false;
-  return true;
-}
-
-function stripLocaleForMiddlewareMatcher(pathname: string): string {
-  const locales = window.__VINEXT_LOCALES__;
-  if (!locales || locales.length === 0 || pathname === "/") return pathname;
-  const firstSegment = pathname.split("/")[1];
-  if (!firstSegment || !locales.includes(firstSegment)) return pathname;
-  return "/" + pathname.split("/").slice(2).join("/");
-}
-
-function clientMiddlewareSourceMatches(pathname: string, source: string): boolean {
-  if (!/[\\():*+?]/.test(source)) {
-    return removeTrailingSlash(pathname) === removeTrailingSlash(source);
-  }
-
-  // Raw regex/constraint matchers can be request-heavy and potentially
-  // expensive. Probe conservatively and let the server matcher decide.
-  if (source.includes("(") || source.includes("\\")) return true;
-
-  const sourceParts = source.split("/").filter(Boolean);
-  const pathParts = pathname.split("/").filter(Boolean);
-  let pathIndex = 0;
-
-  for (const sourcePart of sourceParts) {
-    if (sourcePart.startsWith(":")) {
-      if (sourcePart.endsWith("*")) return true;
-      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
-      if (pathIndex >= pathParts.length) return false;
-      pathIndex++;
-      continue;
-    }
-
-    if (pathParts[pathIndex] !== sourcePart) return false;
-    pathIndex++;
-  }
-
-  return pathIndex === pathParts.length;
-}
-
-function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boolean {
-  if (matcher === undefined) return true;
-  if (typeof matcher === "string") {
-    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher);
-  }
-  if (!Array.isArray(matcher)) return true;
-
-  for (const item of matcher) {
-    if (typeof item === "string") {
-      if (clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), item)) {
-        return true;
-      }
-      continue;
-    }
-    if (!isClientMiddlewareMatcherObject(item)) return true;
-    const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
-    if (clientMiddlewareSourceMatches(candidate, item.source)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function shouldProbePagesMiddleware(browserUrl: string): boolean {
-  if (!hasVinextMiddleware(window.__NEXT_DATA__)) return false;
-  let parsed: URL;
-  try {
-    parsed = new URL(browserUrl, window.location.href);
-  } catch {
-    return false;
-  }
-  if (parsed.origin !== getWindowOrigin()) return false;
-
-  const pathname = stripBasePath(parsed.pathname, __basePath);
-  return clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__);
+  return getPagesMiddlewareDataHref(browserUrl, __basePath) !== null;
 }
 
-function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
-  const nextData = window.__NEXT_DATA__;
-  if (!nextData || !hasVinextMiddleware(nextData)) return null;
-  const buildId = nextData.buildId;
-  if (typeof buildId !== "string" || buildId.length === 0) return null;
+function hasClientRewriteRules(): boolean {
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  return Boolean(
+    rewrites &&
+    (rewrites.beforeFiles.length > 0 ||
+      rewrites.afterFiles.length > 0 ||
+      rewrites.fallback.length > 0),
+  );
+}
 
+function getClientConfigRouteContext(href: string): {
+  basePathState: { basePath: string; hadBasePath: boolean };
+  context: RequestContext;
+  pathname: string;
+  search: string;
+} | null {
   let parsed: URL;
   try {
-    parsed = new URL(browserUrl, window.location.href);
+    parsed = new URL(href, window.location.href);
   } catch {
     return null;
   }
   if (parsed.origin !== getWindowOrigin()) return null;
 
-  const appPathname = stripBasePath(parsed.pathname, __basePath);
-  return buildPagesDataHref(__basePath, buildId, appPathname, parsed.search);
+  const hadBasePath = __basePath ? hasBasePath(parsed.pathname, __basePath) : true;
+  const pathname = hadBasePath ? stripBasePath(parsed.pathname, __basePath) : parsed.pathname;
+  const headers = new Headers({ "user-agent": globalThis.navigator?.userAgent ?? "" });
+  return {
+    basePathState: { basePath: __basePath, hadBasePath },
+    context: {
+      cookies: parseCookies(globalThis.document?.cookie ?? ""),
+      headers,
+      host: parsed.hostname,
+      query: parsed.searchParams,
+    },
+    pathname,
+    search: parsed.search,
+  };
+}
+
+function resolveClientConfigRedirect(href: string): string | null {
+  const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
+  if (!redirects || redirects.length === 0) return null;
+
+  const routeContext = getClientConfigRouteContext(href);
+  if (!routeContext) return null;
+
+  const redirect = matchRedirect(
+    routeContext.pathname,
+    redirects,
+    routeContext.context,
+    routeContext.basePathState,
+  );
+  if (!redirect) return null;
+
+  const destination =
+    __basePath &&
+    routeContext.basePathState.hadBasePath &&
+    !isExternalUrl(redirect.destination) &&
+    !hasBasePath(redirect.destination, __basePath)
+      ? __basePath + redirect.destination
+      : redirect.destination;
+  return preserveRedirectDestinationQuery(destination, routeContext.search);
+}
+
+function applyClientConfigRewrite(
+  href: string,
+  rewrite: NextRewrite,
+): { href: string; kind: "rewrite" } | { kind: "document" } | null {
+  const routeContext = getClientConfigRouteContext(href);
+  if (!routeContext) return null;
+
+  const rewritten = matchRewrite(
+    routeContext.pathname,
+    [rewrite],
+    routeContext.context,
+    routeContext.basePathState,
+  );
+  if (rewritten === null) return null;
+  if (isExternalUrl(rewritten)) return { kind: "document" };
+  return { href: mergeRewriteQuery(href, rewritten), kind: "rewrite" };
+}
+
+function resolveClientConfigRewrite(
+  href: string,
+): { href: string; kind: "rewrite" } | { kind: "document" } | null {
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  if (!rewrites) return null;
+
+  let currentHref = href;
+  let matched = false;
+  for (const rewrite of rewrites.beforeFiles) {
+    const result = applyClientConfigRewrite(currentHref, rewrite);
+    if (result?.kind === "document") return result;
+    if (result?.kind !== "rewrite") continue;
+    currentHref = result.href;
+    matched = true;
+  }
+
+  return matched ? { href: currentHref, kind: "rewrite" } : null;
+}
+
+function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
+  return getPagesMiddlewareDataHref(browserUrl, __basePath);
 }
 
 type MiddlewareDataEffect = {
@@ -2294,12 +2298,35 @@ async function navigateClient(
     } else {
       let browserUrl = url;
       let htmlFetchUrl = fetchUrl;
+      const configRedirect = resolveClientConfigRedirect(browserUrl);
+      if (configRedirect) {
+        const redirectedUrl = resolveLocalRedirectUrl(configRedirect);
+        if (!redirectedUrl) {
+          scheduleHardNavigationAndThrow(configRedirect, "Navigation redirected externally");
+        }
+        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+        routerRuntimeState.lastPathnameAndSearch =
+          window.location.pathname + window.location.search;
+        routerRuntimeState.lastHash = window.location.hash;
+        browserUrl = redirectedUrl;
+        htmlFetchUrl = redirectedUrl;
+      }
+      let routeLookupUrl = configRedirect ? browserUrl : routeUrl;
+      if (routeUrl === url && hasClientRewriteRules()) {
+        const configRewrite = resolveClientConfigRewrite(browserUrl);
+        if (configRewrite?.kind === "document") {
+          scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a document route");
+        } else if (configRewrite?.kind === "rewrite") {
+          routeLookupUrl = configRewrite.href;
+          htmlFetchUrl = configRewrite.href;
+        }
+      }
       // Resolve the `_next/data` target from the ROUTE URL, not the display
       // URL — so `<Link href="/something-else" as="/hello">` fetches
       // `_next/data/<id>/something-else.json` (the page that actually renders)
       // rather than `_next/data/<id>/hello.json` (the masked address). When
       // routeUrl === url (no mask), behaviour is unchanged.
-      let dataTarget = resolvePagesDataNavigationTarget(routeUrl, __basePath);
+      let dataTarget = resolvePagesDataNavigationTarget(routeLookupUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
       let middlewareEffect: MiddlewareDataEffect | null = null;
       if (shouldProbePagesMiddleware(browserUrl)) {
