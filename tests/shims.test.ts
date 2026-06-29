@@ -17942,6 +17942,111 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("preserves the visible pathname for query-only beforeFiles rewrite navigations", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const rootDestinationLoader = vi.fn(async () => makePageModule("root-destination"));
+    const sourceLoader = vi.fn(async () => makePageModule("source"));
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState, replaceState } = createDataNavWindow({
+      page: "/foo",
+      pathname: "/",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/foo": rootDestinationLoader,
+        "/rewrite-to-another-segment/[id]": sourceLoader,
+        "/rewrite-to-another-segment/[id]/foo": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [
+        {
+          source: "/",
+          destination: "/foo",
+        },
+        {
+          source: "/rewrite-to-another-segment/:id",
+          destination: "/rewrite-to-another-segment/:id/foo",
+        },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const rootPushPromise = Router.push({ query: { param: 1 } });
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/?param=1",
+          url: "/?param=1",
+        }),
+        "",
+        "/?param=1",
+      );
+      await expect(rootPushPromise).resolves.toBe(true);
+      expect(rootDestinationLoader).toHaveBeenCalledTimes(1);
+
+      win.history.replaceState({}, "", "/rewrite-to-another-segment/0");
+      win.__NEXT_DATA__ = {
+        ...win.__NEXT_DATA__,
+        page: "/rewrite-to-another-segment/[id]/foo",
+        query: { id: "0" },
+      };
+
+      const pushPromise = Router.push({ query: { id: 1 } });
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/rewrite-to-another-segment/0?id=1",
+          url: "/rewrite-to-another-segment/0?id=1",
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=1",
+      );
+      await expect(pushPromise).resolves.toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/rewrite-to-another-segment/0?id=1",
+          url: "/rewrite-to-another-segment/0?id=1",
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=1",
+      );
+      expect(Router.asPath).toBe("/rewrite-to-another-segment/0?id=1");
+
+      await expect(Router.replace({ query: { id: 2 } })).resolves.toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledTimes(2);
+      expect(replaceState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          as: "/rewrite-to-another-segment/0?id=2",
+          url: "/rewrite-to-another-segment/0?id=2",
+        }),
+        "",
+        "/rewrite-to-another-segment/0?id=2",
+      );
+      expect(Router.asPath).toBe("/rewrite-to-another-segment/0?id=2");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("skips middleware data probes when the client matcher excludes the page", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
