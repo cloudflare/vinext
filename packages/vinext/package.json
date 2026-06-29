@@ -61,6 +61,10 @@
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
     },
+    "./server/pages-router-entry": {
+      "types": "./dist/server/pages-router-entry.d.ts",
+      "import": "./dist/server/pages-router-entry.js"
+    },
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"

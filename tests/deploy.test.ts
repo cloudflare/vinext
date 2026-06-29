@@ -86,16 +86,6 @@ function readVinextPackageExports(): Record<string, unknown> {
   return parsed.exports;
 }
 
-function extractVinextImportSubpaths(source: string): string[] {
-  const imports = new Set<string>();
-  const pattern = /\bfrom\s+["']vinext\/([^"']+)["']/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(source)) !== null) {
-    imports.add(`./${match[1]}`);
-  }
-  return [...imports].sort();
-}
-
 function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
   if (Object.hasOwn(exportsMap, subpath)) return true;
 
@@ -656,6 +646,16 @@ describe("generateWranglerConfig", () => {
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
 
+  it("points Pages Router apps at the built-in worker entry", () => {
+    mkdir(tmpDir, "pages");
+    writeFile(tmpDir, "pages/index.tsx", "export default function Page() { return null; }");
+    const info = detectProject(tmpDir);
+    const config = generateWranglerConfig(info);
+    const parsed = JSON.parse(config);
+
+    expect(parsed.main).toBe("vinext/server/pages-router-entry");
+  });
+
   it("sets compatibility_date to today", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
@@ -910,7 +910,9 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
+    expect(content).toContain("async fetch(");
+    expect(content).toContain("env?: PagesWorkerEnv");
+    expect(content).toContain("ctx?: PagesWorkerExecutionContext");
     expect(content).toContain("Promise<Response>");
   });
 
@@ -1009,9 +1011,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("handles basePath stripping and clones the request with the stripped URL", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
-    expect(content).toContain(
-      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
-    );
+    expect(content).toContain('from "../utils/base-path.js"');
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, clone with the stripped URL so runPagesRequest receives
     // a clean basePath-free request without dropping Worker metadata.
@@ -1032,7 +1032,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     // API routing (including locale prefix stripping) is now inside runPagesRequest.
     // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
-    expect(content).toContain('handleApi: typeof handleApiRoute === "function"');
+    expect(content).toContain("handleApi:");
+    expect(content).toContain('typeof handleApiRoute === "function"');
     expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
@@ -1057,7 +1058,7 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("does not declare an Images binding in the Worker", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("interface Env");
+    expect(content).toContain("type PagesWorkerEnv");
     expect(content).not.toContain("IMAGES");
     expect(content).toContain("ASSETS");
   });
@@ -1065,14 +1066,14 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isOpenRedirectShaped");
-    expect(content).toContain('from "vinext/server/request-pipeline"');
+    expect(content).toContain('from "./request-pipeline.js"');
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
   it("delegates image transforms to the configured adapter", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("handleConfiguredImageOptimization(");
-    expect(content).toContain("env.ASSETS.fetch");
+    expect(content).toContain("env.ASSETS!.fetch");
     expect(content).not.toContain("env.IMAGES");
   });
 
@@ -1080,18 +1081,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("serveFilesystemRoute: async");
     expect(content).toContain("fetchWorkerFilesystemRoute(");
-    expect(content).toContain("env.ASSETS.fetch(assetRequest)");
+    expect(content).toContain("env.ASSETS!.fetch(assetRequest)");
   });
 
-  it("exports every vinext subpath imported by generated worker entries", () => {
+  it("exports the built-in Pages Router worker entry", () => {
     const exportsMap = readVinextPackageExports();
-    const generatedImports = extractVinextImportSubpaths(generatePagesRouterWorkerEntry());
-    const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
-
-    expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
-    expect(
-      uniqueGeneratedImports.filter((subpath) => !hasPackageExport(exportsMap, subpath)),
-    ).toEqual([]);
+    expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {
@@ -1390,12 +1385,8 @@ describe("generatePagesRouterWorkerEntry", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("runs middleware before finalizing missing `_next/static/*` responses", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain(
-      'import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses"',
-    );
-    expect(content).toContain(
-      'import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix"',
-    );
+    expect(content).toContain('from "./http-error-responses.js"');
+    expect(content).toContain('from "../utils/asset-prefix.js"');
     expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
     expect(content).toContain(
       "const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix)",

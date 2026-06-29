@@ -918,7 +918,7 @@ function printHelp(cmd?: string) {
 
   One-command deployment to Cloudflare Workers. Automatically:
     - Detects App Router or Pages Router
-    - Generates wrangler.jsonc, worker/index.ts, vite.config.ts if missing
+    - Generates wrangler.jsonc and vite.config.ts if missing
     - Installs @cloudflare/vite-plugin and wrangler if needed
     - Builds the project with Vite
     - Deploys via wrangler

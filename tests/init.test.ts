@@ -487,6 +487,18 @@ describe("init — basic functionality", () => {
     });
   });
 
+  it("uses the built-in Pages Router worker entry for Cloudflare init", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { result } = await runInit(tmpDir, { platform: "cloudflare" });
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
+    expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      main: "vinext/server/pages-router-entry",
+    });
+  });
+
   it("prints explicit steps to finish Cloudflare KV setup", async () => {
     setupProject(tmpDir, { router: "app" });
 
