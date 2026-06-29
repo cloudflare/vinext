@@ -93,6 +93,10 @@
       "types": "./dist/config/next-config.d.ts",
       "import": "./dist/config/next-config.js"
     },
+    "./internal/config/prerender": {
+      "types": "./dist/config/prerender.d.ts",
+      "import": "./dist/config/prerender.js"
+    },
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"

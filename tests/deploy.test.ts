@@ -1089,6 +1089,15 @@ describe("readPagesRouterEntrySource", () => {
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
   });
 
+  it("exports internal deploy dependencies consumed by @vinext/cloudflare", () => {
+    const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./internal/build/run-prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/config/dotenv")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/config/next-config")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/config/prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/utils/project")).toBe(true);
+  });
+
   it("merges middleware and config headers into responses with correct precedence", () => {
     const content = readPagesRouterEntrySource();
     // mergeHeaders is now called inside runPagesRequest.
