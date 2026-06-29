@@ -61,6 +61,30 @@
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
     },
+    "./internal/server/headers": {
+      "types": "./dist/server/headers.d.ts",
+      "import": "./dist/server/headers.js"
+    },
+    "./internal/server/isr-cache": {
+      "types": "./dist/server/isr-cache.d.ts",
+      "import": "./dist/server/isr-cache.js"
+    },
+    "./internal/server/app-page-cache": {
+      "types": "./dist/server/app-page-cache.d.ts",
+      "import": "./dist/server/app-page-cache.js"
+    },
+    "./internal/build/run-prerender": {
+      "types": "./dist/build/run-prerender.d.ts",
+      "import": "./dist/build/run-prerender.js"
+    },
+    "./internal/config/dotenv": {
+      "types": "./dist/config/dotenv.d.ts",
+      "import": "./dist/config/dotenv.js"
+    },
+    "./internal/config/next-config": {
+      "types": "./dist/config/next-config.d.ts",
+      "import": "./dist/config/next-config.js"
+    },
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"
@@ -88,6 +112,10 @@
     "./utils/query": {
       "types": "./dist/utils/query.d.ts",
       "import": "./dist/utils/query.js"
+    },
+    "./internal/utils/project": {
+      "types": "./dist/utils/project.d.ts",
+      "import": "./dist/utils/project.js"
     }
   },
   "scripts": {

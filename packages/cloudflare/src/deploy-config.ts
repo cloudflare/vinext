@@ -1,23 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { findViteConfigPath } from "../utils/project.js";
-import { escapeRegExp } from "../utils/regex.js";
+import { findViteConfigPath } from "vinext/internal/utils/project";
 
-export function formatMissingCloudflarePluginError(options: {
-  isAppRouter: boolean;
-  configFile?: string;
-}): string {
-  const cfArg = options.isAppRouter
-    ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
-    : "";
-  const configRef = options.configFile ? options.configFile : "your Vite config";
-  return (
-    `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
-    `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
-    `  Run \`vinext init --platform=cloudflare\` to update ${configRef}.\n\n` +
-    `  Expected plugin shape:\n\n` +
-    `    cloudflare(${cfArg})`
-  );
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 /**

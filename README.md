@@ -49,7 +49,7 @@ Replace `next` with `vinext` in your scripts:
 ```bash
 vinext dev          # Development server with HMR
 vinext build        # Production build
-vinext deploy       # Build and deploy to Cloudflare Workers
+npx @vinext/cloudflare deploy  # Build and deploy to Cloudflare Workers
 ```
 
 vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
@@ -58,19 +58,19 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 ### CLI reference
 
-| Command         | Description                                                             |
-| --------------- | ----------------------------------------------------------------------- |
-| `vinext dev`    | Start dev server with HMR                                               |
-| `vinext build`  | Production build (multi-environment for App Router: RSC + SSR + client) |
-| `vinext start`  | Start local production server for testing                               |
-| `vinext deploy` | Build and deploy to Cloudflare Workers                                  |
-| `vinext init`   | Migrate a Next.js project to run under vinext                           |
-| `vinext check`  | Scan your Next.js app for compatibility issues before migrating         |
-| `vinext lint`   | Delegate to eslint or oxlint                                            |
+| Command                         | Description                                                             |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `vinext dev`                    | Start dev server with HMR                                               |
+| `vinext build`                  | Production build (multi-environment for App Router: RSC + SSR + client) |
+| `vinext start`                  | Start local production server for testing                               |
+| `npx @vinext/cloudflare deploy` | Build and deploy to Cloudflare Workers                                  |
+| `vinext init`                   | Migrate a Next.js project to run under vinext                           |
+| `vinext check`                  | Scan your Next.js app for compatibility issues before migrating         |
+| `vinext lint`                   | Delegate to eslint or oxlint                                            |
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
@@ -134,7 +134,7 @@ Vite has become the default build tool for modern web frameworks — fast HMR, a
 
 vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes.
 
-vinext works everywhere. It natively supports Cloudflare Workers (with `vinext deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
+vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vinext/cloudflare deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Alternatives worth knowing about:**
 
@@ -181,7 +181,7 @@ Both. File-system routing, SSR, client hydration, and deployment to Cloudflare W
 Next.js 16.x. No support for deprecated APIs from older versions.
 
 **Can I deploy to AWS/Netlify/other platforms?**
-Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`vinext deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
+Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`npx @vinext/cloudflare deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **What happens when Next.js releases a new feature?**
 We track the public Next.js API surface and add support for new stable features. Experimental or unstable Next.js features are lower priority. The plan is to add commit-level tracking of the Next.js repo so we can stay current as new versions are released.
@@ -190,16 +190,16 @@ We track the public Next.js API surface and add support for new stable features.
 
 ### Cloudflare Workers
 
-vinext has native integration with Cloudflare Workers through `@cloudflare/vite-plugin`, including bindings access via `cloudflare:workers`, KV caching, image optimization, and the `vinext deploy` one-command workflow.
+vinext has native integration with Cloudflare Workers through `@cloudflare/vite-plugin`, including bindings access via `cloudflare:workers`, KV caching, image optimization, and the `@vinext/cloudflare deploy` one-command workflow.
 
 #### Prerequisites
 
-Before running `vinext deploy` for the first time you need to authenticate with Cloudflare and tell wrangler which account to deploy to.
+Before running `npx @vinext/cloudflare deploy` for the first time you need to authenticate with Cloudflare and tell wrangler which account to deploy to.
 
 **Authentication — pick one:**
 
 - **`wrangler login`** (recommended for local development) — opens a browser window to authenticate. Run it once and wrangler caches the token.
-- **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the **Edit Cloudflare Workers** template. That template grants all the permissions `vinext deploy` needs.
+- **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the **Edit Cloudflare Workers** template. That template grants all the permissions `@vinext/cloudflare deploy` needs.
 
 **Account ID:**
 
@@ -217,16 +217,16 @@ Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<acco
 Alternatively, set the `CLOUDFLARE_ACCOUNT_ID` environment variable instead of hardcoding it in the config file.
 
 Run `vinext init --platform=cloudflare` first to install dependencies and create or AST-update
-`vite.config.*`, `wrangler.jsonc`, and `worker/index.ts`. `vinext deploy` then validates that setup,
+`vite.config.*`, `wrangler.jsonc`, and `worker/index.ts`. `@vinext/cloudflare deploy` then validates that setup,
 builds the application, and deploys to Workers without rewriting project configuration.
 
 Cloudflare init can also configure image optimization declaratively in the Vite config with
 `imagesOptimizer()` and add the matching Wrangler Images binding. The generated Worker entry remains a
-thin request forwarder; image optimization is not implemented or generated by `vinext deploy`.
+thin request forwarder; image optimization is not implemented or generated by `@vinext/cloudflare deploy`.
 
 ```bash
-vinext deploy
-vinext deploy --env staging
+npx @vinext/cloudflare deploy
+npx @vinext/cloudflare deploy --env staging
 ```
 
 Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
@@ -277,10 +277,10 @@ For TypeScript types, generate them with `wrangler types` and the `env` import w
 TPR queries Cloudflare zone analytics at deploy time to find which pages actually get traffic, pre-renders only those, and uploads them to KV cache. The result is SSG-level latency for popular pages without pre-rendering your entire site.
 
 ```bash
-vinext deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
-vinext deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
-vinext deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
-vinext deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
+npx @vinext/cloudflare deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
+npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
+npx @vinext/cloudflare deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
 ```
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
@@ -340,7 +340,7 @@ NITRO_PRESET=netlify npx vite build
 NITRO_PRESET=deno_deploy npx vite build
 ```
 
-> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
+> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`npx @vinext/cloudflare deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
 
 <details>
 <summary>Vercel</summary>
@@ -522,7 +522,7 @@ Load order matches Next.js (highest priority first):
 Modes:
 
 - `vinext dev` uses `development`
-- `vinext build`, `vinext start`, and `vinext deploy` use `production`
+- `vinext build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
 
 Variable expansion (`$VAR` / `${VAR}`) is supported.
 
@@ -611,7 +611,7 @@ These are gaps we'd like to close — distinct from the [intentional exclusions]
 - **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
-- **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
+- **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `@vinext/cloudflare deploy`.
 - **`next.config.ts` `baseUrl` bare imports require Vite 8.** A `next.config.ts` that imports a bare specifier resolved through `tsconfig.json`'s `compilerOptions.baseUrl` (e.g. `import { bar } from "bar"` resolving to a local `bar.ts`) relies on Vite 8's native `resolve.tsconfigPaths` (Rolldown/oxc-resolver). On Vite 7 there is no native equivalent, so these imports are not resolved. `compilerOptions.paths` aliases (e.g. `@/foo`) work on both Vite 7 and 8. Note that if a bare import matches both a `baseUrl`-local file and an installed package of the same name, the installed package wins (vinext keeps packages externalized so CJS config plugins like `@next/mdx` keep working).
 
 ## Benchmarks

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "deploy": "vinext deploy",
+    "deploy": "npx @vinext/cloudflare deploy",
     "simulate-traffic": "node scripts/simulate-traffic.mjs"
   },
   "dependencies": {

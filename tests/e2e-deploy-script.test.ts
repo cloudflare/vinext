@@ -27,7 +27,7 @@ describe("Next.js deploy harness logging", () => {
       "originalPackageManager && !originalPackageManager.startsWith('pnpm@')",
     );
     expect(script).toContain("pkg.packageManager = harnessPackageManager");
-    expect(script).toContain("for vinext deploy harness pnpm install");
+    expect(script).toContain("for vinext e2e deploy harness pnpm install");
   });
 
   it("removes install-time deprecation noise from application cliOutput", () => {

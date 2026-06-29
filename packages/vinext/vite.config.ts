@@ -2,7 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
 /**
- * Absolute path to the `@vinext/cloudflare` cache source.
+ * Absolute paths to the `@vinext/cloudflare` source surfaces bundled into
+ * vinext.
  *
  * vinext consumes a few runtime helpers from `@vinext/cloudflare`
  * (`KVCacheHandler`, `CloudflareCdnCacheAdapter`, `ENTRY_PREFIX`). Keeping it as
@@ -13,6 +14,7 @@ import { defineConfig } from "vite-plus";
  * dependency, so the install graph only points one way
  * (`@vinext/cloudflare` -> `vinext`).
  */
+const cloudflareSrc = fileURLToPath(new URL("../cloudflare/src", import.meta.url));
 const cloudflareCacheSrc = fileURLToPath(new URL("../cloudflare/src/cache", import.meta.url));
 
 /**
@@ -74,12 +76,13 @@ export default defineConfig({
         !id.includes("am-i-vibing") &&
         !id.includes("process-ancestry"),
     },
-    // Bundle `@vinext/cloudflare` in by aliasing its `cache/*` subpath to source.
+    // Bundle `@vinext/cloudflare` in by aliasing its internal/cache subpaths to source.
     // The alias rewrites imports to local source so the small runtime helper
     // surface remains bundled without creating a package dependency cycle.
     inputOptions: {
       resolve: {
         alias: {
+          "@vinext/cloudflare/internal": cloudflareSrc,
           "@vinext/cloudflare/cache": cloudflareCacheSrc,
         },
       },

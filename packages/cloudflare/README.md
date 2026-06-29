@@ -1,6 +1,7 @@
 # @vinext/cloudflare
 
-Cloudflare cache adapters for [vinext](https://www.npmjs.com/package/vinext).
+Cloudflare deployment tools and runtime adapters for
+[vinext](https://www.npmjs.com/package/vinext).
 
 This package provides Cloudflare-specific cache and image backends for vinext:
 
@@ -29,4 +30,12 @@ export default defineConfig({
     cloudflare(),
   ],
 });
+```
+
+## Deploy
+
+Deploy Cloudflare Workers projects with the package CLI:
+
+```sh
+npx @vinext/cloudflare deploy
 ```

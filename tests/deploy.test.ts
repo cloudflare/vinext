@@ -13,36 +13,34 @@ import {
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
-} from "../packages/vinext/src/deploy.js";
+} from "../packages/cloudflare/src/deploy.js";
 import {
+  detectPackageManager,
+  detectPackageManagerName,
   detectProject,
+  findInNodeModules,
+  formatMissingCloudflarePluginError,
   getMissingDeps,
   hasWranglerConfig,
+  ensureESModule,
+  renameCJSConfigs,
+  ensureViteConfigCompatibility,
   isPackageResolvable,
-} from "../packages/vinext/src/cloudflare/project.js";
+} from "../packages/vinext/src/utils/project.js";
 import {
   formatMissingCacheAdapterError,
-  formatMissingCloudflarePluginError,
   formatImageOptimizationHint,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
-} from "../packages/vinext/src/cloudflare/deploy-config.js";
+} from "../packages/cloudflare/src/deploy-config.js";
 import {
   generateWranglerConfig,
   generatePagesRouterWorkerEntry,
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
 } from "../packages/vinext/src/init-cloudflare.js";
-import {
-  detectPackageManager,
-  detectPackageManagerName,
-  findInNodeModules,
-  ensureESModule,
-  renameCJSConfigs,
-  ensureViteConfigCompatibility,
-} from "../packages/vinext/src/utils/project.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -56,7 +54,7 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
-import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
+import { domainCandidates, parseWranglerConfig } from "../packages/cloudflare/src/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 

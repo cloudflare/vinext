@@ -21,6 +21,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runCheck, formatReport } from "./check.js";
 import {
+  detectProject,
   ensureESModule,
   renameCJSConfigs,
   detectPackageManager,
@@ -33,7 +34,6 @@ import {
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
-import { detectProject } from "./cloudflare/project.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
