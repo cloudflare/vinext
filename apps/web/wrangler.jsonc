@@ -54,6 +54,6 @@
     "required": ["COMPAT_INGEST_SECRET"],
   },
   "cache": {
-    "enabled": true
+    "enabled": true,
   },
 }
