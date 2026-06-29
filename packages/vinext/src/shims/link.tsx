@@ -379,7 +379,8 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  *
  * For App Router (RSC): fetches the .rsc payload in the background and
  * stores it in an in-memory cache for instant use during navigation.
- * For Pages Router: injects a <link rel="prefetch"> for the page module.
+ * For Pages Router: warms the page chunk, prefetches data only for SSG pages,
+ * and falls back to a document prefetch hint when no page loader matches.
  *
  * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
  * the main thread during initial page load.
@@ -556,11 +557,10 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
       } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {
         // Pages Router prefetch. When a code-split loader is registered for
         // the target route (prod builds expose them on window via the
-        // generated client entry), prefetch the data JSON + warm the page
-        // chunk in parallel — matching the actual navigation, so the click
-        // is a double cache hit. Otherwise (dev, or unmapped route) fall
-        // back to the legacy `<link rel="prefetch" as="document">` so the
-        // browser still preloads the HTML.
+        // generated client entry), warm the page chunk and prefetch data JSON
+        // only for SSG routes. Otherwise (dev, or unmapped route) fall back
+        // to the legacy `<link rel="prefetch" as="document">` so the browser
+        // still preloads the HTML.
         //
         // The decision helper + prefetch action live in shims/internal/ so
         // this file does not pull in the router shim at module init time,

@@ -2146,6 +2146,43 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("keeps registered non-SSG Pages Router Link prefetches chunk-only", async () => {
+    const observer = stubIntersectionObserver();
+    const aboutLoader = vi.fn(async () => ({ default: null }));
+    const pagesWindowOverrides = {
+      __NEXT_DATA__: {
+        buildId: "build-id",
+        __vinext: {
+          pageModuleUrl: "/_next/static/chunks/pages/current.js",
+        },
+      },
+      __VINEXT_PAGE_LOADERS__: {
+        "/about": aboutLoader,
+      },
+      __VINEXT_PAGE_PATTERNS__: ["/about"],
+      __VINEXT_PAGES_SSG_PATTERNS__: [],
+    };
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/about",
+      nodeEnv: "production",
+      windowOverrides: pagesWindowOverrides,
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await flushPrefetchTasks();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(aboutLoader).toHaveBeenCalled();
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("does not duplicate Pages Router viewport prefetch after visibility changes", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({

@@ -17657,6 +17657,7 @@ describe("Pages Router _next/data client navigation", () => {
       page?: string;
       locale?: string;
       loaders?: Record<string, () => Promise<unknown>>;
+      ssgPatterns?: string[];
       appLoader?: () => Promise<unknown>;
       /** Initial pathname for window.location. */
       pathname?: string;
@@ -17704,6 +17705,7 @@ describe("Pages Router _next/data client navigation", () => {
       __VINEXT_DEFAULT_LOCALE__: undefined,
       __VINEXT_PAGE_LOADERS__: opts.loaders,
       __VINEXT_PAGE_PATTERNS__: opts.loaders ? Object.keys(opts.loaders) : undefined,
+      __VINEXT_PAGES_SSG_PATTERNS__: opts.ssgPatterns,
       __VINEXT_APP_LOADER__: opts.appLoader,
     };
 
@@ -18151,6 +18153,7 @@ describe("Pages Router _next/data client navigation", () => {
     const aboutLoader = vi.fn(async () => makePageModule("about"));
     const { win, buildId } = createDataNavWindow({
       loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": aboutLoader },
+      ssgPatterns: ["/about"],
     });
     (globalThis as any).window = win;
 
@@ -18198,6 +18201,45 @@ describe("Pages Router _next/data client navigation", () => {
       expect(appendedLinks).toEqual([]);
       // The loader was warmed (chunk fetch kicked off).
       expect(aboutLoader).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("does not prefetch JSON for non-SSG pages with a registered loader", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": aboutLoader },
+      ssgPatterns: [],
+    });
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      createElement: vi.fn(() => ({ rel: "", as: "", href: "" })),
+      head: {
+        appendChild: vi.fn(),
+      },
+    };
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock;
+    vi.resetModules();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.prefetch("/about");
+
+      await vi.waitFor(() => expect(aboutLoader).toHaveBeenCalledOnce());
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((globalThis as any).document.createElement).not.toHaveBeenCalled();
+      expect((globalThis as any).document.head.appendChild).not.toHaveBeenCalled();
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;

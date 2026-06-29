@@ -2713,12 +2713,11 @@ async function performNavigation(
  * Prefetch the resources needed for a future Pages Router navigation.
  *
  * When the client has a registered code-split loader for the target route
- * (the prod hot path), we prefetch in parallel:
- *   1. The `/_next/data/<buildId>/<page>.json` payload — same URL the actual
- *      navigation will request, so a cache hit is automatic.
- *   2. The page's JS chunk — by invoking the loader thunk now. Vite's
- *      dynamic `import()` machinery is responsible for fetching + caching;
- *      the returned Promise is intentionally discarded.
+ * (the prod hot path), we warm the page's JS chunk by invoking the loader
+ * thunk now. Vite's dynamic `import()` machinery is responsible for fetching
+ * and caching it; the returned Promise is intentionally discarded. SSG routes
+ * also prefetch their `/_next/data/<buildId>/<page>.json` payload, matching
+ * Next.js's Pages Router `_isSsg(route)` gate.
  *
  * When no loader is registered (dev server, or an unmapped route), we fall
  * back to the legacy `<link rel="prefetch" as="document">` hint, which lets

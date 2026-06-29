@@ -11,7 +11,7 @@ import { stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
-import { dedupedPagesDataFetch, fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
+import { fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 
 export type PagesDataTarget = {
@@ -107,14 +107,12 @@ export function resolvePagesDataNavigationTarget(
 }
 
 /**
- * Prefetch the data JSON and kick off the code-split loader so the chunk is
- * warm by the time the user clicks.
+ * Kick off the code-split loader and, for SSG pages, prefetch the data JSON so
+ * the chunk and payload are warm by the time the user clicks.
  *
- * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch. The
- * JSON request uses `fetch()` rather than `<link rel="prefetch">` so it can
- * carry Next.js's `x-deployment-id` skew-protection header. The in-flight
- * request is shared with a racing navigation; after it settles, the browser's
- * normal HTTP cache remains responsible for reuse.
+ * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch.
+ * Matches Next.js Pages Router prefetch: non-SSG routes only warm the page
+ * chunk, while `getStaticProps` routes also fetch `/_next/data`.
  *
  * loader's returned Promise is intentionally discarded — `import()` caches the
  * result, so a subsequent navigation re-invocation hits the cache without
@@ -124,6 +122,11 @@ export function resolvePagesDataNavigationTarget(
 export function prefetchPagesData(target: PagesDataTarget): void {
   if (typeof document === "undefined") return;
 
+  void target.loader().catch(() => {});
+
+  const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(target.pattern) === true;
+  if (!isSsg) return;
+
   const headers: Record<string, string> = {
     Accept: "application/json",
     purpose: "prefetch",
@@ -132,9 +135,5 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   const deploymentId = getDeploymentId();
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
-  const isSsg = window.__VINEXT_PAGES_SSG_PATTERNS__?.includes(target.pattern) === true;
-  const dataFetch = isSsg ? fetchStaticPagesData : dedupedPagesDataFetch;
-  void dataFetch(target.dataHref, { headers }).catch(() => {});
-
-  void target.loader().catch(() => {});
+  void fetchStaticPagesData(target.dataHref, { headers }).catch(() => {});
 }

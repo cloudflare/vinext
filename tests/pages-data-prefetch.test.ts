@@ -25,6 +25,7 @@ describe("prefetchPagesData", () => {
   // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
   it("sends the deployment ID on Pages data prefetch requests", async () => {
+    window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/about"];
     process.env.__VINEXT_DEPLOYMENT_ID = "dpl_123";
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () => new Response("{}"),
@@ -57,9 +58,11 @@ describe("prefetchPagesData", () => {
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
-  it("retains only SSG prefetch responses in the public static-data cache", async () => {
+  it("prefetches data only for SSG pages and keeps non-SSG prefetches chunk-only", async () => {
     window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/ssg"];
-    const fetchMock = vi.fn(async () => new Response('{"pageProps":{}}'));
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => new Response('{"pageProps":{}}'),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const loader = vi.fn(async () => ({ default: null }));
 
@@ -84,10 +87,12 @@ describe("prefetchPagesData", () => {
       search: "",
     });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const cacheKeys = Object.keys(getPagesStaticDataCache());
     expect(cacheKeys).toHaveLength(1);
     expect(cacheKeys[0]).toContain("/_next/data/build-id/ssg.json");
+    expect(fetchMock.mock.calls[0][0]).toBe("/_next/data/build-id/ssg.json");
+    expect(loader).toHaveBeenCalledTimes(2);
   });
 
   it("evicts static data responses that opt out of middleware caching", async () => {
