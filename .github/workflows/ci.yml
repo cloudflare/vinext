@@ -262,6 +262,10 @@ jobs:
   create-next-app-cloudflare:
     name: create-next-app (cloudflare init)
     runs-on: ubuntu-latest
+    env:
+      CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
+      # Public test namespace already used by examples/workers-cache.
+      CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -316,9 +320,30 @@ jobs:
           --data-cache=kv
           --image-optimization=cloudflare-images
 
+      - name: Configure generated Cloudflare deployment
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const configPath = "wrangler.jsonc";
+            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            config.name = process.env.CNA_CLOUDFLARE_WORKER;
+            config.preview_urls = true;
+            for (const namespace of config.kv_namespaces ?? []) {
+              if (namespace.binding === "VINEXT_KV_CACHE") {
+                namespace.id = process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID;
+              }
+            }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          '
+
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: test -f dist/server/wrangler.json
 
   e2e:
     name: E2E (${{ matrix.label }})
@@ -499,7 +524,8 @@ jobs:
   ci:
     name: CI
     if: ${{ always() }}
-    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    needs:
+      [check, test-unit, test-integration-merge, create-next-app, create-next-app-cloudflare, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
