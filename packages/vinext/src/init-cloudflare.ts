@@ -426,13 +426,6 @@ export function getWranglerImagesBinding(code: string): string {
     : "IMAGES";
 }
 
-/** Return the built-in Pages Router Worker entry source for tests and compatibility checks. */
-export function generatePagesRouterWorkerEntry(): string {
-  const sourceUrl = new URL("./server/pages-router-entry.ts", import.meta.url);
-  if (fs.existsSync(sourceUrl)) return fs.readFileSync(sourceUrl, "utf-8");
-  return fs.readFileSync(new URL("./server/pages-router-entry.js", import.meta.url), "utf-8");
-}
-
 function cacheImports(options: CloudflareInitOptions): string[] {
   const imports: string[] = [];
   if (options.dataCache === "kv") {

@@ -25,7 +25,7 @@ import {
   type ImageOptimizer,
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/init-cloudflare.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { imagesOptimizer } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 
@@ -302,7 +302,7 @@ describe("registration is wired into the router/runtime entries", () => {
   });
 
   it("Pages Router worker entry registers the optimizer with env and uses the registry", () => {
-    const code = generatePagesRouterWorkerEntry();
+    const code = readPagesRouterEntrySource();
     expect(code).toContain('from "virtual:vinext-image-adapters"');
     expect(code).toContain("registerConfiguredImageOptimizer(env)");
     expect(code).toContain("handleConfiguredImageOptimization(");

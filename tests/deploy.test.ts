@@ -37,10 +37,10 @@ import {
 } from "../packages/cloudflare/src/deploy-config.js";
 import {
   generateWranglerConfig,
-  generatePagesRouterWorkerEntry,
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
 } from "../packages/vinext/src/init-cloudflare.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -882,9 +882,9 @@ describe("scanPublicFileRoutes", () => {
   });
 });
 
-describe("generatePagesRouterWorkerEntry", () => {
+describe("readPagesRouterEntrySource", () => {
   it("renders without request-level development asset URLs", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
     expect(content).not.toContain("clientEntryUrl");
     expect(content).not.toContain("clientPreambleUrl");
@@ -906,7 +906,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("generates valid TypeScript", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("export default");
     expect(content).toContain("async fetch(");
     expect(content).toContain("env?: PagesWorkerEnv");
@@ -915,7 +915,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("runs middleware before routing", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Ordering is now enforced by runPagesRequest (the pipeline owner).
     // The worker entry wraps runMiddleware via the shared
     // wrapMiddlewareWithBasePath helper to re-add the basePath before
@@ -929,7 +929,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("applies next.config.js redirects before middleware", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Ordering is now enforced by runPagesRequest. The worker passes
     // configRedirects as a dep and delegates to the pipeline owner.
     expect(content).toContain("configRedirects,");
@@ -937,7 +937,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles middleware redirects", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Middleware redirect handling is now inside runPagesRequest.
     // The worker entry supplies a wrapped runMiddleware dep and checks result.type.
     expect(content).toContain('typeof runMiddleware === "function"');
@@ -945,7 +945,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("preserves responseHeaders on middleware redirect", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // responseHeaders handling is now inside runPagesRequest.
     // Verify the worker passes a wrapped runMiddleware dep (which carries responseHeaders).
     expect(content).toContain('typeof runMiddleware === "function"');
@@ -953,7 +953,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles middleware rewrites", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Middleware rewrite handling is now inside runPagesRequest.
     // The worker entry supplies a wrapped runMiddleware dep and gets a {type:"response"} result.
     expect(content).toContain('typeof runMiddleware === "function"');
@@ -963,7 +963,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
   it("proxies external middleware rewrites before local route handling", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // External proxy for middleware rewrites is now inside runPagesRequest.
     // The worker entry supplies a wrapped runMiddleware dep and delegates to the pipeline.
     expect(content).toContain('typeof runMiddleware === "function"');
@@ -971,7 +971,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles middleware access control responses", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Access control (continue=false) is now inside runPagesRequest.
     // Worker supplies a wrapped runMiddleware dep.
     expect(content).toContain('typeof runMiddleware === "function"');
@@ -979,7 +979,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("applies next.config.js redirects", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Redirect matching is now inside runPagesRequest.
     // Worker passes configRedirects and i18nConfig deps.
     expect(content).toContain("configRedirects,");
@@ -988,7 +988,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Rewrite handling is now inside runPagesRequest.
     // Worker passes configRewrites dep with all three phases.
     expect(content).toContain("configRewrites,");
@@ -999,7 +999,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("applies next.config.js custom headers", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Config header application is now inside runPagesRequest.
     // Worker passes configHeaders dep.
     expect(content).toContain("configHeaders,");
@@ -1007,7 +1007,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles basePath stripping and clones the request with the stripped URL", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("basePath");
     expect(content).toContain('from "../utils/base-path.js"');
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
@@ -1018,7 +1018,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles trailing slash normalization", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Trailing slash normalization is now inside runPagesRequest.
     // Worker passes trailingSlash dep.
     expect(content).toContain("trailingSlash,");
@@ -1026,7 +1026,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // API routing (including locale prefix stripping) is now inside runPagesRequest.
     // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
@@ -1037,46 +1037,46 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("preserves request metadata when stripping Pages Router basePath", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("cloneRequestWithUrl(request, strippedUrl.toString())");
   });
 
   it("includes error handling", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("catch (error)");
     expect(content).toContain("Internal Server Error");
   });
 
   it("includes image optimization handler", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("isImageOptimizationPath");
     expect(content).toContain("handleConfiguredImageOptimization");
     expect(content).toContain("registerConfiguredImageOptimizer(env)");
   });
 
   it("does not declare an Images binding in the Worker", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("type PagesWorkerEnv");
     expect(content).not.toContain("IMAGES");
     expect(content).toContain("ASSETS");
   });
 
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("isOpenRedirectShaped");
     expect(content).toContain('from "./request-pipeline.js"');
     expect(content).toContain("isOpenRedirectShaped(pathname)");
   });
 
   it("delegates image transforms to the configured adapter", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("handleConfiguredImageOptimization(");
     expect(content).toContain("env.ASSETS!.fetch");
     expect(content).not.toContain("env.IMAGES");
   });
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("serveFilesystemRoute: async");
     expect(content).toContain("fetchWorkerFilesystemRoute(");
     expect(content).toContain("env.ASSETS!.fetch(assetRequest)");
@@ -1090,7 +1090,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // mergeHeaders is now called inside runPagesRequest.
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1242,7 +1242,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // mergeHeaders (including no-body and streamed content-length guards) is
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1310,7 +1310,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // applyMiddlewareRequestHeaders is now called inside runPagesRequest.
     // The worker entry delegates to the pipeline owner via runPagesRequest.
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1318,7 +1318,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("handles external rewrites via proxyExternalRequest", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // External rewrite proxying is now inside runPagesRequest.
     // The worker entry delegates to the pipeline owner.
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1326,13 +1326,13 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("guards renderPage with typeof check", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // The typeof guard is now in the adapter deps wiring.
     expect(content).toContain('typeof renderPage === "function"');
   });
 
   it("does not defer error page rendering for data requests", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // shouldDeferErrorPageOnMiss logic is now inside runPagesRequest.
     // The worker normalizes the build-ID-aware URL before the pipeline and
     // passes the trusted classification alongside matchPageRoute.
@@ -1345,7 +1345,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("builds reqCtx before middleware runs", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // reqCtx is now built inside runPagesRequest before middleware.
     // The worker passes configRedirects and a wrapped runMiddleware dep; ordering is
     // guaranteed by the pipeline owner.
@@ -1355,7 +1355,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("checks image optimization after basePath stripping", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
     const imagePos = content.indexOf("isImageOptimizationPath(pathname)");
     expect(basePathPos).toBeGreaterThan(-1);
@@ -1364,7 +1364,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("threads configured image widths and qualities into optimization validation", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
     expect(content).toContain("qualities: vinextConfig.images.qualities");
@@ -1373,7 +1373,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   });
 
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     // Segment-boundary checks for redirect destination prefixing are now
     // inside runPagesRequest. The worker passes hadBasePath and basePath deps.
     expect(content).toContain("hadBasePath,");
@@ -1384,7 +1384,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("runs middleware before finalizing missing `_next/static/*` responses", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain('from "./http-error-responses.js"');
     expect(content).toContain('from "../utils/asset-prefix.js"');
     expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
