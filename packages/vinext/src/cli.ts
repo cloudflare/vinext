@@ -31,7 +31,7 @@ import {
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
-import { INIT_PLATFORMS, resolveInitPlatform } from "./init-platform.js";
+import { INIT_PLATFORMS, resolveInitPlatform, resolveInitPrerender } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -861,6 +861,7 @@ async function initCommand() {
   const force = rawArgs.includes("--force");
   const platform = await resolveInitPlatform(rawArgs);
   const platformOptions = await INIT_PLATFORMS[platform].options(rawArgs);
+  const prerender = await resolveInitPrerender(rawArgs);
 
   await runInit({
     root: process.cwd(),
@@ -868,6 +869,7 @@ async function initCommand() {
     skipCheck,
     force,
     platform,
+    prerender,
     cloudflare: platform === "cloudflare" ? platformOptions : undefined,
   });
 }
@@ -1011,6 +1013,8 @@ function printHelp(cmd?: string) {
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
+    --prerender          Configure vinext build to pre-render all static routes
+                         (default: prompt, with No selected by default)
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
@@ -1023,6 +1027,7 @@ function printHelp(cmd?: string) {
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images
+    vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
     vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts

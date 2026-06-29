@@ -25,6 +25,7 @@ export type CloudflarePlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
   existingViteConfigPath?: string;
+  prerender?: boolean;
   today?: string;
 };
 
@@ -67,6 +68,7 @@ export function validateCloudflarePlatformSetup(
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         imagesBinding,
+        prerender: context.prerender,
       },
     );
   }
@@ -95,6 +97,7 @@ export function setupCloudflarePlatform(
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         imagesBinding,
+        prerender: context.prerender,
       },
     );
     if (updatedConfig !== currentConfig) {
@@ -105,8 +108,8 @@ export function setupCloudflarePlatform(
     }
   } else {
     const configContent = context.isAppRouter
-      ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding)
-      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding);
+      ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding, context.prerender)
+      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding, context.prerender);
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
   }
@@ -637,6 +640,7 @@ function vinextExpression(
   binding = "vinext",
   imageBinding = "imagesOptimizer",
   imagesBinding = "IMAGES",
+  prerender = false,
 ): string {
   const cacheEntries: string[] = [];
   if (options.dataCache === "kv") {
@@ -652,6 +656,9 @@ function vinextExpression(
       imagesBinding === "IMAGES" ? "" : `{ binding: ${JSON.stringify(imagesBinding)} }`;
     optionEntries.push(`images: { optimizer: ${imageBinding}(${adapterOptions}) }`);
   }
+  if (prerender) {
+    optionEntries.push(`prerender: { routes: "*" }`);
+  }
   return optionEntries.length === 0
     ? `${binding}()`
     : `${binding}({\n  ${optionEntries.join(",\n  ")},\n})`;
@@ -662,6 +669,7 @@ export function generateAppRouterViteConfig(
   info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
+  prerender = false,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
@@ -680,7 +688,7 @@ export function generateAppRouterViteConfig(
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
   plugins.push(
-    `    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding).replace(/\n/g, "\n    ")},`,
+    `    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding, prerender).replace(/\n/g, "\n    ")},`,
   );
 
   plugins.push(`    cloudflare({
@@ -720,6 +728,7 @@ export function generatePagesRouterViteConfig(
   info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
+  prerender = false,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
@@ -751,7 +760,7 @@ export function generatePagesRouterViteConfig(
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding).replace(/\n/g, "\n    ")},
+    ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding, prerender).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });
@@ -1193,6 +1202,18 @@ function getVinextImageOptimizer(
   return findProperty(images.value as AstObject, "optimizer");
 }
 
+function hasVinextPrerender(call: (ESTree.CallExpression & AstNode) | undefined): boolean {
+  const firstArgument = call?.arguments[0];
+  if (
+    !firstArgument ||
+    firstArgument.type === "SpreadElement" ||
+    firstArgument.type !== "ObjectExpression"
+  ) {
+    return false;
+  }
+  return Boolean(findProperty(firstArgument as AstObject, "prerender"));
+}
+
 function isUsableImageOptimizer(property: AstProperty | undefined): boolean {
   if (!property) return false;
   const value = property.value as AstNode & { name?: string; value?: unknown };
@@ -1308,6 +1329,29 @@ function ensureVinextImageOptimizer(
       expression,
     );
   }
+}
+
+function ensureVinextPrerender(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  prerender: boolean | undefined,
+  code: string,
+): void {
+  if (!prerender) return;
+  const call = findPluginCall(config, vinextBinding);
+  if (!call || hasVinextPrerender(call)) return;
+  if (call.arguments.length === 0) {
+    output.appendLeft(call.end - 1, `{ prerender: { routes: "*" } }`);
+    return;
+  }
+  const firstArgument = call.arguments[0];
+  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to add prerender config.",
+    );
+  }
+  insertObjectProperty(output, firstArgument as AstObject, `    prerender: { routes: "*" },`, code);
 }
 
 function indentBlock(source: string, indent: string): string {
@@ -1461,6 +1505,7 @@ export function updateViteConfigForCloudflare(
     nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
     imagesBinding?: string;
+    prerender?: boolean;
   },
 ): string {
   const program = parseViteConfig(filePath, code);
@@ -1497,6 +1542,7 @@ export function updateViteConfigForCloudflare(
     : ensureDefaultImport(program, output, "vinext", vinextLocal);
   const existingVinextCall = findPluginCall(config, vinextBinding);
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
+  const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
@@ -1573,13 +1619,14 @@ export function updateViteConfigForCloudflare(
       {
         expression: existingVinextCall
           ? `${vinextBinding}()`
-          : options.cache
+          : options.cache || options.prerender
             ? vinextExpression(
                 cacheOptions,
                 vinextBinding,
                 imageOptimizerExpression?.slice(0, imageOptimizerExpression.indexOf("(")) ||
                   "imagesOptimizer",
                 options.imagesBinding,
+                options.prerender,
               )
             : `${vinextBinding}()`,
         binding: vinextBinding,
@@ -1594,7 +1641,7 @@ export function updateViteConfigForCloudflare(
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&
-      (cacheAdditions.length > 0 || imageOptimizerExpression)
+      (cacheAdditions.length > 0 || imageOptimizerExpression || needsPrerender)
     ) {
       const properties: string[] = [];
       if (cacheAdditions.length > 0) {
@@ -1604,6 +1651,9 @@ export function updateViteConfigForCloudflare(
       }
       if (imageOptimizerExpression) {
         properties.push(`images: { optimizer: ${imageOptimizerExpression} }`);
+      }
+      if (needsPrerender) {
+        properties.push(`prerender: { routes: "*" }`);
       }
       const plugins = findProperty(config, "plugins");
       const propertyIndent = plugins
@@ -1622,6 +1672,7 @@ export function updateViteConfigForCloudflare(
     } else {
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
+      ensureVinextPrerender(output, config, vinextBinding, options.prerender, code);
     }
   }
 

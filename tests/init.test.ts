@@ -254,6 +254,11 @@ describe("generateViteConfig", () => {
     expect(generateViteConfig(true)).toContain("defineConfig");
     expect(generateViteConfig(false)).toContain("defineConfig");
   });
+
+  it("can configure prerender for all routes", () => {
+    const config = generateViteConfig(true, true);
+    expect(config).toContain('vinext({ prerender: { routes: "*" } })');
+  });
 });
 
 // ─── Unit Tests: addScripts ──────────────────────────────────────────────────
@@ -487,6 +492,33 @@ describe("init — basic functionality", () => {
     });
   });
 
+  it("does not configure prerender unless opted in", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir);
+
+    expect(readFile(tmpDir, "vite.config.ts")).not.toContain("prerender:");
+  });
+
+  it("generates Node vite.config.ts with prerender when opted in", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    await runInit(tmpDir, { platform: "node", prerender: true });
+
+    expect(readFile(tmpDir, "vite.config.ts")).toContain('vinext({ prerender: { routes: "*" } })');
+  });
+
+  it("generates Cloudflare vite.config.ts with prerender when opted in", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, { prerender: true });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('prerender: { routes: "*" }');
+    expect(config).toContain("data: kvDataAdapter()");
+    expect(config).toContain("images: { optimizer: imagesOptimizer() }");
+  });
+
   it("prints explicit steps to finish Cloudflare KV setup", async () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -653,6 +685,32 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(wrangler).toContain('"binding": "VINEXT_KV_CACHE"');
     expect(wrangler).toContain('"images": { "binding": "IMAGES" }');
     expect(readFile(tmpDir, "worker/index.ts")).toBe("export default { fetch() {} };\n");
+  });
+
+  it("additively fills missing prerender config on rerun", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import vinext from "vinext";
+
+export default { plugins: [vinext({ cache: { data: customData() } })] };
+`,
+    );
+
+    await runInit(tmpDir, {
+      platform: "cloudflare",
+      prerender: true,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "none",
+      },
+    });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain("cache: { data: customData() }");
+    expect(config).toContain('prerender: { routes: "*" }');
   });
 
   it("rejects Wrangler TOML", async () => {

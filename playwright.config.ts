@@ -259,7 +259,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4187" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build --prerender-all && node ../../../packages/vinext/dist/cli.js start --port 4187",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4187",
       cwd: "./tests/fixtures/ppr-impact-demo",
       port: 4187,
       reuseExistingServer: !process.env.CI,

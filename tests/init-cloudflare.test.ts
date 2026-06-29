@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { parseSync } from "vite";
 import {
   generateAppRouterViteConfig,
+  generatePagesRouterViteConfig,
   generatePagesRouterWorkerEntry,
   getWranglerImagesBinding,
   updateViteConfigForCloudflare,
@@ -259,6 +260,39 @@ export default { plugins: [vinext()] };
     );
   });
 
+  it("adds prerender to an existing vinext options object", () => {
+    const output = updateViteConfigForCloudflare(
+      "vite.config.ts",
+      `import vinext from "vinext";
+export default { plugins: [vinext({ cache: { data: customData() } })] };
+`,
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
+        prerender: true,
+      },
+    );
+    expectValidConfig(output);
+    expect(output).toContain("cache: { data: customData() }");
+    expect(output).toContain('prerender: { routes: "*" }');
+  });
+
+  it("preserves an existing prerender option", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ prerender: true })] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
+      prerender: true,
+    });
+    expectValidConfig(output);
+    expect(output.match(/prerender/g)).toHaveLength(1);
+    expect(output).toContain("prerender: true");
+  });
+
   it.each(["undefined", "null"])("replaces an unusable %s image optimizer", (value) => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
@@ -479,6 +513,20 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
     expect(vite).toContain('imagesOptimizer({ binding: "CUSTOM_IMAGES" })');
+  });
+
+  it("generates Cloudflare Vite config with prerender when opted in", () => {
+    const options = {
+      dataCache: "none" as const,
+      cdnCache: "data-cache" as const,
+      imageOptimization: "none" as const,
+    };
+    expect(generateAppRouterViteConfig(undefined, options, "IMAGES", true)).toContain(
+      'prerender: { routes: "*" }',
+    );
+    expect(generatePagesRouterViteConfig(undefined, options, "IMAGES", true)).toContain(
+      'prerender: { routes: "*" }',
+    );
   });
 
   it("repairs an unusable Wrangler Images binding", () => {
