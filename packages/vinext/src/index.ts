@@ -4149,11 +4149,18 @@ export const loadServerActionClient = ${
                   hadBasePath: true,
                 }),
               );
-              if (
-                pathname.includes(".") &&
-                !pathname.endsWith(".html") &&
-                !filePathMatchesRewrite
-              ) {
+              const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
+              let filePathMatchesPagesRoute = false;
+              if (isFilePathRequest && !filePathMatchesRewrite) {
+                const [pageRoutes, apiRoutes] = await Promise.all([
+                  pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
+                  apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
+                ]);
+                filePathMatchesPagesRoute =
+                  matchRoute(pathname, pageRoutes) !== null ||
+                  matchRoute(pathname, apiRoutes) !== null;
+              }
+              if (isFilePathRequest && !filePathMatchesRewrite && !filePathMatchesPagesRoute) {
                 return next();
               }
 
