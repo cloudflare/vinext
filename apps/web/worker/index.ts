@@ -1,5 +1,5 @@
 /** Cloudflare Worker entry point for web-specific APIs and scheduled maintenance. */
-import handler from "vinext/server/app-router-entry";
+import handler from "vinext/server/entry";
 
 type Env = {
   ASSETS: Fetcher;
