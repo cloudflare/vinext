@@ -23,6 +23,8 @@ export type VinextPrerenderDecision = ResolvedVinextPrerenderConfig & {
   reason: VinextPrerenderDecisionReason;
 };
 
+// Custom metadata key attached to vinext's config plugin so fresh Vite config
+// loads can recover the normalized prerender option without re-parsing user code.
 export const VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY = "__vinextPrerenderConfig";
 
 type VinextPrerenderConfigPlugin = {

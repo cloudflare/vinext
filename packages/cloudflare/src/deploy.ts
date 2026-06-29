@@ -402,10 +402,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
     const rawNextConfig = await loadNextConfig(info.root);
     const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
 
-    const vite = await loadProjectViteApi(info.root);
-    const vinextPrerenderConfig = await withCloudflareEnv(buildEnv, () =>
-      loadVinextPrerenderConfigFromViteConfig(vite, info.root),
-    );
+    const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
+    const vinextPrerenderConfig = shouldLoadVinextPrerenderConfig
+      ? await withCloudflareEnv(buildEnv, async () => {
+          const vite = await loadProjectViteApi(info.root);
+          return loadVinextPrerenderConfigFromViteConfig(vite, info.root);
+        })
+      : null;
     const prerenderDecision = resolveVinextPrerenderDecision({
       prerenderAllFlag: options.prerenderAll,
       vinextPrerenderConfig,

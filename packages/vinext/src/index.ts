@@ -1360,6 +1360,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:config",
       enforce: "pre",
+      // Expose normalized prerender config to build/deploy metadata loaders that
+      // inspect the Vite plugin array after a fresh config load.
       ...({ [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]: prerenderConfig } as Record<
         string,
         unknown
