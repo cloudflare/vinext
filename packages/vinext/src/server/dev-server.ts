@@ -75,6 +75,7 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
+import { attachPagesRequestCookies } from "./pages-node-compat.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -482,6 +483,7 @@ export function createSSRHandler(
     const _reqStart = now();
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
+    attachPagesRequestCookies(req);
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
@@ -1886,6 +1888,7 @@ async function renderErrorPage(
   fileMatcher?: ValidFileMatcher,
   err?: Error,
 ): Promise<void> {
+  attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
   const candidates =

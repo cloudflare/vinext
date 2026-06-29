@@ -43,6 +43,13 @@ export type PagesReqResResponse = Writable & {
   revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
 };
 
+type PagesRequestCookiesCarrier = {
+  headers: {
+    cookie?: string | string[] | null | undefined;
+  };
+  cookies?: unknown;
+};
+
 type CreatePagesReqResOptions = {
   body: unknown;
   query: PagesRequestQuery;
@@ -152,6 +159,37 @@ function createRequestReadable(request: Request): Readable {
   // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
   // semantics, byte-based highWaterMark).
   return Readable.from(requestBodyChunks(request), { objectMode: false });
+}
+
+function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
+  return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
+}
+
+export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
+  if (Object.hasOwn(req, "cookies")) return;
+
+  Object.defineProperty(req, "cookies", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const cookies = parsePagesRequestCookies(req.headers.cookie);
+      Object.defineProperty(req, "cookies", {
+        configurable: true,
+        enumerable: true,
+        value: cookies,
+        writable: true,
+      });
+      return cookies;
+    },
+    set(value: unknown) {
+      Object.defineProperty(req, "cookies", {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true,
+      });
+    },
+  });
 }
 
 class PagesResponseStream extends Writable {
@@ -393,14 +431,14 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   // objects. The Workers/prod adapter starts from a Fetch Request, so expose a
   // real Readable here instead of a plain object. That keeps both documented
   // raw-body iteration and legacy stream proxying (`req.pipe(...)`) working.
-  const req: PagesReqResRequest = Object.assign(createRequestReadable(options.request), {
+  const req = Object.assign(createRequestReadable(options.request), {
     method: options.request.method,
     url: options.url,
     headers: headersObj,
     query: options.query,
     body: options.body,
-    cookies: parseCookieHeader(options.request.headers.get("cookie")),
-  });
+  }) as PagesReqResRequest;
+  attachPagesRequestCookies(req);
 
   let resolveResponse!: (value: Response) => void;
   let rejectResponse!: (error: Error) => void;
