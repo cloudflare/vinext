@@ -89,6 +89,23 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
   });
 
+  it("logs registration failures without printing raw Error stack traces", () => {
+    const code = generateCacheAdaptersModule({
+      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
+    });
+    expect(code).toContain("function __vinextFormatAdapterError(error)");
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).not.toContain('", error);');
+  });
+
   it("escapes adapter specifiers so absolute paths are safe", () => {
     // require.resolve() yields an absolute path which may contain characters
     // that must not break the generated import statement.

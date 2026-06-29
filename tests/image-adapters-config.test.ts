@@ -72,6 +72,18 @@ describe("generateImageAdaptersModule", () => {
     expect(code).toContain("__vinextImageOptimizerRegistered = true;");
   });
 
+  it("logs registration failures without printing raw Error stack traces", () => {
+    const code = generateImageAdaptersModule({
+      optimizer: { adapter: "@vinext/cloudflare/images/images-optimizer" },
+    });
+    expect(code).toContain("function __vinextFormatAdapterError(error)");
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured image optimizer; ' +
+        'serving images unoptimized.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).not.toContain('", error);');
+  });
+
   it("escapes adapter specifiers so absolute paths are safe", () => {
     const weird = `/tmp/some path/with"quote/adapter.js`;
     const code = generateImageAdaptersModule({ optimizer: { adapter: weird } });
