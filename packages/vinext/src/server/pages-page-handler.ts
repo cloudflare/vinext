@@ -546,6 +546,13 @@ export function createPagesPageHandler(
         const parsedRouteUrl = new URL(routeUrl, originalRequestUrl);
         const routePathname = parsedRouteUrl.pathname || "/";
         const pagesResolvedUrl = routePathname + originalRequestUrl.search;
+        const createPageReqRes = () =>
+          createPagesReqRes({
+            body: undefined,
+            query,
+            request,
+            url: originalRequestPathAndSearch,
+          });
 
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
@@ -554,14 +561,7 @@ export function createPagesPageHandler(
           buildId,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           htmlLimitedBots: vinextConfig.htmlLimitedBots,
-          createGsspReqRes() {
-            return createPagesReqRes({
-              body: undefined,
-              query,
-              request,
-              url: originalRequestPathAndSearch,
-            });
-          },
+          createGsspReqRes: createPageReqRes,
           createAppTree(appTreeProps) {
             const el = createPageElement(PageComponent, AppComponent, appTreeProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
@@ -644,6 +644,10 @@ export function createPagesPageHandler(
           renderProps = { ...renderProps, pageProps };
         }
         const gsspRes = pageDataResult.gsspRes;
+        const documentReqRes =
+          serializedPagesNextData.autoExport === true
+            ? null
+            : (pageDataResult.documentReqRes ?? createPageReqRes());
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
 
@@ -747,6 +751,7 @@ export function createPagesPageHandler(
           clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
             ? vinextConfig.clientTraceMetadata
             : undefined,
+          documentReqRes,
           gsspRes,
           isrCacheKey: pageIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,

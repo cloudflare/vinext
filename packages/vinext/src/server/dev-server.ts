@@ -223,7 +223,7 @@ async function streamPageToResponse(
     fontHeadHTML,
     scripts,
     DocumentComponent,
-    statusCode = 200,
+    statusCode,
     extraHeaders,
     getHeadHTML,
     enhancePageElement,
@@ -248,6 +248,7 @@ async function streamPageToResponse(
     scriptNonce,
     context: documentContext,
   });
+  if (res.headersSent || res.writableEnded) return;
 
   let bodyStream: ReadableStream<Uint8Array>;
   if (documentRenderPage.status === "rendered") {
@@ -356,7 +357,7 @@ async function streamPageToResponse(
       }
     }
   }
-  res.writeHead(statusCode, headers);
+  res.writeHead(statusCode ?? res.statusCode, headers);
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
@@ -1726,11 +1727,12 @@ hydrate();
           // Forward the per-request nonce so the shared renderPage helper can
           // apply `withScriptNonce` once (it owns that responsibility).
           scriptNonce,
-          // Minimal DocumentContext for `getInitialProps`, matching prod parity.
+          // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
             query,
             asPath: requestAsPath,
+            ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,

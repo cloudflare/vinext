@@ -5728,6 +5728,23 @@ export default function Page({ throwPage }: { throwPage: boolean }) {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "static.tsx"),
+      `export default function StaticPage() {
+  return <p id="static-page-content">STATIC</p>;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "static-gsp.tsx"),
+      `export function getStaticProps() {
+  return { props: {} };
+}
+export default function StaticGspPage() {
+  return <p id="static-gsp-page-content">STATIC GSP</p>;
+}
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
@@ -5780,6 +5797,29 @@ export default class CustomDocument extends Document {
         enhanceApp: ctx.query.withEnhanceApp ? enhanceApp : undefined,
       };
     }
+    const documentCookie = ctx.req?.cookies?.theme ?? "missing";
+    const documentRequestContext = [
+      ctx.req?.url ?? "missing-url",
+      documentCookie,
+      ctx.res ? "has-res" : "missing-res",
+    ].join("|");
+    if (ctx.query?.documentHeader) {
+      ctx.res?.setHeader("x-document-cookie", documentCookie);
+    }
+    if (ctx.query?.documentStatus && ctx.res) {
+      ctx.res.statusCode = 202;
+    }
+    if (ctx.query?.documentEnd && ctx.res) {
+      ctx.res.statusCode = 203;
+      ctx.res.setHeader("x-document-ended", "yes");
+      ctx.res.end("DOCUMENT ENDED");
+      return {
+        html: '<article id="should-not-render">SHOULD NOT RENDER</article>',
+        documentProp: "DOCUMENT",
+        documentErrorContext: "",
+        documentRequestContext,
+      };
+    }
     if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
     if (ctx.query?.manualDocumentHtml) {
       return {
@@ -5787,6 +5827,7 @@ export default class CustomDocument extends Document {
         styles: <style data-manual-document-style>{".manual{color:blue}"}</style>,
         documentProp: "DOCUMENT",
         documentErrorContext: "",
+        documentRequestContext,
       };
     }
     const originalRenderPage = ctx.renderPage;
@@ -5804,6 +5845,7 @@ export default class CustomDocument extends Document {
             ? <ThrowingStyle />
             : initialProps.styles,
       documentProp: "DOCUMENT",
+      documentRequestContext,
       documentErrorContext:
         ctx.pathname === "/_error"
           ? [ctx.pathname, Object.keys(ctx.query ?? {})[0] ?? "", ctx.err?.message ?? ""].join("|")
@@ -5812,7 +5854,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -5869,6 +5911,74 @@ export default class CustomDocument extends Document {
       expect(html).toContain(".manual{color:blue}");
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`
+    // to `_document.getInitialProps` in packages/next/src/server/render.tsx.
+    "passes req/res into _document.getInitialProps in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(202);
+      expect(response.headers.get("x-document-cookie")).toBe("dark");
+      const html = await response.text();
+      expect(html).toContain(
+        'id="document-request-context">/?documentHeader=true&amp;documentStatus=true|dark|has-res',
+      );
+      expect(html).toContain('id="page-content">PAGE');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "passes req/res into _document.getInitialProps for getStaticProps pages in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/static-gsp?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(202);
+      expect(response.headers.get("x-document-cookie")).toBe("dark");
+      const html = await response.text();
+      expect(html).toContain(
+        'id="document-request-context">/static-gsp?documentHeader=true&amp;documentStatus=true|dark|has-res',
+      );
+      expect(html).toContain('id="static-gsp-page-content">STATIC GSP');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "honors _document.getInitialProps responses that end early in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?documentEnd=true`);
+      expect(response.status).toBe(203);
+      expect(response.headers.get("x-document-ended")).toBe("yes");
+      expect(await response.text()).toBe("DOCUMENT ENDED");
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "omits req/res from _document.getInitialProps for auto-export pages in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/static?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-document-cookie")).toBeNull();
+      const html = await response.text();
+      expect(html).toContain('id="document-request-context">missing-url|missing|missing-res');
+      expect(html).toContain('id="static-page-content">STATIC');
     },
   );
 
