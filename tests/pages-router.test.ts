@@ -124,6 +124,136 @@ export default function middleware(request: NextRequest) {
   );
 }
 
+type PagesAppGlobalCssFixture = {
+  appPath: string;
+  pagePath: string;
+  devStylesheetHrefs: string[];
+  appManifestAssets: string[];
+  pageManifestAssets: string[];
+  cssMarkers: string[];
+};
+
+function getHtmlAttr(tag: string, attrName: string): string | null {
+  const match = tag.match(new RegExp(`\\s${attrName}=(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function getStylesheetHrefs(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0])
+    .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
+    .map((tag) => getHtmlAttr(tag, "href"))
+    .filter((href): href is string => href !== null);
+}
+
+function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
+  const pagesDir = path.join(rootDir, "pages");
+  const libDir = path.join(rootDir, "lib");
+  const stylesDir = path.join(rootDir, "styles");
+  fs.mkdirSync(pagesDir, { recursive: true });
+  fs.mkdirSync(libDir, { recursive: true });
+  fs.mkdirSync(stylesDir, { recursive: true });
+
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+
+  fs.writeFileSync(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          baseUrl: ".",
+          jsx: "react-jsx",
+          paths: { "@/*": ["./*"] },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "global style.css"),
+    ".global-css-pages-text { border-top-width: 13px; }\n",
+  );
+  fs.writeFileSync(path.join(stylesDir, "app.module.css"), ".moduleText { padding-left: 17px; }\n");
+  fs.writeFileSync(
+    path.join(stylesDir, "transitive.module.css"),
+    ".transitiveText { margin-top: 19px; }\n",
+  );
+  fs.writeFileSync(path.join(stylesDir, "page.module.css"), ".pageText { margin-left: 29px; }\n");
+  fs.writeFileSync(
+    path.join(stylesDir, "type-only.module.css"),
+    ".typeOnlyText { margin-right: 31px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "ignored.css"),
+    ".ignored-css-query { border-bottom-width: 23px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(libDir, "transitive.ts"),
+    'import transitiveStyles from "../styles/transitive.module.css";\n' +
+      "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+  );
+  fs.writeFileSync(
+    path.join(libDir, "reexport.ts"),
+    'export { transitiveClassName } from "./transitive";\n',
+  );
+  fs.writeFileSync(
+    path.join(libDir, "type-only.ts"),
+    'import "../styles/type-only.module.css";\n' +
+      "export type TypeOnlyTheme = { name: string };\n",
+  );
+
+  const appPath = path.join(pagesDir, "_app.tsx");
+  fs.writeFileSync(
+    appPath,
+    'import "@/styles/global style.css";\n' +
+      'import moduleStyles from "@/styles/app.module.css";\n' +
+      'import { transitiveClassName } from "@/lib/reexport";\n' +
+      'import "@/styles/ignored.css?raw";\n' +
+      'export { type TypeOnlyTheme } from "@/lib/type-only";\n' +
+      "export default function App({ Component, pageProps }: any) {\n" +
+      "  return <div className={`${moduleStyles.moduleText} ${transitiveClassName}`}><Component {...pageProps} /></div>;\n" +
+      "}\n",
+  );
+  const pagePath = path.join(pagesDir, "index.tsx");
+  fs.writeFileSync(
+    pagePath,
+    'import Head from "next/head";\n' +
+      'import pageStyles from "@/styles/page.module.css";\n' +
+      "export default function Home() {\n" +
+      "  return <>\n" +
+      '    <Head><style>{".global-css-pages-text { border-top-width: 0px; }"}</style></Head>\n' +
+      "    <div className={`global-css-pages-text ${pageStyles.pageText}`}>Global CSS Pages Test</div>\n" +
+      "  </>;\n" +
+      "}\n",
+  );
+
+  return {
+    appPath: appPath.split(path.sep).join("/"),
+    pagePath: pagePath.split(path.sep).join("/"),
+    devStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/page.module.css",
+    ],
+    appManifestAssets: [
+      "styles/global style.css",
+      "styles/app.module.css",
+      "styles/transitive.module.css",
+    ],
+    pageManifestAssets: ["styles/page.module.css"],
+    cssMarkers: [
+      "border-top-width: 13px",
+      "padding-left: 17px",
+      "margin-top: 19px",
+      "margin-left: 29px",
+    ],
+  };
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -2591,6 +2721,269 @@ describe("Virtual server entry generation", () => {
       expect(codeWithoutPrefetchManifest).not.toContain(":slug*");
     } finally {
       await testServer.close();
+    }
+  });
+
+  it("dev Pages client assets expose _app global CSS for initial stylesheet links", async () => {
+    // Next.js includes /_app files in every Pages document before collecting
+    // stylesheets:
+    // .nextjs-ref/packages/next/src/pages/_document.tsx getDocumentFiles().
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/`);
+      const html = await res.text();
+      expect(res.status).toBe(200);
+      expect(html).toContain("Global CSS Pages Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.devStylesheetHrefs) {
+        expect(stylesheetHrefs).toContain(href);
+      }
+      expect(html).not.toContain("ignored.css");
+      expect(html).not.toContain("type-only.module.css");
+
+      const headStyleIndex = html.indexOf(".global-css-pages-text { border-top-width: 0px; }");
+      const firstAppStylesheetIndex = html.indexOf(fixture.devStylesheetHrefs[0]);
+      expect(headStyleIndex).toBeGreaterThan(-1);
+      expect(firstAppStylesheetIndex).toBeGreaterThan(headStyleIndex);
+
+      for (const [index, href] of fixture.devStylesheetHrefs.entries()) {
+        const stylesheetRes = await fetch(`http://localhost:${addr.port}${href}`, {
+          headers: { accept: "text/css,*/*;q=0.1" },
+        });
+        expect(stylesheetRes.status).toBe(200);
+        expect(stylesheetRes.headers.get("content-type")).toContain("text/css");
+        const stylesheetText = (await stylesheetRes.text()).replace(/\s+/g, "");
+        expect(stylesheetText).toContain(fixture.cssMarkers[index]!.replace(/\s+/g, ""));
+      }
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        clientEntry?: string;
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.clientEntry).toBe("/@id/__x00__virtual:vinext-client-entry");
+      expect(assets.ssrManifest?.[fixture.appPath]).toEqual(fixture.appManifestAssets);
+      expect(assets.ssrManifest?.[fixture.pagePath]).toEqual(fixture.pageManifestAssets);
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain(
+        "styles/type-only.module.css",
+      );
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet links use basePath source URLs, not assetPrefix build URLs", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-prefix-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/docs", assetPrefix: "/cdn" };\n`,
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/docs/`);
+      const html = await res.text();
+      expect(res.status).toBe(200);
+      expect(html).toContain("Global CSS Pages Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.devStylesheetHrefs.map((value) => `/docs${value}`)) {
+        expect(stylesheetHrefs).toContain(href);
+        const stylesheetRes = await fetch(`http://localhost:${addr.port}${href}`, {
+          headers: { accept: "text/css,*/*;q=0.1" },
+        });
+        expect(stylesheetRes.status).toBe(200);
+        expect(stylesheetRes.headers.get("content-type")).toContain("text/css");
+      }
+      for (const href of fixture.devStylesheetHrefs) {
+        expect(stylesheetHrefs).not.toContain(href);
+      }
+      expect(stylesheetHrefs.some((href) => href.startsWith("/cdn/"))).toBe(false);
+      expect(stylesheetHrefs.some((href) => href.startsWith("/docs/cdn/"))).toBe(false);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet metadata updates when _app imports change", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-hmr-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const appPath = fixture.appPath;
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstHtml = await (await fetch(`${baseUrl}/`)).text();
+      expect(getStylesheetHrefs(firstHtml)).toContain("/styles/global%20style.css");
+      expect(getStylesheetHrefs(firstHtml)).not.toContain("/styles/late.css");
+
+      fs.writeFileSync(path.join(tmpDir, "styles", "late.css"), ".late-css { color: green; }\n");
+      fs.writeFileSync(
+        appPath,
+        'import "@/styles/global style.css";\n' +
+          'import "@/styles/late.css";\n' +
+          "export default function App({ Component, pageProps }: any) {\n" +
+          "  return <Component {...pageProps} />;\n" +
+          "}\n",
+      );
+      testServer.watcher.emit("change", appPath);
+
+      const secondHtml = await (await fetch(`${baseUrl}/`)).text();
+      const secondHrefs = getStylesheetHrefs(secondHtml);
+      expect(secondHrefs).toContain("/styles/global%20style.css");
+      expect(secondHrefs).toContain("/styles/late.css");
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[appPath]).toEqual(["styles/global style.css", "styles/late.css"]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet metadata updates when transitive imports change", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-transitive-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const transitivePath = path.join(tmpDir, "lib", "transitive.ts");
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstHtml = await (await fetch(`${baseUrl}/`)).text();
+      expect(getStylesheetHrefs(firstHtml)).toContain("/styles/transitive.module.css");
+      expect(getStylesheetHrefs(firstHtml)).not.toContain("/styles/late-transitive.module.css");
+
+      fs.writeFileSync(
+        path.join(tmpDir, "styles", "late-transitive.module.css"),
+        ".lateTransitiveText { color: green; }\n",
+      );
+      fs.writeFileSync(
+        transitivePath,
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+          'import lateStyles from "../styles/late-transitive.module.css";\n' +
+          "export const transitiveClassName = `${transitiveStyles.transitiveText} ${lateStyles.lateTransitiveText}`;\n",
+      );
+      testServer.watcher.emit("change", transitivePath);
+
+      const secondHtml = await (await fetch(`${baseUrl}/`)).text();
+      const secondHrefs = getStylesheetHrefs(secondHtml);
+      expect(secondHrefs).toContain("/styles/transitive.module.css");
+      expect(secondHrefs).toContain("/styles/late-transitive.module.css");
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[fixture.appPath]).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/transitive.module.css",
+        "styles/late-transitive.module.css",
+      ]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("production Pages asset tags include _app stylesheet assets for the same graph", async () => {
+    // Dev and prod should get their initial blocking CSS from the same concept:
+    // the Pages `_app` entry graph that Next.js includes in every document.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-prod-"));
+    const outDir = path.join(tmpDir, "dist");
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+
+    try {
+      await buildPagesFixtureToOutDir(tmpDir, outDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir,
+          noCompression: true,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+        const res = await fetch(`${baseUrl}/`);
+        const html = await res.text();
+        expect(res.status).toBe(200);
+        expect(html).toContain("Global CSS Pages Test");
+        expect(html).not.toContain("ignored.css");
+
+        const stylesheetHrefs = getStylesheetHrefs(html);
+        expect(stylesheetHrefs.length).toBeGreaterThan(0);
+
+        const cssText = (
+          await Promise.all(
+            stylesheetHrefs.map(async (href) => {
+              const stylesheetRes = await fetch(`${baseUrl}${href}`);
+              expect(stylesheetRes.status).toBe(200);
+              return stylesheetRes.text();
+            }),
+          )
+        ).join("\n");
+        const compactCssText = cssText.replace(/\s+/g, "");
+        for (const marker of fixture.cssMarkers) {
+          expect(compactCssText).toContain(marker.replace(/\s+/g, ""));
+        }
+        expect(compactCssText).not.toContain("border-bottom-width:23px");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 

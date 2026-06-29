@@ -35,7 +35,12 @@ import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  escapeHtmlAttr,
+  safeJsonStringify,
+} from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -45,6 +50,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
+  findFileWithExts,
   findFileWithExtensions,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
@@ -62,7 +68,8 @@ import {
   matchesPagesStaticPath,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
-import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
   loadUserDocumentInitialProps,
@@ -105,6 +112,37 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
       ),
     ),
   );
+}
+
+const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass|less)$/i;
+
+type PagesClientAssetsModule = {
+  default?: {
+    ssrManifest?: Record<string, string[]>;
+  };
+};
+
+function createDevInitialStylesheetHeadHTML(options: {
+  ssrManifest: Record<string, string[]> | null | undefined;
+  moduleIds: (string | null | undefined)[];
+  nonceAttr: string;
+}): string {
+  const { ssrManifest, moduleIds, nonceAttr } = options;
+  if (!ssrManifest || moduleIds.length === 0) return "";
+
+  const seen = new Set<string>();
+  let html = "";
+  for (const moduleId of moduleIds) {
+    const files = getManifestFilesForModule(ssrManifest, moduleId);
+    if (!files) continue;
+    for (const file of files) {
+      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
+      seen.add(file);
+      const href = createPagesDevAssetUrl(file);
+      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+    }
+  }
+  return html;
 }
 
 /**
@@ -182,6 +220,7 @@ async function streamPageToResponse(
     url: string;
     server: ViteDevServer;
     fontHeadHTML: string;
+    assetHeadHTML?: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
@@ -221,6 +260,7 @@ async function streamPageToResponse(
     url,
     server,
     fontHeadHTML,
+    assetHeadHTML = "",
     scripts,
     DocumentComponent,
     statusCode,
@@ -307,8 +347,11 @@ async function streamPageToResponse(
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML || fontHeadHTML || assetHeadHTML) {
+      docHtml = docHtml.replace(
+        "</head>",
+        `  ${fontHeadHTML}${headHTML}\n  ${assetHeadHTML}\n</head>`,
+      );
     }
     // Inject scripts: replace placeholder or append before </body>
     docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
@@ -324,6 +367,7 @@ async function streamPageToResponse(
 <html>
 <head>
   ${fontHeadHTML}${headHTML}
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -1508,6 +1552,21 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
+        let assetHeadHTML = "";
+        try {
+          const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+          const pagesClientAssets = (await runner.import(
+            "virtual:vinext-pages-client-assets",
+          )) as PagesClientAssetsModule;
+          assetHeadHTML += createDevInitialStylesheetHeadHTML({
+            ssrManifest: pagesClientAssets.default?.ssrManifest,
+            moduleIds: [appAssetPath, route.filePath],
+            nonceAttr,
+          });
+        } catch {
+          // If dev asset metadata is unavailable, keep the existing client-graph
+          // CSS behavior instead of failing the page render.
+        }
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
@@ -1720,6 +1779,7 @@ hydrate();
           url,
           server,
           fontHeadHTML,
+          assetHeadHTML,
           scripts: allScripts,
           DocumentComponent,
           statusCode,
