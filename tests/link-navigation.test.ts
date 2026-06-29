@@ -189,7 +189,7 @@ async function waitForFetchCalls(
   fetch: { mock: { calls: unknown[] } },
   expectedCalls: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 100; attempt++) {
     await flushPrefetchTasks();
     if (fetch.mock.calls.length >= expectedCalls) {
       return;
@@ -2178,6 +2178,98 @@ describe("Link prefetch scheduling", () => {
 
       expect(aboutLoader).toHaveBeenCalled();
       expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches masked Pages Router links by route while probing middleware by display URL", async () => {
+    const observer = stubIntersectionObserver();
+    const actualLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/actual",
+      nodeEnv: "production",
+      props: { as: "/masked" },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: {
+            hasMiddleware: true,
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_PAGE_LOADERS__: {
+          "/actual": actualLoader,
+        },
+        __VINEXT_PAGE_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSG_PATTERNS__: [],
+        __VINEXT_PAGES_SSP_PATTERNS__: ["/actual"],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await waitForFetchCalls(result.fetch, 1);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(actualLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expect(result.fetch.mock.calls[0][0]).toBe("/_next/data/build-id/masked.json");
+      expect(result.fetch.mock.calls[0][1]?.headers).toMatchObject({
+        Accept: "application/json",
+        purpose: "prefetch",
+        "x-middleware-prefetch": "1",
+        "x-nextjs-data": "1",
+      });
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches masked static Pages Router links through the display middleware probe", async () => {
+    const observer = stubIntersectionObserver();
+    const actualLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/actual",
+      nodeEnv: "production",
+      props: { as: "/masked" },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: {
+            hasMiddleware: true,
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_PAGE_LOADERS__: {
+          "/actual": actualLoader,
+        },
+        __VINEXT_PAGE_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSG_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSP_PATTERNS__: [],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(actualLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expect(result.fetch.mock.calls[0][0]).toBe("/_next/data/build-id/masked.json");
+      expect(result.fetch.mock.calls[0][1]?.headers).toMatchObject({
+        Accept: "application/json",
+        purpose: "prefetch",
+        "x-middleware-prefetch": "1",
+        "x-nextjs-data": "1",
+      });
       expect(result.pagePrefetchLinks).toEqual([]);
     } finally {
       result.restoreNodeEnv();

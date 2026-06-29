@@ -50,6 +50,7 @@ import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-match
 import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import {
+  getPagesMiddlewareDataHref,
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
 } from "./internal/pages-data-target.js";
@@ -385,7 +386,12 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
  * the main thread during initial page load.
  */
-function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "high" = "low"): void {
+function prefetchUrl(
+  href: string,
+  mode: LinkPrefetchMode,
+  priority: "low" | "high" = "low",
+  pagesRouteHref?: string,
+): void {
   if (typeof window === "undefined") return;
 
   const prefetchHref = getLinkPrefetchHref({
@@ -396,6 +402,19 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   if (prefetchHref == null) return;
 
   const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const routePrefetchHref =
+    pagesRouteHref === undefined
+      ? prefetchHref
+      : (getLinkPrefetchHref({
+          href: pagesRouteHref,
+          basePath: __basePath,
+          currentOrigin: window.location.origin,
+        }) ?? prefetchHref);
+  const fullRouteHref = toBrowserNavigationHref(
+    routePrefetchHref,
+    window.location.href,
+    __basePath,
+  );
   const target = new URL(fullHref, window.location.href);
   if (
     target.origin === window.location.origin &&
@@ -565,9 +584,13 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         // The decision helper + prefetch action live in shims/internal/ so
         // this file does not pull in the router shim at module init time,
         // which would create a circular import and grow the SSR module graph.
-        const dataTarget = resolvePagesDataNavigationTarget(fullHref, __basePath);
+        const dataTarget = resolvePagesDataNavigationTarget(fullRouteHref, __basePath);
         if (dataTarget) {
-          prefetchPagesData(dataTarget);
+          const middlewareDataHref =
+            fullRouteHref === fullHref
+              ? dataTarget.middlewareDataHref
+              : (getPagesMiddlewareDataHref(fullHref, __basePath) ?? undefined);
+          prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages
           // Router `components` map if it matches an App Router route in the
@@ -635,6 +658,7 @@ type LinkPrefetchInstance = {
   href: string;
   isVisible: boolean;
   mode: LinkPrefetchMode;
+  pagesRouteHref?: string;
   routerMode: LinkPrefetchRouterMode;
   viewportPrefetched: boolean;
 };
@@ -647,7 +671,7 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
     if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
-    prefetchUrl(instance.href, instance.mode, "low");
+    prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
     instance.viewportPrefetched = true;
   } else {
     visibleLinkPrefetches.delete(instance);
@@ -662,7 +686,7 @@ function registerVisibleLinkPing(): void {
 function pingVisibleLinkPrefetches(): void {
   for (const instance of visibleLinkPrefetches) {
     if (instance.isVisible && instance.routerMode === "app") {
-      prefetchUrl(instance.href, instance.mode, "low");
+      prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
     }
   }
 }
@@ -888,6 +912,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // it once after locale prefixing (for prefetch/navigation paths that bypass
   // basePath) and again after `withBasePath` for the rendered `href` attribute.
   const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
+  const normalizedRouteHref =
+    HAS_PAGES_ROUTER &&
+    typeof as === "string" &&
+    typeof routeHrefRaw === "string" &&
+    as !== routeHrefRaw
+      ? normalizePathTrailingSlash(
+          applyLocaleToHref(isDangerous ? "/" : routeHrefRaw, locale),
+          __trailingSlash,
+        )
+      : normalizedHref;
   // Full href with basePath for browser URLs and fetches, normalised again so
   // that combining a non-empty basePath with the bare root (`/`) still
   // produces a canonical href under `trailingSlash: false` (e.g. `/foo`
@@ -960,6 +994,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       href: hrefToPrefetch,
       isVisible: false,
       mode: prefetchMode,
+      pagesRouteHref:
+        normalizedRouteHref === normalizedHref
+          ? undefined
+          : (getLinkPrefetchHref({
+              href: normalizedRouteHref,
+              basePath: __basePath,
+              currentOrigin: window.location.origin,
+            }) ?? undefined),
       routerMode: getLinkPrefetchRouterMode(),
       viewportPrefetched: false,
     };
@@ -971,7 +1013,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       observedLinkPrefetches.delete(node);
       visibleLinkPrefetches.delete(instance);
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref]);
+  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
@@ -992,8 +1034,20 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
       void promotePrefetchEntriesForNavigation(normalizedHref);
     }
-    prefetchUrl(normalizedHref, intentMode, "high");
-  }, [prefetchProp, isDangerous, prefetchMode, normalizedHref, unstable_dynamicOnHover]);
+    prefetchUrl(
+      normalizedHref,
+      intentMode,
+      "high",
+      normalizedRouteHref === normalizedHref ? undefined : normalizedRouteHref,
+    );
+  }, [
+    prefetchProp,
+    isDangerous,
+    prefetchMode,
+    normalizedHref,
+    normalizedRouteHref,
+    unstable_dynamicOnHover,
+  ]);
 
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {

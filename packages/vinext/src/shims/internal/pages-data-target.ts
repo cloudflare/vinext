@@ -258,7 +258,8 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
   if (target.dataKind === "static") {
-    void fetchStaticPagesData(target.dataHref, { headers }).catch(() => {});
+    const dataHref = target.middlewareDataHref ?? target.dataHref;
+    void fetchStaticPagesData(dataHref, { headers }).catch(() => {});
     return;
   }
 

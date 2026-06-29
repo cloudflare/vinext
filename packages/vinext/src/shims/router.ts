@@ -369,7 +369,7 @@ export type NextRouter = {
   /** Reload the page */
   reload(): void;
   /** Prefetch a page (injects <link rel="prefetch">) */
-  prefetch(url: string): Promise<void>;
+  prefetch(url: string, as?: string): Promise<void>;
   /** Register a callback to run before popstate navigation */
   beforePopState(cb: BeforePopStateCallback): void;
   /** Listen for route changes */
@@ -1547,10 +1547,6 @@ function resolveLocalRedirectUrl(location: string): string | null {
   );
 }
 
-function shouldProbePagesMiddleware(browserUrl: string): boolean {
-  return getPagesMiddlewareDataHref(browserUrl, __basePath) !== null;
-}
-
 function hasClientRewriteRules(): boolean {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
   return Boolean(
@@ -1803,11 +1799,27 @@ function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
   return getPagesMiddlewareDataHref(browserUrl, __basePath);
 }
 
+function getPagesDataCacheHref(dataHref: string): string {
+  try {
+    return new URL(dataHref, window.location.href).href;
+  } catch {
+    return dataHref;
+  }
+}
+
 type MiddlewareDataEffect = {
+  dataHref: string;
   redirectLocation: string | null;
   rewriteTarget: string | null;
   response: Response;
 };
+
+function shouldEvictMiddlewareDataCache(
+  middlewareEffect: MiddlewareDataEffect | null,
+  dataTarget: PagesDataTarget | null,
+): boolean {
+  return middlewareEffect?.redirectLocation != null || dataTarget?.dataKind !== "static";
+}
 
 async function resolveMiddlewareDataEffect(
   browserUrl: string,
@@ -1832,6 +1844,7 @@ async function resolveMiddlewareDataEffect(
       signal,
     });
     return {
+      dataHref: getPagesDataCacheHref(dataUrl),
       redirectLocation: res.headers.get("x-nextjs-redirect"),
       rewriteTarget: res.headers.get("x-nextjs-rewrite"),
       response: res,
@@ -2425,6 +2438,7 @@ async function navigateClient(
   routerRuntimeState.activeAbortController = controller;
 
   const navId = ++routerRuntimeState.navigationId;
+  let middlewareDataCacheEvictHref: string | null = null;
 
   /** Check if this navigation is still the active one. If not, throw. */
   function assertStillCurrent(): void {
@@ -2484,7 +2498,15 @@ async function navigateClient(
       let dataTarget = resolvePagesDataNavigationTarget(routeLookupUrl, __basePath);
       let middlewareDataResponse: Response | undefined;
       let middlewareEffect: MiddlewareDataEffect | null = null;
-      if (shouldProbePagesMiddleware(browserUrl)) {
+      let middlewareRewrittenTarget: PagesDataTarget | null | undefined;
+      const middlewareProbeDataHref = getMiddlewarePagesDataFetchUrl(browserUrl);
+      if (middlewareProbeDataHref !== null) {
+        // If this navigation is superseded before middleware responds, we do
+        // not yet know whether middleware would redirect/rewrite away from a
+        // route that initially looked static. Mark the probe for cleanup now,
+        // then clear it below only after a completed response proves the final
+        // target is cacheable static data.
+        middlewareDataCacheEvictHref = getPagesDataCacheHref(middlewareProbeDataHref);
         try {
           middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
         } catch (err: unknown) {
@@ -2492,6 +2514,21 @@ async function navigateClient(
             throw new NavigationCancelledError(browserUrl);
           }
           throw err;
+        }
+        if (middlewareEffect?.rewriteTarget) {
+          middlewareRewrittenTarget = resolvePagesDataNavigationTarget(
+            middlewareEffect.rewriteTarget,
+            __basePath,
+          );
+        }
+        if (middlewareEffect) {
+          const middlewareResolvedTarget =
+            middlewareRewrittenTarget !== undefined ? middlewareRewrittenTarget : dataTarget;
+          if (shouldEvictMiddlewareDataCache(middlewareEffect, middlewareResolvedTarget)) {
+            middlewareDataCacheEvictHref = middlewareEffect.dataHref;
+          } else {
+            middlewareDataCacheEvictHref = null;
+          }
         }
         assertStillCurrent();
       }
@@ -2515,15 +2552,19 @@ async function navigateClient(
           middlewareDataResponse = middlewareEffect.response;
         }
         if (middlewareEffect.rewriteTarget) {
-          const rewrittenTarget = resolvePagesDataNavigationTarget(
-            middlewareEffect.rewriteTarget,
-            __basePath,
-          );
+          const rewrittenTarget =
+            middlewareRewrittenTarget ??
+            resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
           if (!rewrittenTarget) {
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
           dataTarget = rewrittenTarget;
         }
+      }
+      if (middlewareEffect && shouldEvictMiddlewareDataCache(middlewareEffect, dataTarget)) {
+        middlewareDataCacheEvictHref = middlewareEffect.dataHref;
+      } else if (middlewareEffect) {
+        middlewareDataCacheEvictHref = null;
       }
 
       if (dataTarget?.dataKind === "static" || dataTarget?.dataKind === "server") {
@@ -2553,6 +2594,9 @@ async function navigateClient(
     // Clean up the abort controller if this navigation is still the active one
     if (navId === routerRuntimeState.navigationId) {
       routerRuntimeState.activeAbortController = null;
+    }
+    if (middlewareDataCacheEvictHref !== null) {
+      evictPagesDataCache(middlewareDataCacheEvictHref);
     }
   }
 }
@@ -3108,12 +3152,17 @@ async function performNavigation(
  * Ported from Next.js: `packages/next/src/client/page-loader.ts` `prefetch`
  * (the data + chunk parallel prefetch shape).
  */
-async function prefetchUrl(url: string): Promise<void> {
+async function prefetchUrl(url: string, as?: string): Promise<void> {
   if (typeof document === "undefined") return;
 
+  const displayUrl = as ?? url;
   const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
   if (dataTarget) {
-    prefetchPagesData(dataTarget);
+    const middlewareDataHref =
+      displayUrl === url
+        ? dataTarget.middlewareDataHref
+        : (getPagesMiddlewareDataHref(displayUrl, __basePath) ?? undefined);
+    prefetchPagesData({ ...dataTarget, middlewareDataHref });
     return;
   }
 
@@ -3122,14 +3171,14 @@ async function prefetchUrl(url: string): Promise<void> {
   // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
   // the Next.js deploy test reads `window.next.router.components[<path>]` to
   // assert prefetch detection. See issue #1526.
-  await markAppRouteDetectedOnPrefetch(url, __basePath);
+  await markAppRouteDetectedOnPrefetch(displayUrl, __basePath);
 
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels
   // faster, even though we can't resolve the chunk ahead of time.
   const link = document.createElement("link");
   link.rel = "prefetch";
-  link.href = url;
+  link.href = displayUrl;
   link.as = "document";
   document.head.appendChild(link);
 }
@@ -3674,9 +3723,9 @@ const RouterMethods = {
     if (typeof window === "undefined") throwNoRouterInstance();
     window.location.reload();
   },
-  prefetch: (url: string) => {
+  prefetch: (url: string, as?: string) => {
     if (typeof window === "undefined") throwNoRouterInstance();
-    return prefetchUrl(url);
+    return prefetchUrl(url, as);
   },
   beforePopState: (cb: BeforePopStateCallback) => {
     if (typeof window === "undefined") throwNoRouterInstance();
