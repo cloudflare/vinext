@@ -592,6 +592,8 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
 }
 
 // Virtual module IDs for Pages Router production build
+const VIRTUAL_WORKER_ENTRY = "virtual:vinext-worker-entry";
+const RESOLVED_WORKER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_WORKER_ENTRY;
 const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
 const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
@@ -2864,6 +2866,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             );
           }
 
+          // Router-selected Cloudflare Worker entry facade
+          if (cleanId === VIRTUAL_WORKER_ENTRY) return RESOLVED_WORKER_ENTRY;
+          if (cleanId.endsWith("/" + VIRTUAL_WORKER_ENTRY)) {
+            return RESOLVED_WORKER_ENTRY;
+          }
+
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
@@ -2929,6 +2937,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async load(id) {
+        if (id === RESOLVED_WORKER_ENTRY) {
+          const entry = hasAppDir
+            ? "vinext/server/app-router-entry"
+            : "vinext/server/pages-router-entry";
+          return `export { default } from ${JSON.stringify(entry)};`;
+        }
         // Pages Router virtual modules
         if (id === RESOLVED_SERVER_ENTRY) {
           return await generateServerEntry();

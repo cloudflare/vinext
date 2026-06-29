@@ -1,7 +1,11 @@
 /**
- * Default Cloudflare Worker entry point for vinext Pages Router.
+ * Router-specific Cloudflare Worker entry point for vinext Pages Router.
  *
- * Use this directly in wrangler.jsonc:
+ * New projects should usually use the router-selected entry in wrangler.jsonc:
+ *   "main": "vinext/server/entry"
+ *
+ * This Pages Router entry remains available for existing configs and for custom
+ * workers that need to opt into the Pages Router handler explicitly:
  *   "main": "vinext/server/pages-router-entry"
  *
  * Or import and delegate to it from a custom worker:

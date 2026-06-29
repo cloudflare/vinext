@@ -64,7 +64,7 @@ namespace binding — both are configured there.
 3. **The Worker entry** just delegates to the vinext App Router handler:
 
    ```ts
-   import handler from "vinext/server/app-router-entry";
+   import handler from "vinext/server/entry";
    export default { fetch: handler.fetch };
    ```
 

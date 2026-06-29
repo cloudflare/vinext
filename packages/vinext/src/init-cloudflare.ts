@@ -169,9 +169,7 @@ export function generateWranglerConfig(
     : fs.existsSync(path.join(info.root, "worker", "index.js"))
       ? "./worker/index.js"
       : undefined;
-  const workerEntry =
-    customWorkerEntry ??
-    (info.isAppRouter ? "vinext/server/app-router-entry" : "vinext/server/pages-router-entry");
+  const workerEntry = customWorkerEntry ?? "vinext/server/entry";
 
   const config: Record<string, unknown> = {
     $schema: "node_modules/wrangler/config-schema.json",

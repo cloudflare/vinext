@@ -195,7 +195,7 @@ describe("deploy environment validation", () => {
     writeFile(
       tmpDir,
       "wrangler.jsonc",
-      '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+      '{"main":"vinext/server/entry","assets":{"directory":"dist/client"}}\n',
     );
 
     await expect(deploy({ root: tmpDir, dryRun: true })).rejects.not.toThrow("Worker entry");
@@ -637,7 +637,7 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
-    expect(parsed.main).toBe("vinext/server/app-router-entry");
+    expect(parsed.main).toBe("vinext/server/entry");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
       not_found_handling: "none",
@@ -653,7 +653,7 @@ describe("generateWranglerConfig", () => {
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
 
-    expect(parsed.main).toBe("vinext/server/pages-router-entry");
+    expect(parsed.main).toBe("vinext/server/entry");
   });
 
   it("sets compatibility_date to today", () => {
@@ -1084,8 +1084,10 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("env.ASSETS!.fetch(assetRequest)");
   });
 
-  it("exports the built-in Pages Router worker entry", () => {
+  it("exports the built-in worker entries", () => {
     const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./server/entry")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
   });
 

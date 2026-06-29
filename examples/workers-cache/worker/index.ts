@@ -11,7 +11,7 @@
  * (passing this Worker's `env` so the KV binding resolves), so the entry itself
  * just delegates — no manual registration needed.
  */
-import handler from "vinext/server/app-router-entry";
+import handler from "vinext/server/entry";
 
 interface Env {
   ASSETS: Fetcher;

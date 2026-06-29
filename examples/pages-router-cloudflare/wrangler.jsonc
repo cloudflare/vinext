@@ -3,7 +3,7 @@
   "name": "pages-router-cloudflare",
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "vinext/server/pages-router-entry",
+  "main": "vinext/server/entry",
   "preview_urls": true,
   "assets": {
     "directory": "dist/client",

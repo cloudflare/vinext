@@ -1,5 +1,5 @@
 /** Cloudflare Worker entry point that delegates to vinext. */
-import handler from "vinext/server/app-router-entry";
+import handler from "vinext/server/entry";
 
 interface Env {
   ASSETS: Fetcher;

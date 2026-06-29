@@ -483,11 +483,11 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).not.toContain("cdn:");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
-      main: "vinext/server/app-router-entry",
+      main: "vinext/server/entry",
     });
   });
 
-  it("uses the built-in Pages Router worker entry for Cloudflare init", async () => {
+  it("uses the built-in worker entry for Pages Router Cloudflare init", async () => {
     setupProject(tmpDir, { router: "pages" });
 
     const { result } = await runInit(tmpDir, { platform: "cloudflare" });
@@ -495,7 +495,7 @@ describe("init — basic functionality", () => {
     expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
-      main: "vinext/server/pages-router-entry",
+      main: "vinext/server/entry",
     });
   });
 
@@ -600,7 +600,7 @@ describe("init — basic functionality", () => {
 
     expect(result.generatedPlatformFiles).toContain("wrangler.jsonc");
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
-      main: "vinext/server/app-router-entry",
+      main: "vinext/server/entry",
     });
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe("export default {};\n");
   });
