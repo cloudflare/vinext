@@ -1606,9 +1606,8 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { isExternalUrl, matchRedirect, preserveRedirectDestinationQuery } = await import(
-    "../config/config-matchers.js"
-  );
+  const { isExternalUrl, matchRedirect, preserveRedirectDestinationQuery } =
+    await import("../config/config-matchers.js");
   const redirect = matchRedirect(
     routeContext.pathname,
     redirects,
@@ -1644,6 +1643,118 @@ async function applyClientConfigRewrite(
   if (rewritten === null) return null;
   if (isExternalUrl(rewritten)) return { kind: "document" };
   return { href: mergeRewriteQuery(href, rewritten), kind: "rewrite" };
+}
+
+type ClientConfigRewriteResolution =
+  | { href: string; kind: "rewrite" }
+  | { kind: "document" }
+  | null
+  | undefined;
+
+function shouldEvaluateClientConfigRule(
+  ruleBasePath: false | undefined,
+  state: { basePath: string; hadBasePath: boolean },
+): boolean {
+  if (!state.basePath) return true;
+  return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
+}
+
+function matchSimpleClientConfigPattern(
+  pathname: string,
+  source: string,
+): Record<string, string> | null | undefined {
+  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
+    return undefined;
+  }
+
+  const sourceParts = removeTrailingSlash(source).split("/");
+  const pathParts = removeTrailingSlash(pathname).split("/");
+  const params: Record<string, string> = {};
+  let pathIndex = 0;
+
+  for (let sourceIndex = 0; sourceIndex < sourceParts.length; sourceIndex++) {
+    const sourcePart = sourceParts[sourceIndex]!;
+    const pathPart = pathParts[pathIndex];
+    if (sourcePart.startsWith(":")) {
+      const catchAll = sourcePart.match(/^:([\w-]+)([*+])$/);
+      if (catchAll) {
+        const rest = pathParts.slice(pathIndex).join("/");
+        if (catchAll[2] === "+" && rest === "") return null;
+        params[catchAll[1]!] = rest;
+        return sourceIndex === sourceParts.length - 1 ? params : undefined;
+      }
+      if (pathPart === undefined) return null;
+      params[sourcePart.slice(1)] = pathPart;
+      pathIndex++;
+      continue;
+    }
+
+    if (pathPart !== sourcePart) return null;
+    pathIndex++;
+  }
+
+  return pathIndex === pathParts.length ? params : null;
+}
+
+function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
+  const wildcardIndex = source.search(/[:(\\*+?]/);
+  const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
+  const normalizedPrefix = removeTrailingSlash(literalPrefix);
+  if (!normalizedPrefix || normalizedPrefix === "/") return true;
+  const normalizedPathname = removeTrailingSlash(pathname);
+  return (
+    normalizedPathname === normalizedPrefix || normalizedPathname.startsWith(`${normalizedPrefix}/`)
+  );
+}
+
+function substituteSimpleClientConfigDestination(
+  destination: string,
+  params: Record<string, string>,
+): string {
+  const keys = Object.keys(params);
+  if (keys.length === 0) return destination;
+  const alternation = keys
+    .sort((a, b) => b.length - a.length)
+    .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return destination.replace(
+    new RegExp(`:(${alternation})([+*])?(?![A-Za-z0-9_])`, "g"),
+    (_token, key: string) => params[key] ?? _token,
+  );
+}
+
+function isExternalClientConfigUrl(url: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
+}
+
+function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  if (!rewrites) return null;
+
+  let currentHref = href;
+  let matched = false;
+  for (const rewrite of rewrites.beforeFiles) {
+    const routeContext = getClientConfigRouteContext(currentHref);
+    if (!routeContext) return null;
+    if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
+      continue;
+    }
+    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
+      continue;
+    }
+    if (rewrite.has || rewrite.missing) return undefined;
+
+    const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
+    if (params === undefined) return undefined;
+    if (params === null) continue;
+
+    const rewritten = substituteSimpleClientConfigDestination(rewrite.destination, params);
+    if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
+    currentHref = mergeRewriteQuery(currentHref, rewritten);
+    matched = true;
+  }
+
+  return matched ? { href: currentHref, kind: "rewrite" } : null;
 }
 
 async function resolveClientConfigRewrite(
@@ -2324,7 +2435,13 @@ async function navigateClient(
       }
       let routeLookupUrl = configRedirect ? browserUrl : routeUrl;
       if (routeUrl === url && hasClientRewriteRules()) {
-        const configRewrite = await resolveClientConfigRewrite(browserUrl);
+        const syncConfigRewrite = hasClientAppRouteManifest()
+          ? undefined
+          : resolveClientConfigRewriteSync(browserUrl);
+        const configRewrite =
+          syncConfigRewrite === undefined
+            ? await resolveClientConfigRewrite(browserUrl)
+            : syncConfigRewrite;
         if (configRewrite?.kind === "document") {
           scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a document route");
         } else if (configRewrite?.kind === "rewrite") {
@@ -2887,12 +3004,13 @@ async function performNavigation(
     (rewrites.beforeFiles.length > 0 ||
       rewrites.afterFiles.length > 0 ||
       rewrites.fallback.length > 0);
-  const hybridOwner = hasClientRewrites && hasClientAppRouteManifest()
-    ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
-        resolved,
-        __basePath,
-      )
-    : resolveDirectHybridClientRouteOwner(resolved, __basePath);
+  const hybridOwner =
+    hasClientRewrites && hasClientAppRouteManifest()
+      ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
+          resolved,
+          __basePath,
+        )
+      : resolveDirectHybridClientRouteOwner(resolved, __basePath);
   if (["app", "document"].includes(hybridOwner ?? "")) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
