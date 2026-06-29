@@ -99,7 +99,7 @@ describe("prefetchPagesData", () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
-  it("prefetches middleware effects for matched non-SSG pages", async () => {
+  it("caches middleware-effect prefetches for matched non-SSG pages", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () => new Response('{"pageProps":{}}'),
     );
@@ -120,14 +120,31 @@ describe("prefetchPagesData", () => {
     });
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(Object.keys(getPagesStaticDataCache())).toEqual([]);
+    expect(Object.keys(getPagesStaticDataCache())).toHaveLength(1);
     expect(fetchMock.mock.calls[0][0]).toBe("/_next/data/build-id/dynamic.json");
     expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
       Accept: "application/json",
       purpose: "prefetch",
+      "x-middleware-prefetch": "1",
       "x-nextjs-data": "1",
     });
     expect(loader).toHaveBeenCalledOnce();
+
+    prefetchPagesData({
+      buildId: "build-id",
+      dataKind: "server",
+      dataHref: "/_next/data/build-id/dynamic.json",
+      loader,
+      locale: undefined,
+      middlewareDataHref: "/_next/data/build-id/dynamic.json",
+      pagePath: "/dynamic",
+      params: {},
+      pattern: "/dynamic",
+      search: "",
+    });
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(loader).toHaveBeenCalledTimes(2);
   });
 
   it("evicts static data responses that opt out of middleware caching", async () => {

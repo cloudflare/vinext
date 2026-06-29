@@ -39,6 +39,8 @@ import {
 } from "./internal/app-route-detection.js";
 import {
   dedupedPagesDataFetch,
+  evictPagesDataCache,
+  fetchCachedPagesData,
   fetchStaticPagesData,
   getPagesStaticDataCache,
 } from "./internal/pages-data-fetch-dedup.js";
@@ -1814,15 +1816,15 @@ async function resolveMiddlewareDataEffect(
   const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
   if (!dataUrl) return null;
 
-  // The dedup helper uses `signal` to release this caller's waiter. It keeps
-  // the shared request alive for any identical waiter, and aborts only when
-  // this was the final waiter.
+  // Middleware probes use the Pages data cache so a Link prefetch can be reused
+  // by the following navigation. SSR entries are evicted after navigation below,
+  // matching Next.js's `__N_SSP` sdc busting.
   if (signal.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
 
   try {
-    const res = await dedupedPagesDataFetch(dataUrl, {
+    const res = await fetchCachedPagesData(dataUrl, {
       headers: {
         Accept: "application/json",
         "x-nextjs-data": "1",
@@ -2182,6 +2184,9 @@ async function navigateClientData(
   const props: Record<string, unknown> = isUnknownRecord(body) ? body : {};
   const rawPageProps = props.pageProps;
   const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+  if (initialTarget.dataKind === "server") {
+    evictPagesDataCache(initialTarget.dataHref);
+  }
 
   // gSSP/gSP redirect marker. When getServerSideProps/getStaticProps returns
   // `{ redirect }`, the data endpoint replies 200 with `__N_REDIRECT` /

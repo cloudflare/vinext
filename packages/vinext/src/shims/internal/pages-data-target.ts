@@ -11,7 +11,7 @@ import { removeTrailingSlash, stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
-import { dedupedPagesDataFetch, fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
+import { fetchCachedPagesData, fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 import { isUnknownRecord } from "../../utils/record.js";
 
@@ -253,6 +253,7 @@ export function prefetchPagesData(target: PagesDataTarget): void {
     purpose: "prefetch",
     "x-nextjs-data": "1",
   };
+  if (target.middlewareDataHref) headers["x-middleware-prefetch"] = "1";
   const deploymentId = getDeploymentId();
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
@@ -262,6 +263,6 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   }
 
   if (target.middlewareDataHref) {
-    void dedupedPagesDataFetch(target.middlewareDataHref, { headers }).catch(() => {});
+    void fetchCachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
   }
 }

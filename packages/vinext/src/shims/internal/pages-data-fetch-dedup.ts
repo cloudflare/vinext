@@ -82,7 +82,7 @@ export function getPagesStaticDataCache(): Record<string, Promise<Response>> {
   return staticDataCache;
 }
 
-export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
   const key = getStaticDataKey(dataHref);
   let cached = staticDataSources.get(key);
   if (cached === undefined) {
@@ -110,6 +110,16 @@ export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Prom
     staticDataCache[key] = cached.then((response) => response.clone());
   }
   return cloneStaticResponse(cached, init?.signal ?? undefined);
+}
+
+export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+  return fetchCachedPagesData(dataHref, init);
+}
+
+export function evictPagesDataCache(dataHref: string): void {
+  const key = getStaticDataKey(dataHref);
+  delete staticDataCache[key];
+  staticDataSources.delete(key);
 }
 
 function getInflightKey(dataHref: string, init?: RequestInit): string {
