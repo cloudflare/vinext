@@ -14,6 +14,7 @@ import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
   resolveAppPageSpecialError,
+  resolveStaticNavigationShellLayoutFlags,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
   type AppPageSpecialError,
@@ -37,7 +38,11 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
+import { concatUint8Arrays } from "./app-rsc-embedded-chunks.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -82,6 +87,14 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
+import {
+  getStaticNavigationShellRenderState,
+  waitForStaticNavigationShellSettled,
+} from "./app-static-navigation-shell.js";
+import {
+  VINEXT_STATIC_NAVIGATION_SHELL_COMPLETE_HEADER,
+  VINEXT_STATIC_NAVIGATION_SHELL_STALE_TIME_HEADER,
+} from "./headers.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -98,6 +111,7 @@ type AppPageCacheSetter = (
 ) => Promise<void>;
 
 type AppPageRequestCacheLife = {
+  stale?: number;
   revalidate?: number;
   expire?: number;
 };
@@ -254,6 +268,73 @@ function applyRequestCacheLife(options: {
   }
 
   return { expireSeconds, revalidateSeconds };
+}
+
+function getDefaultStaticNavigationShellStaleSeconds(): number {
+  const value = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  if (value !== undefined && value !== "") {
+    const raw = Number(value);
+    if (Number.isFinite(raw) && raw >= 0) {
+      return raw;
+    }
+  }
+  return 300;
+}
+
+async function createStaticNavigationShellStream(
+  options: Pick<RenderAppPageLifecycleOptions, "renderToReadableStream">,
+  element: ReactNode | AppOutgoingElements,
+  staticNavigationShellState: NonNullable<ReturnType<typeof getStaticNavigationShellRenderState>>,
+  onError: AppPageBoundaryOnError,
+): Promise<{ aborted: boolean; contentLength: number; stream: ReadableStream<Uint8Array> }> {
+  const stream = options.renderToReadableStream(element, {
+    onError,
+    signal: staticNavigationShellState.abortController.signal,
+  });
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let readError: unknown;
+
+  const pump = (async (): Promise<"complete"> => {
+    try {
+      for (;;) {
+        const result = await reader.read();
+
+        if (result.done) {
+          break;
+        }
+        chunks.push(result.value);
+      }
+    } catch (error) {
+      readError = error;
+    }
+    return "complete";
+  })();
+
+  const outcome = await Promise.race([
+    pump,
+    waitForStaticNavigationShellSettled(staticNavigationShellState).then(
+      (): "partial" => "partial",
+    ),
+  ]);
+  if (outcome === "partial") {
+    await reader.cancel().catch(() => {});
+    if (!staticNavigationShellState.abortController.signal.aborted) {
+      staticNavigationShellState.abortController.abort();
+    }
+  }
+
+  await pump;
+  if (readError !== undefined && outcome === "complete") {
+    throw readError;
+  }
+
+  const body = concatUint8Arrays(chunks);
+  const shellStream = new Response(body).body;
+  if (shellStream === null) {
+    throw new Error("[vinext] Expected cached-navigation shell response body");
+  }
+  return { aborted: outcome === "partial", contentLength: body.byteLength, stream: shellStream };
 }
 
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
@@ -594,29 +675,41 @@ export async function renderAppPageLifecycle(
   const probePageBeforeRender =
     options.isRscRequest ||
     (configuredProbePageBeforeRender && !(options.peekDynamicUsage?.() ?? false));
-  const preRenderResult = await probeAppPageBeforeRender({
-    hasLoadingBoundary: options.hasLoadingBoundary,
-    probePageBeforeRender,
-    skipProbes: options.pprFallbackShellSignal !== undefined,
-    layoutCount: options.layoutCount,
-    probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex);
-    },
-    probePage() {
-      return options.probePage();
-    },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return options.renderLayoutSpecialError(specialError, layoutIndex);
-    },
-    renderPageSpecialError(specialError) {
-      return options.renderPageSpecialError(specialError);
-    },
-    resolveSpecialError: resolveAppPageSpecialError,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
-    classification: options.classification,
-  });
+  // The static navigation shell intentionally renders inside the Flight stream.
+  // The normal probe runs outside Suspense, so request-boundary APIs like
+  // connection() would suspend the probe itself instead of the target boundary.
+  const preRenderResult =
+    options.renderMode === APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL
+      ? {
+          response: null,
+          layoutFlags: resolveStaticNavigationShellLayoutFlags({
+            classification: options.classification,
+            layoutCount: options.layoutCount,
+          }),
+        }
+      : await probeAppPageBeforeRender({
+          hasLoadingBoundary: options.hasLoadingBoundary,
+          probePageBeforeRender,
+          skipProbes: options.pprFallbackShellSignal !== undefined,
+          layoutCount: options.layoutCount,
+          probeLayoutAt(layoutIndex) {
+            return options.probeLayoutAt(layoutIndex);
+          },
+          probePage() {
+            return options.probePage();
+          },
+          renderLayoutSpecialError(specialError, layoutIndex) {
+            return options.renderLayoutSpecialError(specialError, layoutIndex);
+          },
+          renderPageSpecialError(specialError) {
+            return options.renderPageSpecialError(specialError);
+          },
+          resolveSpecialError: resolveAppPageSpecialError,
+          runWithSuppressedHookWarning(probe) {
+            return options.runWithSuppressedHookWarning(probe);
+          },
+          classification: options.classification,
+        });
   if (preRenderResult.response) {
     return preRenderResult.response;
   }
@@ -694,7 +787,25 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
-  let rscStream = await runWithFetchDedupe(async () => {
+  const staticNavigationShellState =
+    options.renderMode === APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL
+      ? getStaticNavigationShellRenderState()
+      : null;
+  let staticNavigationShellAborted = false;
+  let staticNavigationShellContentLength: number | null = null;
+  const rscStream = await runWithFetchDedupe(async () => {
+    if (staticNavigationShellState !== null) {
+      const shell = await createStaticNavigationShellStream(
+        options,
+        outgoingElement,
+        staticNavigationShellState,
+        rscErrorTracker.onRenderError,
+      );
+      staticNavigationShellAborted = shell.aborted;
+      staticNavigationShellContentLength = shell.contentLength;
+      return shell.stream;
+    }
+
     if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
@@ -739,7 +850,7 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
@@ -756,6 +867,43 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
+    if (options.renderMode === APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL) {
+      const requestCacheLife = options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+      const staticNavigationShellStaleSeconds =
+        typeof requestCacheLife?.stale === "number"
+          ? requestCacheLife.stale
+          : requestCacheLife === null
+            ? null
+            : getDefaultStaticNavigationShellStaleSeconds();
+      const shellResponse = buildAppPageRscResponse(rscForResponse, {
+        isEdgeRuntime: options.isEdgeRuntime,
+        middlewareContext: options.middlewareContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        params: options.params,
+        policy: { cacheControl: NO_STORE_CACHE_CONTROL },
+        timing: buildResponseTiming({
+          compileEnd,
+          handlerStart: options.handlerStart,
+          isProduction: options.isProduction,
+          responseKind: "rsc",
+        }),
+      });
+      if (staticNavigationShellStaleSeconds !== null) {
+        shellResponse.headers.set(
+          VINEXT_STATIC_NAVIGATION_SHELL_STALE_TIME_HEADER,
+          String(staticNavigationShellStaleSeconds),
+        );
+      }
+      shellResponse.headers.set(
+        VINEXT_STATIC_NAVIGATION_SHELL_COMPLETE_HEADER,
+        staticNavigationShellAborted ? "0" : "1",
+      );
+      if (staticNavigationShellContentLength !== null) {
+        shellResponse.headers.set("Content-Length", String(staticNavigationShellContentLength));
+      }
+      return shellResponse;
+    }
+
     if (options.isPrerender === true) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({

@@ -605,6 +605,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           fetchCache: true,
           tags: ctx.tags,
           cacheControl: {
+            stale: effectiveLife.stale,
             revalidate: revalidateSeconds,
             expire: effectiveLife.expire,
           },
@@ -649,10 +650,14 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
-  _setRequestScopedCacheLife({
-    revalidate: cacheControl.revalidate,
-    expire: cacheControl.expire,
-  });
+  const cacheLife: CacheLifeConfig = { revalidate: cacheControl.revalidate };
+  if (cacheControl.stale !== undefined) {
+    cacheLife.stale = cacheControl.stale;
+  }
+  if (cacheControl.expire !== undefined) {
+    cacheLife.expire = cacheControl.expire;
+  }
+  _setRequestScopedCacheLife(cacheLife);
 }
 
 function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
