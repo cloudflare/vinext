@@ -728,7 +728,10 @@ function transformVeryDynamicRequests(code: string, id: string) {
       ? "ts"
       : extension === ".tsx"
         ? "tsx"
-        : extension === ".js" || extension === ".jsx"
+        : extension === ".js" ||
+            extension === ".jsx" ||
+            extension === ".mjs" ||
+            extension === ".cjs"
           ? "jsx"
           : "js";
   let ast: ReturnType<typeof parseAst>;

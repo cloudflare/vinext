@@ -194,6 +194,21 @@ function local(require) { require(request); }
     expect(transformed).toContain("function local(require) { require(request); }");
   });
 
+  it("parses JavaScript module extensions as JSX before rewriting dynamic requests", () => {
+    for (const extension of [".js", ".jsx", ".mjs", ".cjs"]) {
+      const transformed = _transformVeryDynamicRequests(
+        `const element = <main>{children}</main>;
+const request = getRequest();
+require(request);
+`,
+        `/app/page${extension}`,
+      )?.code;
+
+      expect(transformed, extension).toContain("Cannot find module as expression is too dynamic");
+      expect(transformed, extension).toContain("const element = <main>{children}</main>;");
+    }
+  });
+
   it("preserves static literals and partly-static template requests", () => {
     expect(
       _transformVeryDynamicRequests(
