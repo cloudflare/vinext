@@ -2929,6 +2929,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         const configuredExtensions =
           name === "client" ? nextConfig.resolveExtensions : nextConfig.serverResolveExtensions;
+        // Explicit resolver extensions replace vinext's defaults, matching
+        // Next.js/Turbopack semantics; callers who override them must include
+        // `.cjs`/`.cts` if they need extensionless imports of CJS config files.
         const extensions =
           configuredExtensions === null
             ? buildViteResolveExtensions(nextConfig.pageExtensions, config.resolve?.extensions)
