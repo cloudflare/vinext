@@ -253,6 +253,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
 const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
+const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -727,13 +728,17 @@ function mergeStringArrayValues(
   return [...new Set([...existing, ...additions])];
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_RE, "");
+}
+
 function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
   const marker = logger as Logger & { [VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]?: true };
   if (marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]) return;
 
   const warn = logger.warn.bind(logger);
   logger.warn = (msg, options) => {
-    if (OPTIONAL_OPTIMIZE_DEPS_WARNING_RE.test(msg)) return;
+    if (OPTIONAL_OPTIMIZE_DEPS_WARNING_RE.test(stripAnsi(msg))) return;
     warn(msg, options);
   };
   marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN] = true;

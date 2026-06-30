@@ -726,6 +726,9 @@ describe("optimizeDeps.exclude for vinext", () => {
         "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
       );
       logger.warn(
+        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
         "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
       );
 
