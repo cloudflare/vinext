@@ -621,13 +621,8 @@ describe("optimizeDeps.exclude for vinext", () => {
     expect(mainPlugin).toBeDefined();
 
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optdeps-"));
-    await fsp.mkdir(path.join(tmpDir, "node_modules", "use-sync-external-store"), {
-      recursive: true,
-    });
-    await fsp.writeFile(
-      path.join(tmpDir, "node_modules", "use-sync-external-store", "with-selector.js"),
-      `module.exports = {};`,
-    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
     await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
     await fsp.writeFile(
       path.join(tmpDir, "pages", "index.tsx"),
@@ -667,53 +662,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
-    } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
-  }, 15000);
-
-  it("does not seed optional Cloudflare Pages Router worker optimizer deps when absent", async () => {
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) =>
-        p.name === "vinext:config" &&
-        typeof p.config === "function" &&
-        typeof p.configEnvironment === "function",
-    );
-    expect(mainPlugin).toBeDefined();
-
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optdeps-absent-"));
-    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "pages", "index.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
-
-    try {
-      await (mainPlugin as any).config(
-        {
-          root: tmpDir,
-          build: {},
-          plugins: [{ name: "vite-plugin-cloudflare" }],
-        },
-        { command: "serve" },
-      );
-
-      const workerEnvConfig = {
-        optimizeDeps: {
-          include: [],
-        },
-      };
-      (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
-
-      expect(workerEnvConfig.optimizeDeps.include).toContain("react");
-      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
-      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
-      expect(workerEnvConfig.optimizeDeps.include).not.toContain(
-        "use-sync-external-store/with-selector",
-      );
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

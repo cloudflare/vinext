@@ -246,9 +246,6 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react-dom/server.edge",
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
-]);
-
-const OPTIONAL_PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
 ]);
 
@@ -343,25 +340,6 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
   } catch {}
 
   return null;
-}
-
-function canResolveProjectDependency(projectRoot: string, specifier: string): boolean {
-  try {
-    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
-    projectRequire.resolve(specifier);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function getPagesCloudflareWorkerOptimizeDepsInclude(projectRoot: string): string[] {
-  return [
-    ...PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE,
-    ...OPTIONAL_PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE.filter((specifier) =>
-      canResolveProjectDependency(projectRoot, specifier),
-    ),
-  ];
 }
 
 async function loadVite7TsconfigPathsPlugin(projectRoot: string): Promise<Plugin> {
@@ -2899,7 +2877,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
           config.optimizeDeps.include = mergeStringArrayValues(
             config.optimizeDeps.include,
-            getPagesCloudflareWorkerOptimizeDepsInclude(root),
+            PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE,
           );
           config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
             config.optimizeDeps.exclude ?? [],
