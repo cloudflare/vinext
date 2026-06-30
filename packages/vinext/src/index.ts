@@ -431,6 +431,11 @@ function isScriptModuleId(id: string): boolean {
   return SCRIPT_IMPORT_RE.test(stripViteModuleQuery(id).toLowerCase());
 }
 
+function skipCommonjsForLocalCjs(id: string): false | undefined {
+  const cleanId = normalizePathSeparators(stripViteModuleQuery(id));
+  return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
+}
+
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
   return (
     statement.specifiers !== undefined &&
@@ -1439,10 +1444,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // For everything else we return `undefined` to preserve the plugin's
     // defaults — including its existing skip of node_modules `.cjs` files.
     commonjs({
-      filter: (id: string) =>
-        /\.c[jt]s(?:\?.*)?$/.test(id) && !id.split("?")[0].includes("/node_modules/")
-          ? false
-          : undefined,
+      filter: skipCommonjsForLocalCjs,
     }),
     // Enable JSX in plain .js files. Next.js allows JSX in .js files
     // (Babel/SWC handle it transparently), but Vite 8's built-in `vite:oxc`
