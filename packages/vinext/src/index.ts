@@ -246,6 +246,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react-dom/server.edge",
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
+  "use-sync-external-store/with-selector",
 ]);
 
 // Install the process-level peer-disconnect backstop at module load.

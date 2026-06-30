@@ -655,6 +655,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain("react");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
+      expect(workerEnvConfig.optimizeDeps.include).toContain(
+        "use-sync-external-store/with-selector",
+      );
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
