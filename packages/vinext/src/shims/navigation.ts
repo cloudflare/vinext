@@ -1195,6 +1195,7 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 // ---------------------------------------------------------------------------
 
 export type ClientNavigationRenderSnapshot = {
+  hash: string;
   pathname: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
@@ -1238,6 +1239,7 @@ export function createClientNavigationRenderSnapshot(
   const url = new URL(href, origin);
 
   return {
+    hash: url.hash,
     pathname: stripBasePath(url.pathname, __basePath),
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
@@ -1714,6 +1716,13 @@ export async function navigateClientSide(
   }
 
   const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  if (mode !== "push") {
+    const pendingRetainedHistory =
+      getNavigationRuntime()?.functions.waitForPendingRestorableHistory?.();
+    if (pendingRetainedHistory) {
+      await pendingRetainedHistory;
+    }
+  }
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
@@ -1743,6 +1752,17 @@ export async function navigateClientSide(
       scrollToHashTarget(earlyIntent.hash);
     }
     return;
+  }
+
+  const retainedHistoryNavigation =
+    mode === "push"
+      ? getNavigationRuntime()?.functions.navigateRestorableHistoryTarget?.(fullHref, scroll)
+      : null;
+  if (retainedHistoryNavigation) {
+    if (await retainedHistoryNavigation) {
+      clearAppNavigationFailureTarget(fullHref);
+      return;
+    }
   }
 
   // Next.js treats a streamed redirect meta tag as an MPA-navigation marker.
@@ -2212,6 +2232,7 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      getNavigationRuntime()?.functions.invalidateRestorableHistory?.();
       state.originalPushState.call(
         window.history,
         createExternalHistoryStatePreservingMetadata(data, window.history.state),

@@ -715,6 +715,47 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("invalidates retained App Router history after external history.pushState", async () => {
+    const previousWindow = (globalThis as any).window;
+    const invalidateRestorableHistory = vi.fn();
+    const win = {
+      location: {
+        pathname: "/current",
+        search: "",
+        hash: "",
+        href: "http://localhost/current",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null,
+        pushState: vi.fn(),
+        replaceState: vi.fn(),
+      },
+      addEventListener: vi.fn(),
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: { invalidateRestorableHistory },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/navigation.js");
+
+      win.history.pushState(null, "", "/ownerless");
+
+      expect(invalidateRestorableHistory).toHaveBeenCalledOnce();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("preserves App Router history metadata when external history calls provide caller state", async () => {
     // Matches Next.js' external History API wrapper behavior:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L114-L127

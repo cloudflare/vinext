@@ -77,6 +77,7 @@ import {
   clearHardNavigationLoopGuard,
   createAppBrowserNavigationController,
   createBasePathStrippedPathAndSearch,
+  isSnapshotExactTargetHref,
   createSnapshotPathAndSearch,
   type HistoryUpdateMode,
   type NavigationPayloadOutcome,
@@ -114,6 +115,7 @@ import {
   createInitialBfcacheIdMap,
   isCacheRestorableAppPayloadMetadata,
   isCompleteAppPayloadMetadata,
+  readHistoryStateTraversalIndex,
   readHistoryStatePreviousNextUrl,
   resolveInterceptionContextFromPreviousNextUrl,
   type AppNavigationPayloadOrigin,
@@ -128,8 +130,13 @@ import {
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
 import {
+  cancelPendingRetainedNavigation,
+  createNativeHashChangeHandler,
   createPopstateRestoreHandler,
+  isExpectedRetainedPopstate,
+  resolveCoalescedRetainedNavigation,
   restoreSynchronousPopstateScrollPosition,
+  shouldHandleSameRoutePopstate,
 } from "./app-browser-popstate.js";
 import {
   DevRecoveryBoundary,
@@ -338,6 +345,14 @@ let latestRscHmrUpdateId = 0;
 // navigation. This is intentionally not a per-navigation set — a future
 // asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
+let pendingRetainedHistoryNavigation: {
+  expectedHistoryIndex: number;
+  href: string;
+  promise: Promise<boolean>;
+  resolve: (handled: boolean) => void;
+  scrollPosition: { x: number; y: number };
+} | null = null;
+let suppressNextHashChangeInvalidation = false;
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
 // request runner has swapped to the invalidated module graph. Give the
@@ -418,11 +433,18 @@ function clearPrefetchState(): void {
   optimisticRouteTemplateLearning.clear();
 }
 
+function invalidateRestorableHistory(): void {
+  historyController.invalidateRestorableClientState();
+  const retainedNavigation = pendingRetainedHistoryNavigation;
+  pendingRetainedHistoryNavigation = null;
+  cancelPendingRetainedNavigation(retainedNavigation?.resolve);
+}
+
 function clearClientNavigationCaches(): void {
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
   clearPrefetchState();
-  historyController.invalidateRestorableClientState();
+  invalidateRestorableHistory();
 }
 
 function isSettledPrefetchCacheEntry(
@@ -2235,8 +2257,65 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
-    commitHashNavigation: (href, historyUpdateMode, scroll) =>
-      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    commitHashNavigation: (href, historyUpdateMode, scroll) => {
+      invalidateRestorableHistory();
+      historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll);
+    },
+    hasRestorableHistoryTarget: (href) => {
+      const targetUrl = new URL(href, window.location.href);
+      if (targetUrl.hash !== "") return false;
+      const currentHistoryIndex = historyController.currentHistoryTraversalIndex;
+      return (
+        currentHistoryIndex !== null &&
+        historyController.hasRestorableSnapshotAtIndex(currentHistoryIndex + 1, (state) =>
+          isSnapshotExactTargetHref(__basePath, state.navigationSnapshot, href),
+        )
+      );
+    },
+    invalidateRestorableHistory,
+    waitForPendingRestorableHistory: () => {
+      const pendingNavigation = pendingRetainedHistoryNavigation;
+      return pendingNavigation === null ? null : pendingNavigation.promise.then(() => undefined);
+    },
+    navigateRestorableHistoryTarget: (href, scroll) => {
+      const pendingNavigation = pendingRetainedHistoryNavigation;
+      if (pendingNavigation !== null) {
+        return resolveCoalescedRetainedNavigation(
+          pendingNavigation.promise,
+          pendingNavigation.href,
+          href,
+        );
+      }
+      const targetUrl = new URL(href, window.location.href);
+      if (targetUrl.hash !== "") return null;
+      const currentHistoryIndex = historyController.currentHistoryTraversalIndex;
+      if (
+        currentHistoryIndex === null ||
+        !historyController.hasRestorableSnapshotAtIndex(currentHistoryIndex + 1, (state) =>
+          isSnapshotExactTargetHref(__basePath, state.navigationSnapshot, href),
+        )
+      ) {
+        return null;
+      }
+      let resolve!: (handled: boolean) => void;
+      const promise = new Promise<boolean>((settle) => {
+        resolve = settle;
+      });
+      pendingRetainedHistoryNavigation = {
+        expectedHistoryIndex: currentHistoryIndex + 1,
+        href,
+        promise,
+        resolve,
+        scrollPosition: scroll ? { x: 0, y: 0 } : { x: window.scrollX, y: window.scrollY },
+      };
+      // A current snapshot at the immediate next traversal index is retained
+      // only while the browser's forward stack is intact. Every operation that
+      // can truncate that stack invalidates these snapshots before reaching
+      // this point, so this traversal is expected to dispatch popstate and
+      // settle the retained navigation promise below.
+      window.history.forward();
+      return promise;
+    },
     navigate: navigateRsc,
   });
 
@@ -2258,13 +2337,63 @@ function bootstrapHydration(
       notifyAppRouterTransitionStart(href, "traverse");
     },
     restorePopstateScrollPosition,
+    settleRetainedHistoryNavigation: (pendingNavigation) => {
+      const retainedNavigation = pendingRetainedHistoryNavigation;
+      pendingRetainedHistoryNavigation = null;
+      if (retainedNavigation === null) return;
+      void pendingNavigation.then(
+        () => retainedNavigation.resolve(true),
+        () => retainedNavigation.resolve(false),
+      );
+    },
     setPendingNavigation: (pendingNavigation) => {
       window.__VINEXT_RSC_PENDING__ = pendingNavigation;
     },
     shouldSkipScrollRestore: (navId) => synchronousPopstateScrollRestoreNavigationId === navId,
+    shouldSuppressTransitionStart: () => pendingRetainedHistoryNavigation !== null,
+    tryRestoreHistorySnapshot: (historyState) => {
+      const retainedHistoryScrollPosition =
+        pendingRetainedHistoryNavigation?.scrollPosition ?? null;
+      const snapshotNavigationId = browserNavigationController.beginNavigation();
+      if (!restoreHistoryStateSnapshot(historyState, snapshotNavigationId)) return false;
+
+      if (retainedHistoryScrollPosition === null) {
+        restoreSynchronousPopstateScrollPosition(
+          {
+            getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
+            isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+            markScrollRestoreConsumed: (navId) => {
+              synchronousPopstateScrollRestoreNavigationId = navId;
+            },
+            restorePopstateScrollPosition,
+          },
+          historyState,
+        );
+      } else {
+        restoreSynchronousPopstateScrollPosition(
+          {
+            getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
+            isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+            markScrollRestoreConsumed: (navId) => {
+              synchronousPopstateScrollRestoreNavigationId = navId;
+            },
+            restorePopstateScrollPosition,
+          },
+          {
+            __vinext_scrollX: retainedHistoryScrollPosition.x,
+            __vinext_scrollY: retainedHistoryScrollPosition.y,
+          },
+        );
+      }
+      return true;
+    },
   });
 
   window.addEventListener("popstate", (event) => {
+    suppressNextHashChangeInvalidation = true;
+    window.setTimeout(() => {
+      suppressNextHashChangeInvalidation = false;
+    }, 0);
     // The browser has already applied the history entry by the time popstate
     // fires. App Router state does not include hashes, so matching the
     // committed pathname/search proves this traversal does not need a new RSC
@@ -2272,7 +2401,23 @@ function bootstrapHydration(
     // Notify the transition start so observers still see the URL change, then
     // restore scroll directly and skip the RSC dispatch.
     const href = window.location.href;
-    if (isSameAppRoutePopstateTarget(href)) {
+    const retainedNavigation = pendingRetainedHistoryNavigation;
+    if (
+      retainedNavigation !== null &&
+      !isExpectedRetainedPopstate({
+        actualHref: href,
+        actualHistoryIndex: readHistoryStateTraversalIndex(event.state),
+        expectedHref: retainedNavigation.href,
+        expectedHistoryIndex: retainedNavigation.expectedHistoryIndex,
+      })
+    ) {
+      pendingRetainedHistoryNavigation = null;
+      retainedNavigation.resolve(false);
+    }
+    if (
+      shouldHandleSameRoutePopstate(pendingRetainedHistoryNavigation !== null) &&
+      isSameAppRoutePopstateTarget(href)
+    ) {
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
       restorePopstateScrollPosition(event.state);
@@ -2303,6 +2448,13 @@ function bootstrapHydration(
     browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
     handlePopstate(event);
   });
+  window.addEventListener(
+    "hashchange",
+    createNativeHashChangeHandler({
+      invalidateRestorableHistory,
+      shouldSuppressInvalidation: () => suppressNextHashChangeInvalidation,
+    }),
+  );
 
   if (import.meta.env.DEV && import.meta.hot) {
     const applyRscHmrUpdate = async (updateId: number): Promise<void> => {

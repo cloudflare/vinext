@@ -33,8 +33,13 @@ import {
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
+  cancelPendingRetainedNavigation,
+  createNativeHashChangeHandler,
   createPopstateRestoreHandler,
+  isExpectedRetainedPopstate,
+  resolveCoalescedRetainedNavigation,
   restoreSynchronousPopstateScrollPosition,
+  shouldHandleSameRoutePopstate,
 } from "../packages/vinext/src/server/app-browser-popstate.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -6714,7 +6719,124 @@ describe("app browser entry bfcacheId helpers", () => {
   });
 });
 
+describe("native hash history invalidation", () => {
+  it("invalidates retained snapshots when a fragment navigation branches history", () => {
+    const invalidateRestorableHistory = vi.fn();
+
+    createNativeHashChangeHandler({
+      invalidateRestorableHistory,
+      shouldSuppressInvalidation: () => false,
+    })();
+
+    expect(invalidateRestorableHistory).toHaveBeenCalledOnce();
+  });
+
+  it("preserves retained snapshots for a popstate-driven hash change", () => {
+    const invalidateRestorableHistory = vi.fn();
+
+    createNativeHashChangeHandler({
+      invalidateRestorableHistory,
+      shouldSuppressInvalidation: () => true,
+    })();
+
+    expect(invalidateRestorableHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe("retained history lifecycle helpers", () => {
+  it("settles a pending retained traversal as unhandled when history is invalidated", () => {
+    const resolvePendingNavigation = vi.fn();
+
+    cancelPendingRetainedNavigation(resolvePendingNavigation);
+
+    expect(resolvePendingNavigation).toHaveBeenCalledWith(false);
+  });
+
+  it("preserves a failed result for coalesced same-href navigation", async () => {
+    await expect(
+      resolveCoalescedRetainedNavigation(Promise.resolve(false), "/target", "/target"),
+    ).resolves.toBe(false);
+  });
+
+  it("settles pending retained traversals instead of taking the same-route fast path", () => {
+    expect(shouldHandleSameRoutePopstate(true)).toBe(false);
+    expect(shouldHandleSameRoutePopstate(false)).toBe(true);
+  });
+
+  it("rejects unrelated popstate entries for a retained traversal", () => {
+    expect(
+      isExpectedRetainedPopstate({
+        actualHref: "https://example.com/other",
+        actualHistoryIndex: 2,
+        expectedHref: "/target",
+        expectedHistoryIndex: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isExpectedRetainedPopstate({
+        actualHref: "https://example.com/target",
+        actualHistoryIndex: 1,
+        expectedHref: "/target",
+        expectedHistoryIndex: 1,
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("createPopstateRestoreHandler", () => {
+  it("does not fetch when a history snapshot restores synchronously", () => {
+    const navigate = vi.fn();
+    const setPendingNavigation = vi.fn();
+    const historyState = { __vinext_historyIndex: 1 };
+
+    stubWindow("https://example.com/feed");
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => 1,
+      getNavigate: () => navigate,
+      getPendingNavigation: () => null,
+      isCurrentNavigation: () => true,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: () => {},
+      setPendingNavigation,
+      shouldSkipScrollRestore: () => false,
+      tryRestoreHistorySnapshot: (state) => state === historyState,
+    });
+
+    handler({ state: historyState } as PopStateEvent);
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(setPendingNavigation).toHaveBeenCalledWith(null);
+  });
+
+  it("settles a retained navigation without reporting a second transition", async () => {
+    const notifyAppRouterTransitionStart = vi.fn();
+    const settleRetainedHistoryNavigation = vi.fn();
+    const historyState = { __vinext_historyIndex: 1 };
+
+    stubWindow("https://example.com/feed");
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => 1,
+      getNavigate: () => undefined,
+      getPendingNavigation: () => null,
+      isCurrentNavigation: () => true,
+      notifyAppRouterTransitionStart,
+      restorePopstateScrollPosition: () => {},
+      settleRetainedHistoryNavigation,
+      setPendingNavigation: () => {},
+      shouldSkipScrollRestore: () => false,
+      shouldSuppressTransitionStart: () => true,
+      tryRestoreHistorySnapshot: (state) => state === historyState,
+    });
+
+    handler({ state: historyState } as PopStateEvent);
+
+    expect(notifyAppRouterTransitionStart).not.toHaveBeenCalled();
+    expect(settleRetainedHistoryNavigation).toHaveBeenCalledOnce();
+    await expect(settleRetainedHistoryNavigation.mock.calls[0]?.[0]).resolves.toBeUndefined();
+  });
+
   it("guards synchronous popstate scroll retry to the active navigation", () => {
     const scrollState = { __vinext_scrollY: 10 };
     let activeNavigationId = 3;

@@ -105,9 +105,10 @@ export class AppBrowserHistoryController {
   readonly #readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 
   // Highest app-owned traversal index we know about (`#next`) versus the index
-  // of the currently committed entry (`#current`). Traversing to a metadata-less
-  // entry makes `#current` unknown (null), but the next app-owned push must
-  // still continue from the highest known app history.
+  // of the currently committed entry (`#current`). A push from a known current
+  // entry branches at current + 1 and truncates any higher retained indices.
+  // When current is unknown, the next app-owned push continues from the highest
+  // known app history to avoid colliding with an existing index.
   #currentHistoryTraversalIndex: number | null;
   #nextHistoryTraversalIndex: number;
 
@@ -135,7 +136,7 @@ export class AppBrowserHistoryController {
   ): number | null {
     switch (historyUpdateMode) {
       case "push":
-        return this.#nextHistoryTraversalIndex + 1;
+        return (this.#currentHistoryTraversalIndex ?? this.#nextHistoryTraversalIndex) + 1;
       case "replace":
         return this.#currentHistoryTraversalIndex;
       case undefined:
@@ -151,6 +152,22 @@ export class AppBrowserHistoryController {
     this.#currentHistoryTraversalIndex = index;
     if (index !== null) {
       this.#nextHistoryTraversalIndex = Math.max(this.#nextHistoryTraversalIndex, index);
+    }
+  }
+
+  #commitPushedHistoryTraversalIndex(index: number | null): void {
+    this.#currentHistoryTraversalIndex = index;
+    if (index !== null) {
+      this.#nextHistoryTraversalIndex = index;
+    }
+  }
+
+  #invalidateBranchedForwardHistory(): void {
+    if (
+      this.#currentHistoryTraversalIndex !== null &&
+      this.#currentHistoryTraversalIndex < this.#nextHistoryTraversalIndex
+    ) {
+      this.#restorableClientState.invalidateClientState();
     }
   }
 
@@ -187,6 +204,13 @@ export class AppBrowserHistoryController {
     this.#restorableClientState.invalidateClientState();
   }
 
+  hasRestorableSnapshotAtIndex(
+    historyIndex: number,
+    predicate: (state: AppRouterState) => boolean,
+  ): boolean {
+    return this.#restorableClientState.hasRestorableSnapshotAtIndex(historyIndex, predicate);
+  }
+
   rememberHistoryStateSnapshot(state: AppRouterState): void {
     this.#restorableClientState.rememberHistoryStateSnapshot({
       historyIndex: this.#currentHistoryTraversalIndex,
@@ -210,6 +234,9 @@ export class AppBrowserHistoryController {
     const bfcacheIds = visible
       ? visible.bfcacheIds
       : this.#restorableClientState.readCurrentBfcacheVersionHistoryIds(historyState);
+    if (historyUpdateMode === "push") {
+      this.#invalidateBranchedForwardHistory();
+    }
     const nextHistoryState = createHistoryStateWithNavigationMetadata(
       this.#createHashOnlyNavigationBaseHistoryState(historyUpdateMode, scroll),
       {
@@ -225,6 +252,8 @@ export class AppBrowserHistoryController {
       this.#replaceHistoryState(nextHistoryState, href);
     } else {
       this.#pushHistoryState(nextHistoryState, href);
+      this.#commitPushedHistoryTraversalIndex(navigationHistoryIndex);
+      return;
     }
     this.commitHistoryTraversalIndex(navigationHistoryIndex);
   }
@@ -256,6 +285,9 @@ export class AppBrowserHistoryController {
       options.targetHistoryIndex !== undefined
         ? options.targetHistoryIndex
         : this.allocateNavigationHistoryTraversalIndex(options.historyUpdateMode);
+    if (options.historyUpdateMode === "push" && currentHref !== targetHref) {
+      this.#invalidateBranchedForwardHistory();
+    }
     const historyState = createHistoryStateWithNavigationMetadata(
       preserveExistingState ? this.#readHistoryState() : null,
       {
@@ -276,7 +308,7 @@ export class AppBrowserHistoryController {
       options.stageClientParams();
       this.#pushHistoryState(historyState, options.href);
       wroteHistoryState = true;
-      this.commitHistoryTraversalIndex(navigationHistoryIndex);
+      this.#commitPushedHistoryTraversalIndex(navigationHistoryIndex);
     }
 
     if (!wroteHistoryState) {

@@ -260,6 +260,20 @@ function isSnapshotTargetHref(
   }
 }
 
+export function isSnapshotExactTargetHref(
+  basePath: string,
+  snapshot: ClientNavigationRenderSnapshot,
+  targetHref: string,
+): boolean {
+  try {
+    const baseHref = typeof window === "undefined" ? "http://localhost" : window.location.href;
+    const targetUrl = new URL(targetHref, baseHref);
+    return isSnapshotTargetHref(basePath, snapshot, targetHref) && targetUrl.hash === snapshot.hash;
+  } catch {
+    return false;
+  }
+}
+
 export function createAppBrowserNavigationController(
   deps: BrowserNavigationControllerDeps = {},
 ): BrowserNavigationController {
