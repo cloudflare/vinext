@@ -3573,6 +3573,8 @@ export function wrapWithRouterContext(
   // CommitBoundary stays outside StrictMode so its commit `useLayoutEffect`
   // is not double-invoked (Next.js keeps `<Root>` outside <StrictMode> too).
   let inner: ReactElement = createElement(Provider, null, element);
+  // Re-read the static page-load flag on each render so hydration and
+  // navigation share this single wrapping path.
   if (typeof window !== "undefined" && window.__VINEXT_REACT_STRICT_MODE__ === true) {
     inner = createElement(StrictMode, null, inner);
   }
