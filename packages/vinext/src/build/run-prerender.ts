@@ -34,7 +34,7 @@ import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
-import { startProdServer } from "../server/prod-server.js";
+import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -386,6 +386,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   }
 
   injectPregeneratedConcretePaths(root);
+  if (fs.existsSync(rscBundlePath)) {
+    rememberCurrentServerEntryImportMtime(rscBundlePath);
+  }
 
   return {
     routes: allRoutes,

@@ -3,6 +3,10 @@ import path from "node:path";
 import { readPrerenderManifest } from "../server/prerender-manifest.js";
 import { escapeRegExp } from "../utils/regex.js";
 
+declare global {
+  var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
+}
+
 const VINEXT_PREGEN_START = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */";
 const VINEXT_PREGEN_END = "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */";
 const VINEXT_PREGEN_RE = new RegExp(
@@ -21,11 +25,14 @@ export function injectPregeneratedConcretePaths(root: string): void {
   const table = manifest?.pregeneratedConcretePaths ?? [];
 
   if (table.length > 0) {
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
     code =
       `${VINEXT_PREGEN_START}\n` +
       `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n` +
       `${VINEXT_PREGEN_END}\n` +
       code;
+  } else {
+    delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
   }
 
   fs.writeFileSync(workerEntry, code);
