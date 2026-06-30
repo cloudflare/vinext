@@ -9,6 +9,8 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 
+const OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
+
 function makeCtx(): ExecutionContextLike & { calls: Promise<unknown>[] } {
   const calls: Promise<unknown>[] = [];
   return {
@@ -23,6 +25,37 @@ describe("getRequestExecutionContext", () => {
   it("returns null outside a runWithExecutionContext scope", () => {
     // Ensure we're not accidentally inside a scope from a previous test
     expect(getRequestExecutionContext()).toBeNull();
+  });
+
+  it("exposes no OpenNext Cloudflare context outside a request scope", () => {
+    const context = (
+      globalThis as typeof globalThis & {
+        [key: symbol]: { ctx?: ExecutionContextLike } | undefined;
+      }
+    )[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL];
+
+    expect(context).toBeUndefined();
+  });
+
+  it("preserves an explicitly assigned OpenNext Cloudflare fallback context", () => {
+    const fallbackCtx = makeCtx();
+    const currentCtx = makeCtx();
+    const globalWithContext = globalThis as typeof globalThis & {
+      [key: symbol]: { ctx?: ExecutionContextLike } | undefined;
+    };
+
+    try {
+      globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = { ctx: fallbackCtx };
+      expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]?.ctx).toBe(fallbackCtx);
+
+      void runWithExecutionContext(currentCtx, () => {
+        expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]?.ctx).toBe(currentCtx);
+      });
+
+      expect(globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL]?.ctx).toBe(fallbackCtx);
+    } finally {
+      globalWithContext[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL] = undefined;
+    }
   });
 });
 
@@ -95,6 +128,20 @@ describe("runWithExecutionContext", () => {
     });
 
     expect(ctx.calls).toContain(p);
+  });
+
+  it("exposes the current ctx through the OpenNext Cloudflare context symbol", () => {
+    const ctx = makeCtx();
+
+    void runWithExecutionContext(ctx, () => {
+      const context = (
+        globalThis as typeof globalThis & {
+          [key: symbol]: { ctx?: ExecutionContextLike } | undefined;
+        }
+      )[OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL];
+
+      expect(context?.ctx).toBe(ctx);
+    });
   });
 
   it("nested runWithExecutionContext overrides the outer ctx", () => {

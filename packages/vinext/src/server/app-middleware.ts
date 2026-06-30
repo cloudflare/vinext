@@ -3,7 +3,7 @@ import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.j
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
 import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pipeline.js";
@@ -43,7 +43,7 @@ export type ApplyAppMiddlewareResult =
   | {
       kind: "continue";
       cleanPathname: string;
-      didRewrite: boolean;
+      rewritten: boolean;
       search: string | null;
     }
   | {
@@ -212,7 +212,7 @@ export async function applyAppMiddleware(
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
   const middlewareRequest = requestWithoutFlightHeaders(options.request);
   let cleanPathname = options.cleanPathname;
-  let didRewrite = false;
+  let rewritten = false;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
@@ -229,7 +229,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(forwarded.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
-      didRewrite = true;
+      rewritten = true;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);
@@ -285,7 +285,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
-      didRewrite = true;
+      rewritten = true;
       search = rewriteParsed.search;
     }
   }
@@ -296,5 +296,5 @@ export async function applyAppMiddleware(
     processMiddlewareHeaders(options.context.headers);
   }
 
-  return { kind: "continue", cleanPathname, didRewrite, search };
+  return { kind: "continue", cleanPathname, rewritten, search };
 }

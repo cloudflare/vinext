@@ -61,6 +61,7 @@ export type ClientServerActionDeps = {
     elements: AppElements,
     target: ActionRedirectTarget,
     actionInitiation: ClientServerActionInitiation,
+    revalidation: ServerActionRevalidationKind,
   ): void;
   syncCurrentHistoryState(
     previousNextUrl: string | null,
@@ -219,6 +220,7 @@ export async function invokeClientServerAction(
         AppElementsWire.decode(result.root),
         actionRedirectTarget,
         actionInitiation,
+        revalidation,
       );
       throw new ServerActionRedirectError(actionRedirectTarget);
     }

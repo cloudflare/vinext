@@ -349,9 +349,9 @@ function createMissingServerActionResponse(
 
 function redirectDestinationWithBasePath(
   destination: string,
-  basePathState: BasePathMatchState,
+  basePath: string,
+  hadBasePath: boolean,
 ): string {
-  const { basePath, hadBasePath } = basePathState;
   if (
     !basePath ||
     !hadBasePath ||
@@ -488,7 +488,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (originBlock) return originBlock;
   }
 
-  const normalized = normalizeRscRequest(request, options.basePath, true);
+  const canHandleOutsideBasePath =
+    Boolean(options.runMiddleware) ||
+    [
+      ...options.configRedirects,
+      ...options.configRewrites.beforeFiles,
+      ...options.configRewrites.afterFiles,
+      ...options.configRewrites.fallback,
+      ...options.configHeaders,
+    ].some((rule) => rule.basePath === false);
+  const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
   if (normalized instanceof Response) return normalized;
 
   const {
@@ -512,8 +521,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
 
-  // Preserve whether the request arrived under basePath so config matchers can
-  // distinguish default rules from explicit `basePath: false` rules.
   const basePathState = { basePath: options.basePath, hadBasePath };
 
   if (
@@ -533,9 +540,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }
 
-  const trailingSlashRedirect = hadBasePath
-    ? normalizeTrailingSlash(pathname, options.basePath, options.trailingSlash, url.search)
-    : null;
+  const trailingSlashRedirect = normalizeTrailingSlash(
+    pathname,
+    hadBasePath ? options.basePath : "",
+    options.trailingSlash,
+    url.search,
+  );
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
   // Default-locale path normalisation (issue #1336, item 4). Next.js
@@ -559,7 +569,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (redirect) {
     const destination = sanitizeDestination(
-      redirectDestinationWithBasePath(redirect.destination, basePathState),
+      redirectDestinationWithBasePath(redirect.destination, options.basePath, hadBasePath),
     );
     // For RSC navigations `createRscRedirectLocation` recomputes the
     // cache-busting `_rsc` param onto the Location. For plain (document)
@@ -591,7 +601,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     status: null,
   };
   let didMiddlewareRewrite = false;
-  let outOfBasePathRequestClaimed = hadBasePath;
+  let didMiddlewareRewritePathname = false;
 
   if (options.runMiddleware) {
     const middlewareResult = await options.runMiddleware({
@@ -611,8 +621,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    didMiddlewareRewrite = middlewareResult.didRewrite;
-    if (didMiddlewareRewrite) outOfBasePathRequestClaimed = true;
+    didMiddlewareRewrite = middlewareResult.rewritten;
+    didMiddlewareRewritePathname = cleanPathname !== normalized.cleanPathname;
     if (middlewareResult.search !== null) {
       url.search = middlewareResult.search;
     }
@@ -621,6 +631,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
+  let filesystemRouteEligible = hadBasePath || didMiddlewareRewrite;
+  const validateClaimedOutsideBasePathRsc = async (): Promise<Response | null> => {
+    if (hadBasePath || !filesystemRouteEligible) return null;
+    return resolveInvalidRscCacheBustingRequest({ isRscRequest, request });
+  };
 
   // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
   // above to splice in the default locale before matching. Route matching
@@ -646,19 +661,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
     if (beforeFilesRewrite) {
-      outOfBasePathRequestClaimed = true;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+      filesystemRouteEligible = true;
     }
   }
 
-  if (!hadBasePath && outOfBasePathRequestClaimed) {
-    const claimedRscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
-      isRscRequest,
-      request,
-    });
-    if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-  }
+  const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+  if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
 
   const actionId =
     request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
@@ -667,7 +677,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isProgressiveActionRequest =
     isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
   let resolvedLateRewritesForAction = false;
-  if (!outOfBasePathRequestClaimed && (actionId || isProgressiveActionRequest)) {
+  if (!filesystemRouteEligible && (actionId || isProgressiveActionRequest)) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
     for (const rewrite of options.configRewrites.afterFiles) {
       const rewritten = await applyRewrite(
@@ -686,9 +696,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (rewritten instanceof Response) return rewritten;
       if (!rewritten) continue;
-      outOfBasePathRequestClaimed = true;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+      filesystemRouteEligible = true;
       actionMatch = options.matchRoute(cleanPathname);
       if (actionMatch) break;
     }
@@ -710,17 +720,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         );
         if (rewritten instanceof Response) return rewritten;
         if (!rewritten) continue;
-        outOfBasePathRequestClaimed = true;
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+        filesystemRouteEligible = true;
         actionMatch = options.matchRoute(cleanPathname);
         if (actionMatch) break;
       }
     }
-    resolvedLateRewritesForAction = outOfBasePathRequestClaimed;
+    resolvedLateRewritesForAction = filesystemRouteEligible;
   }
 
-  if (outOfBasePathRequestClaimed && isImageOptimizationPath(cleanPathname)) {
+  const lateActionRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+  if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
+
+  if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
     const imageRedirect = resolveDevImageRedirect(
       url,
       [
@@ -735,7 +748,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
-  if (outOfBasePathRequestClaimed && options.handleMetadataRouteRequest) {
+  if (filesystemRouteEligible && options.handleMetadataRouteRequest) {
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
     if (metadataRouteResponse) {
       applyConfigHeadersToResponse(metadataRouteResponse.headers, {
@@ -749,7 +762,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
   }
 
-  const publicFileResponse = outOfBasePathRequestClaimed
+  const publicFileResponse = filesystemRouteEligible
     ? resolvePublicFileRoute({
         cleanPathname,
         middlewareContext,
@@ -787,18 +800,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // where the second `setRootParams` call replaces this value before rendering.
   // Out-of-basePath Server Actions resolve those late rewrites above so this
   // match already uses their claimed destination.
-  const preActionMatch = outOfBasePathRequestClaimed ? options.matchRoute(cleanPathname) : null;
+  const preActionMatch = filesystemRouteEligible ? options.matchRoute(cleanPathname) : null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
 
-  if (!outOfBasePathRequestClaimed && isPostRequest && actionId) {
+  if (!filesystemRouteEligible && isPostRequest && actionId) {
     options.clearRequestContext();
     return notFoundResponse();
   }
   let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
   if (
-    outOfBasePathRequestClaimed &&
+    filesystemRouteEligible &&
     isPostRequest &&
     contentType.startsWith("multipart/form-data") &&
     !actionId
@@ -842,7 +855,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const serverActionResponse =
-    isPostRequest && actionId && options.handleServerActionRequest
+    filesystemRouteEligible && isPostRequest && actionId && options.handleServerActionRequest
       ? await options.handleServerActionRequest({
           actionId,
           cleanPathname,
@@ -856,7 +869,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         })
       : null;
   if (serverActionResponse) return serverActionResponse;
-  if (isPostRequest && actionId && !options.handleServerActionRequest) {
+  if (filesystemRouteEligible && isPostRequest && actionId && !options.handleServerActionRequest) {
     return createMissingServerActionResponse(options, actionId);
   }
 
@@ -864,12 +877,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
-    if (!outOfBasePathRequestClaimed) return null;
+    if (!filesystemRouteEligible) return null;
     const response =
       match === null || match.route.isDynamic
         ? ((await options.renderPagesFallback?.({
             appRouteMatch: match ?? null,
-            allowRscDocumentFallback: didMiddlewareRewrite,
+            allowRscDocumentFallback: didMiddlewareRewritePathname,
             isDataRequest,
             isRscRequest,
             matchKind,
@@ -914,16 +927,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
       if (!afterFilesRewrite) continue;
-      outOfBasePathRequestClaimed = true;
-      if (!hadBasePath) {
-        const claimedRscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
-          isRscRequest,
-          request,
-        });
-        if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+      filesystemRouteEligible = true;
+      const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+      if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
       match = options.matchRoute(cleanPathname);
       const rewrittenStaticPagesResponse = await renderPagesForMatchKind("static");
       if (rewrittenStaticPagesResponse) {
@@ -964,16 +972,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (fallbackRewrite instanceof Response) return fallbackRewrite;
       if (!fallbackRewrite) continue;
-      outOfBasePathRequestClaimed = true;
-      if (!hadBasePath) {
-        const claimedRscCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
-          isRscRequest,
-          request,
-        });
-        if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+      filesystemRouteEligible = true;
+      const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+      if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
       match = options.matchRoute(cleanPathname);
       const rewrittenStaticPagesResponse = await renderPagesForMatchKind("static");
       if (rewrittenStaticPagesResponse) {
@@ -987,6 +990,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       if (match) break;
     }
+  }
+
+  if (!filesystemRouteEligible) {
+    options.clearRequestContext();
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    return notFoundResponse({ headers });
   }
 
   if (pagesDataRequest) {
@@ -1003,13 +1013,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("{}", { status: 200, headers });
     }
     return buildNextDataNotFoundResponse();
-  }
-
-  if (!outOfBasePathRequestClaimed) {
-    options.clearRequestContext();
-    const headers = new Headers();
-    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-    return notFoundResponse({ headers });
   }
 
   if (!match) {

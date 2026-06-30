@@ -124,6 +124,183 @@ export default function middleware(request: NextRequest) {
   );
 }
 
+type PagesAppGlobalCssFixture = {
+  appPath: string;
+  pagePath: string;
+  isrPagePath: string;
+  errorPagePath: string;
+  devStylesheetHrefs: string[];
+  isrDevStylesheetHrefs: string[];
+  errorDevStylesheetHrefs: string[];
+  appManifestAssets: string[];
+  pageManifestAssets: string[];
+  isrManifestAssets: string[];
+  errorManifestAssets: string[];
+  cssMarkers: string[];
+};
+
+function getHtmlAttr(tag: string, attrName: string): string | null {
+  const match = tag.match(new RegExp(`\\s${attrName}=(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function getStylesheetHrefs(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0])
+    .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
+    .map((tag) => getHtmlAttr(tag, "href"))
+    .filter((href): href is string => href !== null);
+}
+
+function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
+  const pagesDir = path.join(rootDir, "pages");
+  const libDir = path.join(rootDir, "lib");
+  const stylesDir = path.join(rootDir, "styles");
+  fs.mkdirSync(pagesDir, { recursive: true });
+  fs.mkdirSync(libDir, { recursive: true });
+  fs.mkdirSync(stylesDir, { recursive: true });
+
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+
+  fs.writeFileSync(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          baseUrl: ".",
+          jsx: "react-jsx",
+          paths: { "@/*": ["./*"] },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "global style.css"),
+    ".global-css-pages-text { border-top-width: 13px; }\n",
+  );
+  fs.writeFileSync(path.join(stylesDir, "app.module.css"), ".moduleText { padding-left: 17px; }\n");
+  fs.writeFileSync(
+    path.join(stylesDir, "transitive.module.css"),
+    ".transitiveText { margin-top: 19px; }\n",
+  );
+  fs.writeFileSync(path.join(stylesDir, "page.module.css"), ".pageText { margin-left: 29px; }\n");
+  fs.writeFileSync(
+    path.join(stylesDir, "type-only.module.css"),
+    ".typeOnlyText { margin-right: 31px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "query.css"),
+    ".query-css-import { border-bottom-width: 23px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "isr.module.css"),
+    ".isrText { border-bottom-width: 41px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "error.module.css"),
+    ".errorText { border-bottom-width: 43px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(libDir, "transitive.ts"),
+    'import transitiveStyles from "../styles/transitive.module.css";\n' +
+      "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+  );
+  fs.writeFileSync(
+    path.join(libDir, "reexport.ts"),
+    'export { transitiveClassName } from "./transitive";\n',
+  );
+  fs.writeFileSync(
+    path.join(libDir, "type-only.ts"),
+    'import "../styles/type-only.module.css";\n' +
+      "export type TypeOnlyTheme = { name: string };\n",
+  );
+
+  const appPath = path.join(pagesDir, "_app.tsx");
+  fs.writeFileSync(
+    appPath,
+    'import "@/styles/global style.css";\n' +
+      'import moduleStyles from "@/styles/app.module.css";\n' +
+      'import { transitiveClassName } from "@/lib/reexport";\n' +
+      'import "@/styles/query.css?raw";\n' +
+      'export { type TypeOnlyTheme } from "@/lib/type-only";\n' +
+      "export default function App({ Component, pageProps }: any) {\n" +
+      "  return <div className={`${moduleStyles.moduleText} ${transitiveClassName}`}><Component {...pageProps} /></div>;\n" +
+      "}\n",
+  );
+  const pagePath = path.join(pagesDir, "index.tsx");
+  fs.writeFileSync(
+    pagePath,
+    'import Head from "next/head";\n' +
+      'import pageStyles from "@/styles/page.module.css";\n' +
+      "export default function Home() {\n" +
+      "  return <>\n" +
+      '    <Head><style>{".global-css-pages-text { border-top-width: 0px; }"}</style></Head>\n' +
+      "    <div className={`global-css-pages-text ${pageStyles.pageText}`}>Global CSS Pages Test</div>\n" +
+      "  </>;\n" +
+      "}\n",
+  );
+  const isrPagePath = path.join(pagesDir, "isr.tsx");
+  fs.writeFileSync(
+    isrPagePath,
+    'import isrStyles from "@/styles/isr.module.css";\n' +
+      "export function getStaticProps() { return { props: {}, revalidate: 60 }; }\n" +
+      "export default function IsrPage() {\n" +
+      "  return <div className={isrStyles.isrText}>Global CSS ISR Test</div>;\n" +
+      "}\n",
+  );
+  const errorPagePath = path.join(pagesDir, "404.tsx");
+  fs.writeFileSync(
+    errorPagePath,
+    'import errorStyles from "@/styles/error.module.css";\n' +
+      "export default function Custom404() {\n" +
+      "  return <div className={errorStyles.errorText}>Global CSS Error Test</div>;\n" +
+      "}\n",
+  );
+
+  return {
+    appPath: appPath.split(path.sep).join("/"),
+    pagePath: pagePath.split(path.sep).join("/"),
+    isrPagePath: isrPagePath.split(path.sep).join("/"),
+    errorPagePath: errorPagePath.split(path.sep).join("/"),
+    devStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/page.module.css",
+    ],
+    isrDevStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/isr.module.css",
+    ],
+    errorDevStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/error.module.css",
+    ],
+    appManifestAssets: [
+      "styles/global style.css",
+      "styles/app.module.css",
+      "styles/transitive.module.css",
+    ],
+    pageManifestAssets: ["styles/page.module.css"],
+    isrManifestAssets: ["styles/isr.module.css"],
+    errorManifestAssets: ["styles/error.module.css"],
+    cssMarkers: [
+      "border-top-width: 13px",
+      "padding-left: 17px",
+      "margin-top: 19px",
+      "margin-left: 29px",
+    ],
+  };
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -612,6 +789,28 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  // Ported from Next.js: test/e2e/typescript/typescript.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/typescript/typescript.test.ts
+  //
+  // Next.js attaches `req.cookies` before Pages SSR in render.tsx:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+  it("passes parsed request cookies to getServerSideProps", async () => {
+    const emptyRes = await fetch(`${baseUrl}/ssr-cookies`);
+    expect(emptyRes.status).toBe(200);
+    expect(await emptyRes.text()).toContain('<pre id="cookies">{}</pre>');
+
+    const res = await fetch(`${baseUrl}/ssr-cookies`, {
+      headers: {
+        Cookie: "_api_session=trusted; theme=dark",
+      },
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain(
+      '<pre id="cookies">{&quot;_api_session&quot;:&quot;trusted&quot;,&quot;theme&quot;:&quot;dark&quot;}</pre>',
+    );
+  });
+
   // Regression test for #1459: Next.js explicitly supports a Promise value
   // for `getServerSideProps` `props`. vinext must `await` the value before
   // serialising — otherwise pageProps end up as a Promise and the rendered
@@ -1001,12 +1200,45 @@ describe("Pages Router integration", () => {
     expect(data).toEqual({ message: "Hello from API!" });
   });
 
+  // Ported from Next.js: test/e2e/api-support/api-support.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/api-support/api-support.test.ts
+  //
+  // Next.js attaches `req.cookies` before Pages API handlers in api-resolver.ts:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/node/api-resolver.ts
+  it("passes parsed request cookies to API routes", async () => {
+    const emptyRes = await fetch(`${baseUrl}/api/cookies`);
+    expect(emptyRes.status).toBe(200);
+    await expect(emptyRes.json()).resolves.toEqual({});
+
+    const res = await fetch(`${baseUrl}/api/cookies`, {
+      headers: {
+        Cookie: "_api_session=trusted; theme=dark",
+      },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      _api_session: "trusted",
+      theme: "dark",
+    });
+  });
+
   it("handles dynamic API routes with query params", async () => {
     const res = await fetch(`${baseUrl}/api/users/123`);
     expect(res.status).toBe(200);
 
     const data = await res.json();
     expect(data).toEqual({ user: { id: "123", name: "User 123" } });
+  });
+
+  // Next.js parity: Pages API routes are matched by the PagesAPIRouteMatcherProvider,
+  // not by a generic file-extension/static-asset preflight.
+  // Source: packages/next/src/server/base-server.ts#getRouteMatchers
+  it("handles dotted dynamic API route segments in dev", async () => {
+    const res = await fetch(`${baseUrl}/api/users/alpha.beta`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ user: { id: "alpha.beta", name: "User alpha.beta" } });
   });
 
   it("keeps dynamic API route params ahead of same-key query params", async () => {
@@ -1167,6 +1399,18 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("Docs");
     expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*getting-started\/install/);
+  });
+
+  // Next.js parity: dynamic page files remain route candidates even when the
+  // requested segment contains a dot; static filesystem outputs are checked as
+  // their own output types in router-utils/filesystem.ts.
+  it("renders dotted dynamic page segments in dev", async () => {
+    const res = await fetch(`${baseUrl}/docs/release/v1.2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Docs");
+    expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/v1\.2/);
   });
 
   it("renders catch-all routes with single segment", async () => {
@@ -2332,6 +2576,79 @@ export const config = { matcher: "/download.txt" };
   });
 });
 
+describe("Pages Router dev dot-path i18n preflight", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-dot-path-i18n-"));
+    await fsp.mkdir(path.join(tmpDir, "pages", "docs"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "pages", "api", "users"), { recursive: true });
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpDir, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "docs", "[...slug].tsx"),
+      `export default function Docs({ slug }) {
+  return <div>i18n docs {slug}</div>;
+}
+
+export function getServerSideProps({ params }) {
+  return { props: { slug: params.slug.join("/") } };
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "api", "users", "[id].ts"),
+      `export default function handler(req, res) {
+  res.status(200).json({ id: req.query.id });
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr"],
+    defaultLocale: "en",
+  },
+};
+`,
+    );
+
+    ({ server, baseUrl } = await startFixtureServer(tmpDir));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // Next.js parity: filesystem route matching normalizes locale prefixes before
+  // matching dynamic pages. Source: packages/next/src/server/lib/router-utils/filesystem.ts
+  it("keeps locale-prefixed dotted dynamic page segments in the Pages pipeline", async () => {
+    const res = await fetch(`${baseUrl}/fr/docs/release/v1.2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("i18n docs");
+    expect(html).toMatch(/release\/v1\.2/);
+  });
+
+  // The shared Pages pipeline strips locale prefixes before API route lookup for
+  // Next.js middleware redirect parity; this dev preflight must mirror that lookup.
+  it("keeps locale-prefixed dotted dynamic API route segments in the Pages pipeline", async () => {
+    const res = await fetch(`${baseUrl}/fr/api/users/alpha.beta`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ id: "alpha.beta" });
+  });
+});
+
 describe("Pages Router dev server origin check", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -2550,6 +2867,385 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("dev Pages client assets expose _app global CSS for initial stylesheet links", async () => {
+    // Next.js includes /_app files in every Pages document before collecting
+    // stylesheets:
+    // .nextjs-ref/packages/next/src/pages/_document.tsx getDocumentFiles().
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/`);
+      const html = await res.text();
+      expect(res.status).toBe(200);
+      expect(html).toContain("Global CSS Pages Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.devStylesheetHrefs) {
+        expect(stylesheetHrefs).toContain(href);
+      }
+      expect(html).not.toContain("type-only.module.css");
+
+      const headStyleIndex = html.indexOf(".global-css-pages-text { border-top-width: 0px; }");
+      const firstAppStylesheetIndex = html.indexOf(fixture.devStylesheetHrefs[0]);
+      expect(headStyleIndex).toBeGreaterThan(-1);
+      expect(firstAppStylesheetIndex).toBeGreaterThan(headStyleIndex);
+
+      for (const [index, href] of fixture.devStylesheetHrefs.entries()) {
+        const stylesheetRes = await fetch(`http://localhost:${addr.port}${href}`, {
+          headers: { accept: "text/css,*/*;q=0.1" },
+        });
+        expect(stylesheetRes.status).toBe(200);
+        expect(stylesheetRes.headers.get("content-type")).toContain("text/css");
+        const stylesheetText = (await stylesheetRes.text()).replace(/\s+/g, "");
+        expect(stylesheetText).toContain(fixture.cssMarkers[index]!.replace(/\s+/g, ""));
+      }
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        clientEntry?: string;
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.clientEntry).toBe("/@id/__x00__virtual:vinext-client-entry");
+      expect(assets.ssrManifest?.[fixture.appPath]).toEqual(fixture.appManifestAssets);
+      expect(assets.ssrManifest?.[fixture.pagePath]).toEqual(fixture.pageManifestAssets);
+      expect(assets.ssrManifest?.[fixture.isrPagePath]).toEqual(fixture.isrManifestAssets);
+      expect(assets.ssrManifest?.[fixture.errorPagePath]).toEqual(fixture.errorManifestAssets);
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain(
+        "styles/type-only.module.css",
+      );
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/query.css");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages cached ISR HTML keeps initial stylesheet links", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-isr-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstRes = await fetch(`${baseUrl}/isr`);
+      const firstHtml = await firstRes.text();
+      expect(firstRes.status).toBe(200);
+      expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(firstHtml).toContain("Global CSS ISR Test");
+      for (const href of fixture.isrDevStylesheetHrefs) {
+        expect(getStylesheetHrefs(firstHtml)).toContain(href);
+      }
+
+      const secondRes = await fetch(`${baseUrl}/isr`);
+      const secondHtml = await secondRes.text();
+      expect(secondRes.status).toBe(200);
+      expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(secondHtml).toContain("Global CSS ISR Test");
+      for (const href of fixture.isrDevStylesheetHrefs) {
+        expect(getStylesheetHrefs(secondHtml)).toContain(href);
+      }
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages custom error HTML includes _app and error page stylesheet links", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-error-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/missing-page`);
+      const html = await res.text();
+      expect(res.status).toBe(404);
+      expect(html).toContain("Global CSS Error Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.errorDevStylesheetHrefs) {
+        expect(stylesheetHrefs).toContain(href);
+      }
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet links use basePath source URLs, not assetPrefix build URLs", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-prefix-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/docs", assetPrefix: "/cdn" };\n`,
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/docs/`);
+      const html = await res.text();
+      expect(res.status).toBe(200);
+      expect(html).toContain("Global CSS Pages Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.devStylesheetHrefs.map((value) => `/docs${value}`)) {
+        expect(stylesheetHrefs).toContain(href);
+        const stylesheetRes = await fetch(`http://localhost:${addr.port}${href}`, {
+          headers: { accept: "text/css,*/*;q=0.1" },
+        });
+        expect(stylesheetRes.status).toBe(200);
+        expect(stylesheetRes.headers.get("content-type")).toContain("text/css");
+      }
+      for (const href of fixture.devStylesheetHrefs) {
+        expect(stylesheetHrefs).not.toContain(href);
+      }
+      expect(stylesheetHrefs.some((href) => href.startsWith("/cdn/"))).toBe(false);
+      expect(stylesheetHrefs.some((href) => href.startsWith("/docs/cdn/"))).toBe(false);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet metadata updates when _app imports change", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-hmr-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const appPath = fixture.appPath;
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstHtml = await (await fetch(`${baseUrl}/`)).text();
+      expect(getStylesheetHrefs(firstHtml)).toContain("/styles/global%20style.css");
+      expect(getStylesheetHrefs(firstHtml)).not.toContain("/styles/late.css");
+
+      fs.writeFileSync(path.join(tmpDir, "styles", "late.css"), ".late-css { color: green; }\n");
+      fs.writeFileSync(
+        appPath,
+        'import "@/styles/global style.css";\n' +
+          'import "@/styles/late.css";\n' +
+          "export default function App({ Component, pageProps }: any) {\n" +
+          "  return <Component {...pageProps} />;\n" +
+          "}\n",
+      );
+      testServer.watcher.emit("change", appPath);
+
+      const secondHtml = await (await fetch(`${baseUrl}/`)).text();
+      const secondHrefs = getStylesheetHrefs(secondHtml);
+      expect(secondHrefs).toContain("/styles/global%20style.css");
+      expect(secondHrefs).toContain("/styles/late.css");
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[appPath]).toEqual(["styles/global style.css", "styles/late.css"]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages _app stylesheet metadata updates when transitive imports change", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-transitive-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const transitivePath = path.join(tmpDir, "lib", "transitive.ts");
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstHtml = await (await fetch(`${baseUrl}/`)).text();
+      expect(getStylesheetHrefs(firstHtml)).toContain("/styles/transitive.module.css");
+      expect(getStylesheetHrefs(firstHtml)).not.toContain("/styles/late-transitive.module.css");
+
+      fs.writeFileSync(
+        path.join(tmpDir, "styles", "late-transitive.module.css"),
+        ".lateTransitiveText { color: green; }\n",
+      );
+      fs.writeFileSync(
+        transitivePath,
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+          'import lateStyles from "../styles/late-transitive.module.css";\n' +
+          "export const transitiveClassName = `${transitiveStyles.transitiveText} ${lateStyles.lateTransitiveText}`;\n",
+      );
+      testServer.watcher.emit("change", transitivePath);
+
+      const secondHtml = await (await fetch(`${baseUrl}/`)).text();
+      const secondHrefs = getStylesheetHrefs(secondHtml);
+      expect(secondHrefs).toContain("/styles/transitive.module.css");
+      expect(secondHrefs).toContain("/styles/late-transitive.module.css");
+
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[fixture.appPath]).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/transitive.module.css",
+        "styles/late-transitive.module.css",
+      ]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets do not treat Less as a built-in Next.js stylesheet", async () => {
+    // Next.js built-in CSS rules cover css/scss/sass, not less:
+    // .nextjs-ref/packages/next/src/build/webpack/config/blocks/css/index.ts regexLikeCss.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-less-css-"));
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "styles"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "styles", "site.less"), ".lessText { color: red; }\n");
+    const appPath = path.join(tmpDir, "pages", "_app.tsx");
+    fs.writeFileSync(
+      appPath,
+      'import "@/styles/site.less";\n' +
+        "export default function App({ Component, pageProps }: any) {\n" +
+        "  return <Component {...pageProps} />;\n" +
+        "}\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      "export default function Home() { return <div>Less should not be linked</div>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./*"] } } }, null, 2),
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[appPath.split(path.sep).join("/")]).toBeUndefined();
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/site.less");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("production Pages asset tags include _app stylesheet assets for the same graph", async () => {
+    // Dev and prod should get their initial blocking CSS from the same concept:
+    // the Pages `_app` entry graph that Next.js includes in every document.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-prod-"));
+    const outDir = path.join(tmpDir, "dist");
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+
+    try {
+      await buildPagesFixtureToOutDir(tmpDir, outDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir,
+          noCompression: true,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+        const res = await fetch(`${baseUrl}/`);
+        const html = await res.text();
+        expect(res.status).toBe(200);
+        expect(html).toContain("Global CSS Pages Test");
+
+        const stylesheetHrefs = getStylesheetHrefs(html);
+        expect(stylesheetHrefs.length).toBeGreaterThan(0);
+
+        const cssText = (
+          await Promise.all(
+            stylesheetHrefs.map(async (href) => {
+              const stylesheetRes = await fetch(`${baseUrl}${href}`);
+              expect(stylesheetRes.status).toBe(200);
+              return stylesheetRes.text();
+            }),
+          )
+        ).join("\n");
+        const compactCssText = cssText.replace(/\s+/g, "");
+        for (const marker of fixture.cssMarkers) {
+          expect(compactCssText).toContain(marker.replace(/\s+/g, ""));
+        }
+        expect(compactCssText).not.toContain("border-bottom-width:23px");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Issue #1329 — `window.next = { version, router, ... }` must be exposed
   // before the Next.js deploy test suite can run `next.router.push(...)`
   // via `browser.eval()`. The installer (shims/router.ts → installWindowNext)
@@ -2585,6 +3281,71 @@ describe("Virtual server entry generation", () => {
       expect(code).not.toMatch(/await\s+import\(\s*["']next\/router["']\s*\)/);
     } finally {
       await testServer.close();
+    }
+  });
+
+  it("does not force full reload for shared App Router code in hybrid apps", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-hybrid-pages-assets-hmr-"));
+    const sharedPath = path.join(tmpDir, "lib", "shared.ts");
+    fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(sharedPath, 'export const shared = "shared";\n');
+    fs.writeFileSync(
+      path.join(tmpDir, "app", "layout.tsx"),
+      "export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "app", "page.tsx"),
+      'import { shared } from "../lib/shared";\n' +
+        "export default function AppPage() { return <div>{shared}</div>; }\n",
+    );
+    fs.writeFileSync(path.join(tmpDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      'import { shared } from "../lib/shared";\n' +
+        "export default function Home() { return <div>{shared}</div>; }\n",
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const wsSend = vi.spyOn(testServer.ws, "send");
+    const clientHotSend = vi.spyOn(testServer.environments.client.hot, "send");
+
+    try {
+      const pagesPlugin = testServer.config.plugins.find(
+        (plugin): plugin is any => plugin.name === "vinext:pages-router",
+      );
+      expect(pagesPlugin).toBeDefined();
+      const hotUpdate = pagesPlugin.hotUpdate;
+      expect(hotUpdate).toBeDefined();
+      const hotUpdateResult =
+        typeof hotUpdate === "function"
+          ? await hotUpdate.call(pagesPlugin, {
+              file: sharedPath,
+              server: testServer,
+              modules: [{ id: sharedPath }],
+            })
+          : await hotUpdate.handler.call(pagesPlugin, {
+              file: sharedPath,
+              server: testServer,
+              modules: [{ id: sharedPath }],
+            });
+
+      expect(hotUpdateResult).toBeUndefined();
+      expect(wsSend).not.toHaveBeenCalledWith({ type: "full-reload" });
+      expect(clientHotSend).not.toHaveBeenCalledWith({ type: "full-reload" });
+    } finally {
+      wsSend.mockRestore();
+      clientHotSend.mockRestore();
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });
@@ -3163,6 +3924,70 @@ describe("Production build", () => {
     // Should contain route patterns from our fixture pages
     expect(entryContent).toContain("/about");
     expect(entryContent).toContain("/ssr");
+  });
+
+  // Ported from Next.js: test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
+  it("resolves framework-owned SWC helpers when they are not hoisted", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-swc-helpers-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureNodeModules = path.join(tmpRoot, "node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.mkdir(fixtureNodeModules, { recursive: true });
+      for (const packageName of ["next", "react", "react-dom"]) {
+        await fsp.symlink(
+          path.join(rootNodeModules, packageName),
+          path.join(fixtureNodeModules, packageName),
+          "junction",
+        );
+      }
+      const appRootHelpers = path.join(fixtureNodeModules, "@swc", "helpers");
+      await fsp.mkdir(path.join(appRootHelpers, "_"), { recursive: true });
+      await fsp.writeFile(
+        path.join(appRootHelpers, "package.json"),
+        JSON.stringify({ name: "@swc/helpers", version: "0.0.0-app-root" }),
+      );
+      await fsp.writeFile(path.join(appRootHelpers, "_", "_object_spread.js"), "const = ;\n");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.jsx"),
+        `export default function Page() {
+  return <p>hello world</p>;
+}
+
+export function getServerSideProps() {
+  const helper = require("@swc/helpers/_/_object_spread");
+  console.log(helper);
+  return { props: { now: Date.now() } };
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+          noCompression: true,
+        }),
+      );
+
+      try {
+        const address = prodServer.address() as { port: number };
+        const response = await fetch(`http://127.0.0.1:${address.port}/`);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("hello world");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("runMiddleware in generated pages prod entry executes named proxy export", async () => {
@@ -4386,6 +5211,16 @@ export default function CounterPage() {
       const ssrHtml = await ssrRes.text();
       expect(ssrHtml).toContain("Server-Side Rendered");
 
+      const ssrCookiesRes = await fetch(`${prodUrl}/ssr-cookies`, {
+        headers: {
+          Cookie: "_api_session=trusted; theme=dark",
+        },
+      });
+      expect(ssrCookiesRes.status).toBe(200);
+      expect(await ssrCookiesRes.text()).toContain(
+        '<pre id="cookies">{&quot;_api_session&quot;:&quot;trusted&quot;,&quot;theme&quot;:&quot;dark&quot;}</pre>',
+      );
+
       // Regression for #1461: user-set Cache-Control via res.setHeader sticks.
       const ssrCcRes = await fetch(`${prodUrl}/ssr-cache-control`);
       expect(ssrCcRes.status).toBe(200);
@@ -4409,6 +5244,17 @@ export default function CounterPage() {
       expect(apiRes.status).toBe(200);
       const apiData = await apiRes.json();
       expect(apiData).toEqual({ message: "Hello from API!" });
+
+      const apiCookiesRes = await fetch(`${prodUrl}/api/cookies`, {
+        headers: {
+          Cookie: "_api_session=trusted; theme=dark",
+        },
+      });
+      expect(apiCookiesRes.status).toBe(200);
+      await expect(apiCookiesRes.json()).resolves.toEqual({
+        _api_session: "trusted",
+        theme: "dark",
+      });
 
       const invalidJsonRes = await fetch(`${prodUrl}/api/parse`, {
         method: "POST",
@@ -5244,6 +6090,23 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("x-custom-middleware")).toBeNull();
   });
 
+  it("serves dotted dynamic API route segments in production", async () => {
+    const res = await fetch(`${prodUrl}/api/users/alpha.beta`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ user: { id: "alpha.beta", name: "User alpha.beta" } });
+  });
+
+  it("serves dotted dynamic page segments in production", async () => {
+    const res = await fetch(`${prodUrl}/docs/release/v1.2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Docs");
+    expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/v1\.2/);
+  });
+
   it("preserves invalid JSON failures for Pages API routes in production", async () => {
     const res = await fetch(`${prodUrl}/api/parse`, {
       method: "POST",
@@ -5599,6 +6462,23 @@ export default function Page({ throwPage }: { throwPage: boolean }) {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "static.tsx"),
+      `export default function StaticPage() {
+  return <p id="static-page-content">STATIC</p>;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "static-gsp.tsx"),
+      `export function getStaticProps() {
+  return { props: {} };
+}
+export default function StaticGspPage() {
+  return <p id="static-gsp-page-content">STATIC GSP</p>;
+}
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
@@ -5651,6 +6531,29 @@ export default class CustomDocument extends Document {
         enhanceApp: ctx.query.withEnhanceApp ? enhanceApp : undefined,
       };
     }
+    const documentCookie = ctx.req?.cookies?.theme ?? "missing";
+    const documentRequestContext = [
+      ctx.req?.url ?? "missing-url",
+      documentCookie,
+      ctx.res ? "has-res" : "missing-res",
+    ].join("|");
+    if (ctx.query?.documentHeader) {
+      ctx.res?.setHeader("x-document-cookie", documentCookie);
+    }
+    if (ctx.query?.documentStatus && ctx.res) {
+      ctx.res.statusCode = 202;
+    }
+    if (ctx.query?.documentEnd && ctx.res) {
+      ctx.res.statusCode = 203;
+      ctx.res.setHeader("x-document-ended", "yes");
+      ctx.res.end("DOCUMENT ENDED");
+      return {
+        html: '<article id="should-not-render">SHOULD NOT RENDER</article>',
+        documentProp: "DOCUMENT",
+        documentErrorContext: "",
+        documentRequestContext,
+      };
+    }
     if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
     if (ctx.query?.manualDocumentHtml) {
       return {
@@ -5658,6 +6561,7 @@ export default class CustomDocument extends Document {
         styles: <style data-manual-document-style>{".manual{color:blue}"}</style>,
         documentProp: "DOCUMENT",
         documentErrorContext: "",
+        documentRequestContext,
       };
     }
     const originalRenderPage = ctx.renderPage;
@@ -5675,6 +6579,7 @@ export default class CustomDocument extends Document {
             ? <ThrowingStyle />
             : initialProps.styles,
       documentProp: "DOCUMENT",
+      documentRequestContext,
       documentErrorContext:
         ctx.pathname === "/_error"
           ? [ctx.pathname, Object.keys(ctx.query ?? {})[0] ?? "", ctx.err?.message ?? ""].join("|")
@@ -5683,7 +6588,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -5740,6 +6645,74 @@ export default class CustomDocument extends Document {
       expect(html).toContain(".manual{color:blue}");
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`
+    // to `_document.getInitialProps` in packages/next/src/server/render.tsx.
+    "passes req/res into _document.getInitialProps in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(202);
+      expect(response.headers.get("x-document-cookie")).toBe("dark");
+      const html = await response.text();
+      expect(html).toContain(
+        'id="document-request-context">/?documentHeader=true&amp;documentStatus=true|dark|has-res',
+      );
+      expect(html).toContain('id="page-content">PAGE');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "passes req/res into _document.getInitialProps for getStaticProps pages in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/static-gsp?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(202);
+      expect(response.headers.get("x-document-cookie")).toBe("dark");
+      const html = await response.text();
+      expect(html).toContain(
+        'id="document-request-context">/static-gsp?documentHeader=true&amp;documentStatus=true|dark|has-res',
+      );
+      expect(html).toContain('id="static-gsp-page-content">STATIC GSP');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "honors _document.getInitialProps responses that end early in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?documentEnd=true`);
+      expect(response.status).toBe(203);
+      expect(response.headers.get("x-document-ended")).toBe("yes");
+      expect(await response.text()).toBe("DOCUMENT ENDED");
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "omits req/res from _document.getInitialProps for auto-export pages in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/static?documentHeader=true&documentStatus=true`, {
+        headers: {
+          Cookie: "theme=dark",
+        },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-document-cookie")).toBeNull();
+      const html = await response.text();
+      expect(html).toContain('id="document-request-context">missing-url|missing|missing-res');
+      expect(html).toContain('id="static-page-content">STATIC');
     },
   );
 

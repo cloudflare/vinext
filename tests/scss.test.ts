@@ -39,6 +39,18 @@ const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 // emit any of these forms (rgb(), 6-digit hex, 3-digit hex, named colour).
 const RESOLVED_BLUE_REGEX = /rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)|#0000ff\b|#00f\b|\bblue\b/;
 
+function getHtmlAttr(tag: string, attrName: string): string | null {
+  const match = tag.match(new RegExp(`\\s${attrName}=(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function getStylesheetHrefs(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0])
+    .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
+    .map((tag) => getHtmlAttr(tag, "href"))
+    .filter((href): href is string => href !== null);
+}
+
 /**
  * Materialize a minimal Pages Router fixture in a fresh tmpdir.
  *
@@ -103,8 +115,6 @@ describe("SCSS preprocessing (Pages Router)", () => {
     if (addr && typeof addr === "object") {
       baseUrl = `http://localhost:${addr.port}`;
     }
-
-    await fetch(`${baseUrl}/`).catch(() => {});
   }, 60_000);
 
   afterAll(async () => {
@@ -117,12 +127,16 @@ describe("SCSS preprocessing (Pages Router)", () => {
     expect(res.status).toBe(200);
     expect(html).toContain("SCSS Pages Test");
 
-    // Pages Router dev does not server-render `<link>` tags for CSS — the
-    // browser loads CSS via the JS module graph when it executes `_app`.
-    // Ask Vite for the compiled CSS via `?direct` to confirm the SCSS
-    // variable resolved (preprocessor ran) rather than being inlined verbatim.
-    const scssDirectUrl = "/styles/global.scss?direct";
-    const cssRes = await fetch(new URL(scssDirectUrl, baseUrl));
+    // Pages Router dev must emit the _app stylesheet as an initial blocking
+    // link, matching Next.js's shared /_app asset handling and avoiding FOUC.
+    const stylesheetHref = getStylesheetHrefs(html).find((href) =>
+      href.endsWith("/styles/global.scss"),
+    );
+    expect(stylesheetHref).toBe("/styles/global.scss");
+
+    // Fetch the exact linked stylesheet URL to confirm the browser-facing CSS
+    // is served and Sass variables resolved before it reaches the browser.
+    const cssRes = await fetch(new URL(stylesheetHref!, baseUrl));
     expect(cssRes.status).toBe(200);
     const css = await cssRes.text();
     expect(css).not.toContain("$var");
@@ -182,10 +196,10 @@ describe("SCSS preprocessing (Pages Router)", () => {
         // If the CSS file isn't linked, the browser never loads any
         // styles for the SCSS-defined classes — the exact failure mode
         // of LHF-5 (`rgb(0, 0, 0)` instead of the SCSS colour).
-        const linkMatch = html.match(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+\.css)"/);
-        expect(linkMatch, 'expected <link rel="stylesheet"> in the served HTML').not.toBeNull();
+        const stylesheetHref = getStylesheetHrefs(html).find((href) => href.endsWith(".css"));
+        expect(stylesheetHref, 'expected <link rel="stylesheet"> in the served HTML').toBeTruthy();
 
-        const cssRes = await fetch(new URL(linkMatch![1]!, prodUrl));
+        const cssRes = await fetch(new URL(stylesheetHref!, prodUrl));
         expect(cssRes.status).toBe(200);
         const css = await cssRes.text();
         expect(css).not.toContain("$var");

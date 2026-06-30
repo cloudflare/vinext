@@ -1,6 +1,13 @@
 import MagicString from "magic-string";
 import { parseAst, type Plugin, type ResolvedConfig } from "vite";
-import { forEachAstChild, hasRange, isAstRecord, nodeArray, type AstRecord } from "./ast-utils.js";
+import {
+  DYNAMIC_IMPORT_PRESCAN,
+  forEachAstChild,
+  hasRange,
+  isAstRecord,
+  nodeArray,
+  type AstRecord,
+} from "./ast-utils.js";
 
 const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
 const TRANSFORMABLE_EXTENSIONS = new Set([
@@ -38,7 +45,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i,
           exclude: /[\\/]node_modules[\\/]/,
         },
-        code: /\bimport\s*\(/,
+        code: DYNAMIC_IMPORT_PRESCAN,
       },
       handler(code, id) {
         const lang = langForId(id)!;

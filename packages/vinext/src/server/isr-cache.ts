@@ -327,12 +327,13 @@ export function buildAppPageCacheValue(
   rscData?: ArrayBuffer,
   status?: number,
   renderObservation?: RenderObservation,
+  headers?: CachedAppPageValue["headers"],
 ): CachedAppPageValue {
   const value: CachedAppPageValue = {
     kind: "APP_PAGE",
     html,
     rscData,
-    headers: undefined,
+    headers,
     postponed: undefined,
     status,
   };

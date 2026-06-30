@@ -64,4 +64,16 @@ test.describe("pages-to-app-routing: navigate from Pages Router to App Router vi
     await expect(page.locator("#app-page")).toHaveText("About");
     expect(page.url()).toContain("/rewrite-about");
   });
+
+  test("clicking an existing Pages path rewritten by middleware navigates to App Router", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/pages-to-app/middleware-rewrite`);
+    await waitForHydration(page);
+
+    await page.click("#to-middleware-rewritten-existing-page-link");
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#app-page")).toHaveText("About");
+    expect(page.url()).toContain("/exists-but-not-routed");
+  });
 });

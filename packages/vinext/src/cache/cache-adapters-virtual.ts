@@ -98,6 +98,15 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "",
     "// A factory that throws (e.g. a missing binding on an incompatible runtime)",
     "// is logged and skipped so the default handler stays in place.",
+    "function __vinextFormatAdapterError(error) {",
+    "  if (error instanceof Error && error.message) return error.message;",
+    "  try {",
+    "    return String(error);",
+    "  } catch {",
+    "    return '<unknown error>';",
+    "  }",
+    "}",
+    "",
     "let __vinextCacheAdaptersRegistered = false;",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
@@ -113,7 +122,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       )} }));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
-        'using the default handler.", error);',
+        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
       "  }",
     );
   }
@@ -126,7 +135,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       )} }));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
-        'using the default adapter.", error);',
+        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
       "  }",
     );
   }

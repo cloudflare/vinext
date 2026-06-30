@@ -12,7 +12,7 @@
  * fall back to serving the original asset unoptimized.
  *
  * Descriptor `options` are inlined into the generated module and forwarded to the
- * factory at runtime, so a config-time builder like `imageAdapter({ binding })`
+ * factory at runtime, so a config-time builder like `imagesOptimizer({ binding })`
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  *
@@ -22,7 +22,7 @@
 /**
  * A serializable pointer to an image optimizer adapter module — the shape of the
  * `images.optimizer` slot in the vinext() plugin config. Produced by an adapter
- * builder (e.g. `imageAdapter(...)` from `@vinext/cloudflare/images/images-optimizer`)
+ * builder (e.g. `imagesOptimizer(...)` from `@vinext/cloudflare/images/images-optimizer`)
  * or written by hand. `options` must be JSON-serializable: it is inlined into the
  * generated registration module and forwarded to the adapter factory at runtime.
  */
@@ -95,6 +95,15 @@ export function generateImageAdaptersModule(images?: VinextImageConfig): string 
     "",
     "// A factory that throws (e.g. a missing binding on an incompatible runtime)",
     "// is logged and skipped so images fall back to unoptimized passthrough.",
+    "function __vinextFormatAdapterError(error) {",
+    "  if (error instanceof Error && error.message) return error.message;",
+    "  try {",
+    "    return String(error);",
+    "  } catch {",
+    "    return '<unknown error>';",
+    "  }",
+    "}",
+    "",
     "let __vinextImageOptimizerRegistered = false;",
     "",
     "export function registerConfiguredImageOptimizer(env) {",
@@ -107,7 +116,7 @@ export function generateImageAdaptersModule(images?: VinextImageConfig): string 
     )} }));`,
     "  } catch (error) {",
     '    console.warn("[vinext] failed to initialize the configured image optimizer; ' +
-      'serving images unoptimized.", error);',
+      'serving images unoptimized.\\n" + __vinextFormatAdapterError(error));',
     "  }",
     "}",
     "",
