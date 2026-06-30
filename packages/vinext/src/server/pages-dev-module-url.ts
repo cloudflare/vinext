@@ -5,7 +5,7 @@ function normalizeBase(base: string): string {
   return `/${base.replace(/^\/+|\/+$/g, "")}/`;
 }
 
-export function encodePagesDevModulePath(modulePath: string): string {
+function encodePagesDevModulePath(modulePath: string): string {
   return encodeURI(modulePath)
     .replace(/%5B/gi, "[")
     .replace(/%5D/gi, "]")
