@@ -140,6 +140,26 @@ describe("styled-jsx compatibility plugin", () => {
     expect(result.code).toContain("styled-jsx/style");
   });
 
+  it("skips styled-jsx transforms for dependency files", async () => {
+    const importModule = vi.fn();
+    const plugin = createStyledJsxPlugin(process.cwd(), { importModule });
+    const transformHook = plugin.transform as {
+      filter: { id: { exclude: RegExp } };
+      handler(source: string, id: string): Promise<unknown>;
+    };
+
+    const result = await transformHook.handler(
+      'import css from "styled-jsx/css"; export const styles = css`p{color:red}`;',
+      "/app/node_modules/dependency/component.js",
+    );
+
+    expect(transformHook.filter.id.exclude.test("/app/node_modules/dependency/component.js")).toBe(
+      true,
+    );
+    expect(result).toBeNull();
+    expect(importModule).not.toHaveBeenCalled();
+  });
+
   it("parses JSX in JavaScript module extensions", async () => {
     const transform = vi.fn(async () => ({ code: "export default null;" }));
     const plugin = createStyledJsxPlugin(process.cwd(), {

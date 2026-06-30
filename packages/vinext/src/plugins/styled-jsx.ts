@@ -16,6 +16,7 @@ type StyledJsxPluginOptions = {
 };
 
 const STYLED_JSX_IMPORT_RE = /^styled-jsx(?:\/.*)?$/;
+const NODE_MODULES_RE = /[\\/]node_modules[\\/]/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
@@ -144,10 +145,14 @@ export function createStyledJsxPlugin(
     },
     transform: {
       filter: {
-        id: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+        id: {
+          include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          exclude: NODE_MODULES_RE,
+        },
         code: STYLED_JSX_SOURCE_RE,
       },
       async handler(source, id) {
+        if (NODE_MODULES_RE.test(id.split("?")[0])) return null;
         const hasStyledJsxCss = STYLED_JSX_CSS_RE.test(source);
         const hasStyledJsxElement = !hasStyledJsxCss && hasStyledJsxTag(source, id);
         if (!hasStyledJsxCss && !hasStyledJsxElement) return null;
