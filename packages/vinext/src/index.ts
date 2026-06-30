@@ -1,5 +1,6 @@
 import type {
   CSSModulesOptions,
+  Logger,
   Plugin,
   PluginOption,
   ResolvedConfig,
@@ -248,6 +249,10 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
   "use-sync-external-store/with-selector",
 ]);
+
+const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
+  /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
+const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -720,6 +725,18 @@ function mergeStringArrayValues(
 ): string[] {
   const existing = value === undefined ? [] : Array.isArray(value) ? value : [value];
   return [...new Set([...existing, ...additions])];
+}
+
+function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
+  const marker = logger as Logger & { [VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]?: true };
+  if (marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN]) return;
+
+  const warn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (OPTIONAL_OPTIMIZE_DEPS_WARNING_RE.test(msg)) return;
+    warn(msg, options);
+  };
+  marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN] = true;
 }
 
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
@@ -2900,6 +2917,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       async configResolved(config) {
         const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
         typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
+        if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
+          suppressOptionalOptimizeDepsWarnings(config.logger);
+        }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files
