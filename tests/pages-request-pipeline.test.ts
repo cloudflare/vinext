@@ -601,6 +601,119 @@ describe("beforeFiles rewrites", () => {
     mockFetch.mockRestore();
   });
 
+  it("proxies basePath:false afterFiles external rewrites before rejecting outside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const req = makeRequest("/rewrite-no-basePath");
+    const proxyExternal = vi.fn(async () => new Response("from external rewrite", { status: 200 }));
+
+    const result = await runPagesRequest(
+      req,
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: false,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            {
+              source: "/rewrite-no-basepath",
+              destination: "https://example.vercel.sh",
+              basePath: false,
+            },
+          ],
+          fallback: [],
+        },
+        proxyExternal,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(await result.response.text()).toBe("from external rewrite");
+    expect(proxyExternal).toHaveBeenCalledWith(expect.any(Request), "https://example.vercel.sh");
+  });
+
+  it("applies default afterFiles rewrites for requests inside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const renderPage = makeRenderPage(200, "getServerSideProps");
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/rewrite-1"
+        ? { route: { isDynamic: true, pattern: "/:slug" } }
+        : pathname === "/gssp"
+          ? { route: { isDynamic: false, pattern: "/gssp" } }
+          : null,
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/rewrite-1"),
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: true,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/rewrite-1", destination: "/gssp" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/gssp",
+      undefined,
+      expect.any(Headers),
+    );
+    expect(matchPageRoute).toHaveBeenCalledWith("/gssp", expect.any(Request));
+  });
+
+  it("does not apply basePath:false afterFiles rewrites for requests inside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const renderPage = makeRenderPage(200, "slug");
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/rewrite-no-basePath"
+        ? { route: { isDynamic: true, pattern: "/:slug" } }
+        : null,
+    );
+    const proxyExternal = vi.fn(async () => new Response("from external rewrite", { status: 200 }));
+
+    const result = await runPagesRequest(
+      makeRequest("/rewrite-no-basePath"),
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: true,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            {
+              source: "/rewrite-no-basepath",
+              destination: "https://example.vercel.sh",
+              basePath: false,
+            },
+          ],
+          fallback: [],
+        },
+        matchPageRoute,
+        proxyExternal,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/rewrite-no-basePath",
+      undefined,
+      expect.any(Headers),
+    );
+    expect(proxyExternal).not.toHaveBeenCalled();
+  });
+
   it("beforeFiles rewrite changes resolved URL", async () => {
     const renderPage = makeRenderPage(200);
     const req = makeRequest("/from");

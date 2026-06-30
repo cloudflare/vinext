@@ -498,18 +498,17 @@ export async function runPagesRequest(
     if (beforeFilesResult) return beforeFilesResult;
   }
 
-  // Step 10: Out-of-basePath reject
-  if (basePath && !hadBasePath && !configRewriteFired) {
-    return {
-      type: "response",
-      response: new Response("This page could not be found", {
-        status: 404,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      }),
-    };
-  }
+  const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
+  const outOfBasePathNotFound = (): PagesPipelineResult => ({
+    type: "response",
+    response: new Response("This page could not be found", {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }),
+  });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
+    if (isOutsideBasePathUnclaimed()) return null;
     const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
     const apiLookupPathname = apiLookupUrl.split("?")[0];
     if (!apiLookupPathname.startsWith("/api/") && apiLookupPathname !== "/api") return null;
@@ -546,7 +545,10 @@ export async function runPagesRequest(
   if (apiResult) return apiResult;
 
   // Step 12: afterFiles rewrites
-  let pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  let pageMatch =
+    !isOutsideBasePathUnclaimed() && deps.matchPageRoute
+      ? deps.matchPageRoute(resolvedPathname, request)
+      : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles
   // actually rewrote resolvedPathname (the common case leaves it unchanged).
   let resolvedPathnameChanged = false;
@@ -565,6 +567,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         resolvedPathnameChanged = true;
         const afterFilesFilesystemResult = await serveFilesystemRoute(
           resolvedPathname,
@@ -596,7 +599,11 @@ export async function runPagesRequest(
   if (typeof deps.renderPage === "function") {
     // Reuse the Step 12 match unless afterFiles changed the pathname.
     let renderPageMatch = pageMatch;
-    if ((isDataReq || isDataRequest) && !renderPageMatch && configRewrites.fallback?.length) {
+    if (
+      (isOutsideBasePathUnclaimed() || isDataReq || isDataRequest) &&
+      !renderPageMatch &&
+      configRewrites.fallback?.length
+    ) {
       for (const rewrite of configRewrites.fallback) {
         const fallbackRewrite = matchRewrite(
           matchResolvedPathname(resolvedPathname),
@@ -613,6 +620,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
@@ -624,6 +632,7 @@ export async function runPagesRequest(
         if (renderPageMatch) break;
       }
     }
+    if (isOutsideBasePathUnclaimed()) return outOfBasePathNotFound();
     // A data request must not defer-render the error page or run fallback rewrites.
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
@@ -668,6 +677,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
@@ -730,11 +740,13 @@ export async function runPagesRequest(
   // emitting the render intent — the SSR handler writes to res directly so
   // we cannot inspect its status code after the fact.
   // Reuse the Step 12 match unless afterFiles changed the pathname.
-  const devPageMatch = resolvedPathnameChanged
-    ? deps.matchPageRoute
-      ? deps.matchPageRoute(resolvedPathname, request)
-      : null
-    : pageMatch;
+  let devPageMatch = isOutsideBasePathUnclaimed()
+    ? null
+    : resolvedPathnameChanged
+      ? deps.matchPageRoute
+        ? deps.matchPageRoute(resolvedPathname, request)
+        : null
+      : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
       const fallbackRewrite = matchRewrite(
@@ -750,13 +762,16 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      configRewriteFired = true;
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
       if (fallbackFilesystemResult) return fallbackFilesystemResult;
       const fallbackApiResult = await handleResolvedApiRoute();
       if (fallbackApiResult) return fallbackApiResult;
-      if (deps.matchPageRoute?.(resolvedPathname, request)) break;
+      devPageMatch = deps.matchPageRoute?.(resolvedPathname, request) ?? null;
+      if (devPageMatch) break;
     }
   }
+  if (isOutsideBasePathUnclaimed()) return outOfBasePathNotFound();
   refreshDataRewriteHeader();
 
   return {

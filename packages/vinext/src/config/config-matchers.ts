@@ -189,7 +189,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
       // alternation. Using anchored match to avoid partial matches.
       // The alternation comes from user config; run it through safeRegExp to
       // guard against ReDoS in pathological configs.
-      const altRe = safeRegExp("^(?:" + alternation + ")$");
+      const altRe = safeRegExp("^(?:" + alternation + ")$", "i");
       if (!altRe) {
         // Unsafe alternation — fall back to linear scan for this rule.
         linear.push([i, redirect]);
@@ -202,11 +202,12 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         redirect,
         originalIndex: i,
       };
-      const bucket = localeStatic.get(suffix);
+      const bucketKey = suffix.toLowerCase();
+      const bucket = localeStatic.get(bucketKey);
       if (bucket) {
         bucket.push(entry);
       } else {
-        localeStatic.set(suffix, [entry]);
+        localeStatic.set(bucketKey, [entry]);
       }
     } else {
       linear.push([i, redirect]);
@@ -774,6 +775,14 @@ function stripTrailingSlashForConfigMatch(value: string): string {
   return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function configPathEquals(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function configPathStartsWith(pathname: string, prefix: string): boolean {
+  return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
@@ -854,7 +863,7 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$");
+        const re = safeRegExp("^" + regexStr + "$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;
@@ -879,7 +888,7 @@ export function matchConfigPattern(
     const isPlus = catchAllMatch[2] === "+";
 
     const prefixNoSlash = prefix.replace(/\/$/, "");
-    if (!pathname.startsWith(prefixNoSlash)) return null;
+    if (!configPathStartsWith(pathname, prefixNoSlash)) return null;
     const charAfter = pathname[prefixNoSlash.length];
     if (charAfter !== undefined && charAfter !== "/") return null;
 
@@ -901,7 +910,7 @@ export function matchConfigPattern(
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) {
       params[parts[i].slice(1)] = pathParts[i];
-    } else if (parts[i] !== pathParts[i]) {
+    } else if (!configPathEquals(parts[i], pathParts[i])) {
       return null;
     }
   }
@@ -981,7 +990,7 @@ export function matchRedirect(
     // (the locale segment was optional). Mandatory-locale entries — emitted
     // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
     // not match here because they require the locale segment to be present.
-    const noLocaleBucket = index.localeStatic.get(normalizedPathname);
+    const noLocaleBucket = index.localeStatic.get(normalizedPathname.toLowerCase());
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
@@ -1011,7 +1020,7 @@ export function matchRedirect(
     if (slashTwo !== -1) {
       const suffix = normalizedPathname.slice(slashTwo); // e.g. "/security"
       const localePart = normalizedPathname.slice(1, slashTwo); // e.g. "en"
-      const localeBucket = index.localeStatic.get(suffix);
+      const localeBucket = index.localeStatic.get(suffix.toLowerCase());
       if (localeBucket) {
         for (const entry of localeBucket) {
           if (entry.originalIndex >= localeMatchIndex) continue;
@@ -1470,7 +1479,7 @@ export function matchHeaders(
       ? stripTrailingSlashForConfigMatch(rule.source)
       : rule.source;
     const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
-      safeRegExp("^" + escapeHeaderSource(source) + "$"),
+      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
     );
     if (sourceRegex && sourceRegex.test(pathname)) {
       if (rule.has || rule.missing) {
