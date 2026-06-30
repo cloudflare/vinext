@@ -323,14 +323,11 @@ export default function middleware() {
 }
 
 /**
- * Fixture: a ROOT-level optional catch-all page `pages/[[...markdownPath]].js`
+ * Fixture: a root-level optional catch-all page `pages/[[...markdownPath]].js`
  * whose getStaticPaths emits an empty-params entry (`{ markdownPath: [] }`) for
  * the homepage plus one concrete path. Models the react.dev shape where nearly
  * everything is served from `src/pages/[[...markdownPath]].js` and the homepage
  * is the empty-params root. Under Next.js this serves `/` with empty params.
- *
- * Regression for issue #3: vinext must serve the root `/` (and its
- * `/_next/data/<id>/index.json`) for an optional catch-all root, not 404.
  */
 function writeOptionalCatchAllRootFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages"), { recursive: true });
@@ -1656,7 +1653,9 @@ describe("Pages Router integration", () => {
     expect(unlistedRes.status).toBe(404);
   });
 
-  // Regression for issue #3: a ROOT-level optional catch-all
+  // Ported from Next.js: test/e2e/dynamic-optional-routing-root-static-paths
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-optional-routing-root-static-paths/dynamic-optional-routing-root-static-paths.test.ts
+  // A root-level optional catch-all
   // `pages/[[...markdownPath]].js` whose getStaticPaths emits the empty-params
   // entry `{ markdownPath: [] }` must serve the root `/` (HTML) and its
   // `/_next/data/<id>/index.json` endpoint, not 404. This is the react.dev
@@ -1670,13 +1669,13 @@ describe("Pages Router integration", () => {
       const started = await startFixtureServer(tmpDir);
       tempServer = started.server;
 
-      // (b) dev renders the root `/` HTML with empty params.
+      // Dev renders the root `/` HTML with empty params.
       const rootRes = await fetch(`${started.baseUrl}/`);
       expect(rootRes.status).toBe(200);
       const rootHtml = await rootRes.text();
       expect(rootHtml).toMatch(/Path: \[(?:<!-- -->)?\]/);
 
-      // (c) the `_next/data/<id>/index.json` endpoint serves the root data.
+      // The `_next/data/<id>/index.json` endpoint serves the root data.
       const dataRes = await fetch(`${started.baseUrl}/_next/data/test-build-id/index.json`);
       expect(dataRes.status).toBe(200);
       const data = (await dataRes.json()) as { pageProps: { markdownPath: string[] } };
@@ -1685,7 +1684,7 @@ describe("Pages Router integration", () => {
       // A non-root concrete path still works (proves the root case is specific).
       const learnRes = await fetch(`${started.baseUrl}/learn`);
       expect(learnRes.status).toBe(200);
-      expect(await learnRes.text()).toContain("Path: [");
+      expect(await learnRes.text()).toMatch(/Path: \[(?:<!-- -->)?learn(?:<!-- -->)?\]/);
 
       // An unlisted path with fallback:false is still a 404.
       const unlistedRes = await fetch(`${started.baseUrl}/unlisted-path`);
