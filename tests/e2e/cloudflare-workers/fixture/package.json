@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-cloudflare-workers-dynamic-preload",
+  "private": true,
+  "type": "module"
+}

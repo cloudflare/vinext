@@ -15,13 +15,51 @@ import {
   dynamicImportPreloadsWithBase,
 } from "./lazy-chunks.js";
 import { manifestFileWithBase, manifestFileWithAssetPrefix } from "./manifest-paths.js";
-import { resolveAssetsDir } from "./asset-prefix.js";
+import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
+  appBootstrapPreinitModules?: string[];
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
 };
+
+function collectAppBootstrapPreinitModules(
+  buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
+  appBrowserEntry: string | undefined,
+  applyBase: (file: string) => string,
+): string[] | undefined {
+  if (!appBrowserEntry) return undefined;
+
+  const entryKey = Object.keys(buildManifest).find(
+    (key) => buildManifest[key].file === appBrowserEntry,
+  );
+  if (!entryKey) return undefined;
+
+  const modules: string[] = [];
+  const seenFiles = new Set<string>();
+  const visitedChunks = new Set<string>();
+
+  function visit(key: string): void {
+    if (visitedChunks.has(key)) return;
+    visitedChunks.add(key);
+
+    const chunk = buildManifest[key];
+    if (!chunk) return;
+
+    for (const importedKey of chunk.imports ?? []) {
+      const importedChunk = buildManifest[importedKey];
+      if (importedChunk?.file.endsWith(".js") && !seenFiles.has(importedChunk.file)) {
+        seenFiles.add(importedChunk.file);
+        modules.push(applyBase(importedChunk.file));
+      }
+      visit(importedKey);
+    }
+  }
+
+  visit(entryKey);
+  return modules.length > 0 ? modules : undefined;
+}
 
 /**
  * Read the client build manifest and compute runtime metadata used by
@@ -45,11 +83,11 @@ export function computeClientRuntimeMetadata(opts: {
 }): ClientRuntimeMetadata {
   const buildManifestPath = path.join(opts.clientDir, ".vite", "manifest.json");
   const buildManifest = readClientBuildManifest(buildManifestPath);
+  const clientEntryManifest = readClientEntryManifest(opts.clientDir);
 
   const metadata: ClientRuntimeMetadata = {};
 
   if (opts.includeClientEntry) {
-    const clientEntryManifest = readClientEntryManifest(opts.clientDir);
     const entryOptions = {
       buildManifest,
       clientDir: opts.clientDir,
@@ -66,6 +104,15 @@ export function computeClientRuntimeMetadata(opts: {
   }
 
   if (!buildManifest) return metadata;
+
+  metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
+    buildManifest,
+    clientEntryManifest?.appBrowserEntry,
+    (file) => {
+      const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
+      return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
+    },
+  );
 
   // `lazyChunks` and `dynamicPreloads` live in DIFFERENT key-spaces and must be
   // normalised differently:
@@ -92,44 +139,4 @@ export function computeClientRuntimeMetadata(opts: {
   }
 
   return metadata;
-}
-
-/**
- * Serialize runtime metadata into the `globalThis.__VINEXT_*` assignment script
- * that the Cloudflare `closeBundle` hook prepends to the worker entry. Returns
- * `""` when there is nothing to inject.
- *
- * Both the App Router and Pages Router closeBundle paths call this (and the
- * deploy tests mirror it), so the injection shape stays in one place. The caller
- * decides which fields to pass — e.g. App Router only forwards `clientEntryFile`
- * for mixed app+pages builds (where `computeClientRuntimeMetadata` was asked for
- * the Pages client entry); pure App Router leaves it undefined.
- */
-export function buildRuntimeGlobalsScript(input: {
-  clientEntryFile?: string | null;
-  ssrManifest?: Record<string, string[]> | null;
-  lazyChunks?: string[] | null;
-  dynamicPreloads?: Record<string, string[]> | null;
-}): string {
-  // Guard on actual content, not just truthiness: `[]` and `{}` are truthy, so a
-  // caller passing an empty collection would otherwise emit a useless (and
-  // misleading) `globalThis.__VINEXT_… = []`. `computeClientRuntimeMetadata`
-  // already returns `undefined` for empties, but this keeps the helper correct
-  // for any caller.
-  const globals: string[] = [];
-  if (input.clientEntryFile) {
-    globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(input.clientEntryFile)};`);
-  }
-  if (input.ssrManifest && Object.keys(input.ssrManifest).length > 0) {
-    globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(input.ssrManifest)};`);
-  }
-  if (input.lazyChunks && input.lazyChunks.length > 0) {
-    globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(input.lazyChunks)};`);
-  }
-  if (input.dynamicPreloads && Object.keys(input.dynamicPreloads).length > 0) {
-    globals.push(
-      `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(input.dynamicPreloads)};`,
-    );
-  }
-  return globals.join("\n");
 }

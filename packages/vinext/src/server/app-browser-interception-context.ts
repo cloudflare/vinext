@@ -9,6 +9,7 @@ import { stripBasePath } from "../utils/base-path.js";
 
 type ResolveManifestNavigationInterceptionContextOptions = {
   basePath: string;
+  currentMatchedPathname?: string | null;
   currentPathname: string;
   routeManifest: RouteManifest | null;
   targetPathname: string;
@@ -50,18 +51,33 @@ export function resolveMiddlewareRewriteNavigationInterceptionContext(
   if (options.routeManifest === null) return null;
 
   const currentPathname = stripBasePath(options.currentPathname, options.basePath);
+  const currentMatchedPathname = options.currentMatchedPathname
+    ? stripBasePath(options.currentMatchedPathname, options.basePath)
+    : null;
   const targetPathname = stripBasePath(options.targetPathname, options.basePath);
   const sourceParts = splitPathnameForRouteMatch(currentPathname);
+  const matchedSourceParts = currentMatchedPathname
+    ? splitPathnameForRouteMatch(currentMatchedPathname)
+    : null;
   const targetParts = splitPathnameForRouteMatch(targetPathname);
 
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
-    if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
     if (
       !matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
     ) {
       continue;
     }
-    return currentPathname;
+    if (matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) {
+      return currentPathname;
+    }
+
+    if (
+      currentMatchedPathname !== null &&
+      matchedSourceParts !== null &&
+      matchRoutePatternPrefix(matchedSourceParts, interception.sourcePatternParts)
+    ) {
+      return currentMatchedPathname;
+    }
   }
 
   return null;

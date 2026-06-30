@@ -3,8 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
-import type { ViteDevServer } from "vite";
 import { waitForAppRouterHydration } from "../../helpers";
+import {
+  startChildViteDevServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -25,7 +29,9 @@ async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
 async function writeHoistedScrollFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const hoistedDir = path.join(appDir, "hoisted");
+  const cssModuleDir = path.join(appDir, "css-module", "[num]");
   await fs.mkdir(hoistedDir, { recursive: true });
+  await fs.mkdir(cssModuleDir, { recursive: true });
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
@@ -70,6 +76,40 @@ export default function HomePage() {
 }
 `,
   );
+  await fs.writeFile(
+    path.join(cssModuleDir, "styles.module.css"),
+    `.square {
+  /* Intentionally empty: React still hoists the route stylesheet resource. */
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(cssModuleDir, "page.tsx"),
+    `import Link from "next/link";
+import styles from "./styles.module.css";
+
+export default async function CssModulePage({
+  params,
+}: {
+  params: Promise<{ num: string }>;
+}) {
+  const { num } = await params;
+  return (
+    <div>
+      {Array.from({ length: 100 }, (_, index) => (
+        <div key={index} style={{ height: 100, width: 100, margin: 10 }}>
+          <Link id="lower" href={\`/css-module/\${Number(num) - 1}\`} prefetch={false}>
+            lower
+          </Link>
+          <div>{num}</div>
+        </div>
+      ))}
+      <div className={styles.square} />
+    </div>
+  );
+}
+`,
+  );
 
   const vinextSource = path.resolve(process.cwd(), "packages/vinext/src/index.ts");
   await fs.writeFile(
@@ -87,27 +127,13 @@ export default defineConfig({
 async function startHoistedScrollFixture(): Promise<{
   baseUrl: string;
   fixtureRoot: string;
-  server: ViteDevServer;
+  server: ChildProductionServer;
 }> {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-hoisted-scroll-"));
   await writeHoistedScrollFixture(fixtureRoot);
 
-  const { createServer } = await import("vite");
-  const server = await createServer({
-    root: fixtureRoot,
-    configFile: path.join(fixtureRoot, "vite.config.ts"),
-    logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  await server.listen();
-
-  const baseUrl = server.resolvedUrls?.local[0];
-  if (!baseUrl) {
-    await server.close();
-    throw new Error("Vite did not expose a local fixture URL");
-  }
-
-  return { baseUrl: baseUrl.replace(/\/$/, ""), fixtureRoot, server };
+  const server = await startChildViteDevServer(fixtureRoot);
+  return { baseUrl: `http://127.0.0.1:${server.port}`, fixtureRoot, server };
 }
 
 test.setTimeout(60_000);
@@ -126,7 +152,38 @@ test("does not scroll to top when React hoists the route's first DOM node", asyn
     await expect(page.locator("#hoisted-page")).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.scrollY)).not.toBe(0);
   } finally {
-    await app.server.close();
-    await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    try {
+      await stopChildProductionServer(app.server);
+    } finally {
+      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    }
   }
 });
+
+for (const clickMode of ["playwright", "javascript"] as const) {
+  test(`scrolls to top for CSS Module navigation clicked via ${clickMode}`, async ({ page }) => {
+    const app = await startHoistedScrollFixture();
+
+    try {
+      await page.goto(`${app.baseUrl}/css-module/1`);
+      await waitForAppRouterHydration(page);
+      await page.evaluate(() => window.scrollTo(0, 1000));
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(1000);
+
+      if (clickMode === "javascript") {
+        await page.evaluate(() => document.getElementById("lower")?.click());
+      } else {
+        await page.locator("#lower").first().click();
+      }
+
+      await expect(page).toHaveURL(`${app.baseUrl}/css-module/0`);
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    } finally {
+      try {
+        await stopChildProductionServer(app.server);
+      } finally {
+        await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      }
+    }
+  });
+}

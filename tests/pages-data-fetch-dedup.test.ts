@@ -166,23 +166,16 @@ describe("dedupedPagesDataFetch", () => {
     });
   });
 
-  it("aborts and evicts when all callers cancel, then lets a replacement succeed", async () => {
+  it("keeps the shared request alive when all callers cancel", async () => {
     const fetchSignals: AbortSignal[] = [];
-    let rejectAbortedFetch: (error: unknown) => void = () => {};
-    let resolveReplacement: (response: Response) => void = () => {};
+    let resolveFetch: (response: Response) => void = () => {};
     const fetchSpy = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
       const signal = init?.signal;
       if (!signal) throw new Error("missing shared abort signal");
       fetchSignals.push(signal);
 
-      if (fetchSignals.length === 1) {
-        return new Promise<Response>((_resolve, reject) => {
-          rejectAbortedFetch = reject;
-        });
-      }
-
       return new Promise<Response>((resolve) => {
-        resolveReplacement = resolve;
+        resolveFetch = resolve;
       });
     });
     (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
@@ -197,27 +190,25 @@ describe("dedupedPagesDataFetch", () => {
     firstController.abort();
     expect(fetchSignals[0].aborted).toBe(false);
     secondController.abort();
-    expect(fetchSignals[0].aborted).toBe(true);
+    expect(fetchSignals[0].aborted).toBe(false);
 
     await expect(first).rejects.toMatchObject({ name: "AbortError" });
     await expect(second).rejects.toMatchObject({ name: "AbortError" });
 
-    const replacement = dedupedPagesDataFetch(url);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(fetchSignals[1].aborted).toBe(false);
-
-    rejectAbortedFetch(new DOMException("Aborted", "AbortError"));
-    await Promise.resolve();
-
     const replacementJoiner = dedupedPagesDataFetch(url);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    resolveReplacement(new Response(JSON.stringify({ pageProps: { attempt: 2 } })));
-    await expect(
-      Promise.all([replacement, replacementJoiner]).then((responses) =>
-        Promise.all(responses.map((response) => response.json())),
-      ),
-    ).resolves.toEqual([{ pageProps: { attempt: 2 } }, { pageProps: { attempt: 2 } }]);
+    resolveFetch(new Response(JSON.stringify({ pageProps: { attempt: 1 } })));
+    await expect(replacementJoiner.then((response) => response.json())).resolves.toEqual({
+      pageProps: { attempt: 1 },
+    });
+
+    const afterSettle = dedupedPagesDataFetch(url);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    resolveFetch(new Response(JSON.stringify({ pageProps: { attempt: 2 } })));
+    await expect(afterSettle.then((response) => response.json())).resolves.toEqual({
+      pageProps: { attempt: 2 },
+    });
   });
 
   it("evicts the inflight entry on fetch rejection so the next call retries", async () => {

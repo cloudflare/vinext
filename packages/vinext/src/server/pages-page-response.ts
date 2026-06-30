@@ -124,8 +124,15 @@ export type PagesI18nRenderContext = {
 };
 
 export type PagesGsspResponse = {
+  headersSent?: boolean;
   statusCode: number;
   getHeaders(): Record<string, string | number | boolean | string[]>;
+};
+
+type PagesDocumentReqRes = {
+  req: unknown;
+  res: PagesGsspResponse;
+  responsePromise?: Promise<Response>;
 };
 
 type PagesStreamedHtmlResponse = {
@@ -164,6 +171,7 @@ type RenderPagesPageResponseOptions = {
    */
   clientTraceMetadata?: readonly string[] | undefined;
   setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
+  documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -513,11 +521,16 @@ export async function renderPagesPageResponse(
     scriptNonce: options.scriptNonce,
     context: {
       err: options.err,
+      req: options.documentReqRes?.req,
+      res: options.documentReqRes?.res,
       pathname: options.routePattern,
       query: options.query ?? options.params,
       asPath: options.routeUrl,
     },
   });
+  if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+    return options.documentReqRes.responsePromise;
+  }
 
   let bodyStream: ReadableStream<Uint8Array>;
   if (documentRenderPage.status === "rendered") {
@@ -588,7 +601,11 @@ export async function renderPagesPageResponse(
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const responseHeaders = new Headers({ "Content-Type": "text/html" });
-  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
+  const finalStatus = applyGsspHeaders(
+    responseHeaders,
+    options.gsspRes ?? options.documentReqRes?.res ?? null,
+    options.statusCode,
+  );
 
   let responseBodyStream = bodyStream;
   if (

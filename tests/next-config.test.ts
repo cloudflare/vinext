@@ -901,6 +901,32 @@ describe("loadNextConfig with tsconfig path aliases", () => {
   });
 });
 
+describe("resolveNextConfig image patterns", () => {
+  it("normalizes URL remote patterns for runtime serialization", async () => {
+    const config = await resolveNextConfig(
+      {
+        images: {
+          remotePatterns: [new URL("https://image-optimization-test.vercel.app/**")],
+        },
+      },
+      "/tmp/project",
+    );
+
+    expect(config.images?.remotePatterns).toEqual([
+      {
+        protocol: "https",
+        hostname: "image-optimization-test.vercel.app",
+        port: "",
+        pathname: "/**",
+        search: "",
+      },
+    ]);
+    expect(JSON.parse(JSON.stringify(config.images?.remotePatterns))).toEqual(
+      config.images?.remotePatterns,
+    );
+  });
+});
+
 describe("resolveNextConfig alias extraction", () => {
   it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
     const fallback = await resolveNextConfig({
@@ -1446,6 +1472,52 @@ describe("resolveNextConfig serverExternalPackages", () => {
   });
 });
 
+describe("resolveNextConfig transpilePackages", () => {
+  it("keeps Next.js defaults separate from configured transpile packages", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.transpilePackages).toEqual([]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["geist"]);
+  });
+
+  it("includes configured packages before Turbopack defaults", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package", "@scope/pkg"],
+    });
+    expect(resolved.transpilePackages).toEqual(["custom-package", "@scope/pkg"]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["custom-package", "@scope/pkg", "geist"]);
+  });
+
+  it("preserves Next.js duplicate package semantics", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["geist", "custom-package", "custom-package"],
+    });
+    expect(resolved.transpilePackages).toEqual(["geist", "custom-package", "custom-package"]);
+    expect(resolved.turbopackTranspilePackages).toEqual([
+      "geist",
+      "custom-package",
+      "custom-package",
+      "geist",
+    ]);
+  });
+
+  it("does not treat optimized packages as Turbopack-transpiled packages", async () => {
+    const resolved = await resolveNextConfig({
+      transpilePackages: ["custom-package"],
+      experimental: {
+        optimizePackageImports: ["optimized-package", "geist", "custom-package"],
+      },
+    });
+
+    expect(resolved.optimizePackageImports).toEqual([
+      "optimized-package",
+      "geist",
+      "custom-package",
+    ]);
+    expect(resolved.transpilePackages).toEqual(["custom-package"]);
+    expect(resolved.turbopackTranspilePackages).toEqual(["custom-package", "geist"]);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -1571,6 +1643,20 @@ describe("resolveNextConfig appNavFailHandling", () => {
       experimental: { appNavFailHandling: true },
     });
     expect(resolved.appNavFailHandling).toBe(true);
+  });
+});
+
+describe("resolveNextConfig globalNotFound", () => {
+  it("defaults experimental.globalNotFound to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.globalNotFound).toBe(false);
+  });
+
+  it("reads experimental.globalNotFound from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { globalNotFound: true },
+    });
+    expect(resolved.globalNotFound).toBe(true);
   });
 });
 
@@ -1933,7 +2019,9 @@ describe("detectNextIntlConfig", () => {
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       transpilePackages: [],
+      turbopackTranspilePackages: ["geist"],
       inlineCss: false,
+      globalNotFound: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
