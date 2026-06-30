@@ -197,10 +197,6 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     ".query-css-import { border-bottom-width: 23px; }\n",
   );
   fs.writeFileSync(
-    path.join(stylesDir, "hash.css"),
-    ".hash-css-import { border-bottom-width: 37px; }\n",
-  );
-  fs.writeFileSync(
     path.join(stylesDir, "isr.module.css"),
     ".isrText { border-bottom-width: 41px; }\n",
   );
@@ -230,7 +226,6 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       'import moduleStyles from "@/styles/app.module.css";\n' +
       'import { transitiveClassName } from "@/lib/reexport";\n' +
       'import "@/styles/query.css?raw";\n' +
-      'import "@/styles/hash.css#hash";\n' +
       'export { type TypeOnlyTheme } from "@/lib/type-only";\n' +
       "export default function App({ Component, pageProps }: any) {\n" +
       "  return <div className={`${moduleStyles.moduleText} ${transitiveClassName}`}><Component {...pageProps} /></div>;\n" +
@@ -275,32 +270,24 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "/styles/global%20style.css",
       "/styles/app.module.css",
       "/styles/transitive.module.css",
-      "/styles/query.css",
-      "/styles/hash.css",
       "/styles/page.module.css",
     ],
     isrDevStylesheetHrefs: [
       "/styles/global%20style.css",
       "/styles/app.module.css",
       "/styles/transitive.module.css",
-      "/styles/query.css",
-      "/styles/hash.css",
       "/styles/isr.module.css",
     ],
     errorDevStylesheetHrefs: [
       "/styles/global%20style.css",
       "/styles/app.module.css",
       "/styles/transitive.module.css",
-      "/styles/query.css",
-      "/styles/hash.css",
       "/styles/error.module.css",
     ],
     appManifestAssets: [
       "styles/global style.css",
       "styles/app.module.css",
       "styles/transitive.module.css",
-      "styles/query.css",
-      "styles/hash.css",
     ],
     pageManifestAssets: ["styles/page.module.css"],
     isrManifestAssets: ["styles/isr.module.css"],
@@ -309,8 +296,6 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "border-top-width: 13px",
       "padding-left: 17px",
       "margin-top: 19px",
-      "border-bottom-width: 23px",
-      "border-bottom-width: 37px",
       "margin-left: 29px",
     ],
   };
@@ -2843,6 +2828,7 @@ describe("Virtual server entry generation", () => {
       expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain(
         "styles/type-only.module.css",
       );
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/query.css");
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3060,8 +3046,6 @@ describe("Virtual server entry generation", () => {
         "styles/app.module.css",
         "styles/transitive.module.css",
         "styles/late-transitive.module.css",
-        "styles/query.css",
-        "styles/hash.css",
       ]);
     } finally {
       await testServer.close();
@@ -3157,6 +3141,7 @@ describe("Virtual server entry generation", () => {
         for (const marker of fixture.cssMarkers) {
           expect(compactCssText).toContain(marker.replace(/\s+/g, ""));
         }
+        expect(compactCssText).not.toContain("border-bottom-width:23px");
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }

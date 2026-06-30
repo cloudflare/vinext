@@ -398,7 +398,8 @@ function parserLanguageForScript(id: string): "ts" | "tsx" {
 }
 
 function isStylesheetSpecifier(specifier: string): boolean {
-  return STYLESHEET_IMPORT_RE.test(stripViteModuleQuery(specifier).toLowerCase());
+  if (specifier.includes("?") || specifier.includes("#")) return false;
+  return STYLESHEET_IMPORT_RE.test(specifier.toLowerCase());
 }
 
 function isScriptModuleId(id: string): boolean {
@@ -2948,12 +2949,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       resolveId: {
         // Hook filter: only invoke JS for handled compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // direct @vercel/og imports in metadata routes, CSS imports carrying
-        // query/hash suffixes, and \0-prefixed re-imports from @vitejs/plugin-rsc.
+        // direct @vercel/og imports in metadata routes, and \0-prefixed
+        // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$|\.(?:css|scss|sass)[?#])/,
+          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
-        async handler(id, importer) {
+        handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
@@ -2966,11 +2967,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // `E:\proj\virtual:vinext-rsc-entry`. normalizePathSeparators is a
           // no-op on POSIX.
           const cleanId = normalizePathSeparators(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
-
-          const cleanStylesheetId = stripViteModuleQuery(cleanId);
-          if (cleanStylesheetId !== cleanId && isStylesheetSpecifier(cleanId)) {
-            return await this.resolve(cleanStylesheetId, importer, { skipSelf: true });
-          }
 
           if (cleanId === "vinext/server/app-rsc-handler") {
             if (
