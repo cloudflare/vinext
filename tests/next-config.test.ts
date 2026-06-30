@@ -2007,6 +2007,7 @@ describe("detectNextIntlConfig", () => {
       cacheComponents: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      cachedNavigations: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },

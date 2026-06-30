@@ -3987,6 +3987,7 @@ describe("app browser navigation lifecycle settlement", () => {
 
     try {
       const navId = controller.beginNavigation();
+      const pendingRouterState = controller.beginPendingBrowserRouterState();
       void controller.renderNavigationPayload({
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
@@ -4016,6 +4017,7 @@ describe("app browser navigation lifecycle settlement", () => {
       expect(stateRef.current.elements["page:/items"]).toMatchObject({
         props: { children: "optimistic" },
       });
+      expect(pendingRouterState.settled).toBe(false);
 
       void controller.renderNavigationPayload({
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -4033,20 +4035,19 @@ describe("app browser navigation lifecycle settlement", () => {
         ),
         operationLane: "navigation",
         params: {},
-        pendingRouterState: null,
+        pendingRouterState,
         previousNextUrl: null,
         targetHref: "https://example.com/items?filter=active",
         navId,
         navigationCommitKind: "authoritative",
       });
 
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(stateRef.current.elements["page:/items"]).toMatchObject({
+      const authoritativeState = await pendingRouterState.promise;
+      stateRef.current = authoritativeState;
+      expect(authoritativeState.elements["page:/items"]).toMatchObject({
         props: { children: "authoritative" },
       });
-      expect(stateRef.current.activeOperation).toMatchObject({
+      expect(authoritativeState.activeOperation).toMatchObject({
         navigationId: navId,
         state: "committed",
       });

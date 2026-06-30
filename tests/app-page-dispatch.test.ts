@@ -18,6 +18,7 @@ import {
   resolveAppPageSegmentParams,
 } from "../packages/vinext/src/server/app-page-params.js";
 import { createAppPageTreePath } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { resolveAppPageDynamicParams } from "../packages/vinext/src/server/app-page-request.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -38,6 +39,7 @@ import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-runtime.js";
+import { APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   runWithExecutionContext,
   type ExecutionContextLike,
@@ -296,6 +298,7 @@ type CreateDispatchOptionsOverrides = {
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
+  renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
   request?: Request;
   revalidateSeconds?: number | null;
@@ -388,6 +391,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
+    renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
     renderHttpAccessFallbackPage: vi.fn(async () => null),
     renderToReadableStream,
@@ -641,6 +645,39 @@ describe("app page dispatch", () => {
     expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
+  });
+
+  it("serves cached static shell RSC without resolving static params", async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      async generateStaticParams() {
+        throw new Error("cache hit should not validate static params");
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>cached shell</html>",
+            new TextEncoder().encode("cached-shell-rsc").buffer,
+          ),
+        ),
+      ),
+      renderMode: APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL,
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("cached-shell-rsc");
   });
 
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
@@ -1872,6 +1909,55 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toBe("This page could not be found");
+  });
+
+  it("uses one generateStaticParams pass for static shell fallback params and validation", async () => {
+    const generateStaticParams = vi.fn(async () => [{ slug: "hello" }]);
+    const { options } = createDispatchOptions({
+      generateStaticParams,
+      isProduction: true,
+      isRscRequest: true,
+      renderMode: APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+    });
+
+    expect(response.status).toBe(200);
+    expect(generateStaticParams).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps fallback params when no generated static param tuple matches", async () => {
+    const generateStaticParams = vi.fn(async () => [
+      { locale: "en", slug: "a" },
+      { locale: "fr", slug: "b" },
+    ]);
+    const clearRequestContext = vi.fn();
+
+    const result = await resolveAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: false,
+      generateStaticParams: {
+        generateStaticParams,
+        parentParamNames: ["locale"],
+      },
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "b" },
+      routeParamNames: ["locale", "slug"],
+    });
+
+    expect(result).toEqual({
+      fallbackParamNames: ["locale", "slug"],
+      response: null,
+    });
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    expect(generateStaticParams).toHaveBeenCalledTimes(1);
+    expect(generateStaticParams).toHaveBeenCalledWith({
+      params: { locale: "en" },
+    });
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
