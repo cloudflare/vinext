@@ -198,6 +198,19 @@ describe("deploy environment validation", () => {
 
     await expect(deploy({ root: tmpDir, dryRun: true })).rejects.not.toThrow("Worker entry");
   });
+
+  it("does not require a custom Worker entry for Pages Router deployments", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"pages"}\n');
+    writeFile(tmpDir, "pages/index.tsx", "export default function Page() { return null; }\n");
+    writeFile(tmpDir, "vite.config.ts", "export default {};\n");
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      '{"main":"vinext/server/fetch-handler","assets":{"directory":"dist/client"}}\n',
+    );
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.not.toThrow("Worker entry");
+  });
 });
 
 // ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────

@@ -710,12 +710,13 @@ export function createPagesPageHandler(
           return buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
         }
 
-        // Include both the matched page module and the global _app module.
+        // Include both the global _app module and the matched page module.
         // _app is wrapped around every page and any CSS/JS it imports must
-        // be linked from the rendered HTML (LHF-5 symptom).
+        // be linked from the rendered HTML (LHF-5 symptom). Match Next.js
+        // document ordering: shared _app files first, then page files.
         const pageModuleIds: (string | null | undefined)[] = [];
-        if (route.filePath) pageModuleIds.push(route.filePath);
         if (appAssetPath) pageModuleIds.push(appAssetPath);
+        if (route.filePath) pageModuleIds.push(route.filePath);
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,

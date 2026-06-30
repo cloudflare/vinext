@@ -35,7 +35,12 @@ import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  escapeHtmlAttr,
+  safeJsonStringify,
+} from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -45,6 +50,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
+  findFileWithExts,
   findFileWithExtensions,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
@@ -62,7 +68,8 @@ import {
   matchesPagesStaticPath,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
-import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
   loadUserDocumentInitialProps,
@@ -105,6 +112,58 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
       ),
     ),
   );
+}
+
+const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
+
+type PagesClientAssetsModule = {
+  default?: {
+    ssrManifest?: Record<string, string[]>;
+  };
+};
+
+function createDevInitialStylesheetHeadHTML(options: {
+  ssrManifest: Record<string, string[]> | null | undefined;
+  moduleIds: (string | null | undefined)[];
+  nonceAttr: string;
+}): string {
+  const { ssrManifest, moduleIds, nonceAttr } = options;
+  if (!ssrManifest || moduleIds.length === 0) return "";
+
+  const seen = new Set<string>();
+  let html = "";
+  for (const moduleId of moduleIds) {
+    const files = getManifestFilesForModule(ssrManifest, moduleId);
+    if (!files) continue;
+    for (const file of files) {
+      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
+      seen.add(file);
+      const href = createPagesDevAssetUrl(file);
+      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+    }
+  }
+  return html;
+}
+
+async function collectDevInitialStylesheetHeadHTML(
+  runner: ModuleImporter,
+  moduleIds: (string | null | undefined)[],
+  nonceAttr: string,
+): Promise<string> {
+  try {
+    const pagesClientAssets = (await runner.import(
+      "virtual:vinext-pages-client-assets",
+    )) as PagesClientAssetsModule;
+    return createDevInitialStylesheetHeadHTML({
+      ssrManifest: pagesClientAssets.default?.ssrManifest,
+      moduleIds,
+      nonceAttr,
+    });
+  } catch {
+    // If dev asset metadata is unavailable, keep the existing client-graph
+    // CSS behavior instead of failing the page render.
+    return "";
+  }
 }
 
 /**
@@ -182,6 +241,7 @@ async function streamPageToResponse(
     url: string;
     server: ViteDevServer;
     fontHeadHTML: string;
+    assetHeadHTML?: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
@@ -221,6 +281,7 @@ async function streamPageToResponse(
     url,
     server,
     fontHeadHTML,
+    assetHeadHTML = "",
     scripts,
     DocumentComponent,
     statusCode,
@@ -307,8 +368,11 @@ async function streamPageToResponse(
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML || fontHeadHTML || assetHeadHTML) {
+      docHtml = docHtml.replace(
+        "</head>",
+        `  ${fontHeadHTML}${headHTML}\n  ${assetHeadHTML}\n</head>`,
+      );
     }
     // Inject scripts: replace placeholder or append before </body>
     docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
@@ -324,6 +388,7 @@ async function streamPageToResponse(
 <html>
 <head>
   ${fontHeadHTML}${headHTML}
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -1508,6 +1573,12 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
+        const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+          runner,
+          [appAssetPath, route.filePath],
+          nonceAttr,
+        );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
@@ -1720,6 +1791,7 @@ hydrate();
           url,
           server,
           fontHeadHTML,
+          assetHeadHTML,
           scripts: allScripts,
           DocumentComponent,
           statusCode,
@@ -1811,7 +1883,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
@@ -1898,10 +1970,10 @@ async function renderErrorPage(
 
   for (const candidate of candidates) {
     try {
-      const candidatePath = path.join(pagesDir, candidate);
-      if (!findFileWithExtensions(candidatePath, matcher)) continue;
+      const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      if (!errorAssetPath) continue;
 
-      const errorModule = await importModule(runner, candidatePath);
+      const errorModule = await importModule(runner, errorAssetPath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1909,9 +1981,10 @@ async function renderErrorPage(
       // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
+      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          const appModule = await importModule(runner, appPathErr);
+          const appModule = await importModule(runner, appAssetPath ?? appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -1974,6 +2047,14 @@ async function renderErrorPage(
       const element = createErrorElement(AppComponent, ErrorComponent);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+      const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
+      const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
+      const nonceAttr = createNonceAttribute(scriptNonce);
+      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        runner,
+        [appAssetPath, errorAssetPath],
+        nonceAttr,
+      );
 
       if (DocumentComponent) {
         const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
@@ -1981,6 +2062,7 @@ async function renderErrorPage(
           url,
           server,
           fontHeadHTML: "",
+          assetHeadHTML,
           scripts: "",
           DocumentComponent,
           statusCode,
@@ -2017,6 +2099,7 @@ async function renderErrorPage(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>

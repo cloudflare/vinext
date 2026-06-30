@@ -408,6 +408,14 @@ jobs:
             label: cloudflare-workers
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-sentry-app
+            label: cloudflare-sentry-app
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-sentry-pages
+            label: cloudflare-sentry-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-dev
             label: cloudflare-dev
             shardIndex: 1
