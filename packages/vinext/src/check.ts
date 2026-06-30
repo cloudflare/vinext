@@ -288,7 +288,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   reactStrictMode: {
     status: "partial",
     detail:
-      "config option recognized but not yet enforced; root is not wrapped in <React.StrictMode>",
+      "enforced for the Pages Router (client root wrapped in <React.StrictMode> when true); App Router is not yet wrapped (Next.js defaults App Router strict mode on)",
   },
   poweredByHeader: {
     status: "supported",

@@ -1161,6 +1161,11 @@ describe("Pages Router integration", () => {
     expect(hydrationProxy).toContain(
       'hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions)',
     );
+    // The dev hydration script publishes the reactStrictMode flag so
+    // wrapWithRouterContext applies the <React.StrictMode> wrap (dev-only, where
+    // StrictMode actually fires). This fixture does not set reactStrictMode, so
+    // the Pages Router default (OFF) is emitted.
+    expect(hydrationProxy).toContain("window.__VINEXT_REACT_STRICT_MODE__ = false;");
   });
 
   it("wraps pages with custom _app.tsx", async () => {

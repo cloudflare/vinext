@@ -43,6 +43,17 @@ declare global {
     __VINEXT_ROOT__: Root | undefined;
 
     /**
+     * Whether `reactStrictMode: true` is set in next.config for the Pages
+     * Router. Set by the generated client entry and the dev hydration script
+     * before `hydrateRoot()`. Read by `wrapWithRouterContext` in
+     * `shims/router.ts` so the StrictMode wrap is applied on the initial
+     * hydration AND every client-side navigation render — mirroring Next.js's
+     * `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`, which runs
+     * for both the initial hydrate and subsequent `reactRoot.render()` calls.
+     */
+    __VINEXT_REACT_STRICT_MODE__: boolean | undefined;
+
+    /**
      * High-resolution timestamp recorded after client hydration is usable.
      * Pages Router writes from the stable router provider after passive
      * effects can attach; App Router writes after the first committed tree

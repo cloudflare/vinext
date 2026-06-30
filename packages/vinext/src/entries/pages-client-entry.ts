@@ -125,6 +125,15 @@ export async function generateClientEntry(
   const reactPreambleImport =
     options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';
 
+  // Pages Router React Strict Mode flag. Next.js resolves the `null`/unset
+  // default to OFF for the Pages Router (`reactStrictMode === null ? false` in
+  // .nextjs-ref/packages/next/src/build/define-env.ts), so the wrap is enabled
+  // only when the option is explicitly `true`. The actual <React.StrictMode>
+  // wrap lives in `wrapWithRouterContext` (next/router), which runs for both
+  // the initial hydration here and every client-side navigation — mirroring
+  // Next.js's `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`.
+  const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
+
   return `${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
 import React from "react";
@@ -161,6 +170,9 @@ const appLoader = undefined;
 // can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
+// reactStrictMode flag — read by wrapWithRouterContext (next/router) so the
+// <React.StrictMode> wrap is applied on initial hydration and every navigation.
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictModeEnabled)};
 window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
 window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
 window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
@@ -262,6 +274,9 @@ async function hydrate() {
   });
 
   // Wrap with RouterContext.Provider so next/router and next/compat/router work during hydration.
+  // When reactStrictMode is enabled, wrapWithRouterContext also wraps the tree
+  // in <React.StrictMode> (see next/router) — applied here and on every
+  // navigation render, matching Next.js.
   element = wrapWithRouterContext(element, resolveHydrationCommit);
 
   const container = document.getElementById("__next");

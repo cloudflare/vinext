@@ -507,6 +507,15 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  /**
+   * Whether `reactStrictMode: true` is set in next.config. When true, the dev
+   * hydration script sets `window.__VINEXT_REACT_STRICT_MODE__` so
+   * `wrapWithRouterContext` wraps the tree in `<React.StrictMode>` on the
+   * initial hydration and every navigation. Pages Router default is OFF
+   * (Next.js: `reactStrictMode === null ? false`), so callers pass
+   * `nextConfig?.reactStrictMode === true`.
+   */
+  reactStrictMode = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -1670,6 +1679,9 @@ const rawPageProps = props.pageProps;
 const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
 window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleSource}") };
 window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
+// reactStrictMode flag — read by wrapWithRouterContext so the <React.StrictMode>
+// wrap is applied on initial hydration and every navigation (matches Next.js).
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictMode === true)};
 
 async function hydrate() {
   let hydrateRootOptions;

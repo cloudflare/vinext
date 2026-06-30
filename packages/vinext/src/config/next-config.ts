@@ -216,6 +216,14 @@ export type NextConfig = {
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
   };
+  /**
+   * Enable React Strict Mode. When `true`, the client root is wrapped in
+   * `<React.StrictMode>` so React runs its dev-only strict checks (double-
+   * invoked effects/render, deprecation warnings). `null`/unset resolves per
+   * router: OFF for the Pages Router, ON for the App Router — matching Next.js.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactStrictMode
+   */
+  reactStrictMode?: boolean | null;
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
@@ -470,6 +478,16 @@ export type ResolvedNextConfig = {
    * `test/e2e/optimized-loading` test fixture.
    */
   disableOptimizedLoading: boolean;
+  /**
+   * Resolved `reactStrictMode` from next.config, preserved as `boolean | null`
+   * so each router can apply its own default (Next.js resolves `null` to OFF
+   * for the Pages Router and ON for the App Router). When the effective value
+   * is `true`, the client root is wrapped in `<React.StrictMode>`.
+   *
+   * See `.nextjs-ref/packages/next/src/build/define-env.ts`
+   * (`__NEXT_STRICT_MODE` / `__NEXT_STRICT_MODE_APP`).
+   */
+  reactStrictMode: boolean | null;
   /**
    * Mirrors Next.js `experimental.scrollRestoration`. When true, the Pages
    * Router client takes ownership of browser history scroll restoration by
@@ -1371,6 +1389,7 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
@@ -1724,6 +1743,9 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    // Preserve `null` (unset) so each router applies its own default — Next.js
+    // resolves `null` to OFF for Pages Router, ON for App Router.
+    reactStrictMode: typeof config.reactStrictMode === "boolean" ? config.reactStrictMode : null,
     scrollRestoration: experimental?.scrollRestoration === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),

@@ -4874,6 +4874,7 @@ export const loadServerActionClient = ${
                         (nextConfig?.rewrites.fallback.length ?? 0) > 0,
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
+                      nextConfig?.reactStrictMode === true,
                     ),
                   };
                 }

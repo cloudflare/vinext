@@ -290,9 +290,9 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
-    // reactStrictMode is reported as `partial` until vinext actually wraps the
-    // hydrated root in `<React.StrictMode>` — currently the config is read but
-    // not enforced. See `packages/vinext/src/check.ts` for the rationale.
+    // reactStrictMode is enforced for the Pages Router (client root wrapped in
+    // `<React.StrictMode>` when `true`) but the App Router is not yet wrapped,
+    // so the status is `partial`. See `packages/vinext/src/check.ts`.
     expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("partial");
   });
 

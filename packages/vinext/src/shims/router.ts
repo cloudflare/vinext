@@ -13,6 +13,7 @@ import {
   useLayoutEffect,
   Fragment,
   Component,
+  StrictMode,
   createElement,
   type ReactElement,
   type ReactNode,
@@ -3561,11 +3562,21 @@ export function wrapWithRouterContext(
   onError: (error: Error) => void = noopCommit,
 ): ReactElement {
   const { CommitBoundary, Provider } = getPagesRouterRuntimeComponents();
-  return createElement(
-    CommitBoundary,
-    { onCommit, onError },
-    createElement(Provider, null, element),
-  );
+  // React Strict Mode (Pages Router). When `reactStrictMode: true`, wrap the
+  // router-context subtree in <React.StrictMode> so React runs its dev-only
+  // strict checks. We read a client-only `window` flag rather than wrapping
+  // unconditionally so the server-rendered tree is never wrapped (matching
+  // Next.js, which only wraps client-side in `client/index.tsx`). Because this
+  // wrap lives in `wrapWithRouterContext` — called by the initial hydration
+  // entry AND every navigation `root.render()` — StrictMode survives soft
+  // navigations, mirroring Next.js's `doRender` closure used for both. The
+  // CommitBoundary stays outside StrictMode so its commit `useLayoutEffect`
+  // is not double-invoked (Next.js keeps `<Root>` outside <StrictMode> too).
+  let inner: ReactElement = createElement(Provider, null, element);
+  if (typeof window !== "undefined" && window.__VINEXT_REACT_STRICT_MODE__ === true) {
+    inner = createElement(StrictMode, null, inner);
+  }
+  return createElement(CommitBoundary, { onCommit, onError }, inner);
 }
 
 /**
