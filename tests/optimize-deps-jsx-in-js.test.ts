@@ -35,6 +35,21 @@ type VinextPlugin = {
   config?: (config: unknown, env: { command: string }) => unknown;
 };
 
+type OptimizerConfig = {
+  rolldownOptions?: { moduleTypes?: Record<string, string> };
+  esbuildOptions?: { loader?: Record<string, string> };
+};
+
+type VinextConfigResult = {
+  optimizeDeps?: OptimizerConfig;
+  environments?: Record<
+    string,
+    {
+      optimizeDeps?: OptimizerConfig & { entries?: string[] };
+    }
+  >;
+};
+
 async function setupAppProject(): Promise<string> {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-optdeps-jsx-"));
   const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -139,6 +154,16 @@ async function expectDevScanAllowsJsxInJs(tmpDir: string, expectedTexts: string[
   }
 }
 
+function expectJsxDotJs(optimizeDeps: OptimizerConfig, viteMajor: number) {
+  if (viteMajor >= 8) {
+    expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".js"]).toBe("jsx");
+    expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".mjs"]).toBe("jsx");
+  } else {
+    expect(optimizeDeps.esbuildOptions?.loader?.[".js"]).toBe("jsx");
+    expect(optimizeDeps.esbuildOptions?.loader?.[".mjs"]).toBe("jsx");
+  }
+}
+
 describe("optimizeDeps: JSX in plain .js files", () => {
   const viteMajor = getViteMajorVersion();
 
@@ -154,45 +179,47 @@ describe("optimizeDeps: JSX in plain .js files", () => {
       const result = (await mainPlugin!.config!(
         { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
         { command: "serve" },
-      )) as {
-        optimizeDeps?: {
-          rolldownOptions?: { moduleTypes?: Record<string, string> };
-          esbuildOptions?: { loader?: Record<string, string> };
-        };
-        environments?: Record<
-          string,
-          {
-            optimizeDeps?: {
-              rolldownOptions?: { moduleTypes?: Record<string, string> };
-              esbuildOptions?: { loader?: Record<string, string> };
-            };
-          }
-        >;
-      };
-
-      const expectJsxDotJs = (optimizeDeps: {
-        rolldownOptions?: { moduleTypes?: Record<string, string> };
-        esbuildOptions?: { loader?: Record<string, string> };
-      }) => {
-        // Mirror the main transform's `/\.m?js$/` filter: both .js and .mjs.
-        if (viteMajor >= 8) {
-          expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".js"]).toBe("jsx");
-          expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".mjs"]).toBe("jsx");
-        } else {
-          expect(optimizeDeps.esbuildOptions?.loader?.[".js"]).toBe("jsx");
-          expect(optimizeDeps.esbuildOptions?.loader?.[".mjs"]).toBe("jsx");
-        }
-      };
+      )) as VinextConfigResult;
 
       // Top-level optimizeDeps (Pages Router default + client inheritance).
       expect(result.optimizeDeps).toBeDefined();
-      expectJsxDotJs(result.optimizeDeps!);
+      expectJsxDotJs(result.optimizeDeps!, viteMajor);
 
       // App Router environments each run their own scanner over app/ sources.
       for (const envName of ["rsc", "ssr", "client"] as const) {
         const envOptimizeDeps = result.environments?.[envName]?.optimizeDeps;
         expect(envOptimizeDeps, `${envName} optimizeDeps`).toBeDefined();
-        expectJsxDotJs(envOptimizeDeps!);
+        expectJsxDotJs(envOptimizeDeps!, viteMajor);
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 20_000);
+
+  it("configures Pages Router build client optimizers to treat .js as JSX", async () => {
+    const tmpDir = await setupPagesProject();
+    try {
+      const getConfig = async (plugins: unknown[]): Promise<VinextConfigResult> => {
+        const vinextPlugins = vinext({ appDir: tmpDir }) as VinextPlugin[];
+        const mainPlugin = vinextPlugins.find(
+          (p) => p.name === "vinext:config" && typeof p.config === "function",
+        );
+        expect(mainPlugin).toBeDefined();
+
+        return (await mainPlugin!.config!(
+          { root: tmpDir, build: {}, plugins, optimizeDeps: {} },
+          { command: "build" },
+        )) as VinextConfigResult;
+      };
+
+      for (const [label, config] of [
+        ["plain", await getConfig([])],
+        ["cloudflare", await getConfig([{ name: "vite-plugin-cloudflare" }])],
+      ] as const) {
+        const clientOptimizeDeps = config.environments?.client?.optimizeDeps;
+        expect(clientOptimizeDeps, `${label} client optimizeDeps`).toBeDefined();
+        expect(clientOptimizeDeps?.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+        expectJsxDotJs(clientOptimizeDeps!, viteMajor);
       }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
