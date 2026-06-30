@@ -4156,7 +4156,8 @@ export const loadServerActionClient = ${
                 (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
                 "localhost";
               const requestOrigin = `http://${requestHost}`;
-              const requestHostname = new URL(requestOrigin).hostname;
+              const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
+              const requestHostname = getUrlHostname(requestOrigin);
               if (isFilePathRequest && !filePathMatchesRewrite) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
@@ -4325,7 +4326,7 @@ export const loadServerActionClient = ${
                         resolvedPathname,
                         nextConfig.i18n,
                         request.headers,
-                        new URL(request.url).hostname,
+                        getUrlHostname(request.url),
                         bp,
                         nextConfig.trailingSlash ?? false,
                       ).url
