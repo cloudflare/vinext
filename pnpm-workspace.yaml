@@ -19,6 +19,7 @@ catalog:
   "@cloudflare/vite-plugin": ^1.31.0
   "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
+  "@jridgewell/remapping": ^2.3.5
   "@mdx-js/loader": 3.1.0
   "@mdx-js/react": ^3.1.1
   "@mdx-js/rollup": ^3.1.1

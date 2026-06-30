@@ -177,8 +177,10 @@ import {
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
+  createSassTildeCssImportPlugin,
   createSassTildeImporter,
   createSassAwareFileSystemLoader,
+  wrapSassTildeAdditionalData,
 } from "./plugins/sass.js";
 import {
   createClientFileNameConfig,
@@ -2503,8 +2505,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Apply the same options to both `.scss` and `.sass` entry
                 // points. Next.js's sass-loader rule matches /\.s[ca]ss$/,
                 // so a single `sassOptions` block covers both syntaxes there.
-                scss: baseOpts,
-                sass: baseOpts,
+                scss: {
+                  ...baseOpts,
+                  ...(sassPreprocessorOptions?.additionalData
+                    ? {
+                        additionalData: wrapSassTildeAdditionalData(
+                          sassPreprocessorOptions.additionalData,
+                          root,
+                          "scss",
+                        ),
+                      }
+                    : {}),
+                },
+                sass: {
+                  ...baseOpts,
+                  ...(sassPreprocessorOptions?.additionalData
+                    ? {
+                        additionalData: wrapSassTildeAdditionalData(
+                          sassPreprocessorOptions.additionalData,
+                          root,
+                          "sass",
+                        ),
+                      }
+                    : {}),
+                },
               };
             })(),
             ...cssModulesOverride,
@@ -3588,6 +3612,7 @@ export const loadServerActionClient = ${
         });
       },
     },
+    createSassTildeCssImportPlugin(),
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),

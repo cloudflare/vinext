@@ -26,9 +26,19 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { preprocessCSS, type PreprocessCSSResult, type ResolvedConfig } from "vite";
+import remapping, { type SourceMapInput } from "@jridgewell/remapping";
+import MagicString from "magic-string";
+import {
+  normalizePath,
+  preprocessCSS,
+  type Plugin,
+  type PreprocessCSSResult,
+  type ResolvedConfig,
+  type SassPreprocessorOptions,
+} from "vite";
 
-type AdditionalData = string | ((source: string, filename: string) => string | Promise<string>);
+type AdditionalData = NonNullable<SassPreprocessorOptions["additionalData"]>;
+type AdditionalDataFunction = Exclude<AdditionalData, string>;
 
 type VitePreprocessorOptions = {
   additionalData?: AdditionalData;
@@ -36,6 +46,433 @@ type VitePreprocessorOptions = {
   // oxlint-disable-next-line typescript/no-explicit-any
   [key: string]: any;
 };
+
+const SASS_STYLESHEET_RE = /\.(?:scss|sass)(?:$|[?#])/;
+const CSS_IMPORT_PATH_RE = /^~[^\s"')]+\.css(?:[?#][^\s"')]*)?$/;
+
+type SassTildeReplacement = {
+  start: number;
+  end: number;
+  value: string;
+};
+
+export function normalizeSassTildeCssImport(
+  source: string,
+  importer: string | undefined,
+  root: string,
+): string | null {
+  if (!source.startsWith("~") || !importer || !SASS_STYLESHEET_RE.test(importer)) return null;
+
+  const stripped = source.slice(1);
+  if (!stripped) return null;
+
+  return stripped.startsWith("/") ? normalizePath(path.resolve(root, `.${stripped}`)) : stripped;
+}
+
+function startsTildeCssImportTarget(statement: string, start: number): boolean {
+  let index = start;
+  while (index < statement.length) {
+    while (/\s/.test(statement[index] ?? "")) index++;
+
+    if (statement.slice(index, index + 2) === "/*") {
+      const end = statement.indexOf("*/", index + 2);
+      if (end === -1) return false;
+      index = end + 2;
+      continue;
+    }
+
+    if (statement.slice(index, index + 2) === "//") {
+      const end = statement.indexOf("\n", index + 2);
+      if (end === -1) return false;
+      index = end + 1;
+      continue;
+    }
+
+    break;
+  }
+
+  const quote = statement[index];
+  if (quote === '"' || quote === "'") {
+    const end = statement.indexOf(quote, index + 1);
+    return end !== -1 && CSS_IMPORT_PATH_RE.test(statement.slice(index + 1, end));
+  }
+
+  if (statement.slice(index, index + 4).toLowerCase() !== "url(") return false;
+  index += 4;
+  while (/\s/.test(statement[index] ?? "")) index++;
+
+  const urlQuote = statement[index];
+  if (urlQuote === '"' || urlQuote === "'") {
+    const end = statement.indexOf(urlQuote, index + 1);
+    return end !== -1 && CSS_IMPORT_PATH_RE.test(statement.slice(index + 1, end));
+  }
+
+  const end = statement.indexOf(")", index);
+  return end !== -1 && CSS_IMPORT_PATH_RE.test(statement.slice(index, end).trimEnd());
+}
+
+function isSassStatementStart(code: string, index: number, indentedSyntax: boolean): boolean {
+  for (let current = index - 1; current >= 0; ) {
+    const char = code[current];
+    if (indentedSyntax && (char === "\n" || char === "\r")) return true;
+    if (/\s/.test(char)) {
+      current--;
+      continue;
+    }
+
+    if (char === "/" && code[current - 1] === "*") {
+      const start = code.lastIndexOf("/*", current - 2);
+      if (start === -1) return false;
+      current = start - 1;
+      continue;
+    }
+
+    const lineStart = code.lastIndexOf("\n", current) + 1;
+    const lineComment = code.lastIndexOf("//", current);
+    if (lineComment >= lineStart && code[lineComment - 1] !== ":") {
+      current = lineComment - 1;
+      continue;
+    }
+
+    return char === "{" || char === ";" || char === "}";
+  }
+  return true;
+}
+
+function rewriteImportStatement(
+  statement: string,
+  statementStart: number,
+  id: string,
+  root: string,
+  replacements: SassTildeReplacement[],
+): string {
+  let output = "";
+  let parentheses = 0;
+  let expectsTarget = true;
+
+  for (let index = 0; index < statement.length; ) {
+    const char = statement[index];
+    const next = statement[index + 1];
+
+    if (char === "/" && next === "*") {
+      const end = statement.indexOf("*/", index + 2);
+      const nextIndex = end === -1 ? statement.length : end + 2;
+      output += statement.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
+    if (char === "/" && next === "/" && parentheses === 0 && statement[index - 1] !== ":") {
+      const end = statement.indexOf("\n", index + 2);
+      const nextIndex = end === -1 ? statement.length : end;
+      output += statement.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      let end = index + 1;
+      while (end < statement.length) {
+        if (statement[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        if (statement[end] === char) break;
+        end++;
+      }
+      const value = statement.slice(index + 1, end);
+      const normalized =
+        expectsTarget && CSS_IMPORT_PATH_RE.test(value)
+          ? normalizeSassTildeCssImport(value, id, root)
+          : null;
+      output += normalized ? `${char}${normalized}${char}` : statement.slice(index, end + 1);
+      if (expectsTarget) {
+        expectsTarget = false;
+        if (normalized) {
+          replacements.push({
+            start: statementStart + index + 1,
+            end: statementStart + end,
+            value: normalized,
+          });
+        }
+      }
+      index = Math.min(end + 1, statement.length);
+      continue;
+    }
+
+    if (expectsTarget && statement.slice(index, index + 4).toLowerCase() === "url(") {
+      const valueStart = index + 4;
+      let contentStart = valueStart;
+      while (/\s/.test(statement[contentStart] ?? "")) contentStart++;
+      const quoted = statement[contentStart] === '"' || statement[contentStart] === "'";
+      if (!quoted) {
+        const close = statement.indexOf(")", contentStart);
+        if (close !== -1) {
+          let contentEnd = close;
+          while (contentEnd > contentStart && /\s/.test(statement[contentEnd - 1] ?? "")) {
+            contentEnd--;
+          }
+          const value = statement.slice(contentStart, contentEnd);
+          const normalized = CSS_IMPORT_PATH_RE.test(value)
+            ? normalizeSassTildeCssImport(value, id, root)
+            : null;
+          if (normalized) {
+            output += `${statement.slice(index, contentStart)}${normalized}${statement.slice(contentEnd, close + 1)}`;
+            expectsTarget = false;
+            replacements.push({
+              start: statementStart + contentStart,
+              end: statementStart + contentEnd,
+              value: normalized,
+            });
+            index = close + 1;
+            continue;
+          }
+        }
+        expectsTarget = false;
+      }
+    }
+
+    if (!expectsTarget && parentheses === 0 && char === ",") {
+      expectsTarget = startsTildeCssImportTarget(statement, index + 1);
+    }
+
+    if (char === "(") parentheses++;
+    if (char === ")") parentheses = Math.max(0, parentheses - 1);
+
+    output += char;
+    index++;
+  }
+
+  return output;
+}
+
+function rewriteSassTildeCssImportsWithReplacements(
+  code: string,
+  id: string,
+  root: string,
+): { code: string; replacements: SassTildeReplacement[] } | null {
+  let output = "";
+  let changed = false;
+  const replacements: SassTildeReplacement[] = [];
+  const indentedSyntax = /\.sass(?:$|[?#])/.test(id);
+  let parentheses = 0;
+
+  for (let index = 0; index < code.length; ) {
+    const char = code[index];
+    const next = code[index + 1];
+
+    if (char === "/" && next === "*") {
+      const end = code.indexOf("*/", index + 2);
+      const nextIndex = end === -1 ? code.length : end + 2;
+      output += code.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
+    if (char === "/" && next === "/" && parentheses === 0 && code[index - 1] !== ":") {
+      const end = code.indexOf("\n", index + 2);
+      const nextIndex = end === -1 ? code.length : end;
+      output += code.slice(index, nextIndex);
+      index = nextIndex;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      let end = index + 1;
+      while (end < code.length) {
+        if (code[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        if (code[end] === char) break;
+        end++;
+      }
+      output += code.slice(index, end + 1);
+      index = Math.min(end + 1, code.length);
+      continue;
+    }
+
+    if (char === "(") parentheses++;
+    if (char === ")") parentheses = Math.max(0, parentheses - 1);
+
+    if (
+      char === "@" &&
+      code.slice(index, index + 7) === "@import" &&
+      isSassStatementStart(code, index, indentedSyntax)
+    ) {
+      const afterKeyword = code[index + 7];
+      if (afterKeyword && /[\w-]/.test(afterKeyword)) {
+        output += char;
+        index++;
+        continue;
+      }
+
+      let end = index + 7;
+      let quote: string | null = null;
+      let comment = false;
+      let lineComment = false;
+      let parentheses = 0;
+      while (end < code.length) {
+        const current = code[end];
+        const following = code[end + 1];
+        if (lineComment) {
+          if (current === "\n") {
+            lineComment = false;
+            if (indentedSyntax && parentheses === 0) break;
+          }
+        } else if (comment) {
+          if (current === "*" && following === "/") {
+            comment = false;
+            end += 2;
+            continue;
+          }
+        } else if (quote) {
+          if (current === "\\") {
+            end += 2;
+            continue;
+          }
+          if (current === quote) quote = null;
+        } else if (current === "/" && following === "*") {
+          comment = true;
+          end += 2;
+          continue;
+        } else if (
+          current === "/" &&
+          following === "/" &&
+          parentheses === 0 &&
+          code[end - 1] !== ":"
+        ) {
+          lineComment = true;
+          end += 2;
+          continue;
+        } else if (current === '"' || current === "'") {
+          quote = current;
+        } else if (current === "(") {
+          parentheses++;
+        } else if (current === ")") {
+          parentheses = Math.max(0, parentheses - 1);
+        } else if (current === ";" && parentheses === 0) {
+          end++;
+          break;
+        } else if (current === "\n" && indentedSyntax && parentheses === 0) {
+          break;
+        }
+        end++;
+      }
+
+      const statement = code.slice(index, end);
+      const rewritten = rewriteImportStatement(statement, index, id, root, replacements);
+      changed ||= rewritten !== statement;
+      output += rewritten;
+      index = end;
+      continue;
+    }
+
+    output += char;
+    index++;
+  }
+
+  return changed ? { code: output, replacements } : null;
+}
+
+function renderSassTildeRewrite(
+  code: string,
+  id: string,
+  root: string,
+): { code: string; map: ReturnType<MagicString["generateMap"]> } | null {
+  const rewritten = rewriteSassTildeCssImportsWithReplacements(code, id, root);
+  if (!rewritten) return null;
+
+  const output = new MagicString(code);
+  for (const replacement of rewritten.replacements) {
+    output.overwrite(replacement.start, replacement.end, replacement.value);
+  }
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary", source: id, includeContent: true }),
+  };
+}
+
+export function rewriteSassTildeCssImports(code: string, id: string, root: string): string | null {
+  return rewriteSassTildeCssImportsWithReplacements(code, id, root)?.code ?? null;
+}
+
+export function wrapSassTildeAdditionalData(
+  additionalData: string,
+  root: string,
+  syntax?: "scss" | "sass",
+): string;
+export function wrapSassTildeAdditionalData(
+  additionalData: AdditionalDataFunction,
+  root: string,
+  syntax?: "scss" | "sass",
+): AdditionalDataFunction;
+export function wrapSassTildeAdditionalData(
+  additionalData: AdditionalData,
+  root: string,
+  syntax?: "scss" | "sass",
+): AdditionalData;
+export function wrapSassTildeAdditionalData(
+  additionalData: AdditionalData,
+  root: string,
+  syntax: "scss" | "sass" = "scss",
+): AdditionalData {
+  if (typeof additionalData === "string") {
+    const syntheticFilename = path.join(root, `__vinext_additional_data.${syntax}`);
+    return rewriteSassTildeCssImports(additionalData, syntheticFilename, root) ?? additionalData;
+  }
+
+  const wrapped: AdditionalDataFunction = async (source: string, filename: string) => {
+    const combined = await additionalData(source, filename);
+    if (typeof combined === "string") {
+      return rewriteSassTildeCssImports(combined, filename, root) ?? combined;
+    }
+
+    const rewritten = renderSassTildeRewrite(combined.content, filename, root);
+    if (!rewritten) return combined;
+
+    const map = combined.map
+      ? JSON.parse(
+          remapping(
+            [
+              JSON.parse(rewritten.map.toString()) as SourceMapInput,
+              combined.map as SourceMapInput,
+            ],
+            () => null,
+          ).toString(),
+        )
+      : JSON.parse(rewritten.map.toString());
+
+    return {
+      ...combined,
+      content: rewritten.code,
+      map,
+    };
+  };
+  return wrapped;
+}
+
+export function createSassTildeCssImportPlugin(): Plugin {
+  let root: string;
+
+  return {
+    name: "vinext:sass-tilde-css-imports",
+    enforce: "pre",
+
+    configResolved(config) {
+      root = config.root;
+    },
+
+    transform: {
+      filter: { id: SASS_STYLESHEET_RE, code: "@import" },
+      handler(code, id) {
+        const rewritten = renderSassTildeRewrite(code, id, root);
+        if (!rewritten) return null;
+        return rewritten;
+      },
+    },
+  };
+}
 
 /**
  * Create a Sass `FileImporter` that resolves webpack-style tilde (`~`) imports.

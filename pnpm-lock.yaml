@@ -987,6 +987,9 @@ importers:
 
   packages/vinext:
     dependencies:
+      '@jridgewell/remapping':
+        specifier: 'catalog:'
+        version: 2.3.5
       '@unpic/react':
         specifier: 'catalog:'
         version: 1.0.2(next@16.2.7(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.100.0))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

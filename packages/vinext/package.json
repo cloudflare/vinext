@@ -136,6 +136,7 @@
     "dev": "vp pack --watch"
   },
   "dependencies": {
+    "@jridgewell/remapping": "catalog:",
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "image-size": "catalog:",
