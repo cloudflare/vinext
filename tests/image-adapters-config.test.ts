@@ -7,7 +7,7 @@
  *    descriptor options and the double-registration guard.
  *  - The image optimizer registry in server/image-optimization.ts
  *    (setImageOptimizer / getImageOptimizer / handleConfiguredImageOptimization).
- *  - The Cloudflare image adapter: its config-time builder (imageAdapter) and its
+ *  - The Cloudflare image optimizer: its config-time builder (imagesOptimizer) and its
  *    runtime factory default export.
  *  - Registration wiring into the Pages worker entry + App Router RSC entry image
  *    config exports.
@@ -25,8 +25,8 @@ import {
   type ImageOptimizer,
 } from "../packages/vinext/src/server/image-optimization.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
-import { imageAdapter } from "../packages/cloudflare/src/images/images-optimizer.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
+import { imagesOptimizer } from "../packages/cloudflare/src/images/images-optimizer.js";
 import createCloudflareImageOptimizer from "../packages/cloudflare/src/images/images-optimizer.runtime.js";
 
 describe("generateImageAdaptersModule", () => {
@@ -70,6 +70,18 @@ describe("generateImageAdaptersModule", () => {
     });
     expect(code).toContain("if (__vinextImageOptimizerRegistered) return;");
     expect(code).toContain("__vinextImageOptimizerRegistered = true;");
+  });
+
+  it("logs registration failures without printing raw Error stack traces", () => {
+    const code = generateImageAdaptersModule({
+      optimizer: { adapter: "@vinext/cloudflare/images/images-optimizer" },
+    });
+    expect(code).toContain("function __vinextFormatAdapterError(error)");
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured image optimizer; ' +
+        'serving images unoptimized.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).not.toContain('", error);');
   });
 
   it("escapes adapter specifiers so absolute paths are safe", () => {
@@ -159,18 +171,18 @@ describe("image optimizer registry", () => {
   });
 });
 
-describe("imageAdapter builder", () => {
+describe("imagesOptimizer builder", () => {
   it("resolves the runtime factory to an absolute path without touching the Workers runtime", () => {
-    const descriptor = imageAdapter({ binding: "MY_IMAGES" });
+    const descriptor = imagesOptimizer({ binding: "MY_IMAGES" });
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("images-optimizer.runtime.js")).toBe(true);
     expect(descriptor.options).toEqual({ binding: "MY_IMAGES" });
-    expect(imageAdapter().options).toBeUndefined();
+    expect(imagesOptimizer().options).toBeUndefined();
   });
 
   it("validates the binding option at config time", () => {
     // @ts-expect-error — binding must be a string
-    expect(() => imageAdapter({ binding: 123 })).toThrow(/binding/);
+    expect(() => imagesOptimizer({ binding: 123 })).toThrow(/binding/);
   });
 });
 
@@ -302,7 +314,7 @@ describe("registration is wired into the router/runtime entries", () => {
   });
 
   it("Pages Router worker entry registers the optimizer with env and uses the registry", () => {
-    const code = generatePagesRouterWorkerEntry();
+    const code = readPagesRouterEntrySource();
     expect(code).toContain('from "virtual:vinext-image-adapters"');
     expect(code).toContain("registerConfiguredImageOptimizer(env)");
     expect(code).toContain("handleConfiguredImageOptimization(");

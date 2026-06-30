@@ -375,7 +375,6 @@ export function mergeElements(
   const merged: Record<string, AppElementValue> = { ...next };
 
   for (const id of preserveElementIds) {
-    if (Object.hasOwn(merged, id)) continue;
     if (Object.hasOwn(prev, id)) {
       const value = prev[id];
       if (value !== undefined) merged[id] = value;

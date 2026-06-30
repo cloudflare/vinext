@@ -16,7 +16,10 @@
     "allowImportingTsExtensions": true,
     "paths": {
       "vinext/shims/*": ["./packages/vinext/src/shims/*"],
-      "@vinext/cloudflare/cache/*": ["./packages/cloudflare/src/cache/*"]
+      "vinext/internal/*": ["./packages/vinext/src/*"],
+      "@vinext/cloudflare/internal/*": ["./packages/cloudflare/src/*"],
+      "@vinext/cloudflare/cache/*": ["./packages/cloudflare/src/cache/*"],
+      "@vinext/cloudflare/images/*": ["./packages/cloudflare/src/images/*"]
     }
   },
   "exclude": ["node_modules", "dist", "fixtures", "tests/fixtures", "benchmarks", "examples"]

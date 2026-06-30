@@ -6,7 +6,10 @@
  * i18n redirect, 405 method check, and internal-error guard.
  */
 import { describe, it, expect, vi } from "vite-plus/test";
-import { createPagesPageHandler } from "../packages/vinext/src/server/pages-page-handler.js";
+import {
+  createPagesPageHandler,
+  shouldEmitPagesClientTraceMetadata,
+} from "../packages/vinext/src/server/pages-page-handler.js";
 import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/server/pages-page-handler.js";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +98,29 @@ function makeOpts(
     ...overrides,
   };
 }
+
+describe("shouldEmitPagesClientTraceMetadata", () => {
+  it("emits only for request-time production renders", () => {
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule(), null)).toBe(false);
+    expect(
+      shouldEmitPagesClientTraceMetadata(
+        makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+        null,
+      ),
+    ).toBe(false);
+    expect(
+      shouldEmitPagesClientTraceMetadata(
+        makePageModule({ getServerSideProps: async () => ({ props: {} }) }),
+        null,
+      ),
+    ).toBe(true);
+
+    const page = Object.assign(() => null, { getInitialProps: async () => ({}) });
+    const app = Object.assign(() => null, { getInitialProps: async () => ({}) });
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule({ default: page }), null)).toBe(true);
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule(), app)).toBe(true);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback

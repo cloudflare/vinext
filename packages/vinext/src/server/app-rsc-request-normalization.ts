@@ -42,6 +42,8 @@ export type NormalizedRscRequest = {
   renderMode: AppRscRenderMode;
   /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
   clientReuseManifest: ClientReuseManifestParseResult;
+  /** Whether the incoming pathname included the configured basePath. */
+  hadBasePath: boolean;
 };
 
 /**
@@ -77,6 +79,7 @@ export type NormalizedRscRequest = {
 export function normalizeRscRequest(
   request: Request,
   basePath: string,
+  allowOutsideBasePath = false,
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
@@ -98,16 +101,18 @@ export function normalizeRscRequest(
 
   // Step 4: Collapse double-slashes and resolve . / .. segments.
   let pathname = normalizePath(decoded);
+  let hadBasePath = true;
 
   // Step 5: basePath check and strip.
   // Skipped when basePath is empty (no basePath configured).
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
-    if (!hasBasePath(pathname, basePath) && !pathname.startsWith("/__vinext/")) {
+    hadBasePath = hasBasePath(pathname, basePath);
+    if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
       return notFoundResponse();
     }
-    pathname = stripBasePath(pathname, basePath);
+    if (hadBasePath) pathname = stripBasePath(pathname, basePath);
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
@@ -141,6 +146,7 @@ export function normalizeRscRequest(
 
   return {
     clientReuseManifest,
+    hadBasePath,
     url,
     pathname,
     cleanPathname,
