@@ -2767,6 +2767,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     "react/jsx-dev-runtime",
                   ]),
                 ],
+                // The client scanner also crawls app/ source files, so it
+                // needs the same JSX-in-`.js` handling (moduleTypes/loader) as
+                // the server optimizers. See getDepOptimizeNodeEnvOptions.
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 // Production App Router rendering needs Vite's client manifest

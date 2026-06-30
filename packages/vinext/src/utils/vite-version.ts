@@ -24,9 +24,11 @@ export function getDepOptimizeNodeEnvOptions(
     transform: {
       define: Record<string, string>;
     };
+    moduleTypes?: Record<string, "jsx">;
   };
   esbuildOptions?: {
     define: Record<string, string>;
+    loader?: Record<string, "jsx">;
   };
 } {
   // Vite defaults keepProcessEnv to true for server-consumer environments,
@@ -36,14 +38,30 @@ export function getDepOptimizeNodeEnvOptions(
     "process.env.NODE_ENV": nodeEnvDefine,
   };
 
+  // The dep optimizer scanner and pre-bundler run their own Rolldown/esbuild
+  // pipeline that does NOT go through the `vinext:jsx-in-js` transform plugin
+  // (which only runs in the Vite plugin pipeline). Next.js allows JSX in plain
+  // `.js`/`.mjs` files, and the scanner crawls the app's source entries to
+  // discover dependencies — so JSX in a `.js`/`.mjs` source file makes the
+  // scanner fail with "Unexpected JSX expression" and aborts pre-bundling.
+  // Force the optimizer to treat `.js`/`.mjs` as JSX so it parses the same
+  // way the main transform does, matching its `/\.m?js$/` filter.
+  //
+  // The motivating symptom is that, once the scan aborts, pre-bundling is
+  // skipped and UMD/CJS deps can fail to interop under SSR — but that
+  // downstream behavior runs through a different optimizer path and is not
+  // what this option is verified to address; this only keeps the scan from
+  // aborting on JSX-in-`.js`/`.mjs`.
+  const jsxModuleTypes = { ".js": "jsx", ".mjs": "jsx" } as const;
   return viteMajorVersion >= 8
     ? {
         rolldownOptions: {
           transform: { define },
+          moduleTypes: { ...jsxModuleTypes },
         },
       }
     : {
-        esbuildOptions: { define },
+        esbuildOptions: { define, loader: { ...jsxModuleTypes } },
       };
 }
 
