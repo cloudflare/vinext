@@ -92,6 +92,8 @@ export type PagesRouterPublicInstance = {
    * See: `packages/next/src/shared/lib/router/router.ts:2525`.
    */
   components: Record<string, unknown>;
+  /** Persistent Pages Router static-data cache, matching Next.js `Router.sdc`. */
+  sdc: Record<string, Promise<Response>>;
 };
 
 // Declare the `next` property on Window here, alongside the type, so this

@@ -119,7 +119,7 @@ export function parseImageParams(
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
   // parameters so semantically identical transforms cannot occupy distinct
   // cache keys and amplify image transformation work.
-  const allowedParamNames = new Set(["url", "w", "q"]);
+  const allowedParamNames = new Set(["url", "w", "q", "dpl"]);
   for (const name of url.searchParams.keys()) {
     if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
   }
@@ -382,7 +382,7 @@ export async function handleImageOptimization(
 
 /**
  * A server-side image optimizer: the transform backend that resizes/transcodes
- * a source image. Produced by an adapter factory (e.g. `imageAdapter()` from
+ * a source image. Produced by an adapter factory (e.g. `imagesOptimizer()` from
  * `@vinext/cloudflare/images/images-optimizer`) and registered via
  * {@link setImageOptimizer}.
  */
@@ -408,10 +408,10 @@ const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptim
  *
  * ```ts
  * import { vinext } from "vinext";
- * import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+ * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
  *
  * export default defineConfig({
- *   plugins: [vinext({ images: { optimizer: imageAdapter() } })],
+ *   plugins: [vinext({ images: { optimizer: imagesOptimizer() } })],
  * });
  * ```
  *

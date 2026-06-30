@@ -224,7 +224,7 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 
 1. Create a directory under `examples/` with a `package.json` (use `"vinext": "workspace:*"`)
 2. Add a `vite.config.ts` with `vinext()` and `cloudflare()` plugins
-3. Add a `wrangler.jsonc` — for simple apps use `"main": "vinext/server/app-router-entry"` (no custom worker entry needed)
+3. Add a `wrangler.jsonc` — for simple apps use `"main": "vinext/server/fetch-handler"` (no custom worker entry needed)
 4. Add the example to the deploy matrix in `.github/workflows/deploy-examples.yml`:
    - Add to `matrix.example` array (with `name`, `project`, `wrangler_config`)
    - Add to the `examples` array in the PR comment step

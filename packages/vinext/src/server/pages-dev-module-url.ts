@@ -5,12 +5,17 @@ function normalizeBase(base: string): string {
   return `/${base.replace(/^\/+|\/+$/g, "")}/`;
 }
 
-function encodeModulePath(modulePath: string): string {
+function encodePagesDevModulePath(modulePath: string): string {
   return encodeURI(modulePath)
     .replace(/%5B/gi, "[")
     .replace(/%5D/gi, "]")
     .replace(/\?/g, "%3F")
     .replace(/#/g, "%23");
+}
+
+export function createPagesDevAssetUrl(assetPath: string): string {
+  const normalizedAssetPath = assetPath.replace(/^\/+/, "");
+  return "/" + encodePagesDevModulePath(normalizedAssetPath);
 }
 
 export function createPagesDevModuleUrl(
@@ -20,5 +25,5 @@ export function createPagesDevModuleUrl(
 ): string {
   const pathImpl = /^[A-Za-z]:[\\/]/.test(viteRoot) ? path.win32 : path;
   const relativePath = pathImpl.relative(viteRoot, moduleFilePath).replace(/\\/g, "/");
-  return normalizeBase(viteBase) + encodeModulePath(relativePath);
+  return normalizeBase(viteBase) + encodePagesDevModulePath(relativePath);
 }

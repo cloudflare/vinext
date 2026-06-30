@@ -1,13 +1,14 @@
 # @vinext/cloudflare
 
-Cloudflare cache adapters for [vinext](https://www.npmjs.com/package/vinext).
+Cloudflare deployment tools and runtime adapters for
+[vinext](https://www.npmjs.com/package/vinext).
 
 This package provides Cloudflare-specific cache and image backends for vinext:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
   namespace. Also used for ISR in the absence of a CDN adapter.
-- **`imageAdapter()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
+- **`imagesOptimizer()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
   `next/image` transformations with a Cloudflare Images binding.
 
 ## Usage
@@ -16,7 +17,7 @@ Declare the adapters on the `vinext()` plugin in your Vite config:
 
 ```ts
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
-import { imageAdapter } from "@vinext/cloudflare/images/images-optimizer";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 
 export default defineConfig({
   plugins: [
@@ -24,9 +25,20 @@ export default defineConfig({
       cache: {
         data: kvDataAdapter(), // KV-backed data cache (binding: VINEXT_KV_CACHE)
       },
-      images: { optimizer: imageAdapter() }, // Cloudflare Images binding: IMAGES
+      images: { optimizer: imagesOptimizer() }, // Cloudflare Images binding: IMAGES
     }),
     cloudflare(),
   ],
 });
 ```
+
+## Deploy
+
+Deploy Cloudflare Workers projects with the package CLI:
+
+```sh
+npx @vinext/cloudflare deploy
+```
+
+With Vite+, use `vpx @vinext/cloudflare deploy`, or
+`vp exec vinext-cloudflare deploy` when running the locally installed bin.
