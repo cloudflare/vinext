@@ -1,3 +1,10 @@
+import { ClientErrorButton } from "./client-error-button";
+
 export default function Home() {
-  return <h1>Sentry App Router Fixture</h1>;
+  return (
+    <main>
+      <h1>Sentry App Router Fixture</h1>
+      <ClientErrorButton />
+    </main>
+  );
 }

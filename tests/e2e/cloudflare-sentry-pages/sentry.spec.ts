@@ -61,4 +61,37 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       }),
     );
   });
+
+  test("reports a browser error through instrumentation-client Sentry.init", async ({
+    page,
+    request,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto("/");
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+    await page.getByRole("button", { name: "Trigger client error" }).click();
+
+    await expect
+      .poll(() =>
+        pageErrors.some((message) =>
+          message.includes("Intentional Sentry Pages Router client error"),
+        ),
+      )
+      .toBe(true);
+
+    const state = await expectReportedError(
+      request,
+      "Intentional Sentry Pages Router client error",
+    );
+
+    expect(state.errors).toContainEqual(
+      expect.objectContaining({
+        message: "Intentional Sentry Pages Router client error",
+        projectId: "1",
+        sdkName: "sentry.javascript.nextjs",
+      }),
+    );
+  });
 });

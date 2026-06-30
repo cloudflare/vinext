@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
   const state: { errors: Array<{ message?: string }> } = { errors: [] };
@@ -54,6 +55,36 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         routerKind: "App Router",
         routerPath: "/render-error",
         routeType: "render",
+        sdkName: "sentry.javascript.nextjs",
+      }),
+    );
+  });
+
+  test("reports a browser error through instrumentation-client Sentry.init", async ({
+    page,
+    request,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto("/");
+    await waitForAppRouterHydration(page);
+    await page.getByRole("button", { name: "Trigger client error" }).click();
+
+    await expect
+      .poll(() =>
+        pageErrors.some((message) =>
+          message.includes("Intentional Sentry App Router client error"),
+        ),
+      )
+      .toBe(true);
+
+    const state = await expectReportedError(request, "Intentional Sentry App Router client error");
+
+    expect(state.errors).toContainEqual(
+      expect.objectContaining({
+        message: "Intentional Sentry App Router client error",
+        projectId: "1",
         sdkName: "sentry.javascript.nextjs",
       }),
     );
