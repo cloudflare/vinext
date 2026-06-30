@@ -1010,6 +1010,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const response = buildNextDataNotFoundResponse();
       const headers = new Headers(response.headers);
       headers.set("x-nextjs-matched-path", matchPathname(canonicalPathname));
+      if (resolvedUrl !== originalResolvedUrl) {
+        headers.set("x-nextjs-rewrite", resolvedUrl);
+      }
       return new Response("{}", { status: 200, headers });
     }
     return buildNextDataNotFoundResponse();

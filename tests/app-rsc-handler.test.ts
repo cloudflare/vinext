@@ -2222,6 +2222,43 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it.each([
+    { convention: "middleware", isProxy: false },
+    { convention: "proxy", isProxy: true },
+  ])(
+    "exposes $convention rewrites to App routes on hybrid Pages data responses",
+    async ({ isProxy }) => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const renderPagesFallback = vi.fn(async () => new Response("pages-data"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        isMiddlewareProxy: isProxy,
+        middlewareModule: {
+          default: (request: Request) =>
+            new Response(null, {
+              headers: {
+                "x-middleware-rewrite": new URL("/docs/about", request.url).toString(),
+              },
+            }),
+        },
+        renderPagesFallback,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/_next/data/build-id/rewrite-to-app.json"),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(response.headers.get("x-nextjs-rewrite")).toBe("/about");
+      expect(await response.text()).toBe("{}");
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      expect(renderPagesFallback).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses the soft redirect protocol for URL-recognized Pages data requests", async () => {
     const handler = createHandler({
       configHeaders: [],
