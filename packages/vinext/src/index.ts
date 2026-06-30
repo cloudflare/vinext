@@ -3623,17 +3623,16 @@ export const loadServerActionClient = ${
           return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
         };
         const pagesAppChanged = isPagesAppFile(options.file);
+        const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(options.file);
         const pagesAssetGraphChanged =
-          pagesAppChanged ||
-          STYLESHEET_FILE_RE.test(options.file) ||
-          isPotentialPagesAssetGraphScript(options.file);
+          pagesAppChanged || STYLESHEET_FILE_RE.test(options.file) || pagesAssetGraphScriptChanged;
         if (pagesAssetGraphChanged) {
           for (const env of Object.values(options.server.environments)) {
             const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
         }
-        if (pagesAppChanged || isPotentialPagesAssetGraphScript(options.file)) {
+        if (pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged)) {
           options.server.ws.send({ type: "full-reload" });
           return [];
         }
@@ -3869,13 +3868,15 @@ export const loadServerActionClient = ${
 
         server.watcher.on("add", (filePath: string) => {
           let routeChanged = false;
+          const pagesAppChanged = isPagesAppFile(filePath);
+          const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
             hasPagesDir &&
-            (isPagesAppFile(filePath) ||
-              STYLESHEET_FILE_RE.test(filePath) ||
-              isPotentialPagesAssetGraphScript(filePath))
+            (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(true);
+            invalidatePagesClientAssetsModule(
+              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
+            );
           }
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
@@ -3893,26 +3894,28 @@ export const loadServerActionClient = ${
           }
         });
         server.watcher.on("change", (filePath: string) => {
+          const pagesAppChanged = isPagesAppFile(filePath);
+          const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
             hasPagesDir &&
-            (isPagesAppFile(filePath) ||
-              STYLESHEET_FILE_RE.test(filePath) ||
-              isPotentialPagesAssetGraphScript(filePath))
+            (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
             invalidatePagesClientAssetsModule(
-              isPagesAppFile(filePath) || isPotentialPagesAssetGraphScript(filePath),
+              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
             );
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
           let routeChanged = false;
+          const pagesAppChanged = isPagesAppFile(filePath);
+          const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
             hasPagesDir &&
-            (isPagesAppFile(filePath) ||
-              STYLESHEET_FILE_RE.test(filePath) ||
-              isPotentialPagesAssetGraphScript(filePath))
+            (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(true);
+            invalidatePagesClientAssetsModule(
+              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
+            );
           }
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
