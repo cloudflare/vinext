@@ -127,9 +127,15 @@ export default function middleware(request: NextRequest) {
 type PagesAppGlobalCssFixture = {
   appPath: string;
   pagePath: string;
+  isrPagePath: string;
+  errorPagePath: string;
   devStylesheetHrefs: string[];
+  isrDevStylesheetHrefs: string[];
+  errorDevStylesheetHrefs: string[];
   appManifestAssets: string[];
   pageManifestAssets: string[];
+  isrManifestAssets: string[];
+  errorManifestAssets: string[];
   cssMarkers: string[];
 };
 
@@ -187,8 +193,20 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     ".typeOnlyText { margin-right: 31px; }\n",
   );
   fs.writeFileSync(
-    path.join(stylesDir, "ignored.css"),
-    ".ignored-css-query { border-bottom-width: 23px; }\n",
+    path.join(stylesDir, "query.css"),
+    ".query-css-import { border-bottom-width: 23px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "hash.css"),
+    ".hash-css-import { border-bottom-width: 37px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "isr.module.css"),
+    ".isrText { border-bottom-width: 41px; }\n",
+  );
+  fs.writeFileSync(
+    path.join(stylesDir, "error.module.css"),
+    ".errorText { border-bottom-width: 43px; }\n",
   );
   fs.writeFileSync(
     path.join(libDir, "transitive.ts"),
@@ -211,7 +229,8 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     'import "@/styles/global style.css";\n' +
       'import moduleStyles from "@/styles/app.module.css";\n' +
       'import { transitiveClassName } from "@/lib/reexport";\n' +
-      'import "@/styles/ignored.css?raw";\n' +
+      'import "@/styles/query.css?raw";\n' +
+      'import "@/styles/hash.css#hash";\n' +
       'export { type TypeOnlyTheme } from "@/lib/type-only";\n' +
       "export default function App({ Component, pageProps }: any) {\n" +
       "  return <div className={`${moduleStyles.moduleText} ${transitiveClassName}`}><Component {...pageProps} /></div>;\n" +
@@ -229,26 +248,69 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "  </>;\n" +
       "}\n",
   );
+  const isrPagePath = path.join(pagesDir, "isr.tsx");
+  fs.writeFileSync(
+    isrPagePath,
+    'import isrStyles from "@/styles/isr.module.css";\n' +
+      "export function getStaticProps() { return { props: {}, revalidate: 60 }; }\n" +
+      "export default function IsrPage() {\n" +
+      "  return <div className={isrStyles.isrText}>Global CSS ISR Test</div>;\n" +
+      "}\n",
+  );
+  const errorPagePath = path.join(pagesDir, "404.tsx");
+  fs.writeFileSync(
+    errorPagePath,
+    'import errorStyles from "@/styles/error.module.css";\n' +
+      "export default function Custom404() {\n" +
+      "  return <div className={errorStyles.errorText}>Global CSS Error Test</div>;\n" +
+      "}\n",
+  );
 
   return {
     appPath: appPath.split(path.sep).join("/"),
     pagePath: pagePath.split(path.sep).join("/"),
+    isrPagePath: isrPagePath.split(path.sep).join("/"),
+    errorPagePath: errorPagePath.split(path.sep).join("/"),
     devStylesheetHrefs: [
       "/styles/global%20style.css",
       "/styles/app.module.css",
       "/styles/transitive.module.css",
+      "/styles/query.css",
+      "/styles/hash.css",
       "/styles/page.module.css",
+    ],
+    isrDevStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/query.css",
+      "/styles/hash.css",
+      "/styles/isr.module.css",
+    ],
+    errorDevStylesheetHrefs: [
+      "/styles/global%20style.css",
+      "/styles/app.module.css",
+      "/styles/transitive.module.css",
+      "/styles/query.css",
+      "/styles/hash.css",
+      "/styles/error.module.css",
     ],
     appManifestAssets: [
       "styles/global style.css",
       "styles/app.module.css",
       "styles/transitive.module.css",
+      "styles/query.css",
+      "styles/hash.css",
     ],
     pageManifestAssets: ["styles/page.module.css"],
+    isrManifestAssets: ["styles/isr.module.css"],
+    errorManifestAssets: ["styles/error.module.css"],
     cssMarkers: [
       "border-top-width: 13px",
       "padding-left: 17px",
       "margin-top: 19px",
+      "border-bottom-width: 23px",
+      "border-bottom-width: 37px",
       "margin-left: 29px",
     ],
   };
@@ -2751,7 +2813,6 @@ describe("Virtual server entry generation", () => {
       for (const href of fixture.devStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
       }
-      expect(html).not.toContain("ignored.css");
       expect(html).not.toContain("type-only.module.css");
 
       const headStyleIndex = html.indexOf(".global-css-pages-text { border-top-width: 0px; }");
@@ -2777,9 +2838,81 @@ describe("Virtual server entry generation", () => {
       expect(assets.clientEntry).toBe("/@id/__x00__virtual:vinext-client-entry");
       expect(assets.ssrManifest?.[fixture.appPath]).toEqual(fixture.appManifestAssets);
       expect(assets.ssrManifest?.[fixture.pagePath]).toEqual(fixture.pageManifestAssets);
+      expect(assets.ssrManifest?.[fixture.isrPagePath]).toEqual(fixture.isrManifestAssets);
+      expect(assets.ssrManifest?.[fixture.errorPagePath]).toEqual(fixture.errorManifestAssets);
       expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain(
         "styles/type-only.module.css",
       );
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages cached ISR HTML keeps initial stylesheet links", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-isr-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      const firstRes = await fetch(`${baseUrl}/isr`);
+      const firstHtml = await firstRes.text();
+      expect(firstRes.status).toBe(200);
+      expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(firstHtml).toContain("Global CSS ISR Test");
+      for (const href of fixture.isrDevStylesheetHrefs) {
+        expect(getStylesheetHrefs(firstHtml)).toContain(href);
+      }
+
+      const secondRes = await fetch(`${baseUrl}/isr`);
+      const secondHtml = await secondRes.text();
+      expect(secondRes.status).toBe(200);
+      expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(secondHtml).toContain("Global CSS ISR Test");
+      for (const href of fixture.isrDevStylesheetHrefs) {
+        expect(getStylesheetHrefs(secondHtml)).toContain(href);
+      }
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages custom error HTML includes _app and error page stylesheet links", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-error-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/missing-page`);
+      const html = await res.text();
+      expect(res.status).toBe(404);
+      expect(html).toContain("Global CSS Error Test");
+      const stylesheetHrefs = getStylesheetHrefs(html);
+      for (const href of fixture.errorDevStylesheetHrefs) {
+        expect(stylesheetHrefs).toContain(href);
+      }
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2927,7 +3060,54 @@ describe("Virtual server entry generation", () => {
         "styles/app.module.css",
         "styles/transitive.module.css",
         "styles/late-transitive.module.css",
+        "styles/query.css",
+        "styles/hash.css",
       ]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets do not treat Less as a built-in Next.js stylesheet", async () => {
+    // Next.js built-in CSS rules cover css/scss/sass, not less:
+    // .nextjs-ref/packages/next/src/build/webpack/config/blocks/css/index.ts regexLikeCss.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-less-css-"));
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "styles"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "styles", "site.less"), ".lessText { color: red; }\n");
+    const appPath = path.join(tmpDir, "pages", "_app.tsx");
+    fs.writeFileSync(
+      appPath,
+      'import "@/styles/site.less";\n' +
+        "export default function App({ Component, pageProps }: any) {\n" +
+        "  return <Component {...pageProps} />;\n" +
+        "}\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      "export default function Home() { return <div>Less should not be linked</div>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./*"] } } }, null, 2),
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const assets = assetsModule.default as {
+        ssrManifest?: Record<string, string[]>;
+      };
+      expect(assets.ssrManifest?.[appPath.split(path.sep).join("/")]).toBeUndefined();
+      expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/site.less");
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2960,7 +3140,6 @@ describe("Virtual server entry generation", () => {
         const html = await res.text();
         expect(res.status).toBe(200);
         expect(html).toContain("Global CSS Pages Test");
-        expect(html).not.toContain("ignored.css");
 
         const stylesheetHrefs = getStylesheetHrefs(html);
         expect(stylesheetHrefs.length).toBeGreaterThan(0);
@@ -2978,7 +3157,6 @@ describe("Virtual server entry generation", () => {
         for (const marker of fixture.cssMarkers) {
           expect(compactCssText).toContain(marker.replace(/\s+/g, ""));
         }
-        expect(compactCssText).not.toContain("border-bottom-width:23px");
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }

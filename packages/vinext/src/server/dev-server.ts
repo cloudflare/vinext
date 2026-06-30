@@ -114,7 +114,7 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
   );
 }
 
-const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass|less)$/i;
+const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
 
 type PagesClientAssetsModule = {
   default?: {
@@ -143,6 +143,27 @@ function createDevInitialStylesheetHeadHTML(options: {
     }
   }
   return html;
+}
+
+async function collectDevInitialStylesheetHeadHTML(
+  runner: ModuleImporter,
+  moduleIds: (string | null | undefined)[],
+  nonceAttr: string,
+): Promise<string> {
+  try {
+    const pagesClientAssets = (await runner.import(
+      "virtual:vinext-pages-client-assets",
+    )) as PagesClientAssetsModule;
+    return createDevInitialStylesheetHeadHTML({
+      ssrManifest: pagesClientAssets.default?.ssrManifest,
+      moduleIds,
+      nonceAttr,
+    });
+  } catch {
+    // If dev asset metadata is unavailable, keep the existing client-graph
+    // CSS behavior instead of failing the page render.
+    return "";
+  }
 }
 
 /**
@@ -1552,21 +1573,12 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
-        let assetHeadHTML = "";
-        try {
-          const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
-          const pagesClientAssets = (await runner.import(
-            "virtual:vinext-pages-client-assets",
-          )) as PagesClientAssetsModule;
-          assetHeadHTML += createDevInitialStylesheetHeadHTML({
-            ssrManifest: pagesClientAssets.default?.ssrManifest,
-            moduleIds: [appAssetPath, route.filePath],
-            nonceAttr,
-          });
-        } catch {
-          // If dev asset metadata is unavailable, keep the existing client-graph
-          // CSS behavior instead of failing the page render.
-        }
+        const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+          runner,
+          [appAssetPath, route.filePath],
+          nonceAttr,
+        );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
@@ -1871,7 +1883,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
@@ -1958,10 +1970,10 @@ async function renderErrorPage(
 
   for (const candidate of candidates) {
     try {
-      const candidatePath = path.join(pagesDir, candidate);
-      if (!findFileWithExtensions(candidatePath, matcher)) continue;
+      const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      if (!errorAssetPath) continue;
 
-      const errorModule = await importModule(runner, candidatePath);
+      const errorModule = await importModule(runner, errorAssetPath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1969,9 +1981,10 @@ async function renderErrorPage(
       // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
+      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          const appModule = await importModule(runner, appPathErr);
+          const appModule = await importModule(runner, appAssetPath ?? appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -2034,6 +2047,14 @@ async function renderErrorPage(
       const element = createErrorElement(AppComponent, ErrorComponent);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+      const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
+      const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
+      const nonceAttr = createNonceAttribute(scriptNonce);
+      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        runner,
+        [appAssetPath, errorAssetPath],
+        nonceAttr,
+      );
 
       if (DocumentComponent) {
         const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
@@ -2041,6 +2062,7 @@ async function renderErrorPage(
           url,
           server,
           fontHeadHTML: "",
+          assetHeadHTML,
           scripts: "",
           DocumentComponent,
           statusCode,
@@ -2077,6 +2099,7 @@ async function renderErrorPage(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
