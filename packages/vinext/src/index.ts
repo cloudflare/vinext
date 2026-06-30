@@ -3983,11 +3983,16 @@ export const loadServerActionClient = ${
                 res.end("Forbidden");
                 return;
               }
+              const requestHost =
+                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
+                "localhost";
+              const requestOrigin = `http://${requestHost}`;
+              const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
               if (isImageOptimizationPath(url.split("?")[0]!)) {
-                const imageRequestUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
+                const imageRequestUrl = new URL(url, requestOrigin);
                 const allowedWidths = [
                   ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
                   ...(nextConfig.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -4152,11 +4157,6 @@ export const loadServerActionClient = ${
               );
               const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
               let filePathMatchesPagesRoute = false;
-              const requestHost =
-                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
-                "localhost";
-              const requestOrigin = `http://${requestHost}`;
-              const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
               const requestHostname = getUrlHostname(requestOrigin);
               if (isFilePathRequest && !filePathMatchesRewrite) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
