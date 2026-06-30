@@ -4152,15 +4152,18 @@ export const loadServerActionClient = ${
               );
               const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
               let filePathMatchesPagesRoute = false;
+              const requestHost =
+                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
+                "localhost";
+              const requestOrigin = `http://${requestHost}`;
+              const requestHostname = new URL(requestOrigin).hostname;
               if (isFilePathRequest && !filePathMatchesRewrite) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                   apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                 ]);
-                const requestHostname =
-                  (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host)?.split(
-                    ":",
-                  )[0] ?? "localhost";
+                // Page matching follows matchPageRoute's full i18n resolution. API matching
+                // mirrors the shared Pages pipeline lookup, which only strips a locale prefix.
                 const pageRouteUrl = nextConfig?.i18n
                   ? resolvePagesI18nRequest(
                       pathname,
@@ -4211,8 +4214,6 @@ export const loadServerActionClient = ${
                 delete req.headers[header];
               }
 
-              const requestOrigin = `http://${req.headers.host || "localhost"}`;
-
               // Build a Web Request for the pipeline (no body — middleware and
               // SSR read req directly). The pipeline only needs the body when
               // proxying external rewrites; that case is handled via
@@ -4251,7 +4252,7 @@ export const loadServerActionClient = ${
                         : "";
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
-                      const mwOrigin = `${mwProto}://${req.headers.host || "localhost"}`;
+                      const mwOrigin = `${mwProto}://${requestHost}`;
                       const middlewareRequest = new Request(new URL(url, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
