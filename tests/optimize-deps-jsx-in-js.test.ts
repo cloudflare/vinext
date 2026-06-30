@@ -22,7 +22,7 @@
  * scan itself no longer aborts on JSX-in-`.js`/`.mjs`.
  */
 
-import { describe, it, expect, afterAll } from "vite-plus/test";
+import { describe, it, expect } from "vite-plus/test";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -57,6 +57,54 @@ async function setupAppProject(): Promise<string> {
   );
   await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
   return tmpDir;
+}
+
+async function setupPagesProject(): Promise<string> {
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-optdeps-pages-jsx-"));
+  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+  await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+  await fsp.writeFile(
+    path.join(tmpDir, "pages/index.js"),
+    `export default function Page() {
+      return <main>pages jsx in js</main>;
+    }`,
+  );
+  await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+  return tmpDir;
+}
+
+async function expectDevScanAllowsJsxInJs(tmpDir: string): Promise<void> {
+  let server: ViteDevServer | null = null;
+  const scanErrors: string[] = [];
+  const logger = createLogger("silent");
+  logger.error = (msg: string) => {
+    scanErrors.push(String(msg));
+  };
+
+  try {
+    server = await createServer({
+      root: tmpDir,
+      configFile: false,
+      customLogger: logger,
+      plugins: [vinext({ appDir: tmpDir })],
+      logLevel: "silent",
+    });
+    await server.listen();
+    const addr = server.httpServer?.address();
+    const baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
+
+    // Trigger the cold-start dependency scan.
+    await fetch(`${baseUrl}/`).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+    const scanFailed = scanErrors.some((e) => e.includes("Failed to run dependency scan"));
+    expect(scanFailed).toBe(false);
+    // The specific OXC parse error must not surface for the .js file.
+    expect(scanErrors.some((e) => e.includes("Unexpected JSX expression"))).toBe(false);
+  } finally {
+    await server?.close();
+  }
 }
 
 describe("optimizeDeps: JSX in plain .js files", () => {
@@ -120,39 +168,19 @@ describe("optimizeDeps: JSX in plain .js files", () => {
   }, 20_000);
 
   describe("dev server", () => {
-    let server: ViteDevServer | null = null;
-    afterAll(async () => {
-      await server?.close();
-    });
-
     it("does not fail the dependency scan when an app .js file uses JSX", async () => {
       const tmpDir = await setupAppProject();
-      const scanErrors: string[] = [];
-      const logger = createLogger("silent");
-      logger.error = (msg: string) => {
-        scanErrors.push(String(msg));
-      };
-
       try {
-        server = await createServer({
-          root: tmpDir,
-          configFile: false,
-          customLogger: logger,
-          plugins: [vinext({ appDir: tmpDir })],
-          logLevel: "silent",
-        });
-        await server.listen();
-        const addr = server.httpServer?.address();
-        const baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
+        await expectDevScanAllowsJsxInJs(tmpDir);
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }, 60_000);
 
-        // Trigger the cold-start dependency scan.
-        await fetch(`${baseUrl}/`).catch(() => {});
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-
-        const scanFailed = scanErrors.some((e) => e.includes("Failed to run dependency scan"));
-        expect(scanFailed).toBe(false);
-        // The specific OXC parse error must not surface for the .js file.
-        expect(scanErrors.some((e) => e.includes("Unexpected JSX expression"))).toBe(false);
+    it("does not fail the dependency scan when a pages .js file uses JSX", async () => {
+      const tmpDir = await setupPagesProject();
+      try {
+        await expectDevScanAllowsJsxInJs(tmpDir);
       } finally {
         await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }
