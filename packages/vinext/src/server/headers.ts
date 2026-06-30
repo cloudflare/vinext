@@ -58,6 +58,14 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
+/** Client cached-navigation shell freshness in seconds. */
+export const VINEXT_STATIC_NAVIGATION_SHELL_STALE_TIME_HEADER =
+  "X-Vinext-Static-Navigation-Shell-Stale-Time";
+
+/** Whether a cached-navigation shell is a complete full-route payload. */
+export const VINEXT_STATIC_NAVIGATION_SHELL_COMPLETE_HEADER =
+  "X-Vinext-Static-Navigation-Shell-Complete";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 

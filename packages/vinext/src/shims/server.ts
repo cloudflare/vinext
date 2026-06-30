@@ -20,6 +20,7 @@ import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { createPartialRscShellRequestApiSuspensePromise } from "./partial-rsc-shell-request-api.js";
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -30,10 +31,11 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 // graph. If headers.ts is pulled in via static import from server.ts, the
 // transform fires on it in Pages Router fixtures that lack @vitejs/plugin-rsc.
 //
-// The connection() function in this file avoids the same problem by using
-// `await import("./headers.js")` (dynamic import, async function). after()
-// must remain synchronous, so we inline the check using the same Symbol.for
-// keys that cache-runtime.ts and cache.ts register their ALS instances with.
+// The connection() function in this file avoids the same problem for the
+// headers shim by using `await import("./headers.js")` only on the normal
+// non-shell path. after() must remain synchronous, so we inline the check using
+// the same Symbol.for keys that cache-runtime.ts and cache.ts register their
+// ALS instances with.
 // ---------------------------------------------------------------------------
 
 const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
@@ -1047,18 +1049,18 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * and sets Cache-Control: no-store on the response.
  */
 export async function connection(): Promise<void> {
-  const {
-    getHeadersContext,
-    markDynamicUsage,
-    markRenderRequestApiUsage,
-    suspendConnectionProbe,
-    throwIfInsideCacheScope,
-  } = await import("./headers.js");
+  const { getHeadersContext, markDynamicUsage, markRenderRequestApiUsage, suspendConnectionProbe } =
+    await import("./headers.js");
   if (getHeadersContext()?.forceStatic) {
     return;
   }
+  _throwIfInsideCacheScope("connection()");
+  const shellSuspense = createPartialRscShellRequestApiSuspensePromise<void>("connection");
+  if (shellSuspense !== null) {
+    await shellSuspense;
+    return;
+  }
   markRenderRequestApiUsage("connection");
-  throwIfInsideCacheScope("connection()");
   markDynamicUsage();
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {

@@ -506,6 +506,11 @@ export type ResolvedNextConfig = {
    */
   clientTraceMetadata: string[] | undefined;
   /**
+   * Enable App Router cached navigations (from `experimental.cachedNavigations`).
+   * Functional only with `cacheComponents: true`, matching Next.js' flag pairing.
+   */
+  cachedNavigations: boolean;
+  /**
    * App Router client cache freshness windows in seconds, sourced from
    * `experimental.staleTimes`. Controls how long prefetched route segments
    * are considered fresh in the client-side router cache.
@@ -1376,6 +1381,7 @@ export async function resolveNextConfig(
       compilerDefineServer: {},
       instrumentationClientInject: [],
       clientTraceMetadata: undefined,
+      cachedNavigations: false,
       staleTimes: { ...DEFAULT_STALE_TIMES },
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
@@ -1490,8 +1496,9 @@ export async function resolveNextConfig(
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
-  // so we warn when appShells is enabled and explain which co-flags are missing.
+  // vinext implements cachedNavigations independently, but does not yet implement
+  // full appShells behavior, so we warn when appShells is enabled and explain
+  // which co-flags are missing.
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
@@ -1732,6 +1739,7 @@ export async function resolveNextConfig(
           (value): value is string => typeof value === "string",
         )
       : undefined,
+    cachedNavigations: experimental?.cachedNavigations === true,
     staleTimes: resolveStaleTimes(experimental),
     useLightningcss,
     lightningCssFeatures,

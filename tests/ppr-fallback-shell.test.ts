@@ -8,6 +8,7 @@ import {
   runWithPprFallbackShellState,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheReady,
+  waitForPprFallbackShellSettled,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 function delay(ms: number): Promise<void> {
@@ -201,8 +202,8 @@ describe("ppr fallback shell render lifecycle", () => {
     expect(state.hasDynamicBoundary).toBe(false);
     expect(state.isFinalRenderStarted).toBe(false);
     expect(state.pendingCacheTasks).toBe(0);
-    expect(state.isAbortScheduled).toBe(false);
     expect(state.cacheReadyResolvers.length).toBe(0);
+    expect(state.shellReadyResolvers.length).toBe(0);
     expect(state.abortController.signal.aborted).toBe(false);
   });
 
@@ -317,6 +318,134 @@ describe("ppr fallback shell render lifecycle", () => {
 
     await ready;
     expect(isReady).toBe(true);
+    expect(state.pendingCacheTasks).toBe(0);
+
+    state.abortController.abort();
+  });
+
+  it("does not settle final static shell before a dynamic boundary is observed", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+    let isSettled = false;
+
+    const settled = waitForPprFallbackShellSettled(state).then(() => {
+      isSettled = true;
+    });
+
+    await delay(5);
+    expect(isSettled).toBe(false);
+
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("connection");
+    });
+
+    await settled;
+    expect(isSettled).toBe(true);
+
+    state.abortController.abort();
+  });
+
+  it("waits for final static shell public cache work after a dynamic boundary", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+    let finishTask!: () => void;
+    let isSettled = false;
+
+    const tracked = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(
+        () => new Promise<void>((resolve) => (finishTask = resolve)),
+        "default",
+      ),
+    );
+    const settled = waitForPprFallbackShellSettled(state).then(() => {
+      isSettled = true;
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("connection");
+    });
+
+    await delay(5);
+    expect(isSettled).toBe(false);
+
+    finishTask();
+    await tracked;
+    await settled;
+    expect(isSettled).toBe(true);
+    expect(state.pendingCacheTasks).toBe(0);
+
+    state.abortController.abort();
+  });
+
+  it("ignores final static shell private cache work by default", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+    let finishTask!: () => void;
+    let isSettled = false;
+
+    const tracked = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(
+        () => new Promise<void>((resolve) => (finishTask = resolve)),
+        "private",
+      ),
+    );
+    const settled = waitForPprFallbackShellSettled(state).then(() => {
+      isSettled = true;
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("connection");
+    });
+
+    await settled;
+    expect(isSettled).toBe(true);
+    expect(state.pendingCacheTasks).toBe(0);
+
+    finishTask();
+    await tracked;
+    state.abortController.abort();
+  });
+
+  it("waits for final static shell private cache work when runtime APIs are included", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      includePrivateCacheTasks: true,
+      routePattern: "/:locale/blog/:slug",
+    });
+    preparePprFallbackShellFinalRender(state);
+    let finishTask!: () => void;
+    let isSettled = false;
+
+    const tracked = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(
+        () => new Promise<void>((resolve) => (finishTask = resolve)),
+        "private",
+      ),
+    );
+    const settled = waitForPprFallbackShellSettled(state).then(() => {
+      isSettled = true;
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("connection");
+    });
+
+    await delay(5);
+    expect(isSettled).toBe(false);
+
+    finishTask();
+    await tracked;
+    await settled;
+    expect(isSettled).toBe(true);
     expect(state.pendingCacheTasks).toBe(0);
 
     state.abortController.abort();
