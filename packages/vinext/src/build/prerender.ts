@@ -48,6 +48,12 @@ import {
   type PrerenderRouteParamsPayload,
 } from "../server/prerender-route-params.js";
 import { startProdServer } from "../server/prod-server.js";
+import {
+  prerenderPoolAvailable,
+  resolvePrerenderPoolSize,
+  startPrerenderServerPool,
+  type PrerenderServerPool,
+} from "./prerender-server-pool.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -595,6 +601,8 @@ export async function prerenderPages({
   // ownedProdServerHandle: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  // Forked render-server pool (declared out here so the finally can close it).
+  let renderPool: PrerenderServerPool | null = null;
   try {
     // Read the prerender secret written at build time by vinext:server-manifest.
     // When _prerenderSecret is provided by the caller (hybrid builds where
@@ -653,8 +661,22 @@ export async function prerenderPages({
       filePath: string;
     };
 
-    const renderPage = (urlPath: string) =>
-      fetch(`${baseUrl}${urlPath}`, { headers: secretHeaders, redirect: "manual" });
+    // Render servers the per-route fetches are load-balanced across. Starts as
+    // the single in-process server (`baseUrl`); when there are enough routes
+    // (and we started our own server, i.e. not a hybrid shared server) we fork
+    // a pool of production servers below and repoint these ports at them so
+    // rendering — which is CPU-bound and otherwise serialized on one core —
+    // spreads across cores. getStaticPaths/secret endpoints keep using
+    // `baseUrl` (the in-process server).
+    let renderPorts: number[] = [prodServer.port];
+    let renderRoundRobin = 0;
+    const renderPage = (urlPath: string) => {
+      const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+      return fetch(`http://127.0.0.1:${port}${urlPath}`, {
+        headers: secretHeaders,
+        redirect: "manual",
+      });
+    };
 
     // Build the bundlePageRoutes list from static file analysis + route info.
     // getStaticPaths is fetched from the prod server via a prerender endpoint.
@@ -816,11 +838,28 @@ export async function prerenderPages({
       }
     }
 
+    // ── Spread rendering across a pool of production servers ──────────────
+    // Only when we own the server (not a hybrid shared server) and there are
+    // enough routes to outweigh the fork/startup cost. The main thread keeps
+    // doing the per-route fetch + file write; the forked servers do the
+    // CPU-bound rendering on their own cores.
+    let effectiveConcurrency = concurrency;
+    if (!options._prodServer && pagesBundlePath && prerenderPoolAvailable()) {
+      const poolSize = resolvePrerenderPoolSize(pagesToRender.length, concurrency);
+      if (poolSize > 1) {
+        const poolOutDir = path.dirname(path.dirname(pagesBundlePath));
+        renderPool = await startPrerenderServerPool(poolOutDir, poolSize);
+        renderPorts = renderPool.ports;
+        // Keep every server busy and overlap the main thread's writes.
+        effectiveConcurrency = Math.max(concurrency, renderPorts.length * 2);
+      }
+    }
+
     // ── Render each page ──────────────────────────────────────────────────
     let completed = 0;
     const pageResults = await runWithConcurrency(
       pagesToRender,
-      concurrency,
+      effectiveConcurrency,
       async ({ route, urlPath, revalidate }) => {
         let result: PrerenderRouteResult;
         try {
@@ -882,6 +921,11 @@ export async function prerenderPages({
     );
     results.push(...pageResults);
 
+    // A worker that crashed mid-render makes its routes fail with connection
+    // errors that are otherwise recorded as non-fatal — fail the build loudly
+    // instead of shipping partial output.
+    renderPool?.assertHealthy();
+
     // ── Render 404 page ───────────────────────────────────────────────────
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
     const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
@@ -915,6 +959,7 @@ export async function prerenderPages({
 
     return { routes: results };
   } finally {
+    if (renderPool) await renderPool.close();
     setCacheHandler(previousHandler);
     if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
     else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
@@ -976,6 +1021,12 @@ export async function prerenderApp({
   // ownedProdServer: a prod server we started ourselves and must close in finally.
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
+  // Forked render-server pool (declared out here so the finally can close it).
+  let renderPool: PrerenderServerPool | null = null;
+  // Render servers the per-route fetches are load-balanced across. Starts as the
+  // single in-process server; repointed at the forked pool below for large apps.
+  let renderPorts: number[] = [];
+  let renderRoundRobin = 0;
 
   try {
     // Start a local prod server and fetch via HTTP.
@@ -1009,12 +1060,14 @@ export async function prerenderApp({
         })();
 
     const baseUrl = `http://127.0.0.1:${prodServer.port}`;
+    renderPorts = [prodServer.port];
     const secretHeaders: Record<string, string> = prerenderSecret
       ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
 
     rscHandler = (req: Request) => {
-      // Forward the request to the local prod server.
+      // Forward the request to a prod server (round-robin across the render
+      // pool when one was forked; otherwise the single in-process server).
       // `redirect: "manual"` ensures pages that call `redirect()` surface as
       // their original 3xx response — otherwise fetch follows the Location
       // header server-side, the prerender harness sees a 200 for the
@@ -1024,7 +1077,8 @@ export async function prerenderApp({
       // document load. Mirrors the pages-prerender `renderPage` helper above.
       // See: https://github.com/cloudflare/vinext/issues/1530
       const parsed = new URL(req.url);
-      const url = `${baseUrl}${parsed.pathname}${parsed.search}`;
+      const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+      const url = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
       return fetch(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },
@@ -1502,18 +1556,41 @@ export async function prerenderApp({
       }
     }
 
+    // ── Spread rendering across a pool of production servers ──────────────
+    // Only when we own the server (not a hybrid shared server) and there are
+    // enough routes to outweigh the fork/startup cost. The main thread keeps
+    // collecting HTML/RSC and writing files; the forked servers render on
+    // their own cores.
+    let effectiveConcurrencyApp = concurrency;
+    if (!options._prodServer && prerenderPoolAvailable()) {
+      const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
+      if (poolSize > 1) {
+        renderPool = await startPrerenderServerPool(path.dirname(serverDir), poolSize);
+        renderPorts = renderPool.ports;
+        effectiveConcurrencyApp = Math.max(concurrency, renderPorts.length * 2);
+      }
+    }
+
     let completedApp = 0;
-    const appResults = await runWithConcurrency(urlsToRender, concurrency, async (urlToRender) => {
-      const result = await renderUrl(urlToRender);
-      onProgress?.({
-        completed: ++completedApp,
-        total: urlsToRender.length,
-        route: urlToRender.urlPath,
-        status: result.status,
-      });
-      return result;
-    });
+    const appResults = await runWithConcurrency(
+      urlsToRender,
+      effectiveConcurrencyApp,
+      async (urlToRender) => {
+        const result = await renderUrl(urlToRender);
+        onProgress?.({
+          completed: ++completedApp,
+          total: urlsToRender.length,
+          route: urlToRender.urlPath,
+          status: result.status,
+        });
+        return result;
+      },
+    );
     results.push(...appResults);
+
+    // Fail loudly if a render worker crashed mid-build (otherwise its routes
+    // fail with connection errors recorded as non-fatal → partial output).
+    renderPool?.assertHealthy();
 
     const outputFiles =
       mode === "export" && metadataRoutes.length > 0
@@ -1559,6 +1636,7 @@ export async function prerenderApp({
       ...(outputFiles.length > 0 ? { outputFiles } : {}),
     };
   } finally {
+    if (renderPool) await renderPool.close();
     setCacheHandler(previousHandler);
     if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
     else process.env.VINEXT_PRERENDER = previousPrerenderFlag;

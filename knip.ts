@@ -40,6 +40,9 @@ export default {
         "src/server/app-browser-entry.ts",
         "src/server/app-browser-server-action-client.ts",
         "src/server/app-ssr-entry.ts",
+        // Forked as a child process by prerender-server-pool.ts via a path
+        // constant (child_process.fork), so knip can't trace it as imported.
+        "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
