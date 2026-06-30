@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 
-// Regression test for cloudflare/vinext#13.
+// Regression test for extensionless imports of vinext init-renamed CJS configs.
 //
 // `vinext init` renames CJS config files like `tailwind.config.js` and
 // `postcss.config.js` to `.cjs` when it adds `"type": "module"` to

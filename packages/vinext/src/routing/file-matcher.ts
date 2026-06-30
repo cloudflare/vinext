@@ -131,7 +131,7 @@ export function findFileWithExts(
  * The user's pageExtensions retain their relative order, which is what
  * Next.js / Turbopack do via the `resolveExtensions` config option.
  *
- * See: cloudflare/vinext#1502, cloudflare/vinext#13
+ * See: cloudflare/vinext#1502
  */
 export function buildViteResolveExtensions(
   pageExtensions?: readonly string[] | null,

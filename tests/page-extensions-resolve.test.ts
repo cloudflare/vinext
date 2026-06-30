@@ -23,7 +23,7 @@ describe("buildViteResolveExtensions", () => {
     // Even without a user-set pageExtensions, vinext normalises to the
     // Next.js defaults `["tsx", "ts", "jsx", "js"]` and uses that order.
     // `.cjs`/`.cts` trail the list so `vinext init`-renamed CJS configs
-    // (`tailwind.config.cjs`) resolve extensionlessly — cloudflare/vinext#13.
+    // (`tailwind.config.cjs`) resolve extensionlessly.
     const extensions = buildViteResolveExtensions(undefined);
     expect(extensions).toEqual([
       ".tsx",
