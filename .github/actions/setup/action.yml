@@ -14,13 +14,34 @@ inputs:
     description: Whether to run `vp install` after setup
     required: false
     default: true
+  version:
+    description: Vite+ version to install. Defaults to the workspace catalog entry.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    - name: Resolve Vite+ version
+      id: vite-plus-version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        if [ -n "$INPUT_VERSION" ]; then
+          version="$INPUT_VERSION"
+        else
+          version="$(node "$GITHUB_ACTION_PATH/resolve-vite-plus-version.cjs")"
+        fi
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
     - name: Setup Vite+
       uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
       with:
         node-version: ${{ inputs.node-version }}
         cache: ${{ inputs.cache }}
         run-install: ${{ inputs.run-install }}
+        version: ${{ steps.vite-plus-version.outputs.version }}

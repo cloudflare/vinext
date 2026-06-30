@@ -60,6 +60,7 @@ type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
   html: string;
   htmlRenderObservation?: RenderObservation;
+  linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation?: RenderObservation;
   tags: string[];
@@ -126,7 +127,10 @@ function recordAppPageCacheOutcome(
 }
 
 export function buildAppPageCacheTags(pathname: string, extraTags: readonly string[]): string[] {
-  const tags = [pathname, `_N_T_${pathname}`, "_N_T_/layout"];
+  // Strip trailing slash for the _N_T_ tag so it matches revalidatePath(),
+  // which also strips trailing slash before building the tag.
+  const stem = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const tags = [pathname, `_N_T_${stem}`, "_N_T_/layout"];
   const segments = pathname.split("/");
   let built = "";
   for (let index = 1; index < segments.length; index++) {
@@ -153,6 +157,7 @@ function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
   contentType: string;
+  linkHeader?: string | string[];
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
@@ -166,6 +171,14 @@ function buildAppPageCachedHeaders(options: {
   applyCdnResponseHeaders(headers, { cacheControl: options.cacheControl });
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+
+  if (options.linkHeader) {
+    if (Array.isArray(options.linkHeader)) {
+      for (const value of options.linkHeader) headers.append("Link", value);
+    } else {
+      headers.set("Link", options.linkHeader);
+    }
+  }
 
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
@@ -230,6 +243,7 @@ export function buildAppPageCachedResponse(
     cacheState: options.cacheState,
     contentType: "text/html; charset=utf-8",
     isEdgeRuntime: options.isEdgeRuntime,
+    linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
   });
 
@@ -422,6 +436,7 @@ export async function readAppPageCacheResponse(
                 undefined,
                 200,
                 revalidatedPage.htmlRenderObservation,
+                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
               revalidateSeconds,
               revalidatedPage.tags,

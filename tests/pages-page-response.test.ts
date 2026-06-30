@@ -562,6 +562,47 @@ describe("pages page response", () => {
     expect(enhancePageElement).toHaveBeenCalledTimes(1);
   });
 
+  it("passes req/res into _document.getInitialProps and applies res headers/status", async () => {
+    const common = createCommonOptions();
+    const documentHeaders: Record<string, string | number | boolean | string[]> = {};
+    const documentRes = {
+      headersSent: false,
+      statusCode: 200,
+      getHeaders: () => documentHeaders,
+      setHeader(name: string, value: string | number | boolean | string[]) {
+        documentHeaders[name] = value;
+      },
+    };
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      req?: { cookies?: Record<string, string> };
+      res?: typeof documentRes;
+      renderPage: () => Promise<{ html: string }>;
+    }) => {
+      ctx.res?.setHeader("x-document-cookie", ctx.req?.cookies?.theme ?? "missing");
+      if (ctx.res) ctx.res.statusCode = 202;
+      const result = await ctx.renderPage();
+      return { html: result.html };
+    };
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      documentReqRes: {
+        req: { cookies: { theme: "dark" } },
+        res: documentRes,
+      },
+      enhancePageElement: () => React.createElement("p", null, "page"),
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-document-cookie")).toBe("dark");
+    expect(await response.text()).toContain("live-body");
+  });
+
   // Edge case: `getInitialProps` returns `styles` (the styled-components /
   // emotion pattern collects style tags and returns them). They must be
   // rendered to a string and merged into the document head.

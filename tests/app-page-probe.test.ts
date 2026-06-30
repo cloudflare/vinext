@@ -51,6 +51,23 @@ describe("app page probe helpers", () => {
     expect(calls).toEqual(["layout", "child"]);
   });
 
+  it("does not invoke client references returned below a layout result", async () => {
+    const ClientReference = Object.assign(
+      vi.fn(() => {
+        throw new Error("client reference must not execute on the server");
+      }),
+      { $$typeof: Symbol.for("react.client.reference") },
+    );
+
+    function Layout() {
+      return React.createElement("section", null, React.createElement(ClientReference));
+    }
+
+    await probeReactServerSubtree(React.createElement(Layout));
+
+    expect(ClientReference).not.toHaveBeenCalled();
+  });
+
   it("probes memo and forwardRef server components returned below a layout result", async () => {
     const calls: string[] = [];
 

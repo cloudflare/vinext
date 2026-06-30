@@ -71,7 +71,7 @@ function parsePort(raw: string, flag: string): number {
   return parsed;
 }
 
-export function parsePositiveIntegerArg(raw: string, flag: string): number {
+function parsePositiveIntegerArg(raw: string, flag: string): number {
   if (raw === "") {
     throw new Error(`${flag} requires a value, but none was provided.`);
   }

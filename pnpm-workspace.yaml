@@ -10,6 +10,7 @@ packages:
   - packages/*
   - examples/*
   - tests/fixtures/*
+  - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
 
@@ -26,6 +27,7 @@ catalog:
   "@radix-ui/react-dialog": ^1.1.14
   "@radix-ui/react-dropdown-menu": ^2.1.15
   "@radix-ui/react-slot": ^1.2.3
+  "@sentry/nextjs": 10.62.0
   "@tailwindcss/forms": 0.5.10
   "@tailwindcss/postcss": 4.1.4
   "@tailwindcss/typography": 0.5.16
@@ -62,6 +64,7 @@ catalog:
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   "@mswjs/interceptors": ^0.41.3
+  am-i-vibing: ^0.5.0
   msw: ^2.14.6
   ms: 3.0.0-canary.1
   next: 16.2.7
@@ -131,3 +134,6 @@ allowBuilds:
   # MSW's postinstall only copies a service worker into ./public for browser
   # mocking. We exclusively use msw/node, so the postinstall is unnecessary.
   msw: false
+  # @sentry/nextjs pulls in @sentry/cli for source-map upload tooling. The
+  # tests only exercise the runtime SDK, so the CLI postinstall is unnecessary.
+  "@sentry/cli": false

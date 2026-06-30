@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -53,9 +53,49 @@
       "types": "./dist/server/pages-request-pipeline.d.ts",
       "import": "./dist/server/pages-request-pipeline.js"
     },
+    "./server/pages-client-assets": {
+      "types": "./dist/server/pages-client-assets.d.ts",
+      "import": "./dist/server/pages-client-assets.js"
+    },
+    "./server/fetch-handler": {
+      "types": "./dist/server/fetch-handler.d.ts",
+      "import": "./dist/server/fetch-handler.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
+    },
+    "./server/pages-router-entry": {
+      "types": "./dist/server/pages-router-entry.d.ts",
+      "import": "./dist/server/pages-router-entry.js"
+    },
+    "./internal/server/headers": {
+      "types": "./dist/server/headers.d.ts",
+      "import": "./dist/server/headers.js"
+    },
+    "./internal/server/isr-cache": {
+      "types": "./dist/server/isr-cache.d.ts",
+      "import": "./dist/server/isr-cache.js"
+    },
+    "./internal/server/app-page-cache": {
+      "types": "./dist/server/app-page-cache.d.ts",
+      "import": "./dist/server/app-page-cache.js"
+    },
+    "./internal/build/run-prerender": {
+      "types": "./dist/build/run-prerender.d.ts",
+      "import": "./dist/build/run-prerender.js"
+    },
+    "./internal/config/dotenv": {
+      "types": "./dist/config/dotenv.d.ts",
+      "import": "./dist/config/dotenv.js"
+    },
+    "./internal/config/next-config": {
+      "types": "./dist/config/next-config.d.ts",
+      "import": "./dist/config/next-config.js"
+    },
+    "./internal/config/prerender": {
+      "types": "./dist/config/prerender.d.ts",
+      "import": "./dist/config/prerender.js"
     },
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
@@ -84,6 +124,10 @@
     "./utils/query": {
       "types": "./dist/utils/query.d.ts",
       "import": "./dist/utils/query.js"
+    },
+    "./internal/utils/project": {
+      "types": "./dist/utils/project.d.ts",
+      "import": "./dist/utils/project.js"
     }
   },
   "scripts": {
@@ -107,6 +151,7 @@
     "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "am-i-vibing": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",

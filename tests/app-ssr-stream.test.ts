@@ -1,10 +1,21 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
   fixFlightHints,
   fixPreloadAs,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
+
+it("serializes dynamic stale time into the hydration bootstrap", () => {
+  expect(
+    createNavigationRuntimeRscMetadataScript(
+      { id: "1" },
+      { pathname: "/posts/1", searchParams: [] },
+      30,
+    ),
+  ).toContain("dynamicStaleTimeSeconds:30");
+});
 
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
@@ -120,6 +131,34 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain(".done=true");
     expect(finalScripts).toContain('.rsc.push("chunk1")');
     expect(finalScripts).toContain('.rsc.push("chunk2")');
+  });
+
+  it("finalizes initial cache metadata after the RSC stream settles", async () => {
+    let initialCacheKind: "dynamic" | "static" = "static";
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
+      kind: initialCacheKind,
+      ...(initialCacheKind === "dynamic" ? { dynamicStaleTimeSeconds: 30 } : {}),
+    }));
+
+    initialCacheKind = "dynamic";
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain('"initialCacheKind":"dynamic"');
+    expect(finalScripts).toContain('"dynamicStaleTimeSeconds":30');
+    expect(finalScripts.indexOf("initialCacheKind")).toBeLessThan(
+      finalScripts.indexOf(".done=true"),
+    );
+  });
+
+  it("omits dynamic stale time from finalized static payload metadata", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
+      kind: "static",
+    }));
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain('"initialCacheKind":"static"');
+    expect(finalScripts).not.toContain("dynamicStaleTimeSeconds");
   });
 
   it("rejects getRawBuffer when the stream errors (#1002)", async () => {
