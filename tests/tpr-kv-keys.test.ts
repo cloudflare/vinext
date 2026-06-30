@@ -8,8 +8,11 @@
  * TPR must write keys in this exact format, otherwise seeded entries
  * are dead keys that result in guaranteed cache misses.
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
-import { buildTprKVPairs } from "../packages/vinext/src/cloudflare/tpr.js";
+import { buildTprKVPairs, resolveVinextProdServerPath } from "../packages/cloudflare/src/tpr.js";
 import { isrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
 
 function entry(
@@ -86,5 +89,31 @@ describe("TPR KV key format", () => {
       "_N_T_/test/page",
     ]);
     expect(parsed.lastModified).toBeTypeOf("number");
+  });
+});
+
+describe("TPR production server resolution", () => {
+  it("resolves prod-server through the app's vinext peer dependency", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-tpr-prod-server-"));
+    const vinextRoot = path.join(root, "node_modules", "vinext");
+    const prodServerPath = path.join(vinextRoot, "dist", "server", "prod-server.js");
+
+    await fs.mkdir(path.dirname(prodServerPath), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+    await fs.writeFile(
+      path.join(vinextRoot, "package.json"),
+      JSON.stringify({
+        name: "vinext",
+        type: "module",
+        exports: {
+          "./server/prod-server": "./dist/server/prod-server.js",
+        },
+      }),
+    );
+    await fs.writeFile(prodServerPath, "export function startProdServer() {}\n");
+
+    await expect(fs.realpath(resolveVinextProdServerPath(root))).resolves.toBe(
+      await fs.realpath(prodServerPath),
+    );
   });
 });

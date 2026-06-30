@@ -1,5 +1,6 @@
 /**
- * Shared project utilities — used by both `vinext init` and `vinext deploy`.
+ * Shared project utilities used by `vinext init`, the vinext plugin, and
+ * platform packages such as `@vinext/cloudflare`.
  *
  * These functions detect and modify project configuration without touching
  * any Next.js source files, config files, or tsconfig.json.
@@ -7,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 // ─── CJS Config Handling ─────────────────────────────────────────────────────
 
@@ -261,11 +263,338 @@ export function findInNodeModules(start: string, subPath: string): string | null
  * Check if a vite.config file exists in the project root.
  */
 export function hasViteConfig(root: string): boolean {
+  return findViteConfigPath(root) !== undefined;
+}
+
+/** Return the config file Vite will load, using Vite's default precedence. */
+export function findViteConfigPath(root: string): string | undefined {
+  return [
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.ts",
+    "vite.config.cjs",
+    "vite.config.mts",
+    "vite.config.cts",
+  ]
+    .map((fileName) => path.join(root, fileName))
+    .find((candidate) => fs.existsSync(candidate));
+}
+
+export function formatMissingCloudflarePluginError(options: {
+  isAppRouter: boolean;
+  configFile?: string;
+}): string {
+  const cfArg = options.isAppRouter
+    ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
+    : "";
+  const configRef = options.configFile ? options.configFile : "your Vite config";
   return (
-    fs.existsSync(path.join(root, "vite.config.ts")) ||
-    fs.existsSync(path.join(root, "vite.config.js")) ||
-    fs.existsSync(path.join(root, "vite.config.mjs"))
+    `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
+    `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
+    `  Run \`vinext init --platform=cloudflare\` to update ${configRef}.\n\n` +
+    `  Expected plugin shape:\n\n` +
+    `    cloudflare(${cfArg})`
   );
+}
+
+export type ProjectInfo = {
+  root: string;
+  isAppRouter: boolean;
+  isPagesRouter: boolean;
+  hasViteConfig: boolean;
+  hasWranglerConfig: boolean;
+  hasWorkerEntry: boolean;
+  hasCloudflarePlugin: boolean;
+  hasRscPlugin: boolean;
+  hasWrangler: boolean;
+  projectName: string;
+  /** Pages that use `revalidate` (ISR) */
+  hasISR: boolean;
+  /** package.json has "type": "module" */
+  hasTypeModule: boolean;
+  /** .mdx files detected in app/ or pages/ */
+  hasMDX: boolean;
+  /** CodeHike is a dependency */
+  hasCodeHike: boolean;
+  /** Native Node modules that need stubbing for Workers */
+  nativeModulesToStub: string[];
+};
+
+/** Check whether a wrangler config file exists in the given directory. */
+export function hasWranglerConfig(root: string): boolean {
+  return (
+    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
+    fs.existsSync(path.join(root, "wrangler.json")) ||
+    fs.existsSync(path.join(root, "wrangler.toml")) ||
+    fs.existsSync(path.join(root, "cloudflare.config.ts"))
+  );
+}
+
+/**
+ * Detect the project structure, routing mode, relevant config files, and
+ * deploy-related dependencies. This lives in core because `vinext init`, the
+ * Vite plugin, and platform packages all need the same project facts.
+ */
+export function detectProject(root: string): ProjectInfo {
+  const hasApp = resolveProjectDir(root, "app") !== null;
+  const hasPages = resolveProjectDir(root, "pages") !== null;
+
+  // Prefer App Router if both exist.
+  const isAppRouter = hasApp;
+  const isPagesRouter = !hasApp && hasPages;
+
+  const hasViteConfigFile = hasViteConfig(root);
+  const wranglerConfigExists = hasWranglerConfig(root);
+
+  const hasWorkerEntry =
+    fs.existsSync(path.join(root, "worker", "index.ts")) ||
+    fs.existsSync(path.join(root, "worker", "index.js"));
+
+  // Check node_modules for installed packages. Walk up ancestor directories so
+  // monorepo-hoisted packages are found when node_modules lives at the workspace
+  // root rather than the app root.
+  const hasCloudflarePlugin = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
+  const hasRscPlugin = findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
+  const hasWrangler =
+    findInNodeModules(root, ".bin/wrangler") !== null ||
+    findInNodeModules(root, ".bin/cf") !== null;
+
+  const pkgPath = path.join(root, "package.json");
+  let pkg: Record<string, unknown> | null = null;
+  if (fs.existsSync(pkgPath)) {
+    try {
+      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  let projectName = path.basename(root);
+  if (pkg?.name && typeof pkg.name === "string") {
+    // Workers names must be lowercase alphanumeric plus hyphens.
+    projectName = pkg.name
+      .replace(/^@[^/]+\//, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+
+  const hasTypeModule = pkg?.type === "module";
+
+  let hasISR = false;
+  let hasMDX = detectMDXFromConfig(root);
+
+  if (isAppRouter) {
+    const appDir = resolveProjectDir(root, "app");
+    if (appDir) {
+      const found = scanTreeForDetection(appDir, { isr: true, mdx: !hasMDX });
+      hasISR = found.isr;
+      hasMDX = hasMDX || found.mdx;
+    }
+  }
+
+  if (hasPages) {
+    const pagesDir = resolveProjectDir(root, "pages");
+    if (pagesDir) {
+      const found = scanTreeForDetection(pagesDir, { isr: !hasISR, mdx: !hasMDX });
+      hasISR = hasISR || found.isr;
+      hasMDX = hasMDX || found.mdx;
+    }
+  }
+
+  hasISR = hasISR || detectCacheComponents(root);
+
+  const allDeps = {
+    ...(pkg?.dependencies as Record<string, unknown> | undefined),
+    ...(pkg?.devDependencies as Record<string, unknown> | undefined),
+  };
+  const hasCodeHike = "codehike" in allDeps;
+  const nativeModulesToStub = detectNativeModules(allDeps);
+
+  return {
+    root,
+    isAppRouter,
+    isPagesRouter,
+    hasViteConfig: hasViteConfigFile,
+    hasWranglerConfig: wranglerConfigExists,
+    hasWorkerEntry,
+    hasCloudflarePlugin,
+    hasRscPlugin,
+    hasWrangler,
+    projectName,
+    hasISR,
+    hasTypeModule,
+    hasMDX,
+    hasCodeHike,
+    nativeModulesToStub,
+  };
+}
+
+const ISR_PATTERN =
+  /export\s+(?:const\s+revalidate\s*=|(?:async\s+)?function\s+getStaticProps\b|const\s+getStaticProps\s*=|\{[^}]*\bgetStaticProps\b[^}]*\})/;
+
+const ISR_SCANNABLE_EXTENSION = /\.(ts|tsx|js|jsx)$/;
+
+function resolveProjectDir(root: string, name: string): string | null {
+  const rootDir = path.join(root, name);
+  try {
+    if (fs.statSync(rootDir).isDirectory()) return rootDir;
+  } catch {
+    // Try the src/ variant.
+  }
+  const srcDir = path.join(root, "src", name);
+  try {
+    if (fs.statSync(srcDir).isDirectory()) return srcDir;
+  } catch {
+    // Not found or not a directory.
+  }
+  return null;
+}
+
+function scanTreeForDetection(
+  dir: string,
+  want: { isr: boolean; mdx: boolean },
+): { isr: boolean; mdx: boolean } {
+  const found = { isr: false, mdx: false };
+
+  const walk = (current: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if ((!want.isr || found.isr) && (!want.mdx || found.mdx)) return;
+
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        if (want.mdx && !found.mdx && entry.name.endsWith(".mdx")) {
+          found.mdx = true;
+        }
+        if (want.isr && !found.isr && ISR_SCANNABLE_EXTENSION.test(entry.name)) {
+          try {
+            if (ISR_PATTERN.test(fs.readFileSync(fullPath, "utf-8"))) {
+              found.isr = true;
+            }
+          } catch {
+            // skip unreadable files
+          }
+        }
+      }
+    }
+  };
+
+  walk(dir);
+  return found;
+}
+
+function detectMDXFromConfig(root: string): boolean {
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
+  for (const f of configFiles) {
+    const p = path.join(root, f);
+    if (fs.existsSync(p)) {
+      try {
+        const content = fs.readFileSync(p, "utf-8");
+        if (/pageExtensions.*mdx/i.test(content) || /@next\/mdx/.test(content)) return true;
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return false;
+}
+
+function detectCacheComponents(root: string): boolean {
+  const configFiles = [
+    "next.config.ts",
+    "next.config.mts",
+    "next.config.mjs",
+    "next.config.js",
+    "next.config.cjs",
+  ];
+  for (const fileName of configFiles) {
+    const configPath = path.join(root, fileName);
+    if (!fs.existsSync(configPath)) continue;
+    try {
+      if (/\bcacheComponents\s*:\s*true\b/.test(fs.readFileSync(configPath, "utf-8"))) {
+        return true;
+      }
+    } catch {
+      // ignore unreadable config files
+    }
+  }
+  return false;
+}
+
+const NATIVE_MODULES_TO_STUB = [
+  "@resvg/resvg-js",
+  "satori",
+  "lightningcss",
+  "@napi-rs/canvas",
+  "sharp",
+];
+
+function detectNativeModules(allDeps: Record<string, unknown>): string[] {
+  return NATIVE_MODULES_TO_STUB.filter((mod) => mod in allDeps);
+}
+
+type MissingDep = {
+  name: string;
+  version: string;
+};
+
+/**
+ * Check if a package is resolvable from a given root directory using Node's
+ * module resolution. Handles hoisting, pnpm symlinks, monorepos, and Yarn PnP.
+ */
+export function isPackageResolvable(root: string, packageName: string): boolean {
+  try {
+    const req = createRequire(path.join(root, "package.json"));
+    req.resolve(packageName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getMissingDeps(
+  info: ProjectInfo,
+  /** Override for testing — defaults to `isPackageResolvable` */
+  _isResolvable: (root: string, pkg: string) => boolean = isPackageResolvable,
+): MissingDep[] {
+  const missing: MissingDep[] = [];
+
+  if (!info.hasCloudflarePlugin) {
+    missing.push({ name: "@cloudflare/vite-plugin", version: "latest" });
+  }
+  if (!info.hasWrangler) {
+    missing.push({ name: "wrangler", version: "latest" });
+  }
+  if (!_isResolvable(info.root, "@vitejs/plugin-react")) {
+    missing.push({ name: "@vitejs/plugin-react", version: "latest" });
+  }
+  if (info.isAppRouter && !info.hasRscPlugin) {
+    missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+  }
+  if (info.isAppRouter && !_isResolvable(info.root, "react-server-dom-webpack")) {
+    missing.push({ name: "react-server-dom-webpack", version: "latest" });
+  }
+  if (info.hasMDX && !_isResolvable(info.root, "@mdx-js/rollup")) {
+    missing.push({ name: "@mdx-js/rollup", version: "latest" });
+  }
+
+  return missing;
 }
 
 /**

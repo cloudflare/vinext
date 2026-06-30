@@ -3,9 +3,11 @@
   "name": "pages-router-cloudflare",
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "./worker/index.ts",
+  "main": "vinext/server/fetch-handler",
   "preview_urls": true,
   "assets": {
-    "not_found_handling": "none"
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
   }
 }

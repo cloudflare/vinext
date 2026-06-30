@@ -48,6 +48,7 @@ import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js"
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +89,15 @@ type VinextConfigSubset = {
   clientTraceMetadata?: readonly string[];
   disableOptimizedLoading: boolean;
 };
+
+export function shouldEmitPagesClientTraceMetadata(
+  pageModule: PagesPageModule,
+  appComponent: unknown,
+): boolean {
+  if (typeof pageModule.getServerSideProps === "function") return true;
+  if (typeof pageModule.getStaticProps === "function") return false;
+  return hasPagesGetInitialProps(pageModule.default) || hasPagesGetInitialProps(appComponent);
+}
 
 /**
  * Options accepted by `createPagesPageHandler`.
@@ -536,6 +546,13 @@ export function createPagesPageHandler(
         const parsedRouteUrl = new URL(routeUrl, originalRequestUrl);
         const routePathname = parsedRouteUrl.pathname || "/";
         const pagesResolvedUrl = routePathname + originalRequestUrl.search;
+        const createPageReqRes = () =>
+          createPagesReqRes({
+            body: undefined,
+            query,
+            request,
+            url: originalRequestPathAndSearch,
+          });
 
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
@@ -544,14 +561,7 @@ export function createPagesPageHandler(
           buildId,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           htmlLimitedBots: vinextConfig.htmlLimitedBots,
-          createGsspReqRes() {
-            return createPagesReqRes({
-              body: undefined,
-              query,
-              request,
-              url: originalRequestPathAndSearch,
-            });
-          },
+          createGsspReqRes: createPageReqRes,
           createAppTree(appTreeProps) {
             const el = createPageElement(PageComponent, AppComponent, appTreeProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
@@ -634,6 +644,10 @@ export function createPagesPageHandler(
           renderProps = { ...renderProps, pageProps };
         }
         const gsspRes = pageDataResult.gsspRes;
+        const documentReqRes =
+          serializedPagesNextData.autoExport === true
+            ? null
+            : (pageDataResult.documentReqRes ?? createPageReqRes());
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
 
@@ -696,12 +710,13 @@ export function createPagesPageHandler(
           return buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
         }
 
-        // Include both the matched page module and the global _app module.
+        // Include both the global _app module and the matched page module.
         // _app is wrapped around every page and any CSS/JS it imports must
-        // be linked from the rendered HTML (LHF-5 symptom).
+        // be linked from the rendered HTML (LHF-5 symptom). Match Next.js
+        // document ordering: shared _app files first, then page files.
         const pageModuleIds: (string | null | undefined)[] = [];
-        if (route.filePath) pageModuleIds.push(route.filePath);
         if (appAssetPath) pageModuleIds.push(appAssetPath);
+        if (route.filePath) pageModuleIds.push(route.filePath);
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,
@@ -734,7 +749,10 @@ export function createPagesPageHandler(
           getFontLinks,
           getFontStyles,
           getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-          clientTraceMetadata: vinextConfig.clientTraceMetadata,
+          clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
+            ? vinextConfig.clientTraceMetadata
+            : undefined,
+          documentReqRes,
           gsspRes,
           isrCacheKey: pageIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,
