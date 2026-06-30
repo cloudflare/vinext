@@ -211,6 +211,7 @@ import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
+import { createBabelConfigPlugin } from "./plugins/babel-config.js";
 import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
@@ -1419,6 +1420,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     ...(viteMajorVersion >= 8 ? [] : [loadVite7TsconfigPathsPlugin(earlyBaseDir)]),
+    // Next.js honors a root Babel config before compiling JSX. Vite 8's React
+    // plugin uses OXC and no longer loads Babel configs, so run the project's
+    // configured Babel transform first when one is present.
+    createBabelConfigPlugin(() => ({
+      forceSwcTransforms: nextConfig?.forceSwcTransforms ?? false,
+      includeExternalDirs:
+        (nextConfig?.externalDir ?? false) || (nextConfig?.transpilePackages.length ?? 0) > 0,
+      serverTarget: hasCloudflarePlugin ? "webworker" : "node",
+      transpilePackages: [
+        ...(nextConfig?.turbopackTranspilePackages ?? []),
+        ...(nextConfig?.optimizePackageImports ?? []),
+      ],
+    })),
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component

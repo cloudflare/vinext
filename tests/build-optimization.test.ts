@@ -1683,6 +1683,59 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result).toBeNull();
   });
 
+  it("replaces next/babel loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), {`,
+      `  loadableGenerated: { webpack: function webpack() { return [require.resolveWeak("./dynamic-widget")]; } },`,
+      `});`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).not.toContain("resolveWeak");
+  });
+
+  it("preserves custom webpack loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), {`,
+      `  loadableGenerated: { webpack: () => ["custom-chunk"] },`,
+      `});`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("preserves custom binary-expression loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const prefix = "custom:";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), {`,
+      `  loadableGenerated: { modules: [prefix + "dynamic-widget"] },`,
+      `});`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("supports the object loader form", async () => {
     const result = await _transformNextDynamicPreloadMetadata(
       [

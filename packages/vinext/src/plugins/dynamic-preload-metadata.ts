@@ -386,10 +386,6 @@ function objectProperties(node: unknown): AstRecord[] {
   return getArray(node, "properties").filter(isRecord);
 }
 
-function hasObjectProperty(node: unknown, name: string): boolean {
-  return objectProperties(node).some((property) => propertyKeyName(property) === name);
-}
-
 function findObjectProperty(node: unknown, name: string): AstRecord | null {
   return objectProperties(node).find((property) => propertyKeyName(property) === name) ?? null;
 }
@@ -561,9 +557,61 @@ async function resolveManifestModuleIds(
   return resolvedIds;
 }
 
-function shouldSkipCall(firstArg: unknown, secondArg: unknown): boolean {
-  if (hasObjectProperty(firstArg, "loadableGenerated")) return true;
-  return hasObjectProperty(secondArg, "loadableGenerated");
+function isNextBabelLoadableGenerated(property: AstRecord): boolean {
+  const value = property.value;
+  if (!isRecord(value) || getString(value, "type") !== "ObjectExpression") return false;
+  const webpackProperty = findObjectProperty(value, "webpack");
+  if (webpackProperty && isNextBabelWebpackCallback(webpackProperty.value)) return true;
+
+  const modulesProperty = findObjectProperty(value, "modules");
+  const modules = modulesProperty?.value;
+  if (!isRecord(modules) || getString(modules, "type") !== "ArrayExpression") return false;
+  return getArray(modules, "elements").some(isNextBabelModuleElement);
+}
+
+function isNextBabelModuleElement(element: unknown): boolean {
+  if (!isRecord(element)) return false;
+  const stringValue = nodeStringValue(element);
+  if (stringValue !== null) return stringValue.includes(" -> ");
+  if (getString(element, "type") !== "BinaryExpression" || element.operator !== "+") return false;
+  const prefix = nodeStringValue(element.left);
+  return prefix !== null && prefix.endsWith(" -> ") && nodeStringValue(element.right) !== null;
+}
+
+function isNextBabelWebpackCallback(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const type = getString(value, "type");
+  if (type !== "ArrowFunctionExpression" && type !== "FunctionExpression") return false;
+
+  let returnedValue = value.body;
+  if (isRecord(returnedValue) && getString(returnedValue, "type") === "BlockStatement") {
+    const statements = getArray(returnedValue, "body");
+    if (statements.length !== 1 || !isRecord(statements[0])) return false;
+    const returnStatement = statements[0];
+    if (getString(returnStatement, "type") !== "ReturnStatement") return false;
+    returnedValue = returnStatement.argument;
+  }
+  if (!isRecord(returnedValue) || getString(returnedValue, "type") !== "ArrayExpression") {
+    return false;
+  }
+
+  const elements = getArray(returnedValue, "elements");
+  return (
+    elements.length > 0 &&
+    elements.every((element) => {
+      if (!isRecord(element) || getString(element, "type") !== "CallExpression") return false;
+      const callee = element.callee;
+      if (!isRecord(callee) || getString(callee, "type") !== "MemberExpression") return false;
+      return nodeName(callee.object) === "require" && nodeName(callee.property) === "resolveWeak";
+    })
+  );
+}
+
+function findLoadableGeneratedProperty(firstArg: unknown, secondArg: unknown): AstRecord | null {
+  return (
+    findObjectProperty(firstArg, "loadableGenerated") ??
+    findObjectProperty(secondArg, "loadableGenerated")
+  );
 }
 
 function applyLoadableGenerated(
@@ -576,9 +624,18 @@ function applyLoadableGenerated(
   const firstArg = args[0];
   const secondArg = args[1];
   if (!isRecord(firstArg)) return false;
-  if (shouldSkipCall(firstArg, secondArg)) return false;
 
   const property = `loadableGenerated: { modules: ${JSON.stringify(moduleIds)} }`;
+  const existingProperty = findLoadableGeneratedProperty(firstArg, secondArg);
+  if (existingProperty) {
+    if (!isNextBabelLoadableGenerated(existingProperty)) return false;
+    const start = getNumber(existingProperty, "start");
+    const end = getNumber(existingProperty, "end");
+    if (start === null || end === null) return false;
+    output.overwrite(start, end, property);
+    return true;
+  }
+
   const firstArgIsObject = getString(firstArg, "type") === "ObjectExpression";
   if (firstArgIsObject) {
     return appendObjectProperty(output, firstArg, property);

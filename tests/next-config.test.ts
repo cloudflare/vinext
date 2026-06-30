@@ -2019,6 +2019,8 @@ describe("detectNextIntlConfig", () => {
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       transpilePackages: [],
+      externalDir: false,
+      forceSwcTransforms: false,
       turbopackTranspilePackages: ["geist"],
       inlineCss: false,
       globalNotFound: false,

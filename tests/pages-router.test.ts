@@ -3926,6 +3926,169 @@ describe("Production build", () => {
     expect(entryContent).toContain("/ssr");
   });
 
+  it("honors a project Babel config before the JSX transform", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-babel-config-"));
+    const buildFixture = async (root: string) => {
+      const fixtureOutDir = path.join(root, "dist");
+      await build({
+        root,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+        },
+      });
+      const outputFiles = await fsp.readdir(path.join(fixtureOutDir, "server"));
+      return (
+        await Promise.all(
+          outputFiles
+            .filter((file) => /\.[cm]?js$/.test(file))
+            .map((file) => fsp.readFile(path.join(fixtureOutDir, "server", file), "utf8")),
+        )
+      ).join("\n");
+    };
+    const setupFixture = async (root: string) => {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(root, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, ".babelrc"),
+        JSON.stringify({ presets: ["next/babel"], plugins: ["./replace-babel-sentinel.cjs"] }),
+      );
+      await fsp.writeFile(
+        path.join(root, "replace-babel-sentinel.cjs"),
+        `module.exports = function () {
+  return { visitor: { StringLiteral(path) {
+    if (path.node.value === "BABEL_CONFIG_BEFORE") path.node.value = "BABEL_CONFIG_AFTER";
+    if (path.node.value === "PACKAGE_BABEL_BEFORE") path.node.value = "PACKAGE_BABEL_AFTER";
+  } } };
+};\n`,
+      );
+    };
+
+    try {
+      const defaultRoot = path.join(tmpRoot, "default");
+      await fsp.mkdir(defaultRoot);
+      await setupFixture(defaultRoot);
+      await fsp.writeFile(
+        path.join(defaultRoot, "babel.config.cjs"),
+        `throw new Error("babel.config.cjs must not override the selected .babelrc");\n`,
+      );
+      await fsp.writeFile(
+        path.join(defaultRoot, "replace-empty-module.cjs"),
+        `module.exports = function () {
+  return { visitor: { Program(path, state) {
+    if (state.filename.endsWith("empty.js")) path.node.body = [];
+  } } };
+};\n
+`,
+      );
+      await fsp.writeFile(
+        path.join(defaultRoot, ".babelrc"),
+        JSON.stringify({
+          presets: ["next/babel"],
+          plugins: ["./replace-babel-sentinel.cjs", "./replace-empty-module.cjs"],
+        }),
+      );
+      await fsp.writeFile(
+        path.join(defaultRoot, "pages", "index.jsx"),
+        `import React from "react";
+import "../empty.js";
+export default class Page extends React.Component {
+  render() { return <div>BABEL_CONFIG_BEFORE</div>; }
+}\n`,
+      );
+      await fsp.writeFile(
+        path.join(defaultRoot, "empty.js"),
+        `console.log("EMPTY_MODULE_MARKER");\n`,
+      );
+      const output = await buildFixture(defaultRoot);
+      expect(output).toContain("BABEL_CONFIG_AFTER");
+      expect(output).not.toContain("BABEL_CONFIG_BEFORE");
+      expect(output).not.toContain("EMPTY_MODULE_MARKER");
+
+      const packageRoot = path.join(tmpRoot, "transpile-package");
+      await fsp.mkdir(packageRoot);
+      await setupFixture(packageRoot);
+      await fsp.mkdir(path.join(packageRoot, "vendor", "node_modules", "babel-fixture-package"), {
+        recursive: true,
+      });
+      await fsp.writeFile(
+        path.join(packageRoot, "vendor", "node_modules", "babel-fixture-package", "package.json"),
+        JSON.stringify({ name: "babel-fixture-package", type: "module", exports: "./index.js" }),
+      );
+      await fsp.writeFile(
+        path.join(packageRoot, "vendor", "node_modules", "babel-fixture-package", "index.js"),
+        `export const packageSentinel = "PACKAGE_BABEL_BEFORE";\n`,
+      );
+      await fsp.writeFile(
+        path.join(packageRoot, "pages", "index.jsx"),
+        `import { packageSentinel } from "../vendor/node_modules/babel-fixture-package/index.js";
+export default function Page() { return <div>{packageSentinel}</div>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(packageRoot, "next.config.mjs"),
+        `export default { transpilePackages: ["babel-fixture-package"] };\n`,
+      );
+      const packageOutput = await buildFixture(packageRoot);
+      expect(packageOutput).toContain("PACKAGE_BABEL_AFTER");
+      expect(packageOutput).not.toContain("PACKAGE_BABEL_BEFORE");
+
+      const externalRoot = path.join(tmpRoot, "external-dir");
+      const externalSourceRoot = path.join(tmpRoot, "external-source");
+      await fsp.mkdir(externalRoot);
+      await fsp.mkdir(externalSourceRoot);
+      await setupFixture(externalRoot);
+      await fsp.writeFile(
+        path.join(externalSourceRoot, "shared.js"),
+        `export const externalSentinel = "PACKAGE_BABEL_BEFORE";\n`,
+      );
+      await fsp.writeFile(
+        path.join(externalRoot, "pages", "index.jsx"),
+        `import { externalSentinel } from "../../external-source/shared.js";
+export default function Page() { return <div>{externalSentinel}</div>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(externalRoot, "next.config.mjs"),
+        `export default { transpilePackages: ["unused-package"] };\n`,
+      );
+      const externalOutput = await buildFixture(externalRoot);
+      expect(externalOutput).toContain("PACKAGE_BABEL_AFTER");
+      expect(externalOutput).not.toContain("PACKAGE_BABEL_BEFORE");
+
+      const forcedRoot = path.join(tmpRoot, "forced-swc");
+      await fsp.mkdir(forcedRoot);
+      await setupFixture(forcedRoot);
+      await fsp.writeFile(
+        path.join(forcedRoot, "pages", "index.jsx"),
+        `export default function Page() { return <div>BABEL_CONFIG_BEFORE</div>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(forcedRoot, "next.config.mjs"),
+        `export default { experimental: { forceSwcTransforms: true } };\n`,
+      );
+      const forcedSwcOutput = await buildFixture(forcedRoot);
+      expect(forcedSwcOutput).toContain("BABEL_CONFIG_BEFORE");
+      expect(forcedSwcOutput).not.toContain("BABEL_CONFIG_AFTER");
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips Vite resource-query modules in the Babel transform", async () => {
+    const { isViteSpecialQuery } = await import("../packages/vinext/src/plugins/babel-config.js");
+    expect(isViteSpecialQuery("/app/source.js?raw")).toBe(true);
+    expect(isViteSpecialQuery("/app/source.js?url&inline")).toBe(true);
+    expect(isViteSpecialQuery("/app/source.js?worker")).toBe(true);
+    expect(isViteSpecialQuery("/app/source.js?sharedworker")).toBe(true);
+    expect(isViteSpecialQuery("/app/source.js?__rsc")).toBe(false);
+  });
+
   // Ported from Next.js: test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
   it("resolves framework-owned SWC helpers when they are not hoisted", async () => {
