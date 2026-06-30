@@ -35,6 +35,7 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { startProdServer } from "../server/prod-server.js";
+import { assertNoStaticExportInterceptionRoutes } from "./interception-static-export.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -169,15 +170,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // Mark the entire prerender orchestration so the socket-error backstop
-  // re-throws peer-disconnect errors during user fetch() calls instead of
-  // silently absorbing them and producing corrupt output. prerender.ts
-  // sets and clears this var around its own render passes, but we widen
-  // the scope here to cover startProdServer / shared-server setup that
-  // happens before those phases run. See server/socket-error-backstop.ts.
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
-
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
@@ -209,6 +201,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // In export mode, SSR routes and any dynamic routes without static params are
   // build errors rather than silently skipped.
   const mode = config.output === "export" ? "export" : "default";
+  const appRoutes = appDir ? await appRouter(appDir, config.pageExtensions) : null;
+  if (mode === "export" && appRoutes) {
+    assertNoStaticExportInterceptionRoutes(appRoutes);
+  }
   const allRoutes: PrerenderRouteResult[] = [];
   const allOutputFiles: string[] = [];
 
@@ -240,6 +236,13 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let sharedProdServer: { server: HttpServer; port: number } | null = null;
   let sharedPrerenderSecret: string | undefined;
 
+  // Mark the server-backed prerender orchestration so the socket-error
+  // backstop re-throws peer-disconnect errors during user fetch() calls.
+  // Static-export route validation above intentionally runs first so an
+  // unsupported route graph cannot leak process-global prerender state.
+  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
+  process.env.VINEXT_PRERENDER = "1";
+
   try {
     if (appDir && pagesDir) {
       // Hybrid build: start a single shared prod server.
@@ -259,8 +262,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── App Router phase ──────────────────────────────────────────────────────
-    if (appDir) {
-      const routes = await appRouter(appDir, config.pageExtensions);
+    if (appDir && appRoutes) {
       const metadataRoutes = scanMetadataFiles(appDir);
 
       // We don't know the exact render-queue size until prerenderApp starts, so
@@ -269,7 +271,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       let appTotal = 0;
       const result = await prerenderApp({
         mode,
-        routes,
+        routes: appRoutes,
         metadataRoutes,
         outDir,
         skipManifest: true,

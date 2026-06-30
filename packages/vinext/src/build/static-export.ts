@@ -22,6 +22,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { prerenderPages, prerenderApp, type PrerenderRouteResult } from "./prerender.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
+import { assertNoStaticExportInterceptionRoutes } from "./interception-static-export.js";
 
 export type StaticExportOptions = {
   /**
@@ -137,6 +138,8 @@ export type AppStaticExportOptions = {
 export async function staticExportApp(
   options: AppStaticExportOptions,
 ): Promise<StaticExportResult> {
+  assertNoStaticExportInterceptionRoutes(options.routes);
+
   const metadataRoutes = options.appDir ? scanMetadataFiles(options.appDir) : [];
 
   const result = await prerenderApp({

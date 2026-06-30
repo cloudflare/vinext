@@ -1496,6 +1496,49 @@ describe("runPrerender — output: 'export' wiring", () => {
       }),
     ).rejects.toThrow(/\/ssr/);
   });
+
+  it("rejects App Router interception routes before starting the prerender server", async () => {
+    const root = tmpDir("vinext-interception-export-");
+    const appDir = path.join(root, "app");
+
+    try {
+      fs.mkdirSync(path.join(appDir, "@modal", "(.)page"), { recursive: true });
+      fs.mkdirSync(path.join(appDir, "page"), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children, modal }) { return <html><body>{children}{modal}</body></html> }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "page.tsx"),
+        "export default function Page() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "@modal", "default.tsx"),
+        "export default function Default() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "@modal", "(.)page", "page.tsx"),
+        "export default function InterceptedPage() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "page", "page.tsx"),
+        "export default function TargetPage() { return null }",
+      );
+
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+      const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
+      await expect(
+        runPrerender({
+          root,
+          nextConfigOverride: { output: "export" },
+          rscBundlePath: path.join(root, "missing-server-bundle.js"),
+        }),
+      ).rejects.toThrow("Intercepting routes are not supported with static export.");
+      expect(process.env.VINEXT_PRERENDER).toBe(previousPrerenderFlag);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── run-prerender fatal-route gate (#1982) ───────────────────────────────────

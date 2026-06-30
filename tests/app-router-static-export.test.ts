@@ -21,7 +21,11 @@ describe("App Router Static export", () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE_DIR, "app");
-    const routes = await appRouter(appDir);
+    const routes = (await appRouter(appDir)).filter(
+      (route) =>
+        route.siblingIntercepts.length === 0 &&
+        route.parallelSlots.every((slot) => slot.interceptingRoutes.length === 0),
+    );
     const config = await resolveNextConfig({ output: "export" });
 
     const result = await staticExportApp({
@@ -110,6 +114,82 @@ describe("App Router Static export", () => {
       expect(result.errors.some((e) => e.error.includes("generateStaticParams"))).toBe(true);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects interception routes with static export", async () => {
+    // Ported from Next.js: test/e2e/app-dir/interception-routes-output-export/interception-routes-output-export.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/interception-routes-output-export/interception-routes-output-export.test.ts
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { appRouter, invalidateAppRouteCache } =
+      await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    const fixtureDir = path.resolve(APP_FIXTURE_DIR, "interception-export-fixture");
+    const appDir = path.join(fixtureDir, "app");
+    const tempDir = path.join(fixtureDir, "out");
+
+    try {
+      fs.mkdirSync(path.join(appDir, "@modal", "(.)page"), { recursive: true });
+      fs.mkdirSync(path.join(appDir, "page"), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children, modal }) { return <html><body>{children}{modal}</body></html> }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "page.tsx"),
+        "export default function Page() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "@modal", "default.tsx"),
+        "export default function Default() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "@modal", "(.)page", "page.tsx"),
+        "export default function InterceptedPage() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "page", "page.tsx"),
+        "export default function TargetPage() { return null }",
+      );
+
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({ output: "export" });
+
+      await expect(
+        staticExportApp({ routes, appDir, rscBundlePath, outDir: tempDir, config }),
+      ).rejects.toThrow("Intercepting routes are not supported with static export.");
+
+      fs.rmSync(path.join(appDir, "@modal"), { recursive: true, force: true });
+      fs.mkdirSync(path.join(appDir, "source", "(.)target"), { recursive: true });
+      fs.mkdirSync(path.join(appDir, "target"), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "source", "page.tsx"),
+        "export default function SourcePage() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "source", "(.)target", "page.tsx"),
+        "export default function InterceptedTarget() { return null }",
+      );
+      fs.writeFileSync(
+        path.join(appDir, "target", "page.tsx"),
+        "export default function TargetPage() { return null }",
+      );
+
+      invalidateAppRouteCache();
+      const siblingRoutes = await appRouter(appDir);
+      await expect(
+        staticExportApp({
+          routes: siblingRoutes,
+          appDir,
+          rscBundlePath,
+          outDir: tempDir,
+          config,
+        }),
+      ).rejects.toThrow("Intercepting routes are not supported with static export.");
+    } finally {
+      invalidateAppRouteCache();
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
 
