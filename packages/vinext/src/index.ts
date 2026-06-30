@@ -1426,7 +1426,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
-    commonjs(),
+    //
+    // Skip project-local `.cjs`/`.cts` files. `vinext init` renames CJS config
+    // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
+    // it adds `"type": "module"`, and app code imports them extensionlessly
+    // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
+    // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
+    // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
+    // rewritten output as CommonJS, failing with "Cannot use export statement
+    // outside a module". Returning `false` makes vite-plugin-commonjs skip these
+    // project-local files so rolldown's own CJS interop bundles them instead.
+    // For everything else we return `undefined` to preserve the plugin's
+    // defaults — including its existing skip of node_modules `.cjs` files.
+    commonjs({
+      filter: (id: string) =>
+        /\.c[jt]s(?:\?.*)?$/.test(id) && !id.split("?")[0].includes("/node_modules/")
+          ? false
+          : undefined,
+    }),
     // Enable JSX in plain .js files. Next.js allows JSX in .js files
     // (Babel/SWC handle it transparently), but Vite 8's built-in `vite:oxc`
     // plugin excludes .js files by default (`exclude: /\.js$/`) AND infers
