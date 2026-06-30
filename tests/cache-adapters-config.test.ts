@@ -18,7 +18,7 @@ import {
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
@@ -87,6 +87,23 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
+  });
+
+  it("logs registration failures without printing raw Error stack traces", () => {
+    const code = generateCacheAdaptersModule({
+      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
+    });
+    expect(code).toContain("function __vinextFormatAdapterError(error)");
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).not.toContain('", error);');
   });
 
   it("escapes adapter specifiers so absolute paths are safe", () => {
@@ -208,7 +225,7 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("Pages Router worker entry registers with env", () => {
-    const code = generatePagesRouterWorkerEntry();
+    const code = readPagesRouterEntrySource();
     expect(code).toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain("registerConfiguredCacheAdapters(env)");
   });

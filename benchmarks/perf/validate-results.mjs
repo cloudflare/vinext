@@ -581,10 +581,9 @@ if (sourceEvent === "pull_request") {
   }
 }
 
-const commit = githubApi(`repos/${commitRepository}/commits/${payload.run.commitSha}`);
+const commit = githubApi(`repos/${commitRepository}/git/commits/${payload.run.commitSha}`);
 assert(
-  new Date(payload.run.measuredAt).toISOString() ===
-    new Date(commit.commit.committer.date).toISOString(),
+  new Date(payload.run.measuredAt).toISOString() === new Date(commit.committer.date).toISOString(),
   "Performance measuredAt does not match the commit timestamp",
 );
 

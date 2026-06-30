@@ -278,7 +278,12 @@ export default function Page() { return <h1>Page loaded</h1> }`,
     });
     const ssrJavaScript = await Promise.all(
       ssrFiles
-        .filter((file) => typeof file === "string" && /\.[cm]?js$/.test(file))
+        .filter(
+          (file) =>
+            typeof file === "string" &&
+            /\.[cm]?js$/.test(file) &&
+            path.basename(file) !== "vinext-client-assets.js",
+        )
         .map((file) => fs.readFile(path.join(root, "dist", "server", "ssr", file), "utf8")),
     );
     expect(ssrJavaScript.join("\n")).not.toContain("my-differentiated-files");

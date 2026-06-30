@@ -126,6 +126,12 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /** Stable implicit children-slot identity for parallel-slot sub-route families. */
+  childrenSlot?: {
+    id: string;
+    ownerTreePath: string;
+    state: "active" | "default" | "unmatched";
+  };
   /**
    * Interception markers not wrapped in an `@slot` directory.
    * On soft-nav, the intercepting page replaces the entire page response.
@@ -173,6 +179,15 @@ export type AppRoute = {
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
    */
   routeSegments: string[];
+  /**
+   * Active filesystem segments for the default `children` slot.
+   *
+   * Synthetic routes materialized only from named parallel-slot pages still
+   * use the full `routeSegments` for URL matching, params, and route identity,
+   * but their children slot renders the parent's default.tsx. In that case the
+   * active children segments remain at the parent route.
+   */
+  childrenRouteSegments?: string[];
   /** Tree position (directory depth from app/ root) for each template. */
   templateTreePositions?: number[];
   /**
@@ -444,6 +459,26 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       slotIds: route.parallelSlots.map((slot) => slot.id).sort(compareStableStrings),
     });
 
+    if (route.childrenSlot) {
+      const ownerLayoutId = findRouteManifestOwnerLayoutIdByTreePath(
+        route,
+        route.childrenSlot.ownerTreePath,
+      );
+      routeEntries.get(route.ids.route)!.slotIds = [
+        ...routeEntries.get(route.ids.route)!.slotIds,
+        route.childrenSlot.id,
+      ].sort(compareStableStrings);
+      slotBindings.set(`${route.ids.route}::${route.childrenSlot.id}`, {
+        id: `${route.ids.route}::${route.childrenSlot.id}`,
+        routeId: route.ids.route,
+        slotId: route.childrenSlot.id,
+        ownerLayoutId,
+        state: route.childrenSlot.state,
+        defaultId: null,
+        routeSegments: null,
+      });
+    }
+
     if (route.ids.page) {
       pages.set(route.ids.page, {
         id: route.ids.page,
@@ -635,6 +670,16 @@ function findRouteManifestOwnerLayoutId(
   treePosition: number,
 ): string | null {
   const layoutIndex = route.layoutTreePositions.indexOf(treePosition);
+  return route.ids.layouts[layoutIndex] ?? null;
+}
+
+function findRouteManifestOwnerLayoutIdByTreePath(
+  route: AppRouteGraphRoute,
+  treePath: string,
+): string | null {
+  const layoutIndex = route.layoutTreePositions.findIndex(
+    (treePosition) => createAppRouteGraphTreePath(route.routeSegments, treePosition) === treePath,
+  );
   return route.ids.layouts[layoutIndex] ?? null;
 }
 
@@ -957,10 +1002,20 @@ export async function buildAppRouteGraph(
     const dir = path.posix.dirname(file);
     const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
-    if (discoverParallelSlots(routeDir, appDir, scanMatcher).length === 0) continue;
+    if (discoverParallelSlots(routeDir, appDir, scanMatcher, true).length === 0) continue;
 
-    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null);
+    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null, true);
     if (!route) continue;
+    const optionalCatchAllOwnsPattern = routes.some(
+      (candidate) =>
+        candidate.patternParts.length === route.patternParts.length + 1 &&
+        candidate.patternParts.at(-1)?.endsWith("*") &&
+        patternsStructurallyEquivalent(candidate.patternParts.slice(0, -1), route.patternParts),
+    );
+    if (optionalCatchAllOwnsPattern) {
+      ghostParentRoutes.push(route);
+      continue;
+    }
     if (routePatterns.has(route.pattern)) {
       ghostParentRoutes.push(route);
       continue;
@@ -1050,9 +1105,9 @@ function validatePageRouteConflicts(routes: readonly AppRoute[], appDir: string)
 }
 
 function formatAppFilePath(filePath: string, appDir: string): string {
-  const relativePath = path.relative(appDir, filePath).replace(/\\/g, "/");
+  const relativePath = normalizePathSeparators(path.relative(appDir, filePath));
   const parsedPath = path.parse(relativePath);
-  const withoutExtension = path.join(parsedPath.dir, parsedPath.name).replace(/\\/g, "/");
+  const withoutExtension = normalizePathSeparators(path.join(parsedPath.dir, parsedPath.name));
   return withoutExtension.startsWith("/") ? withoutExtension : `/${withoutExtension}`;
 }
 
@@ -1178,6 +1233,15 @@ function discoverSlotSubRoutes(
 
     if (subPathMap.size === 0) continue;
 
+    const childrenOwnerTreePath = parentRoute.parallelSlots.find(
+      (slot) => path.dirname(slot.ownerDir) === parentPageDir,
+    )?.ownerTreePath;
+    if (!childrenOwnerTreePath) {
+      throw new Error(
+        `[vinext] App route graph invariant violated: missing children slot owner for ${parentRoute.pattern}`,
+      );
+    }
+
     // Find the default.tsx for the children slot at the parent directory.
     // When the parent route has a children page, a default.tsx is required so
     // the synthetic sub-route has a fallback for the children slot. Layout-only
@@ -1185,6 +1249,38 @@ function discoverSlotSubRoutes(
     // never occupied at the parent level, so the sub-route simply renders null.
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
+    const childrenSlotId = createAppRouteGraphSlotId("children", childrenOwnerTreePath);
+    if (parentRoute.pagePath) {
+      parentRoute.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
+    for (const route of routes) {
+      if (!route.pagePath || route === parentRoute) continue;
+      const relativePageDir = path.relative(parentPageDir, path.dirname(route.pagePath));
+      if (
+        relativePageDir === "" ||
+        relativePageDir === ".." ||
+        relativePageDir.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePageDir)
+      ) {
+        continue;
+      }
+      const existingOwnerDepth = route.childrenSlot?.ownerTreePath
+        .split("/")
+        .filter(Boolean).length;
+      const candidateOwnerDepth = childrenOwnerTreePath.split("/").filter(Boolean).length;
+      if (existingOwnerDepth !== undefined && existingOwnerDepth >= candidateOwnerDepth) {
+        continue;
+      }
+      route.childrenSlot = {
+        id: childrenSlotId,
+        ownerTreePath: childrenOwnerTreePath,
+        state: "active",
+      };
+    }
 
     // When a slot sub-route has no children page of its own (no page.tsx for
     // the sub-path and no default.tsx for the children slot), Next.js falls
@@ -1284,6 +1380,11 @@ function discoverSlotSubRoutes(
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
         parallelSlots: subSlots,
+        childrenSlot: {
+          id: childrenSlotId,
+          ownerTreePath: childrenOwnerTreePath,
+          state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
+        },
         loadingPath: parentRoute.loadingPath,
         errorPath: parentRoute.errorPath,
         layoutErrorPaths: parentRoute.layoutErrorPaths,
@@ -1294,6 +1395,7 @@ function discoverSlotSubRoutes(
         unauthorizedPath: parentRoute.unauthorizedPath,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+        childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
         isDynamic: parentRoute.isDynamic || subIsDynamic,
@@ -1317,6 +1419,42 @@ function discoverSlotSubRoutes(
  * and intercepting route directories.
  */
 type SlotSubPageEntry = { relativePath: string; pagePath: string };
+
+// Per-scan memo of raw directory reads (withFileTypes). Inherited parallel-slot
+// discovery walks every ancestor directory of a route and reads it with
+// `fs.readdirSync` to look for `@slot` directories; because routes share
+// ancestors, the same directory is otherwise read once per descendant route
+// (super-linear: a route dir with N siblings is read O(N) times across the
+// scan). Keyed by the per-scan matcher clone (like `findSlotSubPagesCache`
+// below) so it is scoped to a single scan and collected afterwards — no
+// cross-scan pollution in long-lived dev servers.
+const dirEntriesCache = new WeakMap<ValidFileMatcher, Map<string, fs.Dirent[]>>();
+
+function readDirEntriesCached(dir: string, matcher: ValidFileMatcher): fs.Dirent[] {
+  let perMatcher = dirEntriesCache.get(matcher);
+  if (!perMatcher) {
+    perMatcher = new Map();
+    dirEntriesCache.set(matcher, perMatcher);
+  }
+  let entries = perMatcher.get(dir);
+  if (entries === undefined) {
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      // Only a *missing* directory is an expected empty result — this replaces
+      // the prior `fs.existsSync(dir)` guard, and caching [] keeps a known-absent
+      // dir from being re-probed for every descendant route. Any other fault
+      // (EACCES, EMFILE/ENFILE, …) is real: rethrow it like the original
+      // unguarded `readdirSync` did, rather than silently caching an empty
+      // listing that would drop routes/slots for the rest of the scan.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      entries = [];
+    }
+    perMatcher.set(dir, entries);
+  }
+  return entries;
+}
 
 // Per-scan memo: a slot directory's sub-pages depend only on the directory
 // contents and the matcher's accepted extensions. Inherited slots get scanned
@@ -1476,6 +1614,7 @@ function directoryToAppRoute(
   matcher: ValidFileMatcher,
   pagePath: string | null,
   routePath: string | null,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphRoute | null {
   const segments = dir === "." ? [] : dir.split("/");
 
@@ -1510,6 +1649,7 @@ function directoryToAppRoute(
 
   // Discover loading, error in the route's directory.
   const routeDir = dir === "." ? appDir : path.posix.join(appDir, dir);
+  const effectivePagePath = pagePath ?? (routePath ? null : findFile(routeDir, "default", matcher));
   const loadingPath = findFile(routeDir, "loading", matcher);
   const errorPath = findFile(routeDir, "error", matcher);
 
@@ -1528,12 +1668,18 @@ function directoryToAppRoute(
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
-  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir, matcher);
+  const parallelSlots = discoverInheritedParallelSlots(
+    segments,
+    appDir,
+    routeDir,
+    matcher,
+    includeNestedOnlySlots,
+  );
 
   return {
     ids: createAppRouteSemanticIds({
       pattern: pattern === "/" ? "/" : pattern,
-      pagePath,
+      pagePath: effectivePagePath,
       routePath,
       routeSegments: segments,
       layoutTreePositions,
@@ -1541,7 +1687,7 @@ function directoryToAppRoute(
       slots: parallelSlots,
     }),
     pattern: pattern === "/" ? "/" : pattern,
-    pagePath,
+    pagePath: effectivePagePath,
     routePath,
     layouts,
     templates,
@@ -1855,6 +2001,7 @@ function discoverInheritedParallelSlots(
   appDir: string,
   routeDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
   const slotMap = new Map<string, AppRouteGraphParallelSlot>();
 
@@ -1886,9 +2033,14 @@ function discoverInheritedParallelSlots(
     if (lvlLayoutIdx < 0 && routeHasLayout) continue;
 
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
-    const slotsAtLevel = discoverParallelSlots(dir, appDir, matcher);
     const segmentsBelow = segments.slice(segmentIndex);
     const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
+    const slotsAtLevel = discoverParallelSlots(
+      dir,
+      appDir,
+      matcher,
+      includeNestedOnlySlots && isActiveUrlLevel,
+    );
 
     for (const slot of slotsAtLevel) {
       if (isActiveUrlLevel) {
@@ -2112,12 +2264,7 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
   if (directPage) return directPage;
 
   // Walk route-group subdirectories (transparent in the URL).
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(slotDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
+  const entries = readDirEntriesCached(slotDir, matcher);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
@@ -2129,21 +2276,19 @@ function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | 
 
 /**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
- * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
+ * Returns a ParallelSlot for each @-prefixed subdirectory that has a page,
+ * default component, intercepting route, or nested page-backed sub-route.
  *
  * `dir` and `appDir` must be forward-slash. The slot directory is built from
- * `dir` with `path.posix.join`, and the owner segments and slot key come from
- * `path.posix.relative(appDir, …)`, which only yields a forward-slash relative
- * path when both operands already are.
+ * `dir` with `path.posix.join`.
  */
 function discoverParallelSlots(
   dir: string,
   appDir: string,
   matcher: ValidFileMatcher,
+  includeNestedOnlySlots = false,
 ): AppRouteGraphParallelSlot[] {
-  if (!fs.existsSync(dir)) return [];
-
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const entries = readDirEntriesCached(dir, matcher);
   const slots: AppRouteGraphParallelSlot[] = [];
 
   for (const entry of entries) {
@@ -2164,20 +2309,23 @@ function discoverParallelSlots(
     const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
+    const hasNestedPages = includeNestedOnlySlots && findSlotSubPages(slotDir, matcher).length > 0;
 
-    // Only include slots that have at least a page, default, or intercepting route
-    if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
+    // A slot with only nested pages still owns URL sub-routes. Keeping it in
+    // the graph lets discoverSlotSubRoutes materialize shapes such as
+    // `@slot/other/page.tsx` when the owner has no children page of its own.
+    if (!pagePath && !defaultPath && interceptingRoutes.length === 0 && !hasNestedPages) continue;
 
-    const ownerSegments = path.posix
+    const ownerSegments = path
       .relative(appDir, dir)
-      .split("/")
+      .split(path.sep)
       .filter((segment) => segment.length > 0);
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
-      key: `${slotName}@${path.posix.relative(appDir, slotDir)}`,
+      key: `${slotName}@${normalizePathSeparators(path.relative(appDir, slotDir))}`,
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
@@ -2229,8 +2377,7 @@ function isInterceptionMarkerDir(name: string): boolean {
  * They intercept navigation to another route and render within the slot instead.
  *
  * `slotDir`, `routeDir`, and `appDir` must be forward-slash. They are passed
- * down to `path.posix.join` and `path.posix.relative` when building the
- * intercept page paths and target patterns.
+ * down to `path.posix.join` when building the intercept page paths.
  *
  * @param slotDir - The parallel slot directory (e.g. app/feed/@modal)
  * @param routeDir - The directory of the route that owns this slot (e.g. app/feed)
@@ -2260,6 +2407,10 @@ function discoverInterceptingRoutes(
  * Sibling intercepts use the same conventions and target-computation logic as
  * slot intercepts, but their intercepting page replaces the full page response
  * (not a slot) during soft navigation.
+ *
+ * `appDir` and each route's `pagePath` / `routePath` must be forward-slash. The
+ * owner directories are derived from `pagePath` / `routePath` and matched
+ * against `appDir`-relative paths built with `path.posix.*`.
  */
 function discoverSiblingInterceptingRoutes(
   routes: AppRouteGraphRoute[],
@@ -2274,8 +2425,7 @@ function discoverSiblingInterceptingRoutes(
   for (const route of routes) {
     const filePath = route.pagePath ?? route.routePath;
     if (!filePath) continue;
-    // Keys are forward-slash — findOwnerRouteForDir compares in that space.
-    const routeDir = normalizePathSeparators(path.dirname(filePath));
+    const routeDir = path.posix.dirname(filePath);
     if (!routesByDir.has(routeDir)) {
       routesByDir.set(routeDir, route);
     }
@@ -2295,7 +2445,7 @@ function discoverSiblingInterceptingRoutes(
       // Skip @slot subtrees — their markers are handled by the slot path
       if (entry.name.startsWith("@")) continue;
 
-      const childDir = path.join(dir, entry.name);
+      const childDir = path.posix.join(dir, entry.name);
       const marker = matchInterceptConvention(entry.name);
 
       if (marker) {
@@ -2399,8 +2549,7 @@ export function findOwnerRouteForDir(
  * intercepting route directories.
  *
  * `currentDir`, `routeDir`, and `appDir` must be forward-slash. `currentDir`
- * descends with `path.posix.join` and all three reach the `path.posix.join` /
- * `path.posix.relative` calls that build the intercept page paths and patterns.
+ * descends with `path.posix.join` when building the intercept page paths.
  */
 function scanForInterceptingPages(
   currentDir: string,
@@ -2464,6 +2613,12 @@ function matchInterceptConvention(name: string): { prefix: string; convention: s
 /**
  * Collect page.tsx files inside an intercepting route directory tree
  * and compute their target URL patterns.
+ *
+ * `currentDir`, `interceptRoot`, `routeDir`, `appDir`, and `interceptParentDir`
+ * must all be forward-slash. `currentDir` descends with `path.posix.join` and
+ * its `findFile` results become the stored layout/page paths. The others are
+ * relativized against `appDir` (and each other) to derive the intercept page
+ * segments and URL patterns.
  */
 function collectInterceptingPages(
   currentDir: string,
@@ -2505,9 +2660,7 @@ function collectInterceptingPages(
       results.push({
         branchSegments: [
           interceptSegment,
-          ...normalizePathSeparators(path.relative(interceptRoot, path.dirname(page)))
-            .split("/")
-            .filter(Boolean),
+          ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
         ],
         convention,
         layoutPaths: [...layoutPaths],
@@ -2534,7 +2687,7 @@ function collectInterceptingPages(
     // Skip private folders (prefixed with _)
     if (entry.name.startsWith("_")) continue;
     collectInterceptingPages(
-      path.join(currentDir, entry.name),
+      path.posix.join(currentDir, entry.name),
       interceptRoot,
       convention,
       interceptSegment,

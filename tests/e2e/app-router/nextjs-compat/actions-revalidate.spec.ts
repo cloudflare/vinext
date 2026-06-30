@@ -105,13 +105,15 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
 
   // Next.js: 'should not remount the page + loading component when revalidating'
   // Adapted: Verify that clicking revalidate button updates the timestamp
-  test("revalidatePath via server action updates page data", async ({ page }) => {
+  test("revalidating server actions update page and layout output", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/action-revalidate`);
     await waitForAppRouterHydration(page);
 
     // Read initial timestamp
     const time1 = await page.locator("#time").textContent();
+    const layoutVersion1 = await page.locator("#layout-version").textContent();
     expect(time1).toBeTruthy();
+    expect(layoutVersion1).toBeTruthy();
 
     // Click revalidate button (triggers server action with revalidatePath)
     await page.click("#revalidate");
@@ -122,6 +124,14 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       expect(time2).toBeTruthy();
       expect(time2).not.toBe(time1);
     }).toPass({ timeout: 10_000 });
+
+    await expect(page.locator("#layout-version")).not.toHaveText(layoutVersion1!);
+
+    const layoutVersion2 = await page.locator("#layout-version").textContent();
+    expect(layoutVersion2).toBeTruthy();
+
+    await page.click("#revalidate-tag");
+    await expect(page.locator("#layout-version")).not.toHaveText(layoutVersion2!);
   });
 
   // Test router.refresh() re-renders with fresh data
