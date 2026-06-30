@@ -1,4 +1,4 @@
-import handler from "vinext/server/app-router-entry";
+import handler from "vinext/server/fetch-handler";
 
 const CSP = "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';";
 

@@ -6,8 +6,10 @@ import {
   parseDataCacheArg,
   parseCdnCacheArg,
   parseImageOptimizationArg,
+  parsePrerenderArg,
   resolveCloudflareInitOptions,
   resolveInitPlatform,
+  resolveInitPrerender,
 } from "../packages/vinext/src/init-platform.js";
 
 describe("parsePlatformArg", () => {
@@ -124,6 +126,56 @@ describe("Cloudflare init choices", () => {
     expect(prompts[1]).toMatch(/^  Choose a data cache:/);
     expect(prompts[2]).toMatch(/^  Choose image optimization:/);
     expect(output.read()?.toString()).toBe("  Please choose Cloudflare KV (1) or None (2).\n\n\n");
+  });
+});
+
+describe("prerender init choice", () => {
+  it("parses explicit prerender flags", () => {
+    expect(parsePrerenderArg(["--prerender"])).toBe(true);
+    expect(parsePrerenderArg(["--no-prerender"])).toBe(false);
+    expect(parsePrerenderArg(["--prerender=true"])).toBe(true);
+    expect(parsePrerenderArg(["--prerender=false"])).toBe(false);
+  });
+
+  it("rejects unsupported explicit values", () => {
+    expect(() => parsePrerenderArg(["--prerender=maybe"])).toThrow(
+      "--prerender expects true or false",
+    );
+  });
+
+  it("defaults non-interactive and agent environments to disabled", async () => {
+    await expect(resolveInitPrerender([], { env: {}, isInteractive: false })).resolves.toBe(false);
+    await expect(
+      resolveInitPrerender([], { env: { CODEX_THREAD_ID: "test" }, isInteractive: true }),
+    ).resolves.toBe(false);
+  });
+
+  it("defaults the interactive prompt to No", async () => {
+    const prompts: string[] = [];
+    const output = new PassThrough();
+    await expect(
+      resolveInitPrerender([], {
+        env: {},
+        isInteractive: true,
+        output,
+        question: async (prompt) => {
+          prompts.push(prompt);
+          return "";
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(prompts).toEqual(["  Pre-render all static routes after build? [y/N]: "]);
+    expect(output.read()?.toString()).toBe("\n");
+  });
+
+  it("accepts Yes from the interactive prompt", async () => {
+    await expect(
+      resolveInitPrerender([], {
+        env: {},
+        isInteractive: true,
+        question: async () => "yes",
+      }),
+    ).resolves.toBe(true);
   });
 });
 

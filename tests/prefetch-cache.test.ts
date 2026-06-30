@@ -25,6 +25,7 @@ let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
 let getCurrentInterceptionContext: Navigation["getCurrentInterceptionContext"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
+let DYNAMIC_NAVIGATION_CACHE_TTL: Navigation["DYNAMIC_NAVIGATION_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
 let restoreRscResponse: Navigation["restoreRscResponse"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
@@ -32,6 +33,7 @@ let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let appRouterInstance: Navigation["appRouterInstance"];
 let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
+let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -59,6 +61,7 @@ beforeEach(async () => {
   getCurrentInterceptionContext = nav.getCurrentInterceptionContext;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
+  DYNAMIC_NAVIGATION_CACHE_TTL = nav.DYNAMIC_NAVIGATION_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
   restoreRscResponse = nav.restoreRscResponse;
   prefetchRscResponse = nav.prefetchRscResponse;
@@ -66,6 +69,7 @@ beforeEach(async () => {
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   appRouterInstance = nav.appRouterInstance;
   consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
+  seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
 });
 
 afterEach(() => {
@@ -461,6 +465,77 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
+  it("honors an explicit fallback stale window above the minimum for prefetched responses", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/auto-full.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 60_000 },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 60_000);
+  });
+
+  it("floors explicit fallback stale windows for prefetched responses", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/short-static-stale-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } })),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: 5_000 },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    // Ported from Next.js segment-cache prefetch behavior:
+    // packages/next/src/client/components/segment-cache/cache.ts:getStaleTimeMs
+    // clamps all configured prefetch stale times to at least 30s.
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+  });
+
+  it("uses Next.js's minimum prefetch stale window for server stale time zero", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/zero-stale-prefetch.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { fallbackTtlMs: PREFETCH_CACHE_TTL },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    // Ported from Next.js segment-cache prefetch behavior:
+    // packages/next/src/client/components/segment-cache/cache.ts:getStaleTimeMs
+    // clamps prefetch stale time to at least 30s so too-short server stale
+    // times do not prevent prefetching from being useful.
+    expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+
+    const consumed = consumePrefetchResponse(rscUrl, null, null);
+    expect(consumed?.expiresAt).toBe(now + 30_000);
+  });
+
   it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {
     const rscUrl = "/dashboard.rsc";
     const deferred = createDeferredResponse();
@@ -569,12 +644,18 @@ describe("prefetch cache eviction", () => {
   // build time; navigation.ts reads it when computing PREFETCH_CACHE_TTL.
   describe("staleTimes (#1490)", () => {
     const ORIGINAL_TTL_ENV = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+    const ORIGINAL_DYNAMIC_TTL_ENV = process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME;
 
     afterEach(() => {
       if (ORIGINAL_TTL_ENV === undefined) {
         delete process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
       } else {
         process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = ORIGINAL_TTL_ENV;
+      }
+      if (ORIGINAL_DYNAMIC_TTL_ENV === undefined) {
+        delete process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME;
+      } else {
+        process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = ORIGINAL_DYNAMIC_TTL_ENV;
       }
     });
 
@@ -589,6 +670,16 @@ describe("prefetch cache eviction", () => {
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();
       const nav = await import("../packages/vinext/src/shims/navigation.js");
+      expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
+    });
+
+    it("uses the configured dynamic stale time for committed navigation snapshots", async () => {
+      process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = "30";
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+      expect(nav.DYNAMIC_NAVIGATION_CACHE_TTL).toBe(30_000);
       expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
     });
 
@@ -641,6 +732,30 @@ describe("prefetch cache eviction", () => {
       vi.spyOn(Date, "now").mockReturnValue(now + 200_000);
       expect(nav.consumePrefetchResponse(rscUrl, null, null)).toBeNull();
     });
+  });
+
+  it("seeds a committed navigation snapshot with the dynamic stale window", () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/dynamic.rsc";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: rscUrl,
+    };
+
+    seedPrefetchResponseSnapshot(rscUrl, snapshot);
+
+    expect(getPrefetchCache().get(rscUrl)).toMatchObject({
+      cacheForNavigation: true,
+      expiresAt: now + DYNAMIC_NAVIGATION_CACHE_TTL,
+      outcome: "cache-seeded",
+      snapshot,
+      timestamp: now,
+    });
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(true);
   });
 
   it("uses per-response dynamic stale windows when consuming prefetched responses", () => {

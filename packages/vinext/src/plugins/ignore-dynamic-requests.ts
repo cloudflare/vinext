@@ -8,6 +8,7 @@ import {
   hasRange,
   isAstRecord,
   isIdentifierNamed,
+  mayContainDynamicImport,
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
@@ -720,7 +721,12 @@ function dynamicImportReplacement(): string {
 }
 
 function transformVeryDynamicRequests(code: string, id: string) {
-  if (!code.includes("require") && !code.includes("import")) return null;
+  // Pre-parse gate. `require` stays a broad substring check (it also covers
+  // aliasing and comment-separated `require/* … */(`), but the `import` side is
+  // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
+  // bare `import` (static ESM) otherwise matched ~every module, so this plugin
+  // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
+  if (!code.includes("require") && !mayContainDynamicImport(code)) return null;
 
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =

@@ -367,14 +367,22 @@ function areStaticParamsAllowed(
       }
 
       if (Array.isArray(value)) {
-        return JSON.stringify(value) === JSON.stringify(staticValue);
+        return (
+          Array.isArray(staticValue) &&
+          value.length === staticValue.length &&
+          value.every((part, index) =>
+            typeof staticValue[index] === "string"
+              ? part.toLowerCase() === staticValue[index].toLowerCase()
+              : part === staticValue[index],
+          )
+        );
       }
 
-      if (
-        typeof staticValue === "string" ||
-        typeof staticValue === "number" ||
-        typeof staticValue === "boolean"
-      ) {
+      if (typeof staticValue === "string") {
+        return value.toLowerCase() === staticValue.toLowerCase();
+      }
+
+      if (typeof staticValue === "number" || typeof staticValue === "boolean") {
         return String(value) === String(staticValue);
       }
 

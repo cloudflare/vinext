@@ -22,13 +22,35 @@ describe("buildViteResolveExtensions", () => {
   it("applies Next.js default pageExtensions priority when pageExtensions is undefined", () => {
     // Even without a user-set pageExtensions, vinext normalises to the
     // Next.js defaults `["tsx", "ts", "jsx", "js"]` and uses that order.
+    // `.cjs`/`.cts` trail the list so `vinext init`-renamed CJS configs
+    // (`tailwind.config.cjs`) resolve extensionlessly.
     const extensions = buildViteResolveExtensions(undefined);
-    expect(extensions).toEqual([".tsx", ".ts", ".jsx", ".js", ".mjs", ".mts", ".json"]);
+    expect(extensions).toEqual([
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".js",
+      ".mjs",
+      ".mts",
+      ".json",
+      ".cjs",
+      ".cts",
+    ]);
   });
 
   it("returns the same list when pageExtensions matches the Next.js defaults", () => {
     const extensions = buildViteResolveExtensions(["tsx", "ts", "jsx", "js"]);
-    expect(extensions).toEqual([".tsx", ".ts", ".jsx", ".js", ".mjs", ".mts", ".json"]);
+    expect(extensions).toEqual([
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".js",
+      ".mjs",
+      ".mts",
+      ".json",
+      ".cjs",
+      ".cts",
+    ]);
   });
 
   it("prepends configured pageExtensions so user priority wins", () => {

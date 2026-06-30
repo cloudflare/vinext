@@ -35,14 +35,26 @@ export function filteredTraceGraph<T extends TraceNode>(
 function filteredTraceChildren<T extends TraceNode>(nodes: T[], filters: Set<TraceCategory>): T[] {
   return nodes.flatMap((node) => {
     const children = filteredTraceChildren((node.children ?? []) as T[], filters);
-    if (!filters.has(traceCategory(node))) return children;
+    const matches = filters.has(traceCategory(node));
+    if (!matches && children.length === 0) return [];
+    if (!matches && isUninformativeContextFrame(node)) return children;
     return [
       {
         ...node,
+        value: matches ? node.value : children.reduce((total, child) => total + child.value, 0),
         children: children.length > 0 ? children : undefined,
       },
     ];
   });
+}
+
+function isUninformativeContextFrame(node: TraceNode) {
+  if (node.source || traceCategory(node) !== "other") return false;
+  return (
+    node.category === "native" ||
+    /^0x[0-9a-f]+$/i.test(node.name) ||
+    /\s0x[0-9a-f]+$/i.test(node.name)
+  );
 }
 
 function traceCategory(node: TraceNode): TraceCategory {

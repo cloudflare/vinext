@@ -105,6 +105,21 @@ export function parseImageOptimizationArg(args: string[]): InitImageOptimization
   return parseChoiceArg(args, "--image-optimization", ["cloudflare-images", "none"]);
 }
 
+export function parsePrerenderArg(args: string[]): boolean | undefined {
+  for (const arg of args) {
+    if (arg === "--prerender") return true;
+    if (arg === "--no-prerender") return false;
+    if (!arg.startsWith("--prerender=")) continue;
+
+    const value = arg.slice("--prerender=".length).toLowerCase();
+    if (value === "true" || value === "yes" || value === "1") return true;
+    if (value === "false" || value === "no" || value === "0") return false;
+    throw new Error('--prerender expects true or false when using the "--prerender=value" form.');
+  }
+
+  return undefined;
+}
+
 export async function resolveInitPlatform(
   args: string[],
   options: PlatformPromptOptions = {},
@@ -150,6 +165,47 @@ export async function resolveInitPlatform(
         return "node";
       }
       output.write("  Please choose Cloudflare (1) or Node (2).\n");
+    }
+  } finally {
+    readline?.close();
+  }
+}
+
+export async function resolveInitPrerender(
+  args: string[],
+  options: PlatformPromptOptions = {},
+): Promise<boolean> {
+  const explicitPrerender = parsePrerenderArg(args);
+  if (explicitPrerender !== undefined) return explicitPrerender;
+
+  const env = options.env ?? process.env;
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const isInteractive =
+    options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (isAgentEnvironment(env) || !isInteractive) return false;
+
+  const readline = options.question ? undefined : createInterface({ input, output });
+  const question = options.question ?? ((prompt: string) => readline!.question(prompt));
+
+  try {
+    while (true) {
+      const answer = (await question("  Pre-render all static routes after build? [y/N]: "))
+        .trim()
+        .toLowerCase();
+      if (answer === "") {
+        output.write("\n");
+        return false;
+      }
+      if (answer === "y" || answer === "yes") {
+        output.write("\n");
+        return true;
+      }
+      if (answer === "n" || answer === "no") {
+        output.write("\n");
+        return false;
+      }
+      output.write("  Please answer yes or no.\n");
     }
   } finally {
     readline?.close();

@@ -93,6 +93,22 @@ import {
  */
 const bareServerEntryMtimes = new Map<string, number>();
 
+function resolveCanonicalServerEntry(entryPath: string): { href: string; mtime: number } {
+  // The catch only covers realpathSync.native failing on filesystems that
+  // don't support it; it does not make a missing entry path "work" — that
+  // still throws at the statSync below, same as before this helper existed.
+  let canonicalEntryPath: string;
+  try {
+    canonicalEntryPath = fs.realpathSync.native(entryPath);
+  } catch {
+    canonicalEntryPath = entryPath;
+  }
+  return {
+    href: pathToFileURL(canonicalEntryPath).href,
+    mtime: fs.statSync(canonicalEntryPath).mtimeMs,
+  };
+}
+
 /**
  * Import a built server entry module (App Router RSC entry or Pages Router
  * server entry) by absolute file path.
@@ -130,23 +146,18 @@ const bareServerEntryMtimes = new Map<string, number>();
  * Exported for direct unit testing of the URL choice.
  */
 export function resolveServerEntryImportUrl(entryPath: string): string {
-  // The catch only covers realpathSync.native failing on filesystems that
-  // don't support it; it does not make a missing entry path "work" — that
-  // still throws at the statSync below, same as before this helper existed.
-  let canonicalEntryPath: string;
-  try {
-    canonicalEntryPath = fs.realpathSync.native(entryPath);
-  } catch {
-    canonicalEntryPath = entryPath;
-  }
-  const href = pathToFileURL(canonicalEntryPath).href;
-  const mtime = fs.statSync(canonicalEntryPath).mtimeMs;
+  const { href, mtime } = resolveCanonicalServerEntry(entryPath);
   const bareMtime = bareServerEntryMtimes.get(href);
   if (bareMtime === undefined || bareMtime === mtime) {
     bareServerEntryMtimes.set(href, mtime);
     return href;
   }
   return `${href}?t=${mtime}`;
+}
+
+export function rememberCurrentServerEntryImportMtime(entryPath: string): void {
+  const { href, mtime } = resolveCanonicalServerEntry(entryPath);
+  bareServerEntryMtimes.set(href, mtime);
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any -- built entry modules are untyped, matching the previous inline `await import(...)`

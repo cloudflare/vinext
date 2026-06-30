@@ -9,6 +9,7 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import {
   apiRouter,
   pagesRouter,
@@ -23,6 +24,7 @@ import type {
 } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { normalizePathSeparators } from "../utils/path.js";
+import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 
 /**
  * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
@@ -40,6 +42,14 @@ function toPagesLinkPrefetchRoute(route: Route): VinextPagesLinkPrefetchRoute {
   };
 }
 
+async function hasGetStaticPropsExport(filePath: string): Promise<boolean> {
+  return hasExportedName(await readFile(filePath, "utf8"), "getStaticProps");
+}
+
+async function hasGetServerSidePropsExport(filePath: string): Promise<boolean> {
+  return hasExportedName(await readFile(filePath, "utf8"), "getServerSideProps");
+}
+
 export async function generateClientEntry(
   pagesDir: string,
   nextConfig: ResolvedNextConfig,
@@ -47,6 +57,7 @@ export async function generateClientEntry(
   options: {
     appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
     instrumentationClientPath?: string | null;
+    middlewareMatcher?: StaticMiddlewareMatcher | undefined;
     reactPreamble?: boolean;
   } = {},
 ): Promise<string> {
@@ -60,6 +71,24 @@ export async function generateClientEntry(
     ...pageRoutes.map(toPagesLinkPrefetchRoute),
     ...apiRoutes.map((route) => ({ ...toPagesLinkPrefetchRoute(route), documentOnly: true })),
   ];
+  const pagesSsgPatterns = (
+    await Promise.all(
+      pageRoutes.map(async (route) =>
+        (await hasGetStaticPropsExport(route.filePath))
+          ? pagesPatternToNextFormat(route.pattern)
+          : null,
+      ),
+    )
+  ).filter((pattern): pattern is string => pattern !== null);
+  const pagesSspPatterns = (
+    await Promise.all(
+      pageRoutes.map(async (route) =>
+        (await hasGetServerSidePropsExport(route.filePath))
+          ? pagesPatternToNextFormat(route.pattern)
+          : null,
+      ),
+    )
+  ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
 
   // Build a map of route pattern -> dynamic import.
@@ -132,6 +161,9 @@ const appLoader = undefined;
 // can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
+window.__VINEXT_PAGES_SSG_PATTERNS__ = ${JSON.stringify(pagesSsgPatterns)};
+window.__VINEXT_PAGES_SSP_PATTERNS__ = ${JSON.stringify(pagesSspPatterns)};
+window.__VINEXT_MIDDLEWARE_MATCHER__ = ${JSON.stringify(options.middlewareMatcher)};
 window.__VINEXT_APP_LOADER__ = appLoader;
 // Expose the App Router prefetch manifest so Pages Router \`<Link>\`s and
 // \`Router.prefetch\` can detect when a prefetch target is actually an App
@@ -153,6 +185,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 // instead of issuing an RSC request). Set here AND in app-browser-entry.ts
 // so whichever entry runs first emits the Pages manifest.
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
+window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(nextConfig.redirects)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(nextConfig.rewrites)};
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");

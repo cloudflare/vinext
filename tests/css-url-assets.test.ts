@@ -291,6 +291,19 @@ describe("Pages Router CSS url() asset emission", () => {
 
     for (const assetUrl of [...aSvgs, ...bSvgs]) await expectServedSvg(assetUrl);
   });
+
+  it("preserves asset basenames from imported Sass partials", async () => {
+    const css = await fetchPageStylesheets("/partial-url");
+    const assetUrls = svgUrls(css).filter((url) => url.includes("partial-dark"));
+
+    expect(assetUrls).toEqual([
+      expect.stringMatching(MEDIA_SVG_RE("partial-dark")),
+      expect.stringMatching(MEDIA_SVG_RE("partial-dark2")),
+    ]);
+    expect(new Set(assetUrls).size).toBe(2);
+
+    for (const assetUrl of assetUrls) await expectServedSvg(assetUrl);
+  });
 });
 
 // ── Integration (App Router): inspect plain and Cloudflare build output ──────

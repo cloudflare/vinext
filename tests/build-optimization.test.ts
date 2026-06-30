@@ -608,6 +608,137 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optdeps-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const workerEnvConfig = {
+        optimizeDeps: {
+          entries: ["already-present.ts"],
+          include: ["already-included"],
+          exclude: ["already-excluded"],
+        },
+      };
+      (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
+
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
+      expect(workerEnvConfig.optimizeDeps.include).toContain(
+        "use-sync-external-store/with-selector",
+      );
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const warned: string[] = [];
+      const logger = {
+        hasWarned: false,
+        info() {},
+        warn(msg: string) {
+          warned.push(msg);
+        },
+        warnOnce(msg: string) {
+          warned.push(msg);
+        },
+        error() {},
+        clearScreen() {},
+        hasErrorLogged() {
+          return false;
+        },
+      };
+
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: {},
+        logger,
+        plugins: [],
+      });
+
+      logger.warn(
+        "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      );
+
+      expect(warned).toEqual([
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      ]);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────

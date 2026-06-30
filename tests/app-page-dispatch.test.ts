@@ -1874,6 +1874,55 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
+  it("admits generated params using default case-insensitive route matching", async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      async generateStaticParams() {
+        return [{ region: "SE" }, { region: "DE" }];
+      },
+      params: { region: "se" },
+      route: createRoute({ isDynamic: true, params: ["region"] }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+    });
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.anything(),
+      { region: "se" },
+      undefined,
+      expect.any(URLSearchParams),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("admits generated catch-all params using default case-insensitive route matching", async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      async generateStaticParams() {
+        return [{ slug: ["Docs", "Getting-Started"] }];
+      },
+      params: { slug: ["docs", "getting-started"] },
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+    });
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement).toHaveBeenCalled();
+  });
+
   it('renders dynamic = "error" routes without generateStaticParams', async () => {
     const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
     const { options } = createDispatchOptions({

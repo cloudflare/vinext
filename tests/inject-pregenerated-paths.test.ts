@@ -20,16 +20,14 @@ beforeEach(() => {
 
 afterEach(() => {
   clearPregeneratedConcretePaths();
+  delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
 describe("injectPregeneratedConcretePaths", () => {
   it("replaces an earlier injection", () => {
-    writeFile(
-      "dist/server/index.js",
-      'import { handler } from "vinext/server/app-router-entry";\n',
-    );
+    writeFile("dist/server/index.js", 'import { handler } from "vinext/server/fetch-handler";\n');
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -51,7 +49,7 @@ describe("injectPregeneratedConcretePaths", () => {
     const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
     expect(output).toContain("post-b");
     expect(output).not.toContain("post-a");
-    expect(output).toContain('import { handler } from "vinext/server/app-router-entry"');
+    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
   });
 
   it("strips an earlier injection when the manifest is missing", () => {
@@ -61,7 +59,7 @@ describe("injectPregeneratedConcretePaths", () => {
         "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
         'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
         "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-        'import { handler } from "vinext/server/app-router-entry";',
+        'import { handler } from "vinext/server/fetch-handler";',
         "",
       ].join("\n"),
     );
@@ -70,7 +68,7 @@ describe("injectPregeneratedConcretePaths", () => {
 
     const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
     expect(output).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(output).toContain('import { handler } from "vinext/server/app-router-entry"');
+    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
   });
 
   it("uses the concrete-path table stored in the prerender manifest", () => {
@@ -92,6 +90,27 @@ describe("injectPregeneratedConcretePaths", () => {
     const match = output.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
     expect(match).not.toBeNull();
     expect(JSON.parse(match![1])).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
+    expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toEqual([
+      ["/blog/:slug", ["/blog/post-a"]],
+    ]);
+  });
+
+  it("clears the current-process global when no concrete paths are available", () => {
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug", ["/old/post"]]];
+    writeFile(
+      "dist/server/index.js",
+      [
+        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
+        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug",["/old/post"]]];',
+        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
+        'export default { fetch() { return new Response("ok"); } };',
+        "",
+      ].join("\n"),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir);
+
+    expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toBeUndefined();
   });
 
   it("hydrates the concrete-path registry from the generated Worker entry", async () => {

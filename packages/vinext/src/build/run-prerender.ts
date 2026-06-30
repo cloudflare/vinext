@@ -1,6 +1,6 @@
 /**
  * Shared prerender runner used by both `vinext build` (cli.ts) and
- * `vinext deploy --prerender-all` (deploy.ts).
+ * `vinext-cloudflare deploy --prerender-all` (deploy.ts).
  *
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
  * and result summarisation.
@@ -34,7 +34,7 @@ import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
-import { startProdServer } from "../server/prod-server.js";
+import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -386,6 +386,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   }
 
   injectPregeneratedConcretePaths(root);
+  if (fs.existsSync(rscBundlePath)) {
+    rememberCurrentServerEntryImportMtime(rscBundlePath);
+  }
 
   return {
     routes: allRoutes,

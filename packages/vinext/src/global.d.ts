@@ -20,6 +20,7 @@ import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
 import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
+import type { NextRedirect, NextRewrite } from "./config/next-config";
 
 // `window.next` is declared inline in `./client/window-next.ts` (mirroring
 // Next.js's own pattern in `packages/next/src/client/next.ts`), not here, so
@@ -95,6 +96,32 @@ declare global {
      * incoming URL pathname to a registered loader.
      */
     __VINEXT_PAGE_PATTERNS__: string[] | undefined;
+
+    /** Pages Router patterns whose modules export `getStaticProps`. */
+    __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
+
+    /** Pages Router patterns whose modules export `getServerSideProps`. */
+    __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
+
+    /** Resolved client-safe Pages Router redirects from next.config.js. */
+    __VINEXT_CLIENT_REDIRECTS__: NextRedirect[] | undefined;
+
+    /** Resolved client-safe rewrites from next.config.js. */
+    __VINEXT_CLIENT_REWRITES__:
+      | {
+          beforeFiles: NextRewrite[];
+          afterFiles: NextRewrite[];
+          fallback: NextRewrite[];
+        }
+      | undefined;
+
+    /**
+     * Static `middleware/proxy` matcher config embedded for client-side Pages
+     * Router middleware-effect probes. `undefined` means "match all", matching
+     * Next.js's default when middleware has no matcher or the config was too
+     * dynamic to statically serialize.
+     */
+    __VINEXT_MIDDLEWARE_MATCHER__: unknown;
 
     /**
      * Pages Router `_app` loader. Dynamic `import()` thunk for the user's

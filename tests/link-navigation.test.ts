@@ -9,7 +9,10 @@ import {
   type LinkPrefetchRouterMode,
 } from "../packages/vinext/src/shims/link-prefetch.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_RSC_RENDER_MODE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
 
 type CapturedEffect = () => void | (() => void);
@@ -186,7 +189,7 @@ async function waitForFetchCalls(
   fetch: { mock: { calls: unknown[] } },
   expectedCalls: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 100; attempt++) {
     await flushPrefetchTasks();
     if (fetch.mock.calls.length >= expectedCalls) {
       return;
@@ -1489,6 +1492,32 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not re-prefetch a visible full-prefetch Link just because dynamic stale time is zero", async () => {
+    vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", "0");
+    vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      vi.spyOn(Date, "now").mockReturnValue(1_000_001);
+      pingVisibleLinksFromRuntime();
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches visible dynamic links in automatic production mode without seeding navigation cache", async () => {
     const observer = stubIntersectionObserver();
 
@@ -1514,6 +1543,9 @@ describe("Link prefetch scheduling", () => {
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
       );
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
@@ -1573,18 +1605,22 @@ describe("Link prefetch scheduling", () => {
     try {
       expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
-      await flushPrefetchTasks();
+      await waitForFetchCalls(result.fetch, 2);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[0],
+        result.fetch.mock.calls[1],
         "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
         }),
       );
-      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const shellFetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(
+        (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      const fetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
       expect(
         (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
@@ -1766,8 +1802,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("gates prefetchInlining full payload behind a loading-shell request", async () => {
-    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+  it("awaits an automatic loading-shell prefetch before upgrading to a full payload", async () => {
     const observer = stubIntersectionObserver();
     let resolveShell: ((response: Response) => void) | undefined;
     let releaseShellBody: (() => void) | undefined;
@@ -1782,9 +1817,11 @@ describe("Link prefetch scheduling", () => {
       },
     });
     const result = await renderIsolatedLink({
-      href: "/intent-prefetch-target",
+      href: "/blog/hello",
       nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
     });
+    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
@@ -1803,7 +1840,7 @@ describe("Link prefetch scheduling", () => {
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
 
-      pingVisibleLinksFromRuntime();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -1819,6 +1856,7 @@ describe("Link prefetch scheduling", () => {
       }
       releaseShellBody();
       await waitForFetchCalls(result.fetch, 2);
+      await flushPrefetchTasks();
 
       const secondInit = result.fetch.mock.calls[1]?.[1];
       expect(secondInit?.headers).toBeInstanceOf(Headers);
@@ -1826,6 +1864,16 @@ describe("Link prefetch scheduling", () => {
         throw new Error("Expected full prefetch request headers");
       }
       expect(secondInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(
+        [...getPrefetchCache().values()].some(
+          (entry) => entry.cacheForNavigation === false && entry.optimisticRouteShell === true,
+        ),
+      ).toBe(true);
+      await Promise.all(
+        [...getPrefetchCache().values()].flatMap((entry) =>
+          entry.pending === undefined ? [] : [entry.pending.catch(() => {})],
+        ),
+      );
     } finally {
       result.restoreNodeEnv();
     }
@@ -1901,11 +1949,12 @@ describe("Link prefetch scheduling", () => {
       ).toBe(true);
 
       invalidatePrefetchCache();
-      await waitForFetchCalls(result.fetch, 3);
+      await waitForFetchCalls(result.fetch, 4);
+      await flushPrefetchTasks();
 
-      expect(result.fetch).toHaveBeenCalledTimes(3);
+      expect(result.fetch).toHaveBeenCalledTimes(4);
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[2],
+        result.fetch.mock.calls[3],
         "/blog/hello",
         expect.objectContaining({
           credentials: "include",
@@ -2109,6 +2158,136 @@ describe("Link prefetch scheduling", () => {
           rel: "prefetch",
         },
       ]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps registered non-SSG Pages Router Link prefetches chunk-only", async () => {
+    const observer = stubIntersectionObserver();
+    const aboutLoader = vi.fn(async () => ({ default: null }));
+    const pagesWindowOverrides = {
+      __NEXT_DATA__: {
+        buildId: "build-id",
+        __vinext: {
+          pageModuleUrl: "/_next/static/chunks/pages/current.js",
+        },
+      },
+      __VINEXT_PAGE_LOADERS__: {
+        "/about": aboutLoader,
+      },
+      __VINEXT_PAGE_PATTERNS__: ["/about"],
+      __VINEXT_PAGES_SSG_PATTERNS__: [],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
+    };
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/about",
+      nodeEnv: "production",
+      windowOverrides: pagesWindowOverrides,
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await flushPrefetchTasks();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(aboutLoader).toHaveBeenCalled();
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches masked Pages Router links by route while probing middleware by display URL", async () => {
+    const observer = stubIntersectionObserver();
+    const actualLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/actual",
+      nodeEnv: "production",
+      props: { as: "/masked" },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: {
+            hasMiddleware: true,
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_PAGE_LOADERS__: {
+          "/actual": actualLoader,
+        },
+        __VINEXT_PAGE_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSG_PATTERNS__: [],
+        __VINEXT_PAGES_SSP_PATTERNS__: ["/actual"],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await waitForFetchCalls(result.fetch, 1);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(actualLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expect(result.fetch.mock.calls[0][0]).toBe("/_next/data/build-id/masked.json");
+      expect(result.fetch.mock.calls[0][1]?.headers).toMatchObject({
+        Accept: "application/json",
+        purpose: "prefetch",
+        "x-middleware-prefetch": "1",
+        "x-nextjs-data": "1",
+      });
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches masked static Pages Router links through the display middleware probe", async () => {
+    const observer = stubIntersectionObserver();
+    const actualLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/actual",
+      nodeEnv: "production",
+      props: { as: "/masked" },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: {
+            hasMiddleware: true,
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_PAGE_LOADERS__: {
+          "/actual": actualLoader,
+        },
+        __VINEXT_PAGE_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSG_PATTERNS__: ["/actual"],
+        __VINEXT_PAGES_SSP_PATTERNS__: [],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(actualLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expect(result.fetch.mock.calls[0][0]).toBe("/_next/data/build-id/masked.json");
+      expect(result.fetch.mock.calls[0][1]?.headers).toMatchObject({
+        Accept: "application/json",
+        purpose: "prefetch",
+        "x-middleware-prefetch": "1",
+        "x-nextjs-data": "1",
+      });
+      expect(result.pagePrefetchLinks).toEqual([]);
     } finally {
       result.restoreNodeEnv();
     }

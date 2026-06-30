@@ -834,8 +834,9 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
+    expect(withMiddleware).toContain("hadBasePath,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
@@ -1170,6 +1171,70 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("vinext/instrumentation-client");
       // No spurious bare imports referring to a non-existent project file.
       expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  it("emits only getStaticProps pages in the Pages SSG prefetch manifest", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-ssg-manifest-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "ssg.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "dynamic.tsx"),
+        "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "public-alias.tsx"),
+        "const loader = () => ({ props: {} }); export { loader as getStaticProps }; export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "local-alias.tsx"),
+        "const getStaticProps = () => ({ props: {} }); export { getStaticProps as loader }; export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/local-alias","/ssg"]');
+      expect(code).toContain('window.__VINEXT_PAGES_SSP_PATTERNS__ = ["/dynamic"]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeds the Pages middleware matcher in the client entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-mw-matcher-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { middlewareMatcher: ["/ssr", { source: "/api/:path*" }] },
+      );
+
+      expect(code).toContain(
+        'window.__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr",{"source":"/api/:path*"}]',
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -667,7 +667,7 @@ describe("paired performance benchmarks", () => {
             scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
   });
 
@@ -709,7 +709,7 @@ describe("paired performance benchmarks", () => {
         ),
       [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(nextjsInputs),
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(nextjsInputs),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
   });
 
@@ -745,7 +745,7 @@ describe("paired performance benchmarks", () => {
             scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${commitSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${commitSha}`]: commit(measuredAt),
     });
   }, 15_000);
 
@@ -807,7 +807,7 @@ describe("paired performance benchmarks", () => {
       [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(baseInputs),
       [`repos/cloudflare/vinext/git/trees/${mergeSha}?recursive=1`]: githubTree(baseInputs),
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(staleHeadInputs),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
   });
 
@@ -881,7 +881,7 @@ describe("paired performance benchmarks", () => {
             ],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     };
 
     expect(() => validatePerformancePayload(payload, "pull_request", responses)).not.toThrow();
@@ -1142,5 +1142,5 @@ function githubTree(tree: Array<ReturnType<typeof gitTreeEntry>>) {
 }
 
 function commit(measuredAt: string) {
-  return { commit: { committer: { date: measuredAt } } };
+  return { committer: { date: measuredAt } };
 }

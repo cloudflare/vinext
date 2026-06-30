@@ -135,6 +135,14 @@ describe("normalizeRscRequest — basePath", () => {
     expect((result as Response).status).toBe(404);
   });
 
+  it("retains an out-of-basePath pathname for config rules that opt out", () => {
+    const result = normalized(normalizeRscRequest(req("/outside"), "/app", true));
+
+    expect(result.pathname).toBe("/outside");
+    expect(result.cleanPathname).toBe("/outside");
+    expect(result.hadBasePath).toBe(false);
+  });
+
   it("strips basePath prefix so internal routing sees basePath-free pathname", () => {
     const result = normalized(normalizeRscRequest(req("/app/dashboard"), "/app"));
     expect(result.pathname).toBe("/dashboard");
@@ -563,6 +571,14 @@ describe("normalizeRscRequest — compound scenarios", () => {
     expect(result.pathname).toBe("/dashboard.rsc");
     expect(result.cleanPathname).toBe("/dashboard");
     expect(result.isRscRequest).toBe(true);
+    expect(result.hadBasePath).toBe(true);
+  });
+
+  it("preserves outside-basePath pathnames when config rules opt out", () => {
+    const result = normalized(normalizeRscRequest(req("/outside"), "/app", true));
+    expect(result.pathname).toBe("/outside");
+    expect(result.cleanPathname).toBe("/outside");
+    expect(result.hadBasePath).toBe(false);
   });
 
   it("returns the parsed URL object so middleware can later mutate url.search", () => {

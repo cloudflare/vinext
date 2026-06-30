@@ -281,7 +281,11 @@ export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array |
   while ((match = scriptPattern.exec(html)) !== null) {
     const script = (match[1] ?? "").trim().replace(/;$/, "");
 
-    if (script === RSC_RUNTIME_DONE_SCRIPT || script === RSC_LEGACY_DONE_SCRIPT) {
+    if (
+      script === RSC_RUNTIME_DONE_SCRIPT ||
+      script === RSC_LEGACY_DONE_SCRIPT ||
+      script.endsWith(`;${RSC_RUNTIME_DONE_SCRIPT}`)
+    ) {
       sawDone = true;
       continue;
     }

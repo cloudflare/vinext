@@ -38,6 +38,7 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
+  type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
@@ -308,6 +309,7 @@ function buildHeadInjectionHtml(
   formState: ReactFormState | null,
   insertedHTML: string,
   fontHTML: string,
+  dynamicStaleTimeSeconds?: number,
   scriptNonce?: string,
 ): string {
   const navPayload = {
@@ -315,7 +317,11 @@ function buildHeadInjectionHtml(
     searchParams: [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(navContext.params, navPayload),
+    createNavigationRuntimeRscMetadataScript(
+      navContext.params,
+      navPayload,
+      dynamicStaleTimeSeconds,
+    ),
     scriptNonce,
   );
   const formStateScript =
@@ -381,6 +387,8 @@ export async function handleSsr(
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
+    dynamicStaleTimeSeconds?: number;
+    getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
@@ -408,14 +416,22 @@ export async function handleSsr(
 
         if (options?.sideStream) {
           ssrStream = rscStream;
-          rscEmbed = createRscEmbedTransform(options.sideStream, options?.scriptNonce);
+          rscEmbed = createRscEmbedTransform(
+            options.sideStream,
+            options?.scriptNonce,
+            options?.getInitialNavigationCacheMetadata,
+          );
           if (options.capturedRscDataRef) {
             options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
           }
         } else {
           const [s1, s2] = rscStream.tee();
           ssrStream = s1;
-          rscEmbed = createRscEmbedTransform(s2, options?.scriptNonce);
+          rscEmbed = createRscEmbedTransform(
+            s2,
+            options?.scriptNonce,
+            options?.getInitialNavigationCacheMetadata,
+          );
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
@@ -673,6 +689,7 @@ export async function handleSsr(
             options?.formState ?? null,
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
+            options?.dynamicStaleTimeSeconds,
             options?.scriptNonce,
           );
         };

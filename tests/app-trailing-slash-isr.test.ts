@@ -47,6 +47,7 @@ describe("App Router trailing-slash ISR with generated static params", () => {
     expect(response.status).toBe(200);
     expect(response.url).toBe(`${baseUrl}/en/`);
     expect(html).toContain('id="generated-at"');
-    expect(html).toContain("generated-<!-- -->en");
+    expect(html).toMatch(/id="generated-at">[^<]{10,}/);
+    expect(html).toContain('id="lang">en');
   });
 });

@@ -121,11 +121,18 @@ export function findFileWithExts(
  *  1. User-configured pageExtensions go first (each prefixed with `.`) so
  *     the user's priority wins. e.g. `.platform.tsx` resolves before `.tsx`.
  *  2. Vite's defaults follow, with duplicates removed.
+ *  3. `.cjs`/`.cts` go last (lowest priority). Neither Vite's defaults nor the
+ *     user's pageExtensions include them, but `vinext init` renames CJS config
+ *     files (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when it adds
+ *     `"type": "module"`, and app code imports those extensionlessly
+ *     (`import cfg from "../tailwind.config"`). Without these, the bundle fails
+ *     with "[UNRESOLVED_IMPORT] Could not resolve '../tailwind.config'".
  *
  * The user's pageExtensions retain their relative order, which is what
  * Next.js / Turbopack do via the `resolveExtensions` config option.
  *
- * See: cloudflare/vinext#1502
+ * See: cloudflare/vinext#1502 for page-extension ordering, and
+ * cloudflare/vinext#2435 for extensionless `.cjs` config imports.
  */
 export function buildViteResolveExtensions(
   pageExtensions?: readonly string[] | null,
@@ -135,7 +142,7 @@ export function buildViteResolveExtensions(
   const dotted = normalized.map((ext) => `.${ext}`);
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const ext of [...dotted, ...viteDefaults]) {
+  for (const ext of [...dotted, ...viteDefaults, ".cjs", ".cts"]) {
     if (seen.has(ext)) continue;
     seen.add(ext);
     result.push(ext);

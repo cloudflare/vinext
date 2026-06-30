@@ -26,6 +26,7 @@
     "@changesets/cli": "2.31.0",
     "@mswjs/interceptors": "catalog:",
     "@playwright/test": "catalog:",
+    "@sentry/nextjs": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

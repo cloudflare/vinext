@@ -262,6 +262,10 @@ jobs:
   create-next-app-cloudflare:
     name: create-next-app (cloudflare init)
     runs-on: ubuntu-latest
+    env:
+      CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
+      # Public test namespace already used by examples/workers-cache.
+      CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -316,9 +320,30 @@ jobs:
           --data-cache=kv
           --image-optimization=cloudflare-images
 
+      - name: Configure generated Cloudflare deployment
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const configPath = "wrangler.jsonc";
+            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            config.name = process.env.CNA_CLOUDFLARE_WORKER;
+            config.preview_urls = true;
+            for (const namespace of config.kv_namespaces ?? []) {
+              if (namespace.binding === "VINEXT_KV_CACHE") {
+                namespace.id = process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID;
+              }
+            }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          '
+
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: test -f dist/server/wrangler.json
 
   e2e:
     name: E2E (${{ matrix.label }})
@@ -351,10 +376,18 @@ jobs:
             label: app-router-bfcache
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-prefetch-searchparams
+            label: app-router-prefetch-searchparams
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3
             shardTotal: 3
+          - project: app-router-client-cache
+            label: app-router-client-cache
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router-chrome-browser-specific
             label: app-router-chrome-browser-specific
             shardIndex: 1
@@ -377,6 +410,14 @@ jobs:
             shardTotal: 1
           - project: cloudflare-workers
             label: cloudflare-workers
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-sentry-app
+            label: cloudflare-sentry-app
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-sentry-pages
+            label: cloudflare-sentry-pages
             shardIndex: 1
             shardTotal: 1
           - project: cloudflare-dev
@@ -436,7 +477,7 @@ jobs:
       # the package archives cached we skip the (slow) download step on hits.
       - name: Cache apt archives (WebKit deps)
         if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/apt-archives
@@ -495,7 +536,8 @@ jobs:
   ci:
     name: CI
     if: ${{ always() }}
-    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    needs:
+      [check, test-unit, test-integration-merge, create-next-app, create-next-app-cloudflare, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

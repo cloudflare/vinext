@@ -6,7 +6,7 @@
   // https://developers.cloudflare.com/workers/cache/
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "./worker/index.ts",
+  "main": "vinext/server/fetch-handler",
   "preview_urls": true,
   "assets": {
     "not_found_handling": "none",

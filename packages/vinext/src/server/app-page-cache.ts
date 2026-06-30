@@ -127,7 +127,10 @@ function recordAppPageCacheOutcome(
 }
 
 export function buildAppPageCacheTags(pathname: string, extraTags: readonly string[]): string[] {
-  const tags = [pathname, `_N_T_${pathname}`, "_N_T_/layout"];
+  // Strip trailing slash for the _N_T_ tag so it matches revalidatePath(),
+  // which also strips trailing slash before building the tag.
+  const stem = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const tags = [pathname, `_N_T_${stem}`, "_N_T_/layout"];
   const segments = pathname.split("/");
   let built = "";
   for (let index = 1; index < segments.length; index++) {

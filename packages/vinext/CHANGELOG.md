@@ -1,5 +1,121 @@
 # vinext
 
+## 0.2.0
+
+Today's release includes a revamped `vinext init` command, moving the deploy command to `npx @vinext/cloudflare deploy`, more support for configuring vinext in your Vite config file, and a bunch of bug fixes.
+
+When you run `vinext init` in a project, you will be prompted to choose a target (e.g. 'cloudflare' or 'node'), and all configuration for that target will be done as part of the init command. This replaces the need to run `vinext deploy` to setup a cloudflare project. Projects using `vinext deploy` should switch to `npx @vinext/cloudflare deploy` - the previous command will be removed in a future release, and they are functionally the same.
+
+Cloudflare builds no longer need the custom worker file that used to be generated for applications. You can now point your wrangler config to target a vinext-managed fetch handler that takes care of the generic entry under-the-hood.
+
+```jsonc
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": "vinext/server/fetch-handler",
+}
+```
+
+When removing the custom worker, you can configure your image optimisation provider and prerendering config in your Vite config.
+
+```ts
+import vinext from "vinext";
+import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+
+vinext({
+  images: { optimizer: imagesOptimizer() },
+  // exclude the prerender config altogether if you do not need prerendering.
+  prerender: {
+    // only '*' is supported at the moment, more configurability will come in future releases.
+    routes: "*",
+  },
+});
+```
+
+### Features
+
+- **Build:** support prerender vite config (#2415)
+- **Cloudflare:** add unified worker entry (#2416)
+- **Cloudflare:** move deploy command to cloudflare package (#2405)
+- **Init:** scaffold for cloudflare and node (#2279)
+- **Images:** configure image optimization via vinext({ images }) adapter (#1873)
+
+### Bug Fixes
+
+#### App Router
+
+- match generated params case-insensitively (#2351)
+- honor basePath opt-out rewrites (#2362)
+- preserve layouts across soft navigation (#2316)
+- preserve primary parallel route slot (#2347)
+- preserve named parallel slot state (#2246)
+- avoid repeated hover prefetches (#2396)
+- reuse committed client cache payloads (#2251)
+- normalize trailing slash in implicit cache tags (#2390)
+- scroll past existing hoisted styles (#2356)
+- include page segment in flight state (#2359)
+- discover nested leaf slot routes (#2350)
+- restore intercepted history slots (#2363)
+- preserve interception across middleware rewrites (#2342)
+- honor global not found opt-in (#2340)
+- replay prerendered preload headers (#2333)
+- bind layout-only children defaults (#2335)
+- scope static params across parallel routes (#2317)
+- skip prefetches for bots (#2323)
+- render templates with children only (#2322)
+- align static dynamic params parity (#2321)
+- avoid probing client references (#2313)
+- match dynamic request analysis parity (#2253)
+
+#### Build
+
+- resolve framework-owned SWC helpers (#2357)
+- keep dynamic third-party imports bare in published dist (#2395)
+- align SSR CSS asset paths (#2291)
+
+#### Pages
+
+- pass req res to document initial props (#2402)
+- expose parsed cookies on request objects (#2401)
+- match optional catch-all prerender paths (#2238)
+
+#### Pages Router
+
+- retain prefetched SSG data (#2366)
+- unify client asset bootstrap (#2378)
+- split scanned file paths on forward slashes (#2297)
+
+#### Misc
+
+- **Init:** only detect pnpm approve-builds failures from pnpm-specific output (#2404)
+- **Server:** restore client trace metadata parity (#2371)
+- **CSS:** support namespace CSS Module imports (#2345)
+- **Link:** start viewport prefetches immediately (#2229)
+- **Router:** honor middleware app rewrites for page links (#2339)
+- **Form:** match Next.js navigation parity (#2245)
+- **Client:** isolate Pages Router module graph (#2380)
+- **Image:** match App Router deploy parity (#2310)
+- **Cache:** bypass unstable cache in draft mode (#2319)
+- **CLI:** respect Vite dev server config (#2379)
+- **Cache:** throw updateTag context errors synchronously (#2311)
+- **Config:** match trailing-slash route sources (#2255)
+- **Config:** match deprecation warning parity (#2252)
+- **Middleware:** match Pages data request metadata (#2239)
+- **Actions:** match root params execution phases (#2248)
+
+### Performance
+
+- **Metadata:** cache scanMetadataFiles to skip the redundant 2nd per-build app-tree walk (#2394)
+- **Plugins:** skip dynamic-request AST parse for static-import-only modules — 5000-route build −21% (#2392)
+- **Routing:** cache app-route-graph directory reads — 5000-route build −32% (#2389)
+
+### Contributors
+
+- @Boyeep
+- @hyf0
+- @james-elicx
+- @MaxtuneLee
+- @shulaoda
+
 ## 0.1.8
 
 ### Bug Fixes
