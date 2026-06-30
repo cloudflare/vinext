@@ -2399,6 +2399,79 @@ export const config = { matcher: "/download.txt" };
   });
 });
 
+describe("Pages Router dev dot-path i18n preflight", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-dot-path-i18n-"));
+    await fsp.mkdir(path.join(tmpDir, "pages", "docs"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "pages", "api", "users"), { recursive: true });
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpDir, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "docs", "[...slug].tsx"),
+      `export default function Docs({ slug }) {
+  return <div>i18n docs {slug}</div>;
+}
+
+export function getServerSideProps({ params }) {
+  return { props: { slug: params.slug.join("/") } };
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "api", "users", "[id].ts"),
+      `export default function handler(req, res) {
+  res.status(200).json({ id: req.query.id });
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr"],
+    defaultLocale: "en",
+  },
+};
+`,
+    );
+
+    ({ server, baseUrl } = await startFixtureServer(tmpDir));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // Next.js parity: filesystem route matching normalizes locale prefixes before
+  // matching dynamic pages. Source: packages/next/src/server/lib/router-utils/filesystem.ts
+  it("keeps locale-prefixed dotted dynamic page segments in the Pages pipeline", async () => {
+    const res = await fetch(`${baseUrl}/fr/docs/release/v1.2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("i18n docs");
+    expect(html).toMatch(/release\/v1\.2/);
+  });
+
+  // The shared Pages pipeline strips locale prefixes before API route lookup for
+  // Next.js middleware redirect parity; this dev preflight must mirror that lookup.
+  it("keeps locale-prefixed dotted dynamic API route segments in the Pages pipeline", async () => {
+    const res = await fetch(`${baseUrl}/fr/api/users/alpha.beta`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ id: "alpha.beta" });
+  });
+});
+
 describe("Pages Router dev server origin check", () => {
   let server: ViteDevServer;
   let baseUrl: string;

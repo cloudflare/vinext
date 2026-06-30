@@ -80,7 +80,7 @@ import { mergeServerExternalPackages } from "./config/server-external-packages.j
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
-import { resolvePagesI18nRequest } from "./server/pages-i18n.js";
+import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
@@ -4136,9 +4136,10 @@ export const loadServerActionClient = ${
                 }
               }
 
-              // Skip requests for files with extensions (static assets) after
-              // trailing-slash canonicalization so file-looking dynamic routes
-              // like /catch-all/hello.world/ still get the Next.js redirect.
+              // Skip file-looking requests after trailing-slash canonicalization,
+              // except rewrites and Pages routes that should stay in the pipeline.
+              // This still lets dynamic routes like /catch-all/hello.world/ receive
+              // the same Next.js redirects and route matching as extensionless URLs.
               const filePathMatchesRewrite = [
                 ...(nextConfig?.rewrites.beforeFiles ?? []),
                 ...(nextConfig?.rewrites.afterFiles ?? []),
@@ -4156,9 +4157,24 @@ export const loadServerActionClient = ${
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                   apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),
                 ]);
+                const requestHostname =
+                  (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host)?.split(
+                    ":",
+                  )[0] ?? "localhost";
+                const pageRouteUrl = nextConfig?.i18n
+                  ? resolvePagesI18nRequest(
+                      pathname,
+                      nextConfig.i18n,
+                      req.headers,
+                      requestHostname,
+                      bp,
+                      nextConfig.trailingSlash ?? false,
+                    ).url
+                  : pathname;
+                const apiRouteUrl = stripI18nLocaleForApiRoute(pathname, nextConfig?.i18n ?? null);
                 filePathMatchesPagesRoute =
-                  matchRoute(pathname, pageRoutes) !== null ||
-                  matchRoute(pathname, apiRoutes) !== null;
+                  matchRoute(pageRouteUrl, pageRoutes) !== null ||
+                  matchRoute(apiRouteUrl, apiRoutes) !== null;
               }
               if (isFilePathRequest && !filePathMatchesRewrite && !filePathMatchesPagesRoute) {
                 return next();
