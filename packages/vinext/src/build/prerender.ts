@@ -39,6 +39,7 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../server/headers.js";
@@ -77,6 +78,25 @@ function getErrorMessageWithStack(err: Error): string {
   // and the server bundle includes sourcemaps, this resolves bundled stack frames to
   // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
   return err.stack || err.message;
+}
+
+async function startOptionalPrerenderServerPool(
+  outDir: string,
+  poolSize: number,
+): Promise<PrerenderServerPool | null> {
+  try {
+    return await startPrerenderServerPool(outDir, poolSize);
+  } catch (e) {
+    // The pool is a performance optimization layered over the already-running
+    // in-process prerender server. Startup failure is still before any route has
+    // rendered, so degrade; render-time worker failures remain fatal later.
+    console.warn(
+      `[vinext] prerender render pool failed to start; falling back to single-process render: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return null;
+  }
 }
 
 // A user's generateStaticParams/getStaticPaths threw, surfaced by the prerender
@@ -843,15 +863,12 @@ export async function prerenderPages({
     // enough routes to outweigh the fork/startup cost. The main thread keeps
     // doing the per-route fetch + file write; the forked servers do the
     // CPU-bound rendering on their own cores.
-    let effectiveConcurrency = concurrency;
     if (!options._prodServer && pagesBundlePath && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(pagesToRender.length, concurrency);
       if (poolSize > 1) {
         const poolOutDir = path.dirname(path.dirname(pagesBundlePath));
-        renderPool = await startPrerenderServerPool(poolOutDir, poolSize);
-        renderPorts = renderPool.ports;
-        // Keep every server busy and overlap the main thread's writes.
-        effectiveConcurrency = Math.max(concurrency, renderPorts.length * 2);
+        renderPool = await startOptionalPrerenderServerPool(poolOutDir, poolSize);
+        if (renderPool) renderPorts = renderPool.ports;
       }
     }
 
@@ -859,7 +876,7 @@ export async function prerenderPages({
     let completed = 0;
     const pageResults = await runWithConcurrency(
       pagesToRender,
-      effectiveConcurrency,
+      concurrency,
       async ({ route, urlPath, revalidate }) => {
         let result: PrerenderRouteResult;
         try {
@@ -903,6 +920,7 @@ export async function prerenderPages({
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
           };
         } catch (e) {
+          renderPool?.recordRenderError(e);
           const err = e as Error;
           result = {
             route: route.pattern,
@@ -945,10 +963,14 @@ export async function prerenderPages({
             router: "pages",
           });
         }
-      } catch {
-        // No custom 404
+      } catch (e) {
+        // No custom 404. When the render-worker pool is active, a transport
+        // failure here is still captured by assertHealthy() below so a crashed
+        // worker cannot silently skip an existing custom 404.
+        renderPool?.recordRenderError(e);
       }
     }
+    renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -1417,6 +1439,7 @@ export async function prerenderApp({
             const response = await rscHandler(htmlRequest);
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
+            const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             if (!response.ok || (isSpeculative && cacheControl.includes("no-store"))) {
               await response.body?.cancel();
               return {
@@ -1430,12 +1453,16 @@ export async function prerenderApp({
             }
 
             const html = await response.text();
+            // Prefer the response side channel so single-process and pooled
+            // prerender record the same cache-life metadata; still consume the
+            // process-local value to drain/fallback when no header exists.
+            const processCacheLife = _consumeRequestScopedCacheLife();
             return {
               cacheControl,
               linkHeader,
               html,
               ok: true,
-              requestCacheLife: _consumeRequestScopedCacheLife(),
+              requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
             };
           },
@@ -1546,6 +1573,7 @@ export async function prerenderApp({
           ...(isFallback ? { fallback: true } : {}),
         };
       } catch (e) {
+        renderPool?.recordRenderError(e);
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
@@ -1561,31 +1589,25 @@ export async function prerenderApp({
     // enough routes to outweigh the fork/startup cost. The main thread keeps
     // collecting HTML/RSC and writing files; the forked servers render on
     // their own cores.
-    let effectiveConcurrencyApp = concurrency;
     if (!options._prodServer && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
-        renderPool = await startPrerenderServerPool(path.dirname(serverDir), poolSize);
-        renderPorts = renderPool.ports;
-        effectiveConcurrencyApp = Math.max(concurrency, renderPorts.length * 2);
+        renderPool = await startOptionalPrerenderServerPool(path.dirname(serverDir), poolSize);
+        if (renderPool) renderPorts = renderPool.ports;
       }
     }
 
     let completedApp = 0;
-    const appResults = await runWithConcurrency(
-      urlsToRender,
-      effectiveConcurrencyApp,
-      async (urlToRender) => {
-        const result = await renderUrl(urlToRender);
-        onProgress?.({
-          completed: ++completedApp,
-          total: urlsToRender.length,
-          route: urlToRender.urlPath,
-          status: result.status,
-        });
-        return result;
-      },
-    );
+    const appResults = await runWithConcurrency(urlsToRender, concurrency, async (urlToRender) => {
+      const result = await renderUrl(urlToRender);
+      onProgress?.({
+        completed: ++completedApp,
+        total: urlsToRender.length,
+        route: urlToRender.urlPath,
+        status: result.status,
+      });
+      return result;
+    });
     results.push(...appResults);
 
     // Fail loudly if a render worker crashed mid-build (otherwise its routes
@@ -1620,9 +1642,14 @@ export async function prerenderApp({
           router: "app",
         });
       }
-    } catch {
-      // No custom 404 — skip silently
+    } catch (e) {
+      // No custom 404. When the render-worker pool is active, a transport
+      // failure here is still captured by assertHealthy() below so a crashed
+      // worker cannot silently skip an existing custom 404 (mirrors the
+      // Pages Router 404 path).
+      renderPool?.recordRenderError(e);
     }
+    renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
     if (!skipManifest)
@@ -1665,6 +1692,27 @@ function resolveRenderedCacheControl(
       }),
     ...(revalidate === undefined ? {} : { revalidate }),
   };
+}
+
+function readPrerenderCacheLifeHeader(
+  headers: Headers,
+): { expire?: number; revalidate?: number } | null {
+  const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
+    const cacheLife: { expire?: number; revalidate?: number } = {};
+    if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
+      cacheLife.revalidate = parsed.revalidate;
+    }
+    if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
+      cacheLife.expire = parsed.expire;
+    }
+    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+  } catch {
+    return null;
+  }
 }
 
 function resolveRenderedExpireSeconds(options: {

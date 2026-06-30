@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     outDir,
     noCompression: true,
     purpose: "prerender",
+    silent: true,
   });
   if (typeof process.send === "function") {
     process.send({ type: "ready", port });
@@ -48,8 +49,8 @@ process.on("disconnect", () => process.exit(0));
 main().catch((err: unknown) => {
   const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
   if (typeof process.send === "function") {
-    process.send({ type: "error", error: message });
+    process.send({ type: "error", error: message }, () => process.exit(1));
+    return;
   }
-  // Give the IPC message a tick to flush before exiting.
-  setTimeout(() => process.exit(1), 50);
+  process.exit(1);
 });

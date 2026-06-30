@@ -58,6 +58,9 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
+/** Prerender-only JSON side channel carrying request cacheLife metadata. */
+export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 
@@ -205,4 +208,7 @@ export const INTERNAL_HEADERS = [
 ];
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
-export const VINEXT_INTERNAL_HEADERS = [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER];
+export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+];

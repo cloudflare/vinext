@@ -7,6 +7,7 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -32,6 +33,11 @@ export type AppPageResponseTiming = {
 type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
+};
+
+type AppPagePrerenderCacheLife = {
+  expire?: number;
+  revalidate?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -65,6 +71,7 @@ type BuildAppPageRscResponseOptions = {
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
@@ -75,6 +82,7 @@ type BuildAppPageHtmlResponseOptions = {
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
@@ -104,6 +112,25 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
   ) {
     headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
   }
+}
+
+function applyPrerenderCacheLifeHeader(
+  headers: Headers,
+  requestCacheLife: AppPagePrerenderCacheLife | null | undefined,
+): void {
+  if (!requestCacheLife) return;
+  const payload: AppPagePrerenderCacheLife = {};
+  if (
+    typeof requestCacheLife.revalidate === "number" &&
+    Number.isFinite(requestCacheLife.revalidate)
+  ) {
+    payload.revalidate = requestCacheLife.revalidate;
+  }
+  if (typeof requestCacheLife.expire === "number" && Number.isFinite(requestCacheLife.expire)) {
+    payload.expire = requestCacheLife.expire;
+  }
+  if (payload.revalidate === undefined && payload.expire === undefined) return;
+  headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
 }
 
 export function resolveAppPageRscResponsePolicy(
@@ -278,6 +305,7 @@ export function buildAppPageRscResponse(
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
   applyRscCompatibilityIdHeader(headers);
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
 
   applyTimingHeader(headers, options.timing);
 
@@ -312,6 +340,7 @@ export function buildAppPageHtmlResponse(
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
 
   applyTimingHeader(headers, options.timing);
 

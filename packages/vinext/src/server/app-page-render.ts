@@ -756,11 +756,13 @@ export async function renderAppPageLifecycle(
   }
 
   if (options.isRscRequest) {
+    let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
     if (options.isPrerender === true) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+      requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
         expireSeconds,
-        requestCacheLife: readRequestCacheLifeForPrerender(options),
+        requestCacheLife: requestCacheLifeForPrerender,
         revalidateSeconds,
       }));
     }
@@ -803,6 +805,7 @@ export async function renderAppPageLifecycle(
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
       policy: rscResponsePolicy,
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: buildResponseTiming({
         compileEnd,
         handlerStart: options.handlerStart,
@@ -982,11 +985,13 @@ export async function renderAppPageLifecycle(
   }
 
   // Eagerly read values that must be captured before the stream is consumed.
+  let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   if (options.isPrerender === true) {
     await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
+    requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
-      requestCacheLife: readRequestCacheLifeForPrerender(options),
+      requestCacheLife: requestCacheLifeForPrerender,
       revalidateSeconds,
     }));
   }
@@ -1039,6 +1044,7 @@ export async function renderAppPageLifecycle(
         status: 500,
       },
       policy: { cacheControl: NEVER_CACHE_CONTROL },
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
     applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
@@ -1062,6 +1068,7 @@ export async function renderAppPageLifecycle(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
+      requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
 
@@ -1128,6 +1135,7 @@ export async function renderAppPageLifecycle(
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
+    requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
 }
