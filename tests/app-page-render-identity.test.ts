@@ -37,6 +37,20 @@ describe("createAppPageRenderIdentity", () => {
     });
   });
 
+  it("uses the middleware-matched target for interception proof without changing display pathname", () => {
+    const identity = createAppPageRenderIdentity({
+      displayPathname: "/interception-mw/foo/p/1",
+      targetMatchedPathname: "/interception-mw/en/foo/p/1",
+      interceptionContext: "/interception-mw/en",
+      interceptSourceMatchedUrl: "/interception-mw/en",
+      interceptSlotId: "slot:modal:/interception-mw/[locale]",
+    });
+
+    expect(identity.displayPathname).toBe("/interception-mw/foo/p/1");
+    expect(identity.interception?.targetMatchedUrl).toBe("/interception-mw/en/foo/p/1");
+    expect(identity.interception?.targetRouteId).toBe("route:/interception-mw/en/foo/p/1");
+  });
+
   it("normalizes encoded source and target pathnames before encoding route IDs", () => {
     const identity = createAppPageRenderIdentity({
       displayPathname: "/photos/caf%C3%A9",

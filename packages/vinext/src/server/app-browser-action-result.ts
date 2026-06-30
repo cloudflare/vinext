@@ -1,6 +1,7 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
 import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
 import { ServerActionResultFacts } from "./navigation-planner.js";
+import type { OperationLane } from "./operation-token.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -70,6 +71,12 @@ export function parseServerActionRevalidationHeader(
     default:
       return "none";
   }
+}
+
+export function resolveServerActionOperationLane(
+  revalidation: ServerActionRevalidationKind,
+): Extract<OperationLane, "refresh" | "server-action"> {
+  return revalidation === "none" ? "server-action" : "refresh";
 }
 
 function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {

@@ -1223,6 +1223,7 @@ describe("pages page data", () => {
 
     expect(result).toEqual({
       kind: "render",
+      documentReqRes: null,
       gsspRes: null,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },

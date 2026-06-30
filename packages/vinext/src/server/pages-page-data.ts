@@ -244,6 +244,7 @@ export type ResolvePagesPageDataOptions = {
 
 type ResolvePagesPageDataRenderResult = {
   kind: "render";
+  documentReqRes: PagesGsspContextResponse | null;
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
@@ -741,6 +742,7 @@ export async function resolvePagesPageData(
       renderProps = { ...renderProps, pageProps };
       return {
         kind: "render",
+        documentReqRes: sharedReqRes,
         gsspRes: null,
         isrRevalidateSeconds: null,
         pageProps,
@@ -1089,6 +1091,7 @@ export async function resolvePagesPageData(
 
   return {
     kind: "render",
+    documentReqRes: sharedReqRes,
     gsspRes,
     isrRevalidateSeconds,
     pageProps,

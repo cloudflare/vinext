@@ -113,6 +113,38 @@ describe("seedMemoryCacheFromPrerender", () => {
     }
   });
 
+  it("replays prerendered App Router Link headers", async () => {
+    const buildId = "test-build-link-header";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/preloads",
+            status: "rendered",
+            revalidate: false,
+            router: "app",
+            headers: { link: "</font.woff2>; rel=preload; as=font" },
+          },
+        ],
+      },
+      {
+        "preloads.html": "<html><body>Preloads</body></html>",
+        "preloads.rsc": "RSC payload",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const htmlKey = isrCacheKey("app", "/preloads", buildId) + ":html";
+    const htmlEntry = await getCacheHandler().get(htmlKey);
+    expect(htmlEntry?.value).toMatchObject({
+      kind: "APP_PAGE",
+      headers: { link: "</font.woff2>; rel=preload; as=font" },
+    });
+  });
+
   it("seeds the index route correctly", async () => {
     const buildId = "test-build-002";
     setupPrerenderFixture(

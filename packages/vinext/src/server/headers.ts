@@ -9,6 +9,12 @@
  * omitted — only vinext-internal and Next.js-protocol headers belong here.
  */
 
+import {
+  MIDDLEWARE_OVERRIDE_HEADERS,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+} from "../utils/protocol-headers.js";
+
 // ---------------------------------------------------------------------------
 // Vinext-proprietary headers (`x-vinext-*` / `X-Vinext-*`)
 // ---------------------------------------------------------------------------
@@ -22,17 +28,14 @@ export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 
-/** Serialized middleware context (JSON) forwarded from dev server to RSC entry. */
-export const VINEXT_MW_CTX_HEADER = "x-vinext-mw-ctx";
-
 /** Timing metrics: `handlerStart,compileMs,renderMs`. */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 
-/** Build-time prerender authentication secret. */
-export const VINEXT_PRERENDER_SECRET_HEADER = "x-vinext-prerender-secret";
-
-/** URL-encoded JSON route params for build-time prerender renders. */
-export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-params";
+export {
+  VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "../utils/protocol-headers.js";
 
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
 export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-params";
@@ -129,14 +132,10 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 // Middleware protocol headers (`x-middleware-*`)
 // ---------------------------------------------------------------------------
 
-/** Prefix for forwarded request headers (e.g. `x-middleware-request-cookie`). */
-export const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
-
-/** Comma-separated list of header names that middleware wants to override. */
-export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
-
-/** Carries cookies set by middleware for same-render reads. */
-export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
+export {
+  MIDDLEWARE_HEADER_PREFIX,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+} from "../utils/protocol-headers.js";
 
 /** Signal from `NextResponse.next()` — value "1" means "continue to next handler". */
 export const MIDDLEWARE_NEXT_HEADER = "x-middleware-next";
@@ -149,9 +148,6 @@ const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
 
 /** Skip-middleware signal. */
 const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
-
-/** Generic prefix for all middleware internal headers. */
-export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
 
 // ---------------------------------------------------------------------------
 // Next.js / RSC flight headers (forwarded through middleware)

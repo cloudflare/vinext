@@ -119,6 +119,7 @@ export default {
     "vinext",
     // system/user-project binaries invoked by runtime scripts
     "ps",
+    "taskkill",
     "eslint",
     "gh",
   ],

@@ -4,7 +4,7 @@ import vinext from "vinext";
 
 export default defineConfig({
   plugins: [
-    vinext(),
+    vinext({ prerender: { routes: "*" } }),
     cloudflare({
       viteEnvironment: {
         name: "rsc",
