@@ -115,7 +115,7 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
   observer: ThenableParamsObserver | undefined,
   getFallbackShellPromise: () => Promise<T> | null,
 ): T {
-  if (!fallbackParamNames || fallbackParamNames.size === 0) {
+  if ((!fallbackParamNames || fallbackParamNames.size === 0) && observer === undefined) {
     return plain;
   }
 

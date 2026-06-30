@@ -9,6 +9,10 @@ import {
   type ThenableParams,
   type ThenableParamsObserver,
 } from "vinext/shims/thenable-params";
+import {
+  createPartialRscShellRequestApiSuspensePromise,
+  isPartialRscShellRequestApiScopeActive,
+} from "vinext/shims/partial-rsc-shell-request-api";
 import type { AppPageSearchParams } from "./app-page-head.js";
 
 type AppPageSearchParamsObservationOptions = {
@@ -16,9 +20,21 @@ type AppPageSearchParamsObservationOptions = {
   observeReactPromiseStatus?: boolean;
 };
 
-function markAppPageSearchParamsAccess(markDynamic: boolean): void {
+function markAppPageSearchParamsAccess(keys: readonly string[], markDynamic: boolean): void {
+  // React Flight dev/debug serialization can attach to a thenable and observe
+  // "all keys" even when the page never read searchParams. For a concrete URL
+  // with no search keys, that introspection must not make a complete static
+  // navigation shell look partial.
+  if (keys.length === 0 && isPartialRscShellRequestApiScopeActive()) {
+    return;
+  }
   throwIfStaticGenerationAccessError();
   throwIfInsideCacheScope("searchParams");
+  const shellSuspense =
+    createPartialRscShellRequestApiSuspensePromise<AppPageSearchParams>("searchParams");
+  if (shellSuspense !== null) {
+    throw shellSuspense;
+  }
   if (markDynamic) {
     markDynamicUsage();
   }
@@ -29,8 +45,8 @@ export function createAppPageSearchParamsObserver(
   options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParamsObserver {
   return {
-    observeParamAccess() {
-      markAppPageSearchParamsAccess(options.markDynamic !== false);
+    observeParamAccess(keys: readonly string[]) {
+      markAppPageSearchParamsAccess(keys, options.markDynamic !== false);
     },
   };
 }

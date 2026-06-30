@@ -22,6 +22,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -1407,6 +1408,41 @@ describe("layoutFlags injection into RSC payload", () => {
 
     await renderAppPageLifecycle(options);
     expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({});
+  });
+
+  it("injects build-time __layoutFlags into static navigation shell payloads without probing", async () => {
+    const probeLayoutAt = vi.fn(() => null);
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt,
+      classification: {
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "dynamic"],
+        ]),
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle({
+      ...options,
+      renderMode: APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL,
+    });
+
+    expect(probeLayoutAt).not.toHaveBeenCalled();
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "d",
+    });
   });
 
   it("injects concrete artifact compatibility metadata from the render boundary", async () => {

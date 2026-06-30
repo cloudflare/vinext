@@ -181,6 +181,46 @@ export type LayoutClassificationOptions = {
   ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
+type BuildTimeLayoutClassification = Readonly<{
+  buildTimeResult: "static" | "dynamic";
+  layoutId: string;
+}>;
+
+function readBuildTimeLayoutClassification(cls: LayoutClassificationOptions, layoutIndex: number) {
+  const buildTimeResult = cls.buildTimeClassifications?.get(layoutIndex);
+  if (!buildTimeResult) return null;
+
+  const layoutId = cls.getLayoutId(layoutIndex);
+  return {
+    buildTimeResult,
+    layoutId,
+  };
+}
+
+function resolveBuildTimeLayoutFlag(
+  cls: LayoutClassificationOptions,
+  buildTimeLayout: BuildTimeLayoutClassification,
+): "s" | "d" {
+  const observationDynamic = cls.isLayoutObservationDynamic?.(buildTimeLayout.layoutId) === true;
+  return buildTimeLayout.buildTimeResult === "dynamic" || observationDynamic ? "d" : "s";
+}
+
+export function resolveStaticNavigationShellLayoutFlags(options: {
+  classification?: LayoutClassificationOptions | null;
+  layoutCount: number;
+}): LayoutFlags {
+  const cls = options.classification ?? null;
+  if (cls === null) return {};
+
+  const layoutFlags: Record<string, "s" | "d"> = {};
+  for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
+    const buildTimeLayout = readBuildTimeLayoutClassification(cls, layoutIndex);
+    if (!buildTimeLayout) continue;
+    layoutFlags[buildTimeLayout.layoutId] = resolveBuildTimeLayoutFlag(cls, buildTimeLayout);
+  }
+  return layoutFlags;
+}
+
 type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
   onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
@@ -485,27 +525,27 @@ export async function probeAppPageLayouts(
 
   const response = await options.runWithSuppressedHookWarning(async () => {
     for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
-      const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
+      const buildTimeLayout = cls ? readBuildTimeLayoutClassification(cls, layoutIndex) : null;
 
-      if (cls && buildTimeResult) {
-        const layoutId = cls.getLayoutId(layoutIndex);
+      if (cls && buildTimeLayout) {
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
         // but still probe for special errors (redirects, not-found). Record the
         // build-time flag up front so it survives a short-circuit if the error
         // probe returns a special-error response below.
-        layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
+        layoutFlags[buildTimeLayout.layoutId] =
+          buildTimeLayout.buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
         // Compute the final flag before reporting so the emitted debug reason
         // always agrees with `layoutFlags[layoutId]`. A runtime observation can
         // override a build-time `static` decision to dynamic; in that case we
         // report a `runtime-probe` reason rather than the stale build-time one.
-        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
-        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
+        layoutFlags[buildTimeLayout.layoutId] = resolveBuildTimeLayoutFlag(cls, buildTimeLayout);
         if (cls.debugClassification) {
-          if (observationDynamic && buildTimeResult === "static") {
-            cls.debugClassification(layoutId, {
+          const observationDynamic =
+            cls.isLayoutObservationDynamic?.(buildTimeLayout.layoutId) === true;
+          if (observationDynamic && buildTimeLayout.buildTimeResult === "static") {
+            cls.debugClassification(buildTimeLayout.layoutId, {
               layer: "runtime-probe",
               outcome: "dynamic",
             });
@@ -516,7 +556,7 @@ export async function probeAppPageLayouts(
             // because no Layer 1/2 classifier attached a reason. This is the sole
             // producer of the variant; see `layout-classification-types.ts`.
             cls.debugClassification(
-              layoutId,
+              buildTimeLayout.layoutId,
               cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
             );
           }

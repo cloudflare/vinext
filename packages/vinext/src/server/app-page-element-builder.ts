@@ -20,7 +20,11 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
@@ -322,6 +326,8 @@ export async function buildPageElements<
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
+  const shouldObservePageSearchParamsAccess =
+    observePageSearchParamsAccess || renderMode === APP_RSC_RENDER_MODE_STATIC_NAVIGATION_SHELL;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
@@ -329,7 +335,7 @@ export async function buildPageElements<
     if (isReactOwnedPageComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
-        invocationProps.searchParams = observePageSearchParamsAccess
+        invocationProps.searchParams = shouldObservePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
               markDynamic: hasRequestSearchParams,
             })
@@ -344,7 +350,7 @@ export async function buildPageElements<
     const PageInvoker = () => {
       const invocationProps = { ...props };
       if (searchParams) {
-        invocationProps.searchParams = observePageSearchParamsAccess
+        invocationProps.searchParams = shouldObservePageSearchParamsAccess
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }

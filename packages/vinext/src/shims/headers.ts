@@ -28,6 +28,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { createPartialRscShellRequestApiSuspensePromise } from "./partial-rsc-shell-request-api.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 
 // ---------------------------------------------------------------------------
@@ -682,6 +683,30 @@ function _decorateSuspendingRequestApiPromise<T extends object>(
   });
 }
 
+function _decorateSuspendedRequestApiPromise<T extends object>(
+  promise: Promise<T>,
+): Promise<T> & T {
+  const suspendingTarget = new Proxy({} as T, {
+    get(_target, prop) {
+      if (prop === "then" || prop === "catch" || prop === "finally") {
+        return undefined;
+      }
+      throw promise;
+    },
+    has() {
+      throw promise;
+    },
+    ownKeys() {
+      throw promise;
+    },
+    getOwnPropertyDescriptor() {
+      throw promise;
+    },
+  });
+
+  return _decorateRequestApiPromise(promise, suspendingTarget);
+}
+
 function _sealHeaders(headers: Headers): Headers {
   return new Proxy(headers, {
     get(target, prop) {
@@ -874,6 +899,11 @@ export function headers(): Promise<Headers> & Headers {
     return _decorateRejectedRequestApiPromise<Headers>(state.headersContext.accessError);
   }
 
+  const shellSuspense = createPartialRscShellRequestApiSuspensePromise<Headers>("headers");
+  if (shellSuspense !== null) {
+    return _decorateSuspendedRequestApiPromise(shellSuspense);
+  }
+
   markDynamicUsage();
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
   if (fallbackShellPromise) {
@@ -907,6 +937,11 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
 
   if (state.headersContext.accessError) {
     return _decorateRejectedRequestApiPromise<RequestCookies>(state.headersContext.accessError);
+  }
+
+  const shellSuspense = createPartialRscShellRequestApiSuspensePromise<RequestCookies>("cookies");
+  if (shellSuspense !== null) {
+    return _decorateSuspendedRequestApiPromise(shellSuspense);
   }
 
   markDynamicUsage();
