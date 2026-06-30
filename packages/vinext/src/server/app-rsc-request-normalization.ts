@@ -46,6 +46,12 @@ export type NormalizedRscRequest = {
   hadBasePath: boolean;
 };
 
+type NormalizeRscRequestOptions =
+  | boolean
+  | {
+      allowOutOfBasePath?: boolean;
+    };
+
 /**
  * Normalize an App Router RSC request.
  *
@@ -61,8 +67,9 @@ export type NormalizedRscRequest = {
  *   3. Strict percent-decode each segment — throws on malformed sequences (→ 400). Must
  *      run before basePath check so %2F-encoded slashes cannot create fake basePath prefixes.
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
- *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
- *      `/__vinext/` bypasses this for internal prerender endpoints.
+ *   5. basePath check + strip — 404 when pathname lacks the basePath prefix,
+ *      unless the caller delays rejection so `basePath: false` config rules
+ *      can run. `/__vinext/` bypasses this for internal prerender endpoints.
  *   6. RSC detection: `.rsc` suffix, or Next-style `RSC: 1` plus the internal
  *      `_rsc` cache-busting query. The header alone does not select payload
  *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
@@ -79,8 +86,10 @@ export type NormalizedRscRequest = {
 export function normalizeRscRequest(
   request: Request,
   basePath: string,
-  allowOutsideBasePath = false,
+  options: NormalizeRscRequestOptions = false,
 ): Response | NormalizedRscRequest {
+  const allowOutOfBasePath =
+    typeof options === "boolean" ? options : (options.allowOutOfBasePath ?? false);
   const url = new URL(request.url);
 
   // Step 2: Guard against protocol-relative open redirects on the raw pathname.
@@ -109,10 +118,12 @@ export function normalizeRscRequest(
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
     hadBasePath = hasBasePath(pathname, basePath);
-    if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
-      return notFoundResponse();
+    if (!hadBasePath && !pathname.startsWith("/__vinext/")) {
+      if (!allowOutOfBasePath) return notFoundResponse();
+    } else if (hadBasePath) {
+      pathname = stripBasePath(pathname, basePath);
     }
-    if (hadBasePath) pathname = stripBasePath(pathname, basePath);
+    if (pathname.startsWith("/__vinext/")) hadBasePath = true;
   }
 
   // Steps 6-7: RSC detection and cleanPathname.

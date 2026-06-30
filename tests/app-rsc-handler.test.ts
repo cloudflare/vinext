@@ -118,6 +118,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
               basePath: "/docs",
               ...options,
               filePath: overrides.middlewareFilePath ?? undefined,
+              hadBasePath: options.hadBasePath,
               i18nConfig: overrides.i18nConfig ?? null,
               isProxy: overrides.isMiddlewareProxy ?? false,
               module: overrides.middlewareModule!,
@@ -141,6 +142,61 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  it("applies basePath false external rewrites outside the configured basePath", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("outside basePath");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/outsideBasePath",
+              destination: `http://127.0.0.1:${address.port}/`,
+              basePath: false,
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      });
+
+      const response = await handler(new Request("https://example.test/outsideBasePath"), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("outside basePath");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not expose App routes outside the configured basePath", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handleMetadataRouteRequest = vi.fn(async () => new Response("metadata"));
+    const renderNotFound = vi.fn(async () => new Response("not found", { status: 404 }));
+    const handler = createHandler({
+      dispatchMatchedPage,
+      handleMetadataRouteRequest,
+      renderNotFound,
+    });
+
+    const response = await handler(new Request("https://example.test/about"), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(handleMetadataRouteRequest).not.toHaveBeenCalled();
+    expect(renderNotFound).not.toHaveBeenCalled();
+  });
+
   it.each([
     "url=%2Fimg.jpg&w=640junk&q=75",
     "url=%2Fimg.jpg&w=640&q=75&extra=1",

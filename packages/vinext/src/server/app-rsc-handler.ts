@@ -957,13 +957,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("", { status: 404 });
     }
 
-    const renderedNotFoundResponse = await options.renderNotFound({
-      isRscRequest,
-      middlewareContext,
-      request,
-      route: null,
-      scriptNonce,
-    });
+    const renderedNotFoundResponse = filesystemRouteEligible
+      ? await options.renderNotFound({
+          isRscRequest,
+          middlewareContext,
+          request,
+          route: null,
+          scriptNonce,
+        })
+      : null;
     if (renderedNotFoundResponse) return renderedNotFoundResponse;
 
     options.clearRequestContext();

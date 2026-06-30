@@ -7921,6 +7921,28 @@ describe("double-encoded path handling in middleware", () => {
     expect(mwPathname).not.toBe("/%2564ashboard");
   });
 
+  it("App Router middleware clears basePath for out-of-basePath requests", async () => {
+    const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
+    let capturedBasePath: string | undefined;
+    const result = await applyAppMiddleware({
+      basePath: "/base",
+      cleanPathname: "/outside",
+      context: { headers: null, requestHeaders: null, status: null },
+      hadBasePath: false,
+      isProxy: false,
+      module: {
+        default: (request: import("next/server").NextRequest) => {
+          capturedBasePath = request.nextUrl.basePath;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+      request: new Request("http://localhost:3000/outside"),
+    });
+
+    expect(result.kind).toBe("continue");
+    expect(capturedBasePath).toBe("");
+  });
+
   it("App Router middleware preserves status from NextResponse.next()", async () => {
     const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
     const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
