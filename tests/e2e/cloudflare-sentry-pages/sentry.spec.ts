@@ -1,4 +1,19 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
+
+async function expectReportedError(request: APIRequestContext, message: string) {
+  const state: { errors: Array<{ message?: string }> } = { errors: [] };
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      Object.assign(state, await stateRes.json());
+      return state.errors.some((error) => error.message === message);
+    })
+    .toBe(true);
+
+  return state;
+}
 
 test.describe("Sentry on Cloudflare Workers Pages Router", () => {
   test.beforeEach(async ({ request }) => {
@@ -10,18 +25,7 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
     const errorRes = await request.get("/api/error-route");
     expect(errorRes.status()).toBe(500);
 
-    const state: { errors: Array<{ message?: string }> } = { errors: [] };
-
-    await expect
-      .poll(async () => {
-        const stateRes = await request.get("/api/sentry-test-state");
-        expect(stateRes.status()).toBe(200);
-        Object.assign(state, await stateRes.json());
-        return state.errors.some(
-          (error) => error.message === "Intentional Sentry Pages Router error",
-        );
-      })
-      .toBe(true);
+    const state = await expectReportedError(request, "Intentional Sentry Pages Router error");
 
     expect(state.errors).toContainEqual(
       expect.objectContaining({
@@ -31,6 +35,28 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         routerKind: "Pages Router",
         routerPath: "/api/error-route",
         routeType: "route",
+        sdkName: "sentry.javascript.nextjs",
+      }),
+    );
+  });
+
+  test("reports a thrown render error through real @sentry/nextjs", async ({ request }) => {
+    const errorRes = await request.get("/render-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(
+      request,
+      "Intentional Sentry Pages Router render error",
+    );
+
+    expect(state.errors).toContainEqual(
+      expect.objectContaining({
+        message: "Intentional Sentry Pages Router render error",
+        projectId: "1",
+        requestPath: "/render-error",
+        routerKind: "Pages Router",
+        routerPath: "/render-error",
+        routeType: "render",
         sdkName: "sentry.javascript.nextjs",
       }),
     );
