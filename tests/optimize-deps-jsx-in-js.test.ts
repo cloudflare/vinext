@@ -10,10 +10,10 @@
  * makes the scan fail with "[PARSE_ERROR] Unexpected JSX expression" and aborts
  * pre-bundling.
  *
- * Fix: vinext configures the dep optimizer to treat `.js`/`.mjs` as JSX
- * (`optimizeDeps.rolldownOptions.moduleTypes` on Vite 8,
- * `optimizeDeps.esbuildOptions.loader` on Vite 7), mirroring how the main
- * transform treats `.js`/`.mjs`.
+ * Fix: vinext configures the dep optimizer to treat `.js`/`.mjs` as JSX via
+ * an optimizer-wide extension mapping (`optimizeDeps.rolldownOptions.moduleTypes`
+ * on Vite 8, `optimizeDeps.esbuildOptions.loader` on Vite 7). This is broader
+ * than `vinext:jsx-in-js` because it can also apply to optimized dependencies.
  *
  * The motivating real-world symptom (issue #5) is that, once the scan aborts,
  * pre-bundling is skipped and UMD/CJS deps can fail to interop under SSR
@@ -61,20 +61,47 @@ async function setupAppProject(): Promise<string> {
 
 async function setupPagesProject(): Promise<string> {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-optdeps-pages-jsx-"));
-  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-  await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+  await linkRootNodeModulesWithPlainJsDep(tmpDir);
   await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
   await fsp.writeFile(
     path.join(tmpDir, "pages/index.js"),
-    `export default function Page() {
-      return <main>pages jsx in js</main>;
+    `import { plainJsValue } from "plain-js-dep";
+
+export default function Page() {
+      return <main>{plainJsValue} pages jsx in js</main>;
     }`,
   );
   await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
   return tmpDir;
 }
 
-async function expectDevScanAllowsJsxInJs(tmpDir: string): Promise<void> {
+async function linkRootNodeModulesWithPlainJsDep(tmpDir: string): Promise<void> {
+  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  const tmpNodeModules = path.join(tmpDir, "node_modules");
+  await fsp.mkdir(tmpNodeModules, { recursive: true });
+
+  for (const entry of await fsp.readdir(rootNodeModules, { withFileTypes: true })) {
+    if (entry.name === "plain-js-dep") continue;
+    await fsp.symlink(
+      path.join(rootNodeModules, entry.name),
+      path.join(tmpNodeModules, entry.name),
+      entry.isDirectory() ? "junction" : "file",
+    );
+  }
+
+  const plainJsDepDir = path.join(tmpNodeModules, "plain-js-dep");
+  await fsp.mkdir(plainJsDepDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(plainJsDepDir, "package.json"),
+    JSON.stringify({ name: "plain-js-dep", version: "1.0.0", type: "module", main: "index.js" }),
+  );
+  await fsp.writeFile(
+    path.join(plainJsDepDir, "index.js"),
+    `export const plainJsValue = 1 < 2 > 0 ? "plain-js-dep-ok" : "plain-js-dep-bad";`,
+  );
+}
+
+async function expectDevScanAllowsJsxInJs(tmpDir: string, expectedTexts: string[]): Promise<void> {
   let server: ViteDevServer | null = null;
   const scanErrors: string[] = [];
   const logger = createLogger("silent");
@@ -95,9 +122,14 @@ async function expectDevScanAllowsJsxInJs(tmpDir: string): Promise<void> {
     const baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
 
     // Trigger the cold-start dependency scan.
-    await fetch(`${baseUrl}/`).catch(() => {});
+    const response = await fetch(`${baseUrl}/`);
+    const html = await response.text();
     await new Promise((resolve) => setTimeout(resolve, 2_000));
 
+    expect(response.status).toBe(200);
+    for (const expectedText of expectedTexts) {
+      expect(html).toContain(expectedText);
+    }
     const scanFailed = scanErrors.some((e) => e.includes("Failed to run dependency scan"));
     expect(scanFailed).toBe(false);
     // The specific OXC parse error must not surface for the .js file.
@@ -168,19 +200,10 @@ describe("optimizeDeps: JSX in plain .js files", () => {
   }, 20_000);
 
   describe("dev server", () => {
-    it("does not fail the dependency scan when an app .js file uses JSX", async () => {
-      const tmpDir = await setupAppProject();
-      try {
-        await expectDevScanAllowsJsxInJs(tmpDir);
-      } finally {
-        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-      }
-    }, 60_000);
-
-    it("does not fail the dependency scan when a pages .js file uses JSX", async () => {
+    it("renders when a pages .js file uses JSX", async () => {
       const tmpDir = await setupPagesProject();
       try {
-        await expectDevScanAllowsJsxInJs(tmpDir);
+        await expectDevScanAllowsJsxInJs(tmpDir, ["plain-js-dep-ok", "pages jsx in js"]);
       } finally {
         await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }

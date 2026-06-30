@@ -45,7 +45,9 @@ export function getDepOptimizeNodeEnvOptions(
   // discover dependencies — so JSX in a `.js`/`.mjs` source file makes the
   // scanner fail with "Unexpected JSX expression" and aborts pre-bundling.
   // Force the optimizer to treat `.js`/`.mjs` as JSX so it parses the same
-  // way the main transform does, matching its `/\.m?js$/` filter.
+  // syntax that the main transform accepts for app source. Unlike the
+  // `vinext:jsx-in-js` transform, this is an optimizer-wide extension mapping
+  // and can also apply to dependencies that the optimizer pre-bundles.
   //
   // The motivating symptom is that, once the scan aborts, pre-bundling is
   // skipped and UMD/CJS deps can fail to interop under SSR — but that
@@ -57,11 +59,11 @@ export function getDepOptimizeNodeEnvOptions(
     ? {
         rolldownOptions: {
           transform: { define },
-          moduleTypes: { ...jsxModuleTypes },
+          moduleTypes: jsxModuleTypes,
         },
       }
     : {
-        esbuildOptions: { define, loader: { ...jsxModuleTypes } },
+        esbuildOptions: { define, loader: jsxModuleTypes },
       };
 }
 
