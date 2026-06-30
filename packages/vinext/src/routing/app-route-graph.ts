@@ -1105,9 +1105,9 @@ function validatePageRouteConflicts(routes: readonly AppRoute[], appDir: string)
 }
 
 function formatAppFilePath(filePath: string, appDir: string): string {
-  const relativePath = path.relative(appDir, filePath).replace(/\\/g, "/");
+  const relativePath = normalizePathSeparators(path.relative(appDir, filePath));
   const parsedPath = path.parse(relativePath);
-  const withoutExtension = path.join(parsedPath.dir, parsedPath.name).replace(/\\/g, "/");
+  const withoutExtension = normalizePathSeparators(path.join(parsedPath.dir, parsedPath.name));
   return withoutExtension.startsWith("/") ? withoutExtension : `/${withoutExtension}`;
 }
 
