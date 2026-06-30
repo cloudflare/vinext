@@ -138,6 +138,7 @@ import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import { createLayoutOwnedGlobalCssPlugin } from "./plugins/layout-owned-global-css.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
@@ -3432,6 +3433,14 @@ export const loadServerActionClient = ${
         },
       },
     },
+    createLayoutOwnedGlobalCssPlugin(
+      () => appDir,
+      () => (hasPagesDir ? pagesDir : null),
+      {
+        getPageExtensions: () => nextConfig.pageExtensions,
+        getMdxOptions: () => nextConfig.mdx,
+      },
+    ),
     {
       name: "vinext:pages-client-assets-resolver",
       // The resolver and writer share a build-scoped destination registry.

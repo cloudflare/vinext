@@ -194,6 +194,7 @@ export default defineConfig({
             "tests/nextjs-compat/**/*.test.ts",
             // Flaky under parallelism due to 1 MiB buffer allocation pressure.
             "tests/kv-cache-handler.test.ts",
+            "tests/layout-owned-global-css-build.test.ts",
           ],
         },
       },
@@ -242,6 +243,7 @@ export default defineConfig({
             "tests/features.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/kv-cache-handler.test.ts",
+            "tests/layout-owned-global-css-build.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/pages-i18n-prod.test.ts",
             "tests/pages-router-concurrency.test.ts",
