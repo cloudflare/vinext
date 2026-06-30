@@ -13,7 +13,7 @@ export default function About() {
         uses ISR with a 1-hour revalidation window.
       </p>
       <p className="product-desc">
-        When deployed with <code>vinext deploy --experimental-tpr</code>, TPR
+        When deployed with <code>npx @vinext/cloudflare deploy --experimental-tpr</code>, TPR
         queries Cloudflare zone analytics to determine which product pages
         actually get traffic, and pre-renders only those into KV cache. The
         rest are rendered on demand via SSR and cached for subsequent requests.

@@ -59,6 +59,17 @@ type PropertyKey = ESTree.PropertyKey;
 type Statement = ESTree.Statement;
 type VariableDeclarator = ESTree.VariableDeclarator;
 
+type StaticMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: Array<Record<string, string>>;
+  missing?: Array<Record<string, string>>;
+};
+
+export type StaticMiddlewareMatcher = string | Array<string | StaticMiddlewareMatcherObject>;
+
+const UNSUPPORTED_STATIC_VALUE = Symbol("unsupported static value");
+
 export function getAppRouteRenderEntryPath(route: AppRouteRenderEntry): string | null {
   if (route.pagePath) return route.pagePath;
   if (route.routePath) return null;
@@ -131,6 +142,23 @@ export function hasNamedExport(code: string, name: string): boolean {
   const program = parseRouteModule(code);
   if (!program) return false;
   return hasNamedExportInProgram(program, name);
+}
+
+/** Returns true when Next.js' analyzer recognizes the requested export name. */
+export function hasExportedName(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+    if (node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return true;
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.local) === name) return true;
+    }
+  }
+  return false;
 }
 
 function hasNamedExportInProgram(program: Program, name: string): boolean {
@@ -211,6 +239,112 @@ function extractStringFromConstInitializer(initializer: Expression | null): stri
   }
 
   return null;
+}
+
+export function extractMiddlewareMatcherConfig(
+  filePath: string,
+): StaticMiddlewareMatcher | undefined {
+  let code: string;
+  try {
+    code = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const initializer = findExportedConstInitializer(code, "config");
+  if (!initializer) return undefined;
+  const config = unwrapStaticExpression(initializer);
+  if (config.type !== "ObjectExpression") return undefined;
+
+  const matcherExpression = objectPropertyValue(config, "matcher");
+  if (!matcherExpression) return undefined;
+
+  const value = extractStaticJsonValue(matcherExpression);
+  return isStaticMiddlewareMatcher(value) ? value : undefined;
+}
+
+function objectPropertyValue(object: ObjectExpression, key: string): Expression | null {
+  for (const property of object.properties) {
+    if (property.type !== "Property" || property.computed) continue;
+    if (propertyKeyName(property.key) !== key) continue;
+    return property.value;
+  }
+  return null;
+}
+
+function propertyKeyName(key: PropertyKey): string | null {
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
+  return null;
+}
+
+function extractStaticJsonValue(expression: Expression): unknown {
+  const value = unwrapStaticExpression(expression);
+
+  if (value.type === "Literal") {
+    if (
+      typeof value.value === "string" ||
+      typeof value.value === "number" ||
+      typeof value.value === "boolean" ||
+      value.value === null
+    ) {
+      return value.value;
+    }
+    return UNSUPPORTED_STATIC_VALUE;
+  }
+
+  if (value.type === "TemplateLiteral" && value.expressions.length === 0) {
+    return value.quasis[0]?.value.cooked ?? value.quasis[0]?.value.raw ?? "";
+  }
+
+  if (value.type === "ArrayExpression") {
+    const items: unknown[] = [];
+    for (const element of value.elements) {
+      if (!element || element.type === "SpreadElement") return UNSUPPORTED_STATIC_VALUE;
+      const item = extractStaticJsonValue(element);
+      if (item === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      items.push(item);
+    }
+    return items;
+  }
+
+  if (value.type === "ObjectExpression") {
+    const object: Record<string, unknown> = {};
+    for (const property of value.properties) {
+      if (property.type !== "Property" || property.computed) return UNSUPPORTED_STATIC_VALUE;
+      const key = propertyKeyName(property.key);
+      if (!key) return UNSUPPORTED_STATIC_VALUE;
+      const propertyValue = extractStaticJsonValue(property.value);
+      if (propertyValue === UNSUPPORTED_STATIC_VALUE) return UNSUPPORTED_STATIC_VALUE;
+      object[key] = propertyValue;
+    }
+    return object;
+  }
+
+  return UNSUPPORTED_STATIC_VALUE;
+}
+
+function isStaticMiddlewareMatcher(value: unknown): value is StaticMiddlewareMatcher {
+  if (typeof value === "string") return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => typeof item === "string" || isStaticMiddlewareMatcherObject(item));
+}
+
+function isStaticMiddlewareMatcherObject(value: unknown): value is StaticMiddlewareMatcherObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.source !== "string") return false;
+  if (record.locale !== undefined && record.locale !== false) return false;
+  return isStaticMatcherConditions(record.has) && isStaticMatcherConditions(record.missing);
+}
+
+function isStaticMatcherConditions(value: unknown): value is Array<Record<string, string>> {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    return Object.values(item).every((entry) => typeof entry === "string");
+  });
 }
 
 /**

@@ -35,6 +35,7 @@ function createRenderer(overrides?: {
   ) => (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
   sanitizeErrorForClient?: (error: Error) => Error;
   globalNotFoundModule?: { default: React.ComponentType<any> } | null;
+  globalNotFoundEnabled?: boolean;
   rootLayoutModules?: readonly ({ default: React.ComponentType<any> } | null | undefined)[];
   rootNotFoundModule?: { default: React.ComponentType<any> } | null;
   rscRenderer?: (
@@ -75,6 +76,8 @@ function createRenderer(overrides?: {
         return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
       },
       globalErrorModule: null,
+      globalNotFoundEnabled:
+        overrides?.globalNotFoundEnabled ?? overrides?.globalNotFoundModule != null,
       loadGlobalNotFoundModule: overrides?.globalNotFoundModule
         ? async () => overrides.globalNotFoundModule ?? null
         : null,
@@ -692,13 +695,13 @@ describe("app fallback renderer with globalNotFoundModule", () => {
   it("falls back to default not-found when global-not-found is absent and route is null", async () => {
     // Mirrors test/e2e/app-dir/global-not-found/not-present: when the user
     // opted into experimental.globalNotFound but never created the file,
-    // route-miss 404s should still serve the default 404 response. With no
-    // user-defined root notFoundModule either, vinext renders its built-in
-    // default not-found component (parity with Next.js's packaged
-    // not-found.tsx — "This page could not be found." with trailing period).
+    // route-miss 404s should still serve the default 404 response, even when
+    // the app defines a root not-found.tsx for explicit notFound() calls.
     const { renderer } = createRenderer({
       globalNotFoundModule: null,
+      globalNotFoundEnabled: true,
       rootLayoutModules: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
     });
     const request = new Request("https://example.com/does-not-exist");
 
@@ -710,6 +713,38 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(response?.status).toBe(404);
     const html = await response?.text();
     expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain('data-boundary="not-found"');
+    expect(html).not.toContain('lang="en"');
+    expect((html?.match(/<html/gi) ?? []).length).toBe(1);
+    expect((html?.match(/<body/gi) ?? []).length).toBe(1);
+  });
+
+  it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {
+    const { renderer } = createRenderer({
+      globalNotFoundEnabled: true,
+      rootLayoutModules: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+    });
+    const request = new Request("https://example.com/call-not-found");
+
+    const response = await renderer.renderNotFound(
+      {
+        layouts: [rootLayoutModule],
+        notFound: notFoundModule,
+        params: {},
+        pattern: "/call-not-found",
+      },
+      false,
+      request,
+      undefined,
+      undefined,
+      { headers: null, status: null },
+    );
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain('data-boundary="not-found"');
+    expect(html).toContain('lang="en"');
   });
 
   it("does not use global-not-found for non-404 access fallbacks (403, 401)", async () => {

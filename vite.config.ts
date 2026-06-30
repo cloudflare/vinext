@@ -3,6 +3,8 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
+const VINEXT_SRC = path.resolve(import.meta.dirname, "packages/vinext/src");
+const CLOUDFLARE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 
 // Resolve own-workspace sources directly in tests so the vinext <->
@@ -10,7 +12,10 @@ const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 // no prior build required). Shared by both test projects below.
 const WORKSPACE_SRC_ALIAS = {
   "vinext/shims": SHIMS_SRC,
+  "vinext/internal": VINEXT_SRC,
+  "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
   "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
+  "@vinext/cloudflare/images": path.resolve(import.meta.dirname, "packages/cloudflare/src/images"),
 };
 
 export default defineConfig({

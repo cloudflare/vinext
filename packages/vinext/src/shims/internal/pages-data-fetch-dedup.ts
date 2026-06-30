@@ -23,16 +23,16 @@
  *   directly by anyone, which keeps subsequent clones legal even after one
  *   caller has consumed its copy.
  *
- * - Each caller owns one waiter. Cancelling a waiter leaves the shared request
- *   alive while another waiter remains; cancelling the final waiter aborts the
- *   underlying fetch and evicts the entry immediately so a replacement caller
- *   can retry without joining a doomed request.
+ * - Each caller owns one waiter. Cancelling a waiter rejects only that caller;
+ *   the shared request continues and self-evicts when it settles. This mirrors
+ *   Next.js: a superseded data request may still reach the server, but its
+ *   result is ignored by the cancelled navigation.
  *
  * - The map is module-scoped (one per realm). The Pages Router runs in the
  *   browser only, so a single `Map` is sufficient.
  */
 
-import { NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 
 type InflightEntry = {
   controller: AbortController;
@@ -43,6 +43,86 @@ type InflightEntry = {
 
 /** Inflight fetch entries keyed by the resolved data request identity. */
 const inflight = new Map<string, InflightEntry>();
+const staticDataCache: Record<string, Promise<Response>> = Object.create(null) as Record<
+  string,
+  Promise<Response>
+>;
+const staticDataSources = new Map<string, Promise<Response>>();
+
+function getStaticDataKey(dataHref: string): string {
+  if (typeof window === "undefined") return dataHref;
+  try {
+    return new URL(dataHref, window.location.href).href;
+  } catch {
+    return dataHref;
+  }
+}
+
+function cloneStaticResponse(cached: Promise<Response>, signal?: AbortSignal): Promise<Response> {
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  if (!signal) return cached.then((response) => response.clone());
+
+  return new Promise<Response>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    cached.then(
+      (response) => {
+        signal.removeEventListener("abort", abort);
+        resolve(response.clone());
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+export function getPagesStaticDataCache(): Record<string, Promise<Response>> {
+  return staticDataCache;
+}
+
+export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+  const key = getStaticDataKey(dataHref);
+  let cached = staticDataSources.get(key);
+  if (cached === undefined) {
+    const { signal: _signal, ...sharedInit } = init ?? {};
+    cached = dedupedPagesDataFetch(dataHref, sharedInit)
+      .then((response) => {
+        const expectedDeploymentId = getDeploymentId() ?? null;
+        const responseDeploymentId = response.headers.get("x-nextjs-deployment-id");
+        if (
+          !response.ok ||
+          response.headers.get("x-middleware-cache") === "no-cache" ||
+          (responseDeploymentId !== null && responseDeploymentId !== expectedDeploymentId)
+        ) {
+          delete staticDataCache[key];
+          staticDataSources.delete(key);
+        }
+        return response;
+      })
+      .catch((error: unknown) => {
+        delete staticDataCache[key];
+        staticDataSources.delete(key);
+        throw error;
+      });
+    staticDataSources.set(key, cached);
+    const publicCached = cached.then((response) => response.clone());
+    publicCached.catch(() => {});
+    staticDataCache[key] = publicCached;
+  }
+  return cloneStaticResponse(cached, init?.signal ?? undefined);
+}
+
+export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+  return fetchCachedPagesData(dataHref, init);
+}
+
+export function evictPagesDataCache(dataHref: string): void {
+  const key = getStaticDataKey(dataHref);
+  delete staticDataCache[key];
+  staticDataSources.delete(key);
+}
 
 function getInflightKey(dataHref: string, init?: RequestInit): string {
   let resolvedHref = dataHref;
@@ -65,29 +145,25 @@ function cloneSharedResponse(
 
   return new Promise<Response>((resolve, reject) => {
     let released = false;
-    const release = (cancelled: boolean) => {
+    const release = () => {
       if (released) return;
       released = true;
       entry.waiters -= 1;
-      if (cancelled && entry.waiters === 0 && !entry.settled) {
-        if (inflight.get(key) === entry) inflight.delete(key);
-        entry.controller.abort();
-      }
     };
     const abort = () => {
-      release(true);
+      release();
       reject(new DOMException("Aborted", "AbortError"));
     };
     signal?.addEventListener("abort", abort, { once: true });
     entry.promise.then(
       (response) => {
         signal?.removeEventListener("abort", abort);
-        release(false);
+        release();
         resolve(response.clone());
       },
       (error: unknown) => {
         signal?.removeEventListener("abort", abort);
-        release(false);
+        release();
         reject(error);
       },
     );
@@ -138,4 +214,6 @@ export function dedupedPagesDataFetch(dataHref: string, init?: RequestInit): Pro
 export function clearPagesDataInflight(): void {
   for (const entry of inflight.values()) entry.controller.abort();
   inflight.clear();
+  staticDataSources.clear();
+  for (const key of Object.keys(staticDataCache)) delete staticDataCache[key];
 }

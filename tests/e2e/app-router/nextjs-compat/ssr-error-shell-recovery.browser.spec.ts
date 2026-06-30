@@ -20,24 +20,21 @@
  * tests/nextjs-compat/global-error.test.ts.
  */
 import fs from "node:fs/promises";
-import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "../../fixtures";
+import {
+  startChildProductionServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 type ProductionApp = {
   baseUrl: string;
   fixtureRoot: string;
-  server: Server;
+  server: ChildProductionServer;
 };
-
-async function closeServer(server: Server): Promise<void> {
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  await closed;
-}
 
 async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
   const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
@@ -299,20 +296,12 @@ async function buildPrerenderAndServeRecoveryFixture(): Promise<ProductionApp> {
   );
   await runPrerender({ root: fixtureRoot });
 
-  const { startProdServer } = await import(
-    pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
-  );
-  const started = await startProdServer({
-    host: "127.0.0.1",
-    port: 0,
-    outDir: path.join(fixtureRoot, "dist"),
-    noCompression: true,
-  });
+  const started = await startChildProductionServer(fixtureRoot);
 
   return {
     baseUrl: `http://127.0.0.1:${started.port}`,
     fixtureRoot,
-    server: started.server,
+    server: started,
   };
 }
 
@@ -390,8 +379,11 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
       expect(unexpectedErrors).toEqual([]);
       consoleErrors.length = 0;
     } finally {
-      await closeServer(app.server);
-      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      try {
+        await stopChildProductionServer(app.server);
+      } finally {
+        await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+      }
     }
   });
 });

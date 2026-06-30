@@ -174,10 +174,17 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
+      const linkHeader = response.headers.get("link");
       const writes = [
         options.isrSet(
           htmlKey,
-          buildAppPageCacheValue(cachedHtml, undefined, 200, htmlRenderObservation),
+          buildAppPageCacheValue(
+            cachedHtml,
+            undefined,
+            200,
+            htmlRenderObservation,
+            linkHeader ? { link: linkHeader } : undefined,
+          ),
           cachePolicy.revalidateSeconds,
           pageTags,
           cachePolicy.expireSeconds,

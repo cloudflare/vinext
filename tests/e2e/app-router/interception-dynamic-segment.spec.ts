@@ -4,7 +4,7 @@
 import { test, expect } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
-const BASE = "http://localhost:4174";
+const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4174";
 const ROOT = `${BASE}/interception-dyn-seg`;
 
 test.describe("interception-dynamic-segment", () => {
@@ -16,6 +16,8 @@ test.describe("interception-dynamic-segment", () => {
 
     // Client navigation — modal slot should show intercepted content
     await expect(page.locator("#modal")).toContainText("intercepted");
+    await expect(page.locator("#modal-segment")).toHaveText("modal segment: 1");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: foo|1");
     // The catch-all fallback should NOT be visible during interception
     await expect(page.locator("#modal")).not.toContainText("catch-all");
   });
@@ -69,8 +71,22 @@ test.describe("interception-dynamic-segment", () => {
 
     // Modal slot shows intercepted sidebar content
     await expect(page.locator("#modal")).toContainText("Intercepted test-nested sidebar");
+    await expect(page.locator("#modal-segment")).toHaveText("modal segment: test-nested");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: test-nested");
     // Children slot should still contain the home page content
     await expect(page.locator("#children")).toContainText("CHILDREN SLOT");
+  });
+
+  test("resolves @modal/sub/(.)target/[id] from the actual marker", async ({ page }) => {
+    await page.goto(`${ROOT}/sub`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#link-sub-target-42");
+
+    await expect(page.locator("#modal")).toContainText("Intercepted sub target 42");
+    await expect(page.locator("#modal-segment")).toHaveText("modal segment: 42");
+    await expect(page.locator("#modal-segments")).toHaveText("modal segments: sub|target|42");
+    await expect(page.locator("#children")).toContainText("/sub/target/42");
   });
 
   test("direct visit to test-nested shows actual page (not intercepted)", async ({ page }) => {

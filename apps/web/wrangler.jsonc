@@ -53,4 +53,7 @@
   "secrets": {
     "required": ["COMPAT_INGEST_SECRET"],
   },
+  "cache": {
+    "enabled": true,
+  },
 }

@@ -23,6 +23,7 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -123,6 +124,8 @@ export type PrerenderRouteResult =
       path?: string;
       /** Which router produced this route. Used by cache seeding. */
       router: "app" | "pages";
+      /** Response headers that must be replayed with the prerendered artifact. */
+      headers?: Record<string, string>;
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -278,7 +281,11 @@ export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array |
   while ((match = scriptPattern.exec(html)) !== null) {
     const script = (match[1] ?? "").trim().replace(/;$/, "");
 
-    if (script === RSC_RUNTIME_DONE_SCRIPT || script === RSC_LEGACY_DONE_SCRIPT) {
+    if (
+      script === RSC_RUNTIME_DONE_SCRIPT ||
+      script === RSC_LEGACY_DONE_SCRIPT ||
+      script.endsWith(`;${RSC_RUNTIME_DONE_SCRIPT}`)
+    ) {
       sawDone = true;
       continue;
     }
@@ -1355,10 +1362,12 @@ export async function prerenderApp({
           async () => {
             const response = await rscHandler(htmlRequest);
             const cacheControl = response.headers.get("cache-control") ?? "";
+            const linkHeader = response.headers.get("link");
             if (!response.ok || (isSpeculative && cacheControl.includes("no-store"))) {
               await response.body?.cancel();
               return {
                 cacheControl,
+                linkHeader,
                 html: null,
                 ok: response.ok,
                 requestCacheLife: null,
@@ -1369,6 +1378,7 @@ export async function prerenderApp({
             const html = await response.text();
             return {
               cacheControl,
+              linkHeader,
               html,
               ok: true,
               requestCacheLife: _consumeRequestScopedCacheLife(),
@@ -1477,6 +1487,7 @@ export async function prerenderApp({
             ? { expire: renderedCacheControl.expire }
             : {}),
           router: "app",
+          ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
@@ -1630,6 +1641,7 @@ export function writePrerenderIndex(
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
+        ...(r.headers ? { headers: r.headers } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };
@@ -1644,6 +1656,7 @@ export function writePrerenderIndex(
     ...(buildId ? { buildId } : {}),
     ...(typeof trailingSlash === "boolean" ? { trailingSlash } : {}),
     routes: indexRoutes,
+    pregeneratedConcretePaths: buildPregeneratedConcretePathTable({ routes: indexRoutes }),
   };
   fs.writeFileSync(
     path.join(outDir, "vinext-prerender.json"),
