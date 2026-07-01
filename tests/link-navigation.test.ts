@@ -56,6 +56,12 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: false,
+    patternParts: ["teams", ":team", "dashboard"],
+    isDynamic: true,
+    requiresDynamicNavigationRequest: true,
+  },
 ] satisfies VinextLinkPrefetchRoute[];
 
 function createTestNavigationRuntime(navigate: unknown) {
@@ -1945,11 +1951,11 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("does not issue a prefetchInlining shell request for dynamic routes without loading shells", async () => {
+  it("uses a shell-only automatic prefetch for dynamic routes requiring fresh navigation", async () => {
     vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
-      href: "/clothing/1",
+      href: "/teams/vercel/dashboard",
       nodeEnv: "production",
     });
 
@@ -1961,7 +1967,7 @@ describe("Link prefetch scheduling", () => {
       expect(result.fetch).toHaveBeenCalledTimes(1);
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/clothing/1",
+        "/teams/vercel/dashboard",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1969,7 +1975,7 @@ describe("Link prefetch scheduling", () => {
       );
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        null,
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
     } finally {
       result.restoreNodeEnv();
