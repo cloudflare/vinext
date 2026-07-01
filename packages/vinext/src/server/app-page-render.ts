@@ -722,6 +722,7 @@ export async function renderAppPageLifecycle(
   let expireSeconds = options.expireSeconds;
   const shouldWaitForAllReady =
     options.isPrerender === true && options.isSpeculativePrerender !== true;
+  const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
   const shouldCaptureRscForCacheMetadata =
     options.isProgressiveActionRender !== true &&
     (options.isProduction || options.isPrerender === true) &&
@@ -762,6 +763,8 @@ export async function renderAppPageLifecycle(
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
     if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    }
+    if (shouldReadRequestCacheLifeForPrerender) {
       requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
         expireSeconds,
@@ -937,6 +940,10 @@ export async function renderAppPageLifecycle(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
+        fallbackToErrorDocumentOnShellError:
+          options.isPrerender === true && options.isSpeculativePrerender === true
+            ? false
+            : undefined,
         waitForAllReady: shouldWaitForAllReady,
       });
     },
@@ -991,6 +998,8 @@ export async function renderAppPageLifecycle(
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   if (shouldWaitForAllReady) {
     await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
+  }
+  if (shouldReadRequestCacheLifeForPrerender) {
     requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,

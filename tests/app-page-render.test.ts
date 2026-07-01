@@ -902,10 +902,11 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("does not wait for all ready or captured RSC metadata during speculative prerender", async () => {
+  it("does not wait for captured RSC metadata during speculative prerender", async () => {
     const common = createCommonOptions();
     let capturedWaitForAllReady: boolean | undefined;
-    const getRequestCacheLife = vi.fn(() => null);
+    let capturedFallbackToErrorDocumentOnShellError: boolean | undefined;
+    const getRequestCacheLife = vi.fn(() => ({ revalidate: 1, expire: 3 }));
     const pendingRscData = new Promise<ArrayBuffer>(() => {});
 
     const response = await renderAppPageLifecycle({
@@ -920,11 +921,14 @@ describe("app page render lifecycle", () => {
           _fontData: unknown,
           options?: {
             capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            fallbackToErrorDocumentOnShellError?: boolean;
             sideStream?: ReadableStream<Uint8Array>;
             waitForAllReady?: boolean;
           },
         ) {
           capturedWaitForAllReady = options?.waitForAllReady;
+          capturedFallbackToErrorDocumentOnShellError =
+            options?.fallbackToErrorDocumentOnShellError;
           if (options?.capturedRscDataRef) {
             options.capturedRscDataRef.value = pendingRscData;
           }
@@ -938,7 +942,12 @@ describe("app page render lifecycle", () => {
     });
 
     expect(capturedWaitForAllReady).toBe(false);
-    expect(getRequestCacheLife).not.toHaveBeenCalled();
+    expect(capturedFallbackToErrorDocumentOnShellError).toBe(false);
+    expect(getRequestCacheLife).toHaveBeenCalledOnce();
+    expect(response.headers.get("x-vinext-prerender-cache-life")).toBe(
+      JSON.stringify({ revalidate: 1, expire: 3 }),
+    );
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
     await expect(response.text()).resolves.toBe("<html>speculative</html>");
   });
 
