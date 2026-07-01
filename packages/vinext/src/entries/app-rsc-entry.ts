@@ -8,6 +8,7 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { normalizePathSeparators } from "../utils/path.js";
@@ -26,6 +27,15 @@ import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "../server/image-optim
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+
+function resolveRealEntryPath(rel: string, base: string): string {
+  const resolved = resolveEntryPath(rel, base);
+  try {
+    return normalizePathSeparators(realpathSync(resolved));
+  } catch {
+    return resolved;
+  }
+}
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
@@ -111,6 +121,10 @@ const appHookWarningSuppressionPath = resolveEntryPath(
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
+const defaultGlobalErrorShimPath = resolveRealEntryPath(
+  "../shims/default-global-error.js",
+  import.meta.url,
+);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -314,6 +328,9 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
     : ""
 }
 import { createAppRscHandler } from "vinext/server/app-rsc-handler";
+// Ensure the built-in global error client component is registered with
+// plugin-rsc before SSR validates fallback error-boundary references.
+import __VinextDefaultGlobalError from ${JSON.stringify(defaultGlobalErrorShimPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
@@ -332,6 +349,7 @@ ${
     ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});`
     : ""
 }
+void __VinextDefaultGlobalError;
 ${
   (metadataRoutes?.length ?? 0) > 0
     ? `const __loadMetadataRouteResponse = () => import(${JSON.stringify(metadataRouteResponsePath)});`

@@ -137,6 +137,7 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import { rscClientReferenceValidationPlugin } from "./plugins/rsc-client-reference-validation.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
@@ -831,10 +832,6 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
 );
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
-// Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
-// do not execute a stale dist build. Published packages resolve to emitted JS,
-// which Node can load natively outside the RSC transform graph.
-const _canExternalizeAppRscHandler = _appRscHandlerPath.endsWith(".js");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -2662,15 +2659,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       external:
                         userSsrExternal === true
                           ? true
-                          : [
-                              "satori",
-                              "@resvg/resvg-js",
-                              "yoga-wasm-web",
-                              ...(env?.command === "serve" && _canExternalizeAppRscHandler
-                                ? ["vinext/server/app-rsc-handler"]
-                                : []),
-                              ...userSsrExternal,
-                            ],
+                          : ["satori", "@resvg/resvg-js", "yoga-wasm-web", ...userSsrExternal],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -3129,13 +3118,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const cleanId = normalizePathSeparators(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
 
           if (cleanId === "vinext/server/app-rsc-handler") {
-            if (
-              _canExternalizeAppRscHandler &&
-              this.environment?.name === "rsc" &&
-              this.environment.config?.command === "serve"
-            ) {
-              return { id: _appRscHandlerPath, external: true };
-            }
             return _appRscHandlerPath;
           }
 
@@ -3655,6 +3637,7 @@ export const loadServerActionClient = ${
         return clientInjectModule;
       },
     },
+    rscClientReferenceValidationPlugin(),
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily

@@ -849,8 +849,15 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const defaultGlobalErrorShimPath = path
+      .resolve("packages/vinext/src/shims/default-global-error.js")
+      .replaceAll("\\", "/");
 
     expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
+    expect(code).toContain(
+      `import __VinextDefaultGlobalError from ${JSON.stringify(defaultGlobalErrorShimPath)};`,
+    );
+    expect(code).toContain("void __VinextDefaultGlobalError;");
     expect(code).toContain("export default createAppRscHandler({");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });

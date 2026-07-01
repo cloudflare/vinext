@@ -151,12 +151,17 @@ describe("clientManualChunks", () => {
 
 describe("optimizeDeps.exclude for vinext", () => {
   const rscClientShimExcludes = [
+    "vinext/shims/app-router-scroll",
+    "vinext/shims/default-global-error",
+    "vinext/shims/dynamic-preload-chunks",
     "vinext/shims/error-boundary",
     "vinext/shims/form",
+    "vinext/shims/image",
     "vinext/shims/layout-segment-context",
     "vinext/shims/link",
     "vinext/shims/script",
     "vinext/shims/slot",
+    "vinext/shims/use-merged-ref",
     "vinext/shims/offline",
   ];
 
@@ -336,7 +341,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
-  it("does not externalize the built App Router request handler from a source checkout", async () => {
+  it("keeps the App Router request handler inside the RSC transform graph", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const mainPlugin = vinext().find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
@@ -361,6 +366,10 @@ describe("optimizeDeps.exclude for vinext", () => {
         { root: tmpDir, build: {}, plugins: [] },
         { command: "serve" },
       );
+      // The handler imports vinext's built-in App Router client shims. Even
+      // from an installed package, externalizing it lets Node load those shims
+      // outside plugin-rsc's metadata pass and breaks client-reference
+      // validation for create-next-app projects.
       expect(devConfig.environments.rsc.resolve.external).not.toContain(
         "vinext/server/app-rsc-handler",
       );

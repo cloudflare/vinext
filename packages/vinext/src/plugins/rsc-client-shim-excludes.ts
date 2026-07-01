@@ -1,13 +1,18 @@
-const RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
+export const RSC_CLIENT_SHIM_SPECIFIERS = Object.freeze([
   // @vitejs/plugin-rsc tracks package client references by the original
   // bare source. If Vite pre-bundles these known client shims, the generated
   // client-package proxy can lose the matching export metadata in dev.
+  "vinext/shims/app-router-scroll",
+  "vinext/shims/default-global-error",
+  "vinext/shims/dynamic-preload-chunks",
   "vinext/shims/error-boundary",
   "vinext/shims/form",
+  "vinext/shims/image",
   "vinext/shims/layout-segment-context",
   "vinext/shims/link",
   "vinext/shims/script",
   "vinext/shims/slot",
+  "vinext/shims/use-merged-ref",
   "vinext/shims/offline",
 ]);
 
@@ -18,7 +23,7 @@ export const VINEXT_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   // shim). Not a real npm dep, so pre-bundling it would break HMR and cause
   // a "new dependencies optimized" reload on the first request.
   "private-next-instrumentation-client",
-  ...RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE,
+  ...RSC_CLIENT_SHIM_SPECIFIERS,
 ]);
 
 // React entries that @vitejs/plugin-rsc adds to environments.ssr.optimizeDeps.include
