@@ -298,8 +298,20 @@ export type NextConfig = {
     /** Enables hard-navigation recovery when App Router navigation rendering fails. */
     appNavFailHandling?: boolean;
     /**
+     * Enables experimental taint APIs in React and opts App Router React
+     * resolution into React's experimental channel.
+     */
+    taint?: boolean;
+    /**
+     * Enables React's transition indicator feature and opts App Router React
+     * resolution into React's experimental channel.
+     */
+    transitionIndicator?: boolean;
+    /**
      * Enables the experimental App Router gesture transition API:
      * `useRouter().experimental_gesturePush()`.
+     * This also opts App Router React resolution into React's experimental
+     * channel.
      */
     gestureTransition?: boolean;
     [key: string]: unknown;
@@ -362,6 +374,14 @@ export type ResolvedNextConfig = {
   instrumentationClientInject: string[];
   cacheComponents: boolean;
   appNavFailHandling: boolean;
+  /**
+   * Whether the App Router should resolve React, ReactDOM, and the RSC runtime
+   * to React's experimental release channel.
+   *
+   * Mirrors Next.js `needsExperimentalReact`: enabled by experimental.taint,
+   * experimental.transitionIndicator, or experimental.gestureTransition.
+   */
+  experimentalReact: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
    * `useRouter().experimental_gesturePush()`.
@@ -1334,6 +1354,14 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
   };
 }
 
+function needsExperimentalReact(experimental: Record<string, unknown> | undefined): boolean {
+  return (
+    experimental?.taint === true ||
+    experimental?.transitionIndicator === true ||
+    experimental?.gestureTransition === true
+  );
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
@@ -1357,6 +1385,7 @@ export async function resolveNextConfig(
       serverResolveExtensions: null,
       cacheComponents: false,
       appNavFailHandling: false,
+      experimentalReact: false,
       gestureTransition: false,
       prefetchInlining: false,
       redirects: [],
@@ -1701,6 +1730,7 @@ export async function resolveNextConfig(
       : [],
     cacheComponents: config.cacheComponents ?? false,
     appNavFailHandling: experimental?.appNavFailHandling === true,
+    experimentalReact: needsExperimentalReact(experimental),
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
     redirects,

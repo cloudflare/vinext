@@ -1632,6 +1632,34 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+// Ported from Next.js: packages/next/src/lib/needs-experimental-react.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/needs-experimental-react.ts
+describe("resolveNextConfig experimental React channel", () => {
+  it("defaults to the stable React channel", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.experimentalReact).toBe(false);
+  });
+
+  it.each(["taint", "transitionIndicator", "gestureTransition"] as const)(
+    "opts into React experimental when experimental.%s is enabled",
+    async (flag) => {
+      const resolved = await resolveNextConfig({
+        experimental: { [flag]: true },
+      });
+
+      expect(resolved.experimentalReact).toBe(true);
+    },
+  );
+
+  it("does not opt into React experimental for experimental.blockingSSR", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { blockingSSR: true },
+    });
+
+    expect(resolved.experimentalReact).toBe(false);
+  });
+});
+
 describe("resolveNextConfig appNavFailHandling", () => {
   it("defaults experimental.appNavFailHandling to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2006,6 +2034,7 @@ describe("detectNextIntlConfig", () => {
       serverResolveExtensions: null,
       cacheComponents: false,
       appNavFailHandling: false,
+      experimentalReact: false,
       gestureTransition: false,
       prefetchInlining: false,
       redirects: [],

@@ -252,6 +252,12 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
 ]);
 
+const EXPERIMENTAL_REACT_ALIASES = Object.freeze({
+  react: "react-experimental-builtin",
+  "react-dom": "react-dom-experimental-builtin",
+  "react-server-dom-webpack": "react-server-dom-webpack-experimental",
+});
+
 const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
@@ -348,6 +354,12 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
   } catch {}
 
   return null;
+}
+
+function canResolveExperimentalReactAliases(projectRoot: string): boolean {
+  return Object.values(EXPERIMENTAL_REACT_ALIASES).every(
+    (packageName) => resolveOptionalDependency(projectRoot, packageName) !== null,
+  );
 }
 
 async function loadVite7TsconfigPathsPlugin(projectRoot: string): Promise<Plugin> {
@@ -2125,6 +2137,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
+        const useExperimentalReactAliases =
+          hasAppDir && nextConfig.experimentalReact && canResolveExperimentalReactAliases(root);
+        const ssrReactExternalEntries = useExperimentalReactAliases
+          ? []
+          : ["react", "react-dom", "react-dom/server"];
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -2371,9 +2388,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : {
                   ssr: {
                     external: [
-                      "react",
-                      "react-dom",
-                      "react-dom/server",
+                      ...ssrReactExternalEntries,
                       "ipaddr.js",
                       ...(Array.isArray(config.ssr?.external) ? config.ssr.external : []),
                       ...nextServerExternal,
@@ -2388,6 +2403,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
               ...tsconfigPathAliases,
               ...nextConfig.aliases,
+              ...(useExperimentalReactAliases ? EXPERIMENTAL_REACT_ALIASES : {}),
               ...nextShimMap,
               "vinext/server/pages-client-assets": _pagesClientAssetsPath,
             },
@@ -2571,7 +2587,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? true
             : nextServerExternal;
         const externalizeSsrReactInDev =
-          env.command === "serve" && !hasCloudflarePlugin && !hasNitroPlugin;
+          env.command === "serve" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          !useExperimentalReactAliases;
 
         // Capture top-level optimizeDeps populated by earlier plugins
         // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
@@ -2884,13 +2903,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             ssr: {
               resolve: {
-                external: [
-                  "react",
-                  "react-dom",
-                  "react-dom/server",
-                  "ipaddr.js",
-                  ...nextServerExternal,
-                ],
+                external: [...ssrReactExternalEntries, "ipaddr.js", ...nextServerExternal],
                 noExternal: true as const,
               },
               optimizeDeps: {

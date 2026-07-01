@@ -386,7 +386,10 @@ describe("optimizeDeps.exclude for vinext", () => {
     "react-server-dom-webpack/client.edge",
   ];
 
-  async function setupAppRouterConfigTest(prefix: string) {
+  async function setupAppRouterConfigTest(
+    prefix: string,
+    options: { linkNodeModules?: boolean; router?: "app" | "pages" } = {},
+  ) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const mainPlugin = vinext().find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
@@ -394,23 +397,34 @@ describe("optimizeDeps.exclude for vinext", () => {
     expect(mainPlugin).toBeDefined();
 
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
-    await fsp.symlink(
-      path.resolve(import.meta.dirname, "../node_modules"),
-      path.join(root, "node_modules"),
-      "junction",
-    );
-    await fsp.mkdir(path.join(root, "app"), { recursive: true });
-    await fsp.writeFile(
-      path.join(root, "app", "layout.tsx"),
-      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
-    );
-    await fsp.writeFile(
-      path.join(root, "app", "page.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
+    if (options.linkNodeModules !== false) {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+    }
+    if (options.router === "pages") {
+      await fsp.mkdir(path.join(root, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+    } else {
+      await fsp.mkdir(path.join(root, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "app", "layout.tsx"),
+        `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+      );
+      await fsp.writeFile(
+        path.join(root, "app", "page.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }`,
+      );
+    }
     await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
 
     return {
+      root,
       config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
         return (mainPlugin as any).config(
           { root, build: {}, plugins: [], ...userConfig },
@@ -419,6 +433,16 @@ describe("optimizeDeps.exclude for vinext", () => {
       },
       cleanup: () => fsp.rm(root, { recursive: true, force: true }),
     };
+  }
+
+  async function writePackageStub(root: string, packageName: string) {
+    const packageDir = path.join(root, "node_modules", packageName);
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: packageName, version: "0.0.0-test", type: "module" }, null, 2),
+    );
+    await fsp.writeFile(path.join(packageDir, "index.js"), "export default {};\n");
   }
 
   it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
@@ -469,6 +493,108 @@ describe("optimizeDeps.exclude for vinext", () => {
         );
         expect(buildExclude, `build SSR exclude should NOT contain ${entry}`).not.toContain(entry);
       }
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("does not alias React packages to missing experimental channel packages", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-react-experimental-missing-");
+
+    try {
+      await fsp.writeFile(
+        path.join(fixture.root, "next.config.mjs"),
+        // Ported from Next.js: test/e2e/app-dir/gesture-transitions/next.config.js
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/gesture-transitions/next.config.js
+        `export default { experimental: { gestureTransition: true } };\n`,
+      );
+
+      const result = await fixture.config();
+
+      expect(result.resolve.alias.react).toBeUndefined();
+      expect(result.resolve.alias["react-dom"]).toBeUndefined();
+      expect(result.resolve.alias["react-server-dom-webpack"]).toBeUndefined();
+
+      const ssrExternal = result.environments.ssr.resolve.external ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(ssrExternal, `dev SSR external should contain ${entry}`).toContain(entry);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("aliases React packages to the experimental channel when required deps are available", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-react-experimental-available-", {
+      linkNodeModules: false,
+    });
+
+    try {
+      await Promise.all(
+        [
+          "react-experimental-builtin",
+          "react-dom-experimental-builtin",
+          "react-server-dom-webpack-experimental",
+        ].map((packageName) => writePackageStub(fixture.root, packageName)),
+      );
+      await fsp.writeFile(
+        path.join(fixture.root, "next.config.mjs"),
+        // Ported from Next.js: test/e2e/app-dir/rsc-basic/rsc-basic-react-experimental.test.ts
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic-react-experimental.test.ts
+        `export default { experimental: { taint: true } };\n`,
+      );
+
+      const result = await fixture.config();
+
+      expect(result.resolve.alias.react).toBe("react-experimental-builtin");
+      expect(result.resolve.alias["react-dom"]).toBe("react-dom-experimental-builtin");
+      expect(result.resolve.alias["react-server-dom-webpack"]).toBe(
+        "react-server-dom-webpack-experimental",
+      );
+
+      const ssrExternal = result.environments.ssr.resolve.external ?? [];
+      expect(ssrExternal).not.toContain("react");
+      expect(ssrExternal).not.toContain("react-dom");
+      expect(ssrExternal).not.toContain("react-dom/server");
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      expect(ssrExclude).not.toContain("react");
+      expect(ssrExclude).not.toContain("react-dom");
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("does not alias React packages for Pages-only projects with experimental React flags", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-react-experimental-pages-", {
+      linkNodeModules: false,
+      router: "pages",
+    });
+
+    try {
+      await Promise.all(
+        [
+          "react-experimental-builtin",
+          "react-dom-experimental-builtin",
+          "react-server-dom-webpack-experimental",
+        ].map((packageName) => writePackageStub(fixture.root, packageName)),
+      );
+      await fsp.writeFile(
+        path.join(fixture.root, "next.config.mjs"),
+        // Next.js only exercises React experimental channel aliases for app-dir builds.
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic-react-experimental.test.ts
+        `export default { experimental: { taint: true } };\n`,
+      );
+
+      const result = await fixture.config();
+
+      expect(result.resolve.alias.react).toBeUndefined();
+      expect(result.resolve.alias["react-dom"]).toBeUndefined();
+      expect(result.resolve.alias["react-server-dom-webpack"]).toBeUndefined();
+
+      const ssrExternal = result.environments.ssr.resolve.external ?? [];
+      expect(ssrExternal).toContain("react");
+      expect(ssrExternal).toContain("react-dom");
+      expect(ssrExternal).toContain("react-dom/server");
     } finally {
       await fixture.cleanup();
     }

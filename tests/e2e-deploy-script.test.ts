@@ -1,7 +1,94 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
+
+function writeJson(filePath: string, value: unknown) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function runInjectOnlyDeployFixture(nextConfigSource: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-e2e-deploy-script-"));
+
+  try {
+    const vinextDir = path.join(root, "vinext");
+    const nextjsDir = path.join(root, "next.js");
+    const appDir = path.join(root, "app");
+
+    fs.mkdirSync(path.join(vinextDir, "packages", "vinext", "dist"), { recursive: true });
+    fs.mkdirSync(path.join(vinextDir, "packages", "cloudflare", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(vinextDir, "packages", "vinext", "dist", "cli.js"), "");
+    fs.writeFileSync(
+      path.join(vinextDir, "pnpm-workspace.yaml"),
+      [
+        "catalog:",
+        "  vite: ^8.0.0",
+        '  "@vitejs/plugin-react": ^5.0.0',
+        '  "@vitejs/plugin-rsc": ^0.0.0',
+        "  react-server-dom-webpack: ^19.0.0",
+        '  "@mdx-js/rollup": ^3.0.0',
+        '  "@mdx-js/react": ^3.0.0',
+        "  ipaddr.js: ^2.2.0",
+        "",
+      ].join("\n"),
+    );
+    writeJson(path.join(vinextDir, "package.json"), {
+      name: "vinext-monorepo",
+      private: true,
+      packageManager: "pnpm@11.1.1",
+    });
+    writeJson(path.join(vinextDir, "packages", "vinext", "package.json"), {
+      name: "vinext",
+      version: "0.0.0-test",
+      type: "module",
+      bin: { vinext: "dist/cli.js" },
+      exports: {},
+    });
+    writeJson(path.join(vinextDir, "packages", "cloudflare", "package.json"), {
+      name: "@vinext/cloudflare",
+      version: "0.0.0-test",
+      type: "module",
+      exports: {},
+    });
+
+    writeJson(path.join(nextjsDir, "package.json"), {
+      name: "nextjs-workspace",
+      devDependencies: {
+        "react-experimental-builtin": "npm:react@0.0.0-experimental-test-20260701",
+        "react-dom-experimental-builtin": "npm:react-dom@0.0.0-experimental-test-20260701",
+        "react-server-dom-webpack-experimental":
+          "file:packages/next/src/compiled/react-server-dom-webpack-experimental",
+      },
+    });
+
+    fs.mkdirSync(path.join(appDir, "app"), { recursive: true });
+    writeJson(path.join(appDir, "package.json"), {
+      name: "experimental-react-app",
+      version: "0.0.0-test",
+    });
+    fs.writeFileSync(path.join(appDir, "next.config.js"), nextConfigSource);
+
+    execFileSync("bash", [path.resolve("scripts/e2e-deploy.sh")], {
+      cwd: appDir,
+      env: {
+        ...process.env,
+        NEXTJS_DIR: nextjsDir,
+        VINEXT_DIR: vinextDir,
+        VINEXT_E2E_DEPLOY_INJECT_ONLY: "1",
+      },
+      encoding: "utf8",
+    });
+
+    return {
+      appPackageJson: JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8")),
+      nextjsDir,
+    };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
 
 describe("Next.js deploy harness logging", () => {
   it("initializes fixtures for the Node deployment platform", () => {
@@ -28,6 +115,64 @@ describe("Next.js deploy harness logging", () => {
     );
     expect(script).toContain("pkg.packageManager = harnessPackageManager");
     expect(script).toContain("for vinext e2e deploy harness pnpm install");
+  });
+
+  it("injects Next's experimental React alias packages when fixtures opt in", () => {
+    const deployScript = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+    const suiteScript = fs.readFileSync(path.resolve("scripts/run-nextjs-deploy-suite.sh"), "utf8");
+    const workflow = fs.readFileSync(
+      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      "utf8",
+    );
+    const deployShard = workflow.slice(
+      workflow.indexOf("- name: Run deploy shard"),
+      workflow.indexOf("- name: Upload test results"),
+    );
+
+    expect(suiteScript).toContain("export NEXTJS_DIR");
+    expect(deployShard).toContain("NEXTJS_DIR: ${{ github.workspace }}/next.js");
+    expect(deployScript).toContain("needsExperimentalReactDeps");
+    expect(deployScript).toContain("nextDependencySpecFor");
+    expect(deployScript).toContain("experimentalReactDependencySpecFor");
+    expect(deployScript).toContain("react-experimental-builtin");
+    expect(deployScript).toContain("react-dom-experimental-builtin");
+    expect(deployScript).toContain("react-server-dom-webpack-experimental");
+    expect(deployScript).toContain("taint|transitionIndicator|gestureTransition");
+    expect(deployScript).not.toContain("taint|blockingSSR|transitionIndicator|gestureTransition");
+  });
+
+  it("injects npm react-server-dom-webpack experimental deps instead of Next's compiled copy", () => {
+    const { appPackageJson } = runInjectOnlyDeployFixture(
+      "module.exports = { experimental: { taint: true } }\n",
+    );
+
+    expect(appPackageJson.devDependencies["react-server-dom-webpack-experimental"]).toBe(
+      "npm:react-server-dom-webpack@0.0.0-experimental-test-20260701",
+    );
+    expect(appPackageJson.devDependencies["react-experimental-builtin"]).toBe(
+      "npm:react@0.0.0-experimental-test-20260701",
+    );
+    expect(appPackageJson.devDependencies.vite).toBe("^8.0.0");
+  });
+
+  it("detects quoted experimental React config keys before injecting deps", () => {
+    const { appPackageJson } = runInjectOnlyDeployFixture(
+      'module.exports = { experimental: { "taint": true } }\n',
+    );
+
+    expect(appPackageJson.devDependencies["react-experimental-builtin"]).toBeDefined();
+    expect(appPackageJson.devDependencies["react-dom-experimental-builtin"]).toBeDefined();
+    expect(appPackageJson.devDependencies["react-server-dom-webpack-experimental"]).toBeDefined();
+  });
+
+  it("does not inject experimental React deps for experimental.blockingSSR", () => {
+    const { appPackageJson } = runInjectOnlyDeployFixture(
+      "module.exports = { experimental: { blockingSSR: true } }\n",
+    );
+
+    expect(appPackageJson.devDependencies["react-experimental-builtin"]).toBeUndefined();
+    expect(appPackageJson.devDependencies["react-dom-experimental-builtin"]).toBeUndefined();
+    expect(appPackageJson.devDependencies["react-server-dom-webpack-experimental"]).toBeUndefined();
   });
 
   it("removes install-time deprecation noise from application cliOutput", () => {

@@ -293,6 +293,11 @@ const vinextDir = process.env.VINEXT_DIR
 const pkgPath = path.join(process.cwd(), 'package.json')
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
 const rootPkg = JSON.parse(fs.readFileSync(path.join(vinextDir, 'package.json'), 'utf8'))
+const nextjsDir = process.env.NEXTJS_DIR
+const nextRootPkg =
+  nextjsDir && fs.existsSync(path.join(nextjsDir, 'package.json'))
+    ? JSON.parse(fs.readFileSync(path.join(nextjsDir, 'package.json'), 'utf8'))
+    : null
 const vinextPkg = JSON.parse(
   fs.readFileSync(path.join(vinextDir, 'packages', 'vinext', 'package.json'), 'utf8'),
 )
@@ -388,6 +393,49 @@ function dependencySpecFor(name) {
   throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
+function nextDependencySpecFor(name) {
+  if (!nextRootPkg) return null
+
+  for (const deps of [nextRootPkg.dependencies, nextRootPkg.devDependencies]) {
+    const spec = deps?.[name]
+    if (!spec) continue
+    if (spec.startsWith('file:')) {
+      const fileSpecPath = spec.slice('file:'.length)
+      if (fileSpecPath && !path.isAbsolute(fileSpecPath)) {
+        return `file:${path.resolve(nextjsDir, fileSpecPath)}`
+      }
+    }
+    return spec
+  }
+
+  return null
+}
+
+function npmAliasTargetVersion(spec) {
+  const match = /^npm:[^@]+@(.+)$/.exec(spec || '')
+  return match ? match[1] : null
+}
+
+function experimentalReactVersion() {
+  for (const dep of ['react-experimental-builtin', 'react-dom-experimental-builtin']) {
+    const version = npmAliasTargetVersion(nextDependencySpecFor(dep))
+    if (version && version.includes('experimental')) return version
+  }
+
+  return null
+}
+
+function experimentalReactDependencySpecFor(name) {
+  if (name === 'react-server-dom-webpack-experimental') {
+    const version = experimentalReactVersion()
+    if (version) {
+      return `npm:react-server-dom-webpack@${version}`
+    }
+  }
+
+  return nextDependencySpecFor(name)
+}
+
 function resolveManifestDeps(deps) {
   if (!deps) return undefined
 
@@ -471,6 +519,30 @@ function hasAppRouterDir(root) {
   return fs.existsSync(path.join(root, 'app')) || fs.existsSync(path.join(root, 'src', 'app'))
 }
 
+function needsExperimentalReactDeps(root) {
+  if (!hasAppRouterDir(root)) return false
+
+  for (const filename of [
+    'next.config.js',
+    'next.config.mjs',
+    'next.config.cjs',
+    'next.config.ts',
+    'next.config.mts',
+    'next.config.cts',
+  ]) {
+    const configPath = path.join(root, filename)
+    if (!fs.existsSync(configPath)) continue
+    const source = fs.readFileSync(configPath, 'utf8')
+    const experimentalReactFlag =
+      /(?:^|[^A-Za-z0-9_$])(?:(?:taint|transitionIndicator|gestureTransition)|["'](?:taint|transitionIndicator|gestureTransition)["'])\s*:/
+    if (experimentalReactFlag.test(source)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 function compareSemver(a, b) {
   for (let index = 0; index < 3; index += 1) {
     if (a[index] < b[index]) return -1
@@ -534,6 +606,29 @@ for (const dep of [
 ]) {
   if (!pkg.devDependencies[dep] && !pkg.dependencies?.[dep]) {
     pkg.devDependencies[dep] = dependencySpecFor(dep)
+  }
+}
+
+// Next.js deploy-suite fixtures can opt App Router into React's experimental
+// channel via experimental.taint/transitionIndicator/gestureTransition.
+// Next's own build aliases React to its monorepo alias packages in that case;
+// vinext mirrors the aliasing in Vite config, so the throwaway test app must
+// also install those alias packages when the prepared Next checkout exposes
+// them. Use the npm react-server-dom-webpack package for vinext: Next's compiled
+// RSDW copy expects Next's webpack module loader globals during render.
+if (needsExperimentalReactDeps(process.cwd())) {
+  for (const dep of [
+    'react-experimental-builtin',
+    'react-dom-experimental-builtin',
+    'react-server-dom-webpack-experimental',
+  ]) {
+    if (pkg.devDependencies[dep] || pkg.dependencies?.[dep]) continue
+
+    const spec = experimentalReactDependencySpecFor(dep)
+    if (!spec) continue
+
+    pkg.devDependencies[dep] = spec
+    console.log(`Injected ${dep} for React experimental channel parity`)
   }
 }
 
@@ -633,6 +728,11 @@ if (hasTsConfig && !pkg.devDependencies.jiti && !pkg.dependencies?.jiti) {
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log('Injected vinext harness dependencies into package.json')
 EOF
+
+if [ "${VINEXT_E2E_DEPLOY_INJECT_ONLY:-0}" = "1" ]; then
+  DEPLOYMENT_READY=1
+  exit 0
+fi
 
 export CI=1
 export NEXT_TELEMETRY_DISABLED="${NEXT_TELEMETRY_DISABLED:-1}"
