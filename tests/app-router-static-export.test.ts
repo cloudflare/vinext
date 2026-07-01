@@ -49,6 +49,24 @@ describe("App Router Static export", () => {
     expect(result.files).toContain("metadata-dynamic-static/-/apple-icon.png");
   }, 60_000);
 
+  // Regression test for cloudflare/vinext#1533.
+  // x-ref: https://github.com/vercel/next.js/issues/71840
+  //
+  // A client component loaded via a *variable* dynamic `import(`./${slug}`)`
+  // (not next/dynamic) inside an async server component must resolve to its
+  // real chunk in a production build. Before the server-side
+  // dynamic-import-vars transform, the variable import was left unexpanded in
+  // the RSC environment and the Server Components render threw, rendering the
+  // error boundary instead of the component's content.
+  it("resolves variable dynamic import() of a client component (#1533)", () => {
+    const file = path.join(exportDir, "nextjs-compat", "dynamic", "raw-import.html");
+    expect(fs.existsSync(file)).toBe(true);
+    const html = fs.readFileSync(file, "utf-8");
+    expect(html).toContain("<button>submit</button>");
+    // The Server Components render must succeed — no error boundary fallback.
+    expect(html).not.toContain("Something went wrong");
+  });
+
   it("pre-renders dynamic routes from generateStaticParams", async () => {
     // blog/[slug] has generateStaticParams returning hello-world and getting-started
     expect(fs.existsSync(path.join(exportDir, "blog", "hello-world.html"))).toBe(true);

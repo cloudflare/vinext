@@ -137,6 +137,7 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import { createServerDynamicImportVarsPlugin } from "./plugins/server-dynamic-import-vars.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
@@ -6214,6 +6215,10 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
     plugins.push(createRscClientReferenceLoadersPlugin());
+    // Expand variable dynamic imports (`import(`./${x}`)`) in the server
+    // (rsc/ssr) environments, which Vite's built-in dynamic-import-vars plugin
+    // skips. See plugins/server-dynamic-import-vars.ts (issue #1533).
+    plugins.push(createServerDynamicImportVarsPlugin());
   }
 
   return plugins;

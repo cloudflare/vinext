@@ -97,6 +97,20 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).toContain("this is a client button");
   });
 
+  // ── Raw dynamic import() in async server component ───────────
+
+  // Ported from Next.js: test/e2e/app-dir/dynamic-import/dynamic-import.test.ts
+  // x-ref: https://github.com/vercel/next.js/issues/71840
+  // Regression test for cloudflare/vinext#1533.
+  //
+  // A client component loaded via a raw `await import()` (not next/dynamic),
+  // accessed through a named export, inside an async server component. The
+  // resolved client reference must render its real content during SSR.
+  it("SSR: raw import() of a named client export renders its content (#1533)", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/raw-import");
+    expect(html).toContain("<button>submit</button>");
+  });
+
   // ── SSR false only page ──────────────────────────────────────
 
   // Next.js: 'should not render client component imported through ssr: false in client components'
