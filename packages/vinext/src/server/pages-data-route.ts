@@ -88,6 +88,11 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   return { pagePathname: `/${rest}` };
 }
 
+export function normalizeNextDataPagePathname(pagePathname: string, trailingSlash = false): string {
+  if (!trailingSlash || pagePathname === "/" || pagePathname.endsWith("/")) return pagePathname;
+  return `${pagePathname}/`;
+}
+
 /**
  * Build the JSON envelope returned by `/_next/data/<buildId>/<page>.json`.
  * Mirrors Next.js' `RenderResult(JSON.stringify(props))` path in
@@ -199,6 +204,7 @@ export function normalizePagesDataRequest(
   request: Request,
   buildId: string | null,
   basePath = "",
+  trailingSlash = false,
 ): NormalizePagesDataRequestResult {
   const reqUrl = new URL(request.url);
   const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
@@ -222,14 +228,15 @@ export function normalizePagesDataRequest(
       notFoundResponse: buildNextDataNotFoundResponse(),
     };
   }
+  const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
   const normalizedUrl = new URL(reqUrl);
   normalizedUrl.pathname = hadBasePath
-    ? addBasePathToPathname(dataMatch.pagePathname, basePath)
-    : dataMatch.pagePathname;
+    ? addBasePathToPathname(pagePathname, basePath)
+    : pagePathname;
   return {
     isDataReq: true,
     request: new Request(normalizedUrl, request),
-    normalizedPathname: dataMatch.pagePathname,
+    normalizedPathname: pagePathname,
     search: reqUrl.search,
     notFoundResponse: null,
   };

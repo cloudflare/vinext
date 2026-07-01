@@ -5,6 +5,7 @@ import {
   buildNextDataJsonResponse,
   buildNextDataNotFoundResponse,
   normalizePagesDataRequest,
+  normalizeNextDataPagePathname,
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 // Helper mirroring vinext/html safeJsonStringify behavior for tests.
@@ -91,6 +92,22 @@ describe("pages-data-route", () => {
   });
 
   describe("normalizePagesDataRequest", () => {
+    it("applies trailingSlash to the page URL before middleware sees data requests", () => {
+      // Mirrors Next.js middleware-trailing-slash data-request coverage:
+      // test/e2e/middleware-trailing-slash/test/index.test.ts.
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/_next/data/${buildId}/ssr-page.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "", true);
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/ssr-page/");
+      expect(result.request.url).toBe("http://localhost/ssr-page/?x=1");
+    });
+
+    it("preserves the root pathname when trailingSlash is enabled", () => {
+      expect(normalizeNextDataPagePathname("/", true)).toBe("/");
+    });
+
     it("recognizes a data URL under basePath while preserving basePath for middleware", () => {
       const buildId = "abc123";
       const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
@@ -101,6 +118,16 @@ describe("pages-data-route", () => {
       expect(result.search).toBe("?x=1");
       expect(result.request.url).toBe("http://localhost/root/about?x=1");
       expect(result.notFoundResponse).toBeNull();
+    });
+
+    it("applies trailingSlash after preserving basePath for middleware", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "/root", true);
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/about/");
+      expect(result.request.url).toBe("http://localhost/root/about/?x=1");
     });
 
     it("preserves an absolute data URL outside the configured basePath", () => {

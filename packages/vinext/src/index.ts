@@ -80,7 +80,11 @@ import {
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
-import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
+import {
+  isNextDataPathname,
+  normalizeNextDataPagePathname,
+  parseNextDataPathname,
+} from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -4527,8 +4531,12 @@ export const loadServerActionClient = ${
                 if (dataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                  url = dataMatch.pagePathname + qs;
-                  pathname = dataMatch.pagePathname;
+                  const pagePathname = normalizeNextDataPagePathname(
+                    dataMatch.pagePathname,
+                    nextConfig?.trailingSlash,
+                  );
+                  url = pagePathname + qs;
+                  pathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;

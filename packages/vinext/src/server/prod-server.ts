@@ -45,6 +45,7 @@ import {
 } from "./pages-request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import {
+  normalizeNextDataPagePathname,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
@@ -1788,8 +1789,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
         isDataReq = true;
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = dataMatch.pagePathname + qs;
-        pathname = dataMatch.pagePathname;
+        const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
+        url = pagePathname + qs;
+        pathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry

@@ -310,7 +310,12 @@ export function createPagesPageHandler(
     const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
     let dataRequestPathname: string | null = null;
     let dataRequestSearch = "";
-    const initialDataNorm = normalizePagesDataRequest(request, buildId);
+    const initialDataNorm = normalizePagesDataRequest(
+      request,
+      buildId,
+      vinextConfig.basePath,
+      vinextConfig.trailingSlash,
+    );
 
     // Auto-detect /_next/data/... requests by inspecting the incoming URL.
     // When the worker pipeline forwards an unrewritten data URL as the `url`

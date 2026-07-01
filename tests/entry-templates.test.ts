@@ -1061,7 +1061,7 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).toContain("vinextConfig.basePath,\n    vinextConfig.trailingSlash");
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
