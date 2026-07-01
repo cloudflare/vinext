@@ -11,6 +11,7 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -177,25 +178,31 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
   });
 }
 
-async function flushPrefetchTasks(): Promise<void> {
+async function flushPrefetchTasks(until?: () => boolean): Promise<void> {
   // requestIdleCallback is mocked as sync, then prefetchUrl enters an async
   // IIFE that may resolve lazy runtime modules before hashing headers and
-  // writing caches. Dynamic imports can cross a macrotask boundary, so drain
-  // one event-loop turn rather than relying on a fixed microtask depth.
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // writing caches. Low-priority App Router fetches then drain from a
+  // microtask-backed queue. Without an explicit condition, settle dynamic
+  // imports first, then yield one event-loop turn for the queue drain.
+  if (until === undefined) {
+    await vi.dynamicImportSettled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.dynamicImportSettled();
+    return;
+  }
+
+  const deadline = Date.now() + 1_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (until()) return;
+  } while (Date.now() < deadline);
 }
 
 async function waitForFetchCalls(
   fetch: { mock: { calls: unknown[] } },
   expectedCalls: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await flushPrefetchTasks();
-    if (fetch.mock.calls.length >= expectedCalls) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  await flushPrefetchTasks(() => fetch.mock.calls.length >= expectedCalls);
 }
 
 async function waitForFetchCall(
@@ -1588,10 +1595,41 @@ describe("Link prefetch scheduling", () => {
       expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
         "1",
       );
+      expect(
+        (fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+      ).toBe("1");
       const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("starts App Router viewport prefetches without waiting for browser idle", async () => {
+    const observer = stubIntersectionObserver();
+    const requestIdleCallback = vi.fn();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
     } finally {
       result.restoreNodeEnv();
     }
