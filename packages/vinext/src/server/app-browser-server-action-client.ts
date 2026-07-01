@@ -143,6 +143,10 @@ export async function invokeClientServerAction(
     actionId: id,
     basePath: deps.basePath,
     elements: actionInitiation.routerState.elements,
+    interceptionContext:
+      actionInitiation.routerState.interception !== null
+        ? actionInitiation.routerState.interceptionContext
+        : null,
     previousNextUrl: actionInitiation.routerState.previousNextUrl,
   }).headers;
   const fetchResponse = await fetch(createServerActionRequestUrl(actionInitiation.path), {
