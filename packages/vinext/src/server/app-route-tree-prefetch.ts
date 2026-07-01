@@ -189,8 +189,23 @@ async function gzipStreamByteLength(stream: ReadableStream<Uint8Array>): Promise
     Uint8Array,
     Uint8Array
   >;
-  const compressed = stream.pipeThrough(gzip);
-  return (await new Response(compressed).arrayBuffer()).byteLength;
+  const reader = stream.pipeThrough(gzip).getReader();
+  let byteLength = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return byteLength;
+
+      byteLength += value.byteLength;
+      if (byteLength >= SEGMENT_INLINE_THRESHOLD) {
+        await reader.cancel().catch(() => {});
+        return SEGMENT_INLINE_THRESHOLD;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function estimatePrefetchSize(

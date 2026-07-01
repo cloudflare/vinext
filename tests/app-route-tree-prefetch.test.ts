@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { createElement, Suspense } from "react";
 import {
   createRouteTreePrefetchResponse,
   isRouteTreePrefetchRequest,
@@ -25,6 +26,11 @@ const largeModule = {
 const renderedLargeModule = {
   default() {
     return "x".repeat(3000);
+  },
+};
+const renderedVeryCompressibleModule = {
+  default() {
+    return "x".repeat(20_000);
   },
 };
 const sourceTrapModule = {
@@ -56,6 +62,30 @@ const scopedLayoutParamsModule = {
       throw new Error("parent layout received leaf params");
     }
     return "parent layout without leaf params";
+  },
+};
+
+let asyncSegmentResolved = false;
+const asyncSegmentModule = {
+  default() {
+    function AsyncContent() {
+      if (!asyncSegmentResolved) {
+        throw new Promise<void>((resolve) => {
+          setTimeout(() => {
+            asyncSegmentResolved = true;
+            resolve();
+          }, 10);
+        });
+      }
+
+      return "small async content";
+    }
+
+    return createElement(
+      Suspense,
+      { fallback: createElement("div", null, "x".repeat(20_000)) },
+      createElement(AsyncContent),
+    );
   },
 };
 
@@ -205,6 +235,45 @@ describe("App Router route tree prefetch", () => {
       [
         "inlined root",
         'inlined `-- "test-source-trap"',
+        'outlined     `-- "__PAGE__" (+metadata)',
+      ].join("\n"),
+    );
+  });
+
+  it("uses completed React output when measuring async segment size", async () => {
+    asyncSegmentResolved = false;
+    const data = await readTree(
+      await routeTreeResponse({
+        layoutTreePositions: [0, 1],
+        layouts: [smallModule, asyncSegmentModule],
+        page: smallModule,
+        routeSegments: ["test-async-size"],
+      }),
+    );
+
+    expect(renderInliningTree(data.tree)).toBe(
+      [
+        "inlined root",
+        'inlined `-- "test-async-size"',
+        'outlined     `-- "__PAGE__" (+metadata)',
+      ].join("\n"),
+    );
+  });
+
+  it("uses compressed size for highly compressible rendered segments", async () => {
+    const data = await readTree(
+      await routeTreeResponse({
+        layoutTreePositions: [0, 1],
+        layouts: [smallModule, renderedVeryCompressibleModule],
+        page: smallModule,
+        routeSegments: ["test-compressible-size"],
+      }),
+    );
+
+    expect(renderInliningTree(data.tree)).toBe(
+      [
+        "inlined root",
+        'inlined `-- "test-compressible-size"',
         'outlined     `-- "__PAGE__" (+metadata)',
       ].join("\n"),
     );
