@@ -137,6 +137,7 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
@@ -6213,6 +6214,7 @@ export const loadServerActionClient = ${
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
+    plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
   }
 
