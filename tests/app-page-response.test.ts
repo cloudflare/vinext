@@ -10,7 +10,10 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { VINEXT_DYNAMIC_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function createBody(text: string): ReadableStream {
@@ -486,6 +489,22 @@ describe("app page response helpers", () => {
     });
 
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+  });
+
+  it("keeps the framework rendered path when middleware sets the internal alias header", () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/spoofed?searchParam=wrong"),
+    });
+
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      policy: {},
+      renderedPathAndSearch: "/search-params/target-page?searchParam=rewrittenSearchParam",
+    });
+
+    expect(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+      encodeURIComponent("/search-params/target-page?searchParam=rewrittenSearchParam"),
+    );
   });
 
   it("keeps the framework compatibility ID when middleware sets the internal header", () => {

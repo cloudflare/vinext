@@ -299,12 +299,6 @@ export function buildAppPageRscResponse(
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
-  if (options.renderedPathAndSearch) {
-    headers.set(
-      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
-      encodeURIComponent(options.renderedPathAndSearch),
-    );
-  }
   applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
@@ -313,6 +307,12 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.renderedPathAndSearch) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(options.renderedPathAndSearch),
+    );
+  }
   applyRscCompatibilityIdHeader(headers);
   applyRscDeploymentIdHeader(headers);
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
