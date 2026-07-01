@@ -71,6 +71,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
@@ -877,6 +878,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       });
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
+      applyRscDeploymentIdHeader(interceptHeaders);
       return new Response(interceptStream, {
         status: options.middlewareContext.status ?? 200,
         headers: interceptHeaders,

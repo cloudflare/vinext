@@ -223,9 +223,12 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.isRscRequest).toBe(false);
   });
 
-  it("does not select RSC rendering by RSC header alone on an HTML URL", () => {
+  it("detects full-route RSC requests by RSC header alone on an HTML URL", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
     const result = normalized(normalizeRscRequest(req("/about", { [RSC_HEADER]: "1" }), ""));
-    expect(result.isRscRequest).toBe(false);
+    expect(result.isRscRequest).toBe(true);
     expect(result.cleanPathname).toBe("/about");
   });
 

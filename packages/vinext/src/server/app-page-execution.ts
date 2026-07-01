@@ -2,6 +2,7 @@ import type { LayoutFlags } from "./app-elements.js";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
   createRscRedirectLocation,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -390,6 +391,7 @@ export async function buildAppPageSpecialErrorResponse(
       // ID. Without it, the client treats the response as cross-build and hard-
       // navigates instead of following the redirect through the soft-nav loop.
       applyRscCompatibilityIdHeader(headers);
+      applyRscDeploymentIdHeader(headers);
       // Preserve middleware response headers (Set-Cookie, custom headers, etc.)
       // exactly like the 307 path does — the client will still see them.
       mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
