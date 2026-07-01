@@ -593,7 +593,8 @@ function prefetchUrl(
                     undefined,
                     {
                       cacheForNavigation: false,
-                      optimisticRouteShell: true,
+                      optimisticRouteShell: !gateViaRouteTree,
+                      prefetchKind: gateViaRouteTree ? "route-tree" : "loading-shell",
                     },
                   );
                   shellEntry = shellCache.get(shellCacheKey);
@@ -632,6 +633,7 @@ function prefetchUrl(
             cacheForNavigation: autoPrefetch.cacheForNavigation,
             fallbackTtlMs: PREFETCH_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
+            prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
           },
         );
       } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {
@@ -703,6 +705,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
 
   for (const [cacheKey, entry] of getPrefetchCache()) {
     if (entry.optimisticRouteShell === true) continue;
+    if (entry.prefetchKind === "route-tree") continue;
 
     const [rscUrl] = cacheKey.split("\0", 1);
     let cached: URL;

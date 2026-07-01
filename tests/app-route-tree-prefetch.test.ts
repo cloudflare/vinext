@@ -232,19 +232,18 @@ describe("App Router route tree prefetch", () => {
     expect(data.tree.slots?.children?.slots?.sidebar?.slots?.children?.name).toBe("__PAGE__");
   });
 
-  it("serializes dynamic segment params for client-side segment cache keys", async () => {
+  it("leaves dynamic segment siblings unknown until segment-local metadata exists", async () => {
     const response = await routeTreeResponse({
       layoutTreePositions: [0, 1],
       layouts: [smallModule, largeModule],
       page: smallModule,
       routeSegments: ["test-dynamic", "[slug]"],
-      staticSiblings: ["sale"],
     });
     const data = await readTree(response);
 
     const dynamicSegment = data.tree.slots?.children?.slots?.children;
     expect(dynamicSegment?.name).toBe("slug");
-    expect(dynamicSegment?.param).toEqual({ key: null, siblings: ["sale"], type: "d" });
+    expect(dynamicSegment?.param).toEqual({ key: null, siblings: null, type: "d" });
     expect((dynamicSegment?.prefetchHints ?? 0) & ParentInlinedIntoSelf).toBe(0);
     expect(response.headers.get("x-nextjs-postponed")).toBe("2");
   });

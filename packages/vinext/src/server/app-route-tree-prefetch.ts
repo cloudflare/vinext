@@ -48,7 +48,6 @@ export type AppRouteTreePrefetchRoute = {
   layouts?: readonly unknown[];
   page?: unknown;
   routeSegments: readonly string[];
-  staticSiblings?: readonly string[] | null;
   slots?: Readonly<Record<string, AppRouteTreePrefetchSlot>> | null;
 };
 
@@ -87,12 +86,8 @@ export function isRouteTreePrefetchRequest(request: Request): boolean {
   );
 }
 
-function createNode(
-  segment: string,
-  module: unknown,
-  staticSiblings?: readonly string[] | null,
-): MutableTreePrefetch {
-  const { name, param } = routeTreeSegment(segment, staticSiblings);
+function createNode(segment: string, module: unknown): MutableTreePrefetch {
+  const { name, param } = routeTreeSegment(segment);
   const measuredSize = estimatePrefetchSize(module);
   const virtualSegmentSize =
     (module === null || module === undefined) && segment !== PAGE_SEGMENT
@@ -118,28 +113,25 @@ function addChild(node: MutableTreePrefetch, key: string, child: MutableTreePref
   ensureSlots(node)[key] = child;
 }
 
-function routeTreeSegment(
-  segment: string,
-  staticSiblings?: readonly string[] | null,
-): { name: string; param: TreePrefetchParam | null } {
+function routeTreeSegment(segment: string): { name: string; param: TreePrefetchParam | null } {
   if (segment.startsWith(":")) {
     const rest = segment.slice(1);
     if (rest.endsWith("+")) {
-      return dynamicRouteTreeSegment(rest.slice(0, -1), "c", staticSiblings);
+      return dynamicRouteTreeSegment(rest.slice(0, -1), "c");
     }
     if (rest.endsWith("*")) {
-      return dynamicRouteTreeSegment(rest.slice(0, -1), "oc", staticSiblings);
+      return dynamicRouteTreeSegment(rest.slice(0, -1), "oc");
     }
-    return dynamicRouteTreeSegment(rest, "d", staticSiblings);
+    return dynamicRouteTreeSegment(rest, "d");
   }
   if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-    return dynamicRouteTreeSegment(segment.slice(5, -2), "oc", staticSiblings);
+    return dynamicRouteTreeSegment(segment.slice(5, -2), "oc");
   }
   if (segment.startsWith("[...") && segment.endsWith("]")) {
-    return dynamicRouteTreeSegment(segment.slice(4, -1), "c", staticSiblings);
+    return dynamicRouteTreeSegment(segment.slice(4, -1), "c");
   }
   if (segment.startsWith("[") && segment.endsWith("]")) {
-    return dynamicRouteTreeSegment(segment.slice(1, -1), "d", staticSiblings);
+    return dynamicRouteTreeSegment(segment.slice(1, -1), "d");
   }
   return { name: segment, param: null };
 }
@@ -147,13 +139,16 @@ function routeTreeSegment(
 function dynamicRouteTreeSegment(
   name: string,
   type: DynamicParamTypeShort,
-  staticSiblings?: readonly string[] | null,
 ): { name: string; param: TreePrefetchParam } {
   return {
     name,
     param: {
       key: null,
-      siblings: staticSiblings?.length ? staticSiblings : null,
+      // Next.js emits segment-local static siblings on each loader-tree dynamic
+      // segment. Vinext currently only has the flattened full-RSC-payload list,
+      // so route-tree prefetches leave this unknown until segment-local route
+      // metadata exists.
+      siblings: null,
       type,
     },
   };
@@ -208,7 +203,7 @@ async function buildTree(route: AppRouteTreePrefetchRoute): Promise<MutableTreeP
 
   for (const [index, segment] of route.routeSegments.entries()) {
     const position = index + 1;
-    const child = createNode(segment, layoutsByPosition.get(position), route.staticSiblings);
+    const child = createNode(segment, layoutsByPosition.get(position));
     addChild(current, "children", child);
     nodesByPosition.set(position, child);
     current = child;

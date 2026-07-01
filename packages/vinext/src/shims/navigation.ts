@@ -253,6 +253,8 @@ export type PrefetchOptions = {
   onInvalidate?: () => void;
 };
 
+export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
+
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
   expiresAt?: number;
@@ -263,6 +265,7 @@ export type PrefetchCacheEntry = {
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
+  prefetchKind?: PrefetchCacheKind;
   size?: number;
   timestamp: number;
 };
@@ -870,6 +873,7 @@ export function prefetchRscResponse(
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     optimisticRouteShell?: boolean;
+    prefetchKind?: PrefetchCacheKind;
   } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
@@ -886,6 +890,9 @@ export function prefetchRscResponse(
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
+    prefetchKind:
+      behavior.prefetchKind ??
+      (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
     timestamp: now,
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);

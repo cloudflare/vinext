@@ -2010,6 +2010,12 @@ describe("Link prefetch scheduling", () => {
       expect(routeTreeHeaders?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
       expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const routeTreeEntry = Array.from(getPrefetchCache().values()).find(
+        (entry) => entry.prefetchKind === "route-tree",
+      );
+      expect(routeTreeEntry?.cacheForNavigation).toBe(false);
+      expect(routeTreeEntry?.optimisticRouteShell).toBe(false);
 
       observer.dispatchIntersectingEntry(result.anchor);
       await flushPrefetchTasks();

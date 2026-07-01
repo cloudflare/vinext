@@ -503,6 +503,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
     if (optimisticRouteTemplateSources.has(sourceKey)) continue;
     if (optimisticRouteTemplateLearning.has(sourceKey)) continue;
     if (!isSettledPrefetchCacheEntry(entry)) continue;
+    if (entry.prefetchKind === "route-tree") continue;
 
     const promise = learnOptimisticRouteTemplateFromPrefetch({
       cacheKey,
