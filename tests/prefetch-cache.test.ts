@@ -345,6 +345,30 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(rscUrl)).toBe(true);
   });
 
+  it("keeps route-tree prefetch responses out of navigation consumption", async () => {
+    const routeTreeUrl = "/dashboard.rsc?_rsc=tree";
+    const deferred = createDeferredResponse();
+
+    prefetchRscResponse(routeTreeUrl, deferred.promise, null, null, undefined, {
+      cacheForNavigation: false,
+      prefetchKind: "route-tree",
+    });
+
+    deferred.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(routeTreeUrl)?.outcome === "cache-seeded" &&
+        getPrefetchCache().get(routeTreeUrl)?.pending === undefined,
+    );
+
+    const entry = getPrefetchCache().get(routeTreeUrl);
+    expect(entry?.prefetchKind).toBe("route-tree");
+    expect(entry?.optimisticRouteShell).toBe(false);
+    expect(hasPrefetchCacheEntryForNavigation("/dashboard.rsc", null, null)).toBe(false);
+    expect(consumePrefetchResponse("/dashboard.rsc", null, null)).toBeNull();
+    expect(getPrefetchCache().has(routeTreeUrl)).toBe(true);
+  });
+
   it("derives the interception context from the current pathname", () => {
     (globalThis as any).window.location.pathname = "/feed";
 

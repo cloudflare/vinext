@@ -88,6 +88,12 @@ import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
 } from "./server-action-not-found.js";
+import {
+  createRouteTreePrefetchResponse,
+  isRouteTreePrefetchRequest,
+  type AppRouteTreePrefetchRoute,
+  type PrefetchInliningConfig,
+} from "./app-route-tree-prefetch.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -109,12 +115,15 @@ type AppRscHandlerRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   isDynamic: boolean;
+  layouts?: readonly unknown[];
+  layoutTreePositions?: readonly number[];
   params?: readonly string[];
   page?: unknown;
   pattern: string;
   rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments: readonly string[];
+  slots?: AppRouteTreePrefetchRoute["slots"];
 };
 
 type AppRscRouteMatch<TRoute> = {
@@ -312,6 +321,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
+  prefetchInlining?: PrefetchInliningConfig;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
   rootParamNamesByPattern?: RootParamNamesMap;
@@ -1050,6 +1060,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
+  const resolvedSearchParams = getResolvedSearchParams();
+  if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
+    const response = await createRouteTreePrefetchResponse(route, {
+      buildId: options.buildId,
+      prefetchInlining: options.prefetchInlining,
+    });
+    options.clearRequestContext();
+    return applyMiddlewareContextToResponse(response, middlewareContext);
+  }
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
     prerenderRouteParamsPayload,
@@ -1059,7 +1078,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const prerenderRouteParams = prerenderRouteParamsMatch?.params ?? null;
   const isPrerenderFallbackShell = prerenderRouteParamsMatch?.kind === "fallback-shell";
   const renderParams = prerenderRouteParams ?? params;
-  const resolvedSearchParams = getResolvedSearchParams();
   let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
   if (
     options.createPprFallbackShells &&

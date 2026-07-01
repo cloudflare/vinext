@@ -9,12 +9,15 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
   createClientReuseManifest,
   createClientReusePayloadHash,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -31,11 +34,14 @@ type TestRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   isDynamic: boolean;
+  layouts?: readonly unknown[];
+  layoutTreePositions?: readonly number[];
   page?: { default?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
   routeHandler?: { GET?: () => Response; runtime?: string } | null;
   routeSegments: readonly string[];
+  slots?: AppRouteTreePrefetchRoute["slots"];
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
@@ -394,6 +400,89 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("x-response-header")).toBe("preserved");
+  });
+
+  it("preserves middleware response headers on route-tree prefetches", async () => {
+    const middleware = vi.fn(
+      () =>
+        new Response(null, {
+          headers: {
+            "x-middleware-next": "1",
+            "x-response-header": "preserved",
+          },
+        }),
+    );
+    const clearRequestContext = vi.fn();
+    const handler = createHandler({
+      clearRequestContext,
+      configHeaders: [],
+      middlewareModule: { default: middleware },
+    });
+
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, {
+        headers,
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-postponed")).toBe("2");
+    expect(response.headers.get("x-response-header")).toBe("preserved");
+    expect(clearRequestContext).toHaveBeenCalledOnce();
+  });
+
+  it("returns route-tree prefetches for layout-only App Router matches", async () => {
+    const layoutOnlyRoute = createPageRoute({
+      layouts: [{ default() {} }],
+      layoutTreePositions: [0],
+      page: null,
+      pattern: "/parallel-only",
+      routeHandler: null,
+      routeSegments: ["parallel-only"],
+      slots: {
+        sidebar: {
+          name: "sidebar",
+          default: { default() {} },
+          page: null,
+          routeSegments: null,
+        },
+      },
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute: (pathname: string) =>
+        pathname === "/parallel-only"
+          ? {
+              params: {},
+              route: layoutOnlyRoute,
+            }
+          : null,
+    });
+
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/parallel-only", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, {
+        headers,
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-postponed")).toBe("2");
+    expect(await response.text()).toContain('"tree"');
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("does not dispatch server actions directly outside basePath", async () => {
