@@ -240,6 +240,7 @@ function printHelp(): void {
     --skip-install               Write files but do not install dependencies
     --disable-git                Do not initialize a git repository
     --yes                        Use defaults for prompts
+    -v, --version                Show the create-vinext-app version
     -h, --help                   Show this help
 `);
 }
