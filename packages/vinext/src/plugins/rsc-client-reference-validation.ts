@@ -72,7 +72,8 @@ export function rscClientReferenceValidationPlugin(): Plugin {
     apply: "serve",
 
     load: {
-      filter: { id: /^\0virtual:vite-rsc\/reference-validation\?/ },
+      // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+      filter: { id: /^\u0000virtual:vite-rsc\/reference-validation\?/ },
       handler(id) {
         // Vite decodes `/@id/__x00__...` back to a NUL-prefixed id before
         // plugin-rsc validates it. Accept only the framework-owned client
