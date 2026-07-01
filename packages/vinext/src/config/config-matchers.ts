@@ -1125,7 +1125,12 @@ export function matchesRewriteSource(
  * Substitute all matched route params into a redirect/rewrite destination.
  *
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
- * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
+ * (`:path*`, `:path+`) in a single pass. Vinext matches config routes against
+ * an already-decoded pathname, unlike Next.js's config-route matcher which
+ * retains encoded source captures through destination interpolation. Re-encode
+ * params used in the query component so `%26` and `%3D` retain the same wire
+ * representation instead of becoming new query syntax. Unknown params are left
+ * intact.
  */
 function substituteDestinationParams(destination: string, params: Record<string, string>): string {
   const keys = Object.keys(params);
@@ -1147,7 +1152,31 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  return destination.replace(paramRe, (_token, key: string) => params[key]);
+  return destination.replace(
+    paramRe,
+    (_token, key: string, modifier: string | undefined, offset: number) => {
+      if (!isDestinationQueryOffset(destination, offset)) return params[key];
+      const encoded = encodeURIComponent(params[key]);
+      return modifier === "*" || modifier === "+" ? encoded.replace(/%2F/gi, "/") : encoded;
+    },
+  );
+}
+
+/**
+ * Check whether a destination param starts inside the query component.
+ *
+ * Encoding both query keys and values is deliberate because vinext accepts the
+ * decoded `cleanPathname` at this layer. Next.js preserves percent-encoded route
+ * captures until after destination query interpolation; without compensating
+ * here, vinext turns encoded `&` and `=` path data into query delimiters. The
+ * pathname, hostname, and fragment retain their existing substitution behavior.
+ */
+function isDestinationQueryOffset(destination: string, offset: number): boolean {
+  const queryStart = destination.indexOf("?");
+  if (queryStart === -1 || offset <= queryStart) return false;
+
+  const hashStart = destination.indexOf("#");
+  return hashStart === -1 || (hashStart > queryStart && offset < hashStart);
 }
 
 /**
