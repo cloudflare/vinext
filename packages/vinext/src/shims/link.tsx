@@ -313,9 +313,19 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
 
 function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
   cacheForNavigation: boolean;
+  prefetchRouteTree: boolean;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
+  if (route.shouldPrefetchRouteTree === true) {
+    return {
+      cacheForNavigation: true,
+      prefetchRouteTree: true,
+      prefetchShellFirst: true,
+      shouldPrefetch: true,
+    };
+  }
+
   const hasLoadingShell = route.canPrefetchLoadingShell;
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
@@ -324,6 +334,7 @@ function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
     // fallbacks are treated as exact-URL full prefetches; the prefetch cache is
     // keyed by the concrete RSC URL, so this cannot reuse data across params.
     cacheForNavigation: !hasLoadingShell,
+    prefetchRouteTree: false,
     prefetchShellFirst: !route.isDynamic,
     shouldPrefetch: true,
   };
@@ -346,26 +357,47 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
+  prefetchRouteTree: boolean;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      prefetchRouteTree: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      prefetchRouteTree: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      prefetchRouteTree: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      prefetchRouteTree: false,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   return resolveMatchedAutoAppRoutePrefetch(match.route);
@@ -373,11 +405,13 @@ export function resolveAutoAppRoutePrefetch(href: string): {
 
 function resolveFullAppRoutePrefetch(): {
   cacheForNavigation: true;
+  prefetchRouteTree: false;
   prefetchShellFirst: boolean;
   shouldPrefetch: true;
 } {
   return {
     cacheForNavigation: true,
+    prefetchRouteTree: false,
     prefetchShellFirst: true,
     shouldPrefetch: true,
   };
@@ -403,6 +437,7 @@ function prefetchUrl(
   mode: LinkPrefetchMode,
   priority: "low" | "high" = "low",
   pagesRouteHref?: string,
+  schedulePriority: "idle" | "immediate" = priority === "high" ? "immediate" : "idle",
 ): void {
   if (typeof window === "undefined") return;
 
@@ -437,7 +472,7 @@ function prefetchUrl(
   }
 
   const schedule =
-    priority === "high"
+    schedulePriority === "immediate"
       ? (fn: () => void) => {
           fn();
         }
@@ -473,7 +508,11 @@ function prefetchUrl(
           PREFETCH_CACHE_TTL,
         } = navigation;
         const { createRscRequestHeaders, createRscRequestUrl } = rscCacheBusting;
-        const { NEXT_ROUTER_PREFETCH_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } = headersModule;
+        const {
+          NEXT_ROUTER_PREFETCH_HEADER,
+          NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          VINEXT_MOUNTED_SLOTS_HEADER,
+        } = headersModule;
         // Hybrid ownership: skip the App RSC prefetch when Pages owns the
         // URL. The App's `__VINEXT_LINK_PREFETCH_ROUTES__` may include an
         // App catch-all that also matches the same path, so a naive
@@ -489,7 +528,12 @@ function prefetchUrl(
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchHref)
             : mode === "full-after-shell"
-              ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
+              ? {
+                  cacheForNavigation: true,
+                  prefetchRouteTree: false,
+                  prefetchShellFirst: true,
+                  shouldPrefetch: true,
+                }
               : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
@@ -508,6 +552,10 @@ function prefetchUrl(
         }
         if (isOptimisticRouteShellPrefetch) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        }
+        if (autoPrefetch.prefetchRouteTree) {
+          headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+          headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
         }
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
@@ -539,6 +587,7 @@ function prefetchUrl(
         // unified route payload, so gate that payload behind a loading-shell
         // request to preserve the same pending/dedup observable contract.
         const fetchPromise =
+          !autoPrefetch.prefetchRouteTree &&
           (mode === "full" || mode === "full-after-shell" || __prefetchInlining) &&
           autoPrefetch.cacheForNavigation &&
           autoPrefetch.prefetchShellFirst &&
@@ -696,6 +745,7 @@ type LinkPrefetchInstance = {
   isVisible: boolean;
   mode: LinkPrefetchMode;
   pagesRouteHref?: string;
+  prefetchRouteTree: boolean;
   routerMode: LinkPrefetchRouterMode;
   viewportPrefetched: boolean;
 };
@@ -708,7 +758,13 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
   if (isVisible) {
     visibleLinkPrefetches.add(instance);
     if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
-    prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
+    prefetchUrl(
+      instance.href,
+      instance.mode,
+      "low",
+      instance.pagesRouteHref,
+      instance.prefetchRouteTree ? "immediate" : "idle",
+    );
     instance.viewportPrefetched = true;
   } else {
     visibleLinkPrefetches.delete(instance);
@@ -1027,6 +1083,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!observer) return;
 
     registerVisibleLinkPing();
+    const routerMode = getLinkPrefetchRouterMode();
+    const prefetchRouteTree =
+      routerMode === "app" && resolveAutoAppRoutePrefetch(hrefToPrefetch).prefetchRouteTree;
     const instance: LinkPrefetchInstance = {
       href: hrefToPrefetch,
       isVisible: false,
@@ -1039,7 +1098,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               basePath: __basePath,
               currentOrigin: window.location.origin,
             }) ?? undefined),
-      routerMode: getLinkPrefetchRouterMode(),
+      prefetchRouteTree,
+      routerMode,
       viewportPrefetched: false,
     };
     observedLinkPrefetches.set(node, instance);

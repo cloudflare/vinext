@@ -317,6 +317,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: true,
+          patternParts: [":rootParam"],
+          isDynamic: true,
+          shouldPrefetchRouteTree: true,
+        },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
@@ -324,21 +330,25 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        prefetchRouteTree: false,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        prefetchRouteTree: false,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
+        prefetchRouteTree: false,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
+        prefetchRouteTree: false,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -347,11 +357,19 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        prefetchRouteTree: false,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
-      expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
+      expect(resolveAutoAppRoutePrefetch("/aaa")).toEqual({
+        cacheForNavigation: true,
+        prefetchRouteTree: true,
+        prefetchShellFirst: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/missing/deep")).toEqual({
         cacheForNavigation: false,
+        prefetchRouteTree: false,
         prefetchShellFirst: false,
         shouldPrefetch: false,
       });

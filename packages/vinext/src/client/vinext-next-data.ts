@@ -13,6 +13,7 @@ export type VinextLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  shouldPrefetchRouteTree?: boolean;
 };
 
 /**

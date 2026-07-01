@@ -11,6 +11,7 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -55,6 +56,12 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: true,
+    patternParts: [":rootParam"],
+    isDynamic: true,
+    shouldPrefetchRouteTree: true,
+  },
 ] satisfies VinextLinkPrefetchRoute[];
 
 function createTestNavigationRuntime(navigate: unknown) {
@@ -1905,6 +1912,97 @@ describe("Link prefetch scheduling", () => {
       expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         null,
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses a route-tree segment prefetch for root-param routes", async () => {
+    const observer = stubIntersectionObserver();
+    const requestIdleCallback = vi.fn();
+    const result = await renderIsolatedLink({
+      href: "/aaa",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/aaa",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers;
+      expect(headers).toBeInstanceOf(Headers);
+      if (!(headers instanceof Headers)) {
+        throw new Error("Expected root-param prefetch request headers");
+      }
+      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+      expect(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("waits for observer visibility before route-tree segment prefetches", async () => {
+    const observer = stubIntersectionObserver();
+    const animationFrameCallbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      animationFrameCallbacks.push(callback);
+      return animationFrameCallbacks.length;
+    });
+    const result = await renderIsolatedLink({
+      href: "/aaa",
+      nodeEnv: "production",
+      windowOverrides: { requestAnimationFrame },
+    });
+
+    try {
+      Object.assign(result.anchor, {
+        getClientRects: vi.fn(() => [
+          {
+            bottom: 1500,
+            height: 20,
+            left: 0,
+            right: 100,
+            top: 1480,
+            width: 100,
+            x: 0,
+            y: 1480,
+            toJSON: () => ({}),
+          },
+        ]),
+      });
+
+      for (const callback of animationFrameCallbacks) {
+        callback(0);
+      }
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers;
+      expect(headers).toBeInstanceOf(Headers);
+      if (!(headers instanceof Headers)) {
+        throw new Error("Expected root-param prefetch request headers");
+      }
+      expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
     } finally {
       result.restoreNodeEnv();
     }

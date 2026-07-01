@@ -62,6 +62,7 @@ export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute
     documentOnly: true,
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
+    shouldPrefetchRouteTree: (route.rootParamNames ?? []).length > 0,
   };
 }
 
@@ -71,6 +72,7 @@ export function toLinkPrefetchRoute(route: AppRoute): VinextLinkPrefetchRoute {
     canPrefetchLoadingShell: route.loadingPath !== null,
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
+    shouldPrefetchRouteTree: (route.rootParamNames ?? []).length > 0,
   };
 }
 
