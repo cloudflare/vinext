@@ -698,7 +698,7 @@ export function buildAppPageElements<
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
-  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
+  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell;
   if (shouldRenderPrefetchLoadingShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
@@ -707,9 +707,10 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  elements[pageElementId] = isPrefetchLoadingShell
-    ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+  elements[pageElementId] =
+    isPrefetchLoadingShell && routeLoadingComponent !== null
+      ? null
+      : renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     const templateComponent = getDefaultExport(templateEntry.templateModule);
@@ -942,7 +943,14 @@ export function buildAppPageElements<
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
     if (routeLoadingComponent === null) {
-      routeChildren = null;
+      routeChildren = (
+        <LayoutSegmentProvider
+          providerId={pageElementId}
+          segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
+        >
+          <Slot id={pageElementId} />
+        </LayoutSegmentProvider>
+      );
     } else {
       const RouteLoadingComponent = routeLoadingComponent;
       routeChildren = <RouteLoadingComponent />;

@@ -1,11 +1,13 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -56,9 +58,11 @@ import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
+  childrenSlot?: { id: string } | null;
   error?: { default?: unknown } | null;
   errors?: readonly ({ default?: unknown } | null | undefined)[];
   forbiddens?: readonly ({ default?: unknown } | null | undefined)[];
+  ids?: { page: string | null; slots: Readonly<Record<string, string>> } | null;
   isDynamic: boolean;
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
@@ -295,7 +299,9 @@ type CreateDispatchOptionsOverrides = {
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
+  probePageLoadingShellFallback?: DispatchOptions["probePageLoadingShellFallback"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
+  renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
   request?: Request;
   revalidateSeconds?: number | null;
@@ -387,7 +393,9 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
+    probePageLoadingShellFallback: overrides.probePageLoadingShellFallback,
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
+    renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
     renderHttpAccessFallbackPage: vi.fn(async () => null),
     renderToReadableStream,
@@ -615,6 +623,126 @@ describe("app page dispatch", () => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
     vi.unstubAllEnvs();
+  });
+
+  it("replaces implicit children slot page entries with page Suspense fallbacks for loading-shell prefetches", async () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/nested");
+    const fallback = React.createElement("div", { id: "dynamic-page-loading-a" }, "Loading a...");
+    const pageElement = React.createElement(
+      React.Suspense,
+      { fallback },
+      React.createElement("div", { id: "dynamic-page-content-a" }, "Dynamic page a"),
+    );
+    const capturedPayloads: Record<string, unknown>[] = [];
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => ({
+        [APP_ROUTE_KEY]: "route:/nested/settings",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [childrenSlotId]: pageElement,
+        "route:/nested/settings": React.createElement("main", null, "Route"),
+      }),
+      cleanPathname: "/nested/settings",
+      isRscRequest: true,
+      probePageLoadingShellFallback: () => pageElement,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      renderToReadableStream(payload) {
+        capturedPayloads.push(captureRecord(payload));
+        return createStream(["flight"]);
+      },
+      route: createRoute({
+        childrenSlot: { id: childrenSlotId },
+        ids: { page: "page:/nested/settings", slots: {} },
+        pattern: "/nested/settings",
+        routeSegments: ["nested", "settings"],
+      }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(capturedPayloads).toHaveLength(1);
+    expect(capturedPayloads[0][childrenSlotId]).toBe(fallback);
+    expect(capturedPayloads[0][APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+  });
+
+  it("replaces loading-shell page entries with Suspense fallbacks inside server wrappers", async () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/nested");
+    const fallback = React.createElement("div", { id: "dynamic-page-loading-a" }, "Loading a...");
+    const dynamicChild = vi.fn(() =>
+      React.createElement("div", { id: "dynamic-page-content-a" }, "Dynamic page a"),
+    );
+    async function Wrapper() {
+      return React.createElement(React.Suspense, { fallback }, React.createElement(dynamicChild));
+    }
+    const capturedPayloads: Record<string, unknown>[] = [];
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => ({
+        [APP_ROUTE_KEY]: "route:/nested/settings",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [childrenSlotId]: React.createElement("div", { id: "placeholder" }, "Placeholder"),
+        "route:/nested/settings": React.createElement("main", null, "Route"),
+      }),
+      cleanPathname: "/nested/settings",
+      isRscRequest: true,
+      probePageLoadingShellFallback: () => React.createElement(Wrapper),
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      renderToReadableStream(payload) {
+        capturedPayloads.push(captureRecord(payload));
+        return createStream(["flight"]);
+      },
+      route: createRoute({
+        childrenSlot: { id: childrenSlotId },
+        ids: { page: "page:/nested/settings", slots: {} },
+        pattern: "/nested/settings",
+        routeSegments: ["nested", "settings"],
+      }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(capturedPayloads).toHaveLength(1);
+    expect(capturedPayloads[0][childrenSlotId]).toBe(fallback);
+    expect(dynamicChild).not.toHaveBeenCalled();
+  });
+
+  it("removes the loading-shell marker when no page entry is replaced", async () => {
+    const fallback = React.createElement("div", { id: "page-loading" }, "Loading page");
+    const capturedPayloads: Record<string, unknown>[] = [];
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => ({
+        [APP_ROUTE_KEY]: "route:/dashboard",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        "route:/dashboard": React.createElement("main", null, "Route"),
+      }),
+      cleanPathname: "/dashboard",
+      isRscRequest: true,
+      probePageLoadingShellFallback: () =>
+        React.createElement(
+          React.Suspense,
+          { fallback },
+          React.createElement("div", null, "Dashboard"),
+        ),
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      renderToReadableStream(payload) {
+        capturedPayloads.push(captureRecord(payload));
+        return createStream(["flight"]);
+      },
+      route: createRoute({
+        ids: { page: "page:/dashboard", slots: {} },
+        pattern: "/dashboard",
+        routeSegments: ["dashboard"],
+      }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(capturedPayloads).toHaveLength(1);
+    expect(Object.hasOwn(capturedPayloads[0], APP_PREFETCH_LOADING_SHELL_MARKER_KEY)).toBe(false);
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {

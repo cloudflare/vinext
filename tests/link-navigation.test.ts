@@ -399,7 +399,8 @@ describe("Link prefetch pure decisions", () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushPrefetchTasks();
   vi.doUnmock("react");
   vi.doUnmock("react/jsx-runtime");
   vi.doUnmock("react/jsx-dev-runtime");
@@ -1855,7 +1856,9 @@ describe("Link prefetch scheduling", () => {
       await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
     const { consumePrefetchResponse, getPrefetchCache, getPrefetchedUrls } =
       await import("../packages/vinext/src/shims/navigation.js");
-    const rscUrl = await createRscRequestUrl("/intent-prefetch-target", createRscRequestHeaders());
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    const rscUrl = await createRscRequestUrl("/intent-prefetch-target", headers);
     const snapshot = {
       buffer: new TextEncoder().encode("flight").buffer,
       contentType: "text/x-component",
@@ -1993,6 +1996,203 @@ describe("Link prefetch scheduling", () => {
         [...getPrefetchCache().values()].flatMap((entry) =>
           entry.pending === undefined ? [] : [entry.pending.catch(() => {})],
         ),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps ordinary automatic query prefetches reusable for navigation", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/products/1?color=red",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.optimisticRouteShell).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("stores automatic query prefetches as optimistic shells when middleware skips prefetches", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/products/1?mismatch-rewrite=./2",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_MIDDLEWARE_MATCHER__: [
+          {
+            source: "/products/:path*",
+            missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+          },
+        ],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(entry?.optimisticRouteShell).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps automatic query prefetches reusable when middleware query conditions do not match", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/products/1?color=red",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_MIDDLEWARE_MATCHER__: [
+          {
+            source: "/products/:path*",
+            has: [{ type: "query", key: "mismatch-rewrite" }],
+            missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+          },
+        ],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.optimisticRouteShell).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps automatic query prefetches reusable for regex-style middleware sources", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/products/1?mismatch-rewrite=./2",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_MIDDLEWARE_MATCHER__: [
+          {
+            source: "/products/(.*)",
+            missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+          },
+        ],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/products/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.optimisticRouteShell).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not issue a prefetchInlining shell request for dynamic routes without loading shells", async () => {
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/clothing/1",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/clothing/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
       );
     } finally {
       result.restoreNodeEnv();

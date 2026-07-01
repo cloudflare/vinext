@@ -1,4 +1,4 @@
-import { createElement, isValidElement, Suspense } from "react";
+import { cloneElement, createElement, isValidElement, Suspense, type ReactNode } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -7,9 +7,9 @@ import { matchRoutePattern } from "../routing/route-pattern.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
-  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   type AppElementValue,
   type AppElements,
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
 } from "./app-elements.js";
 
 type OptimisticRouteTrieNode = {
@@ -27,6 +27,7 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  loadingShell: boolean;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
   routeId: string;
@@ -296,8 +297,48 @@ function getPageElementIds(
   return Array.from(pageElementIds).sort();
 }
 
+function hasRouteOrPageSuspenseFallback(
+  elements: AppElements,
+  routeElement: AppElementValue | undefined,
+  pageElementIds: readonly string[],
+): boolean {
+  if (elementHasSuspenseFallback(routeElement)) return true;
+  return pageElementIds.some((pageElementId) =>
+    elementHasSuspenseFallback(elements[pageElementId]),
+  );
+}
+
 function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
+}
+
+function createSuspendingElementInsideFirstSuspense(value: unknown, depth = 0): ReactNode | null {
+  if (depth > 100) return null;
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((entry) => {
+      const transformed = createSuspendingElementInsideFirstSuspense(entry, depth + 1);
+      if (transformed === null) return entry as ReactNode;
+      changed = true;
+      return transformed;
+    });
+    return changed ? next : null;
+  }
+  if (!isValidElement(value)) return null;
+
+  const props = Reflect.get(value, "props");
+  if (value.type === Suspense && isUnknownRecord(props)) {
+    const fallback = Reflect.get(props, "fallback");
+    if (fallback !== null && fallback !== undefined) {
+      return cloneElement(value, undefined, createElement(OptimisticRouteSegment));
+    }
+  }
+
+  if (!isUnknownRecord(props)) return null;
+  const children = Reflect.get(props, "children") as ReactNode;
+  const transformedChildren = createSuspendingElementInsideFirstSuspense(children, depth + 1);
+  if (transformedChildren === null) return null;
+  return cloneElement(value, undefined, transformedChildren);
 }
 
 export function createOptimisticRouteTemplate(options: {
@@ -314,18 +355,32 @@ export function createOptimisticRouteTemplate(options: {
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) return null;
-  if (options.interceptionContext !== null) return null;
+  if (match === null) {
+    return null;
+  }
+  if (options.interceptionContext !== null) {
+    return null;
+  }
 
   const metadata = AppElementsWire.readMetadata(options.elements);
-  if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
+  if (metadata.interception !== null || metadata.interceptionContext !== null) {
+    return null;
+  }
 
   const routeElement = options.elements[metadata.routeId];
+  const pageElementIds = getPageElementIds(options.elements, match.route);
+  if (pageElementIds.length === 0) {
+    return null;
+  }
   // Full-prefetch learning is intentionally heuristic: legacy full prefetches
-  // are accepted only when the serialized route subtree still contains a
-  // Suspense fallback. Authoritative loading-shell prefetches use the marker
-  // check below instead.
-  if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
+  // are accepted only when the serialized route or page subtree still contains
+  // a Suspense fallback. Loading-shell prefetches with route loading UI encode
+  // null page entries and can be accepted via the marker path below.
+  if (!options.allowLoadingShell) {
+    if (!hasRouteOrPageSuspenseFallback(options.elements, routeElement, pageElementIds)) {
+      return null;
+    }
+  }
   if (
     options.allowLoadingShell &&
     options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
@@ -334,14 +389,13 @@ export function createOptimisticRouteTemplate(options: {
   }
   // Shell prefetches must include the eagerly-rendered loading component. A
   // null route element means the server had no route loading boundary.
-  if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
+  if (options.allowLoadingShell && (routeElement === undefined || routeElement === null)) {
     return null;
-
-  const pageElementIds = getPageElementIds(options.elements, match.route);
-  if (pageElementIds.length === 0) return null;
+  }
 
   return {
     elements: options.elements,
+    loadingShell: options.allowLoadingShell === true,
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
     routeId: match.route.id,
@@ -350,8 +404,12 @@ export function createOptimisticRouteTemplate(options: {
 
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
+  if (template.loadingShell) return elements;
+
   for (const pageElementId of template.pageElementIds) {
-    elements[pageElementId] = createElement(OptimisticRouteSegment);
+    elements[pageElementId] =
+      createSuspendingElementInsideFirstSuspense(elements[pageElementId]) ??
+      createElement(OptimisticRouteSegment);
   }
   return elements;
 }

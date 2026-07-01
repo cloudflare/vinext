@@ -303,6 +303,25 @@ describe("App Router generated manifest construction", () => {
     }
   });
 
+  it("embeds the App middleware matcher in the browser entry", () => {
+    const code = generateBrowserEntry(
+      [],
+      null,
+      [],
+      { afterFiles: [], beforeFiles: [], fallback: [] },
+      [
+        {
+          source: "/products/:path*",
+          missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+        },
+      ],
+    );
+
+    expect(code).toContain(
+      'window.__VINEXT_MIDDLEWARE_MATCHER__ = [{"source":"/products/:path*","missing":[{"type":"header","key":"Next-Router-Prefetch"}]}]',
+    );
+  });
+
   it("constructs route module imports and route entries from the scanned app shape", () => {
     const routes = [
       {

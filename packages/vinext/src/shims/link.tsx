@@ -308,6 +308,195 @@ function toSameOriginRouteHref(href: string): string | null {
   return `${stripBasePath(url.pathname, __basePath)}${url.search}`;
 }
 
+type ClientMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: unknown[];
+  missing?: unknown[];
+};
+
+type ClientMiddlewareMatcherCondition = {
+  type: "header" | "cookie" | "query" | "host";
+  key?: string;
+  value?: string;
+};
+
+function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.source !== "string") return false;
+  if (record.locale !== undefined && record.locale !== false) return false;
+  if (record.has !== undefined && !Array.isArray(record.has)) return false;
+  if (record.missing !== undefined && !Array.isArray(record.missing)) return false;
+  return true;
+}
+
+function isClientMiddlewareMatcherCondition(
+  condition: unknown,
+): condition is ClientMiddlewareMatcherCondition {
+  if (!condition || typeof condition !== "object" || Array.isArray(condition)) return false;
+  const record = condition as Record<string, unknown>;
+  if (
+    record.type !== "header" &&
+    record.type !== "cookie" &&
+    record.type !== "query" &&
+    record.type !== "host"
+  ) {
+    return false;
+  }
+  if (record.key !== undefined && typeof record.key !== "string") return false;
+  if (record.value !== undefined && typeof record.value !== "string") return false;
+  return true;
+}
+
+function isRouterPrefetchHeaderCondition(condition: ClientMiddlewareMatcherCondition): boolean {
+  return (
+    condition.type === "header" &&
+    typeof condition.key === "string" &&
+    condition.key.toLowerCase() === "next-router-prefetch"
+  );
+}
+
+function conditionValueMatches(value: string, pattern: string | undefined): boolean {
+  if (pattern === undefined || pattern === "") return value !== "";
+  try {
+    return new RegExp(`^${pattern}$`).test(value);
+  } catch {
+    return false;
+  }
+}
+
+function readClientCookie(name: string | undefined): string | undefined {
+  if (!name || typeof document === "undefined") return undefined;
+  const cookies = document.cookie ? document.cookie.split(";") : [];
+  for (const cookie of cookies) {
+    const [rawKey, ...rawValue] = cookie.split("=");
+    if (rawKey?.trim() === name) return rawValue.join("=").trim();
+  }
+  return undefined;
+}
+
+function clientMatcherConditionMatches(
+  condition: ClientMiddlewareMatcherCondition,
+  target: URL,
+): boolean | "unknown" {
+  switch (condition.type) {
+    case "query": {
+      if (!condition.key) return false;
+      const values = target.searchParams.getAll(condition.key);
+      if (values.length === 0) return false;
+      if (condition.value === undefined || condition.value === "") {
+        return values.some((value) => value !== "");
+      }
+      return conditionValueMatches(values[values.length - 1] ?? "", condition.value);
+    }
+    case "host": {
+      const hostname = target.host.split(":", 1)[0]?.toLowerCase() ?? "";
+      return conditionValueMatches(hostname, condition.value);
+    }
+    case "header": {
+      if (condition.key?.toLowerCase() === "next-router-prefetch") return false;
+      return "unknown";
+    }
+    case "cookie": {
+      const value = readClientCookie(condition.key);
+      if (value === undefined) return "unknown";
+      return conditionValueMatches(value, condition.value);
+    }
+  }
+}
+
+function routerPrefetchHeaderConditionMatchesPrefetch(
+  condition: ClientMiddlewareMatcherCondition,
+): boolean {
+  return isRouterPrefetchHeaderCondition(condition) && conditionValueMatches("1", condition.value);
+}
+
+function stripLocaleForMiddlewareMatcher(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales || locales.length === 0 || pathname === "/") return pathname;
+  const firstSegment = pathname.split("/")[1];
+  if (!firstSegment || !locales.includes(firstSegment)) return pathname;
+  return "/" + pathname.split("/").slice(2).join("/");
+}
+
+function clientMiddlewareSourceMatches(pathname: string, source: string): boolean {
+  if (!/[\\():*+?]/.test(source)) {
+    return (
+      normalizePathTrailingSlash(pathname, false) === normalizePathTrailingSlash(source, false)
+    );
+  }
+
+  if (source.includes("(") || source.includes("\\")) return false;
+
+  const sourceParts = source.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  let pathIndex = 0;
+
+  for (const sourcePart of sourceParts) {
+    if (sourcePart.startsWith(":")) {
+      if (sourcePart.endsWith("*")) return true;
+      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
+      if (pathIndex >= pathParts.length) return false;
+      pathIndex++;
+      continue;
+    }
+
+    if (pathParts[pathIndex] !== sourcePart) return false;
+    pathIndex++;
+  }
+
+  return pathIndex === pathParts.length;
+}
+
+function middlewareMatcherConditionsMatchNavigation(
+  matcher: ClientMiddlewareMatcherObject,
+  target: URL,
+): boolean {
+  let foundPrefetchMissingCondition = false;
+
+  for (const rawCondition of matcher.has ?? []) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return false;
+    if (clientMatcherConditionMatches(rawCondition, target) !== true) return false;
+  }
+
+  for (const rawCondition of matcher.missing ?? []) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return false;
+
+    if (routerPrefetchHeaderConditionMatchesPrefetch(rawCondition)) {
+      foundPrefetchMissingCondition = true;
+      continue;
+    }
+
+    const matches = clientMatcherConditionMatches(rawCondition, target);
+    if (matches !== false) return false;
+  }
+
+  return foundPrefetchMissingCondition;
+}
+
+function middlewareMatcherMaySkipRouterPrefetch(target: URL, matcher: unknown): boolean {
+  if (!Array.isArray(matcher)) return false;
+  const pathname = stripBasePath(target.pathname, __basePath);
+
+  for (const item of matcher) {
+    if (!isClientMiddlewareMatcherObject(item)) continue;
+    if (!middlewareMatcherConditionsMatchNavigation(item, target)) continue;
+
+    const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
+    if (clientMiddlewareSourceMatches(candidate, item.source)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function automaticSearchPrefetchMayMismatchNavigation(target: URL): boolean {
+  if (target.search === "") return false;
+  return middlewareMatcherMaySkipRouterPrefetch(target, window.__VINEXT_MIDDLEWARE_MATCHER__);
+}
+
 function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
@@ -495,7 +684,10 @@ function prefetchUrl(
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const cacheForNavigation =
+          autoPrefetch.cacheForNavigation &&
+          !(mode === "auto" && automaticSearchPrefetchMayMismatchNavigation(target));
+        const isOptimisticRouteShellPrefetch = !cacheForNavigation;
         if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
         const headers = createRscRequestHeaders({
           interceptionContext,
@@ -507,7 +699,7 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && autoPrefetch.cacheForNavigation) {
+        if (__prefetchInlining && cacheForNavigation) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -524,7 +716,7 @@ function prefetchUrl(
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
+          if (!cacheForNavigation) {
             return;
           }
 
@@ -608,11 +800,11 @@ function prefetchUrl(
           });
         };
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (cacheForNavigation &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
@@ -644,7 +836,7 @@ function prefetchUrl(
           __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
         const gateViaLoadingShell = mode === "full-after-shell" && autoPrefetch.prefetchShellFirst;
         const fetchPromise =
-          autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
+          cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
                   await fetchLoadingShellForReuse();
@@ -698,7 +890,7 @@ function prefetchUrl(
             : fetchFullRscPayload();
         if (
           mode === "full" &&
-          autoPrefetch.cacheForNavigation &&
+          cacheForNavigation &&
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null
         ) {
@@ -711,7 +903,7 @@ function prefetchUrl(
           mountedSlotsHeader,
           undefined,
           {
-            cacheForNavigation: autoPrefetch.cacheForNavigation,
+            cacheForNavigation,
             fallbackTtlMs: PREFETCH_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",

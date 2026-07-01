@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, Suspense, type ReactNode } from "react";
+import ReactDOMServer from "react-dom/server";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -20,6 +21,10 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+
+function renderAppElement(value: AppElements[string]) {
+  return ReactDOMServer.renderToString(value as ReactNode);
+}
 
 function route(input: {
   id: string;
@@ -394,6 +399,113 @@ describe("App Router optimistic routing", () => {
     expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
       elements[childrenSlotId],
     );
+  });
+
+  it("learns dynamic route templates when the Suspense fallback is on the page element", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement(
+        Suspense,
+        { fallback: createElement("p", { id: "page-loading" }, "Loading page") },
+        createElement("article", null, "Post 1"),
+      ),
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template).toMatchObject<Partial<OptimisticRouteTemplate>>({
+      pageElementIds: [pageId],
+      routeId: "route:/blog/:slug",
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    expect(renderAppElement(optimisticElements[pageId])).toContain("Loading page");
+  });
+
+  it("uses fallback-only loading-shell page entries unchanged during optimistic navigation", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+      [pageId]: createElement("p", { id: "page-loading" }, "Loading page"),
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    expect(optimisticElements[pageId]).toBe(elements[pageId]);
+    const html = renderAppElement(optimisticElements[pageId]);
+    expect(html).toContain("Loading page");
+  });
+
+  it("does not learn loading-shell templates without the shell marker", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("article", null, "Post 1"),
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+
+    expect(
+      createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements,
+        href: "/blog/post-1.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      }),
+    ).toBeNull();
   });
 
   it("does not learn routes without a loading boundary", () => {

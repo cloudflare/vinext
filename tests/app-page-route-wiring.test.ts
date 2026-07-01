@@ -905,7 +905,7 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("keeps the page entry for loading-shell prefetches without a route loading boundary", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -931,11 +931,14 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
-    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    // Page-level Suspense fallbacks are discovered from this entry by the
+    // dispatch layer. Shells without a usable fallback have their marker removed
+    // there instead of being learned as optimistic templates.
+    expect(elements["page:/dashboard"]).toBeDefined();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
-    expect(html).not.toContain("Page");
+    expect(html).toContain("Page");
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {

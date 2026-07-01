@@ -3373,6 +3373,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             graph.routeManifest,
             pagesPrefetchRoutes,
             nextConfig.rewrites,
+            middlewarePath ? extractMiddlewareMatcherConfig(middlewarePath) : undefined,
           );
         }
         if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {

@@ -77,6 +77,13 @@ type ExecuteMiddlewareOptions = {
   normalizedPathname?: string;
   request: Request;
   /**
+   * Optional unmodified request used only for matcher has/missing evaluation.
+   * App Router strips Flight headers before invoking user middleware, but Next.js
+   * evaluates matcher conditions before that strip so `missing:
+   * Next-Router-Prefetch` can exclude prefetch requests.
+   */
+  matcherRequest?: Request;
+  /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
    * so `request.nextUrl.toString()` formats with the configured slash policy,
    * which feeds into `NextResponse.redirect(request.nextUrl)` Location headers.
@@ -306,7 +313,7 @@ export async function executeMiddleware(
     !matchesMiddleware(
       matchPathname,
       middlewareMatcher(options.module),
-      options.request,
+      options.matcherRequest ?? options.request,
       options.i18nConfig,
     )
   ) {

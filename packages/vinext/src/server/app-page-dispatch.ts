@@ -19,6 +19,7 @@ import {
   markDynamicUsage,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
+  runWithConnectionProbe,
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -33,7 +34,12 @@ import {
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
 } from "vinext/shims/fetch-cache";
-import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
+import {
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  AppElementsWire,
+  isAppElementsRecord,
+  type AppOutgoingElements,
+} from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
@@ -74,6 +80,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -88,6 +95,7 @@ import {
   isAppLayoutObservationUnsafeForStaticReuse,
   type AppLayoutParamAccessTracker,
 } from "./app-layout-param-observation.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -116,6 +124,110 @@ type AppPageBackgroundRegenerator = (
   renderFn: () => Promise<void>,
   errorContext?: AppPageBackgroundRegenerationErrorContext,
 ) => void;
+type AppPageDispatchRouteIds = {
+  page: string | null;
+  slots: Readonly<Record<string, string>>;
+};
+
+async function extractFirstSuspenseFallback(value: unknown, depth = 0): Promise<ReactNode | null> {
+  if (depth > 100) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const fallback = await extractFirstSuspenseFallback(entry, depth + 1);
+      if (fallback !== null) return fallback;
+    }
+    return null;
+  }
+  if (!React.isValidElement(value)) return null;
+
+  const props = value.props as Record<string, unknown>;
+  if (value.type === React.Suspense && props.fallback !== null && props.fallback !== undefined) {
+    return props.fallback as ReactNode;
+  }
+
+  if (typeof value.type === "function") {
+    const result = (value.type as (componentProps: Record<string, unknown>) => unknown)(props);
+    const resolved = isPromiseLike(result) ? await result : result;
+    return extractFirstSuspenseFallback(resolved, depth + 1);
+  }
+
+  return extractFirstSuspenseFallback(props.children, depth + 1);
+}
+
+async function probePrefetchLoadingShellFallback(options: {
+  probePageLoadingShellFallback: () => unknown;
+  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
+}): Promise<ReactNode | null> {
+  try {
+    return await options.runWithSuppressedHookWarning(async () => {
+      const outcome = await runWithConnectionProbe(async () => {
+        const result = options.probePageLoadingShellFallback();
+        const resolved = isPromiseLike(result) ? await result : result;
+        return extractFirstSuspenseFallback(resolved);
+      });
+      return outcome.completed ? outcome.result : null;
+    });
+  } catch {
+    return null;
+  }
+}
+
+function isAppPagePayloadEntryKey(key: string): boolean {
+  const parsed = AppElementsWire.parseElementKey(key);
+  return parsed?.kind === "page" || (parsed?.kind === "slot" && parsed.name === "children");
+}
+
+function getAppPagePayloadEntryIds(
+  element: Readonly<Record<string, unknown>>,
+  route: AppPageDispatchRoute,
+): string[] {
+  const ids = new Set<string>();
+  if (route.ids?.page && Object.hasOwn(element, route.ids.page)) {
+    ids.add(route.ids.page);
+  }
+  const routeSlotIds = [route.childrenSlot?.id, ...Object.values(route.ids?.slots ?? {})];
+  for (const slotId of routeSlotIds) {
+    if (slotId && isAppPagePayloadEntryKey(slotId) && Object.hasOwn(element, slotId)) {
+      ids.add(slotId);
+    }
+  }
+  for (const key of Object.keys(element)) {
+    if (AppElementsWire.parseElementKey(key)?.kind === "page") {
+      ids.add(key);
+    }
+  }
+  return Array.from(ids).sort();
+}
+
+function replaceAppPageElementWithFallback<TElement>(
+  element: TElement | null,
+  fallback: ReactNode,
+  route: AppPageDispatchRoute,
+): { element: TElement | null; replaced: boolean } {
+  if (!isAppElementsRecord(element)) return { element, replaced: false };
+
+  let replaced = false;
+  const next: Record<string, unknown> = { ...element };
+  for (const elementId of getAppPagePayloadEntryIds(next, route)) {
+    next[elementId] = fallback;
+    replaced = true;
+  }
+
+  return {
+    element: replaced ? (next as TElement) : element,
+    replaced,
+  };
+}
+
+function removePrefetchLoadingShellMarker<TElement>(element: TElement | null): TElement | null {
+  if (!isAppElementsRecord(element) || !(APP_PREFETCH_LOADING_SHELL_MARKER_KEY in element)) {
+    return element;
+  }
+
+  const next: Record<string, unknown> = { ...element };
+  delete next[APP_PREFETCH_LOADING_SHELL_MARKER_KEY];
+  return next as TElement;
+}
 
 type AppPageDispatchIntercept<TPage = unknown> = {
   // Lazy-loaded layout modules: typed `unknown` because they arrive as
@@ -173,10 +285,12 @@ type EffectiveLayoutClassifications = Readonly<{
 export type AppPageDispatchRoute = {
   __buildTimeClassifications?: LayoutClassificationOptions["buildTimeClassifications"];
   __buildTimeReasons?: LayoutClassificationOptions["buildTimeReasons"];
+  childrenSlot?: { id: string } | null;
   error?: AppPageModule | null;
   errors?: readonly (AppPageModule | null | undefined)[];
   forbidden?: AppPageModule | null;
   forbiddens?: readonly (AppPageModule | null | undefined)[];
+  ids?: AppPageDispatchRouteIds | null;
   isDynamic: boolean;
   layouts: readonly AppPageModule[];
   layoutTreePositions?: readonly number[];
@@ -314,6 +428,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
   probePage: (searchParams?: URLSearchParams) => unknown;
+  probePageLoadingShellFallback?: (searchParams?: URLSearchParams) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
     error: unknown,
@@ -942,6 +1057,30 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pageBuildResult = await buildCurrentPageElement();
   if (pageBuildResult.response) {
     return pageBuildResult.response;
+  }
+  if (
+    options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    !route.loading?.default
+  ) {
+    const loadingShellFallback = options.probePageLoadingShellFallback
+      ? await probePrefetchLoadingShellFallback({
+          probePageLoadingShellFallback: () =>
+            options.probePageLoadingShellFallback!(pageSearchParams),
+          runWithSuppressedHookWarning: (probe) => options.runWithSuppressedHookWarning(probe),
+        })
+      : null;
+    if (loadingShellFallback !== null) {
+      const replacement = replaceAppPageElementWithFallback(
+        pageBuildResult.element,
+        loadingShellFallback,
+        route,
+      );
+      pageBuildResult.element = replacement.replaced
+        ? replacement.element
+        : removePrefetchLoadingShellMarker(replacement.element);
+    } else {
+      pageBuildResult.element = removePrefetchLoadingShellMarker(pageBuildResult.element);
+    }
   }
 
   const navigationParams = resolveAppPageNavigationParams(

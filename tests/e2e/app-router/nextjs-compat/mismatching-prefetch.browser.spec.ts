@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
 
 type ProductionApp = {
@@ -73,25 +73,28 @@ export default function Page() {
 `,
   );
   await fs.writeFile(
-    path.join(dynamicDir, "loading.tsx"),
-    `export default function Loading() {
-  return <div id="dynamic-page-loading-a">Loading a...</div>;
-}
-`,
-  );
-  await fs.writeFile(
     path.join(dynamicDir, "page.tsx"),
     `import { connection } from "next/server";
+import { Suspense, type ReactNode } from "react";
 
 export function generateStaticParams() {
   return [{ param: "a" }, { param: "b" }];
 }
 
-export default async function Page({ params }: { params: Promise<{ param: string }> }) {
+async function DynamicContent({ children }: { children: ReactNode }) {
   await connection();
+  return children;
+}
+
+export default async function Page({ params }: { params: Promise<{ param: string }> }) {
   const { param } = await params;
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  return <div id={\`dynamic-page-content-\${param}\`}>{\`Dynamic page \${param}\`}</div>;
+  return (
+    <Suspense fallback={<div id={\`dynamic-page-loading-\${param}\`}>{\`Loading \${param}...\`}</div>}>
+      <DynamicContent>
+        <div id={\`dynamic-page-content-\${param}\`}>{\`Dynamic page \${param}\`}</div>
+      </DynamicContent>
+    </Suspense>
+  );
 }
 `,
   );
@@ -100,14 +103,18 @@ export default async function Page({ params }: { params: Promise<{ param: string
     `import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
-  if (request.headers.get("x-vinext-rsc-render-mode") === "prefetch-loading-shell") {
-    return NextResponse.next();
-  }
   const destination = request.nextUrl.searchParams.get("mismatch-rewrite");
   return destination ? NextResponse.rewrite(new URL(destination, request.url)) : NextResponse.next();
 }
 
-export const config = { matcher: "/mismatching-prefetch/:path*" };
+export const config = {
+  matcher: [
+    {
+      source: "/mismatching-prefetch/:path*",
+      missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+    },
+  ],
+};
 `,
   );
 
@@ -173,13 +180,18 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
     const prefetchResponse = page.waitForResponse((response) => {
       const request = response.request();
       return (
-        request.headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell" &&
-        response.url().includes("/mismatching-prefetch/dynamic-page/a?")
+        request.headers().rsc === "1" &&
+        response.url().includes("/mismatching-prefetch/dynamic-page/a")
       );
     });
     await page.click("#reveal-link");
     await page.hover("#mismatch-link");
-    expect((await prefetchResponse).ok()).toBe(true);
+    const prefetchedShell = await prefetchResponse;
+    expect(prefetchedShell.ok()).toBe(true);
+    // Ported from Next.js:
+    // test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    expect(await prefetchedShell.text()).toContain("Loading a...");
 
     await page.evaluate(() => {
       (window as Window & { __MISMATCH_PREFETCH_MARKER__?: boolean }).__MISMATCH_PREFETCH_MARKER__ =
@@ -192,8 +204,38 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
       }
     });
 
-    await page.click("#mismatch-link");
-    await expect(page.locator("#dynamic-page-content-b")).toHaveText("Dynamic page b");
+    let dynamicRequestReleasedValue = false;
+    let releaseDynamicRequest!: () => void;
+    const dynamicRequestReleased = new Promise<void>((resolve) => {
+      releaseDynamicRequest = () => {
+        if (dynamicRequestReleasedValue) return;
+        dynamicRequestReleasedValue = true;
+        resolve();
+      };
+    });
+    const holdDynamicRequest = async (route: Route) => {
+      const request = route.request();
+      if (
+        request.headers().rsc === "1" &&
+        request.url().includes("/mismatching-prefetch/dynamic-page/a")
+      ) {
+        await dynamicRequestReleased;
+      }
+      await route.continue();
+    };
+    await page.route("**/mismatching-prefetch/dynamic-page/a**", holdDynamicRequest);
+
+    try {
+      await page.click("#mismatch-link");
+      // Ported from Next.js:
+      // test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+      await expect(page.locator("#dynamic-page-loading-a")).toHaveText("Loading a...");
+      releaseDynamicRequest();
+      await expect(page.locator("#dynamic-page-content-b")).toHaveText("Dynamic page b");
+    } finally {
+      releaseDynamicRequest();
+    }
     expect(new URL(page.url()).pathname).toBe("/mismatching-prefetch/dynamic-page/a");
     expect(new URL(page.url()).search).toBe("?mismatch-rewrite=./b");
     expect(documentRequests).toEqual([]);

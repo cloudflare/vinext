@@ -8061,6 +8061,42 @@ describe("double-encoded path handling in middleware", () => {
     expect(capturedHeaders?.get("x-user-visible")).toBe("keep");
   });
 
+  it("App Router middleware matcher checks prefetch headers before stripping them", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/concurrent-navigations/proxy.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/concurrent-navigations/proxy.ts
+    const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
+    const middleware = vi.fn(() => new Response(null, { headers: { "x-middleware-next": "1" } }));
+    const module = {
+      default: middleware,
+      config: {
+        matcher: [
+          {
+            source: "/:path*",
+            missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+          },
+        ],
+      },
+    };
+
+    const result = await applyAppMiddleware({
+      cleanPathname: "/dashboard",
+      context: { headers: null, requestHeaders: null, status: null },
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/dashboard", {
+        headers: {
+          rsc: "1",
+          "next-router-prefetch": "1",
+          "x-user-visible": "keep",
+        },
+      }),
+    });
+
+    expect(result.kind).toBe("continue");
+    expect(middleware).not.toHaveBeenCalled();
+  });
+
   it("App Router Flight header stripping does not lock the original request body", async () => {
     const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
     const request = new Request("http://localhost:3000/actions", {

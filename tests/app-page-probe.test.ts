@@ -5,11 +5,13 @@ import {
   probeAppPage,
   probeAppPageBeforeRender,
   probeReactServerSubtree,
+  renderAppPageForLoadingShellProbe,
 } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import { connection } from "../packages/vinext/src/shims/server.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -690,6 +692,37 @@ describe("probeAppPage", () => {
     }) as Promise<unknown>;
 
     await expect(result).rejects.toBe(REDIRECT);
+  });
+});
+
+describe("renderAppPageForLoadingShellProbe", () => {
+  it("exposes the page Suspense fallback without walking into connection() children", async () => {
+    const child = vi.fn(async function Child() {
+      await connection();
+      return React.createElement("div", null, "Loaded");
+    });
+
+    async function Page(props: { params: Promise<{ slug: string }> }) {
+      const { slug } = await props.params;
+      return React.createElement(
+        React.Suspense,
+        { fallback: React.createElement("div", { id: `loading-${slug}` }, `Loading ${slug}...`) },
+        React.createElement(child),
+      );
+    }
+
+    const result = (await renderAppPageForLoadingShellProbe({
+      pageComponent: Page,
+      asyncRouteParams: makeThenableParams({ slug: "a" }),
+      searchParams: null,
+    })) as React.ReactElement<{ fallback: React.ReactElement<{ id: string; children: string }> }>;
+
+    expect(React.isValidElement(result)).toBe(true);
+    expect(result.props.fallback.props).toMatchObject({
+      children: "Loading a...",
+      id: "loading-a",
+    });
+    expect(child).not.toHaveBeenCalled();
   });
 });
 

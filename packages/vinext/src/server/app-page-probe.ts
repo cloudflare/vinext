@@ -276,6 +276,26 @@ export function probeAppPage(options: {
   return result;
 }
 
+export function renderAppPageForLoadingShellProbe(options: {
+  pageComponent: unknown;
+  asyncRouteParams: unknown;
+  searchParams: URLSearchParams | null | undefined;
+}): unknown {
+  const { pageComponent, asyncRouteParams, searchParams } = options;
+  if (typeof pageComponent !== "function") {
+    return null;
+  }
+  const { pageSearchParams } = collectAppPageSearchParams(searchParams);
+  const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+    observeReactPromiseStatus: true,
+  });
+  const pageProps = markAppPagePropsForUseCache({
+    params: asyncRouteParams,
+    searchParams: asyncSearchParams,
+  });
+  return (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
+}
+
 type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
 
 type AppPageProbeSlot = Readonly<{ page?: AppPageProbeModule }> | null | undefined;
