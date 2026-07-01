@@ -17,7 +17,7 @@ export type CloudflareProjectInfo = {
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   dataCache: "kv",
-  cdnCache: "data-cache",
+  cdnCache: "workers-cache",
   imageOptimization: "cloudflare-images",
 };
 

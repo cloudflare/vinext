@@ -32,12 +32,12 @@ describe("Cloudflare init choices", () => {
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
-  it("defaults to KV data, data-cache CDN fallback, and Cloudflare Images", async () => {
+  it("defaults to KV data, Workers Cache CDN, and Cloudflare Images", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "data-cache",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
   });
@@ -55,7 +55,7 @@ describe("Cloudflare init choices", () => {
       }),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "data-cache",
+      cdnCache: "workers-cache",
       imageOptimization: "none",
     });
   });
@@ -81,7 +81,7 @@ describe("Cloudflare init choices", () => {
       }),
     ).resolves.toEqual({
       dataCache: "none",
-      cdnCache: "data-cache",
+      cdnCache: "workers-cache",
       imageOptimization: "none",
     });
     expect(prompts).toEqual([

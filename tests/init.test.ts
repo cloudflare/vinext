@@ -172,7 +172,7 @@ async function runInit(
       platform: "cloudflare",
       cloudflare: {
         dataCache: "kv",
-        cdnCache: "data-cache",
+        cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
       },
       ...opts,
@@ -205,7 +205,7 @@ async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): 
       platform: "cloudflare",
       cloudflare: {
         dataCache: "kv",
-        cdnCache: "data-cache",
+        cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
       },
       ...opts,
@@ -472,7 +472,7 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("vinext({");
     expect(config).toContain("data: kvDataAdapter()");
-    expect(config).not.toContain("cdn:");
+    expect(config).toContain("cdn: cdnAdapter()");
     expect(config).not.toContain("plugin-rsc");
   });
 
@@ -485,9 +485,10 @@ describe("init — basic functionality", () => {
     expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
     expect(readFile(tmpDir, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
-    expect(readFile(tmpDir, "vite.config.ts")).not.toContain("cdn:");
+    expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: cdnAdapter()");
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      cache: { enabled: true },
       main: "vinext/server/fetch-handler",
     });
   });
@@ -528,6 +529,7 @@ describe("init — basic functionality", () => {
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain('prerender: { routes: "*" }');
     expect(config).toContain("data: kvDataAdapter()");
+    expect(config).toContain("cdn: cdnAdapter()");
     expect(config).toContain("images: { optimizer: imagesOptimizer() }");
   });
 

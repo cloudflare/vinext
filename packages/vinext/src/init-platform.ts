@@ -222,7 +222,7 @@ export async function resolveCloudflareInitOptions(
   if (explicitDataCache && explicitImageOptimization) {
     return {
       dataCache: explicitDataCache,
-      cdnCache: explicitCdnCache ?? "data-cache",
+      cdnCache: explicitCdnCache ?? "workers-cache",
       imageOptimization: explicitImageOptimization,
     };
   }
@@ -241,7 +241,7 @@ export async function resolveCloudflareInitOptions(
   if (!isInteractive) {
     return {
       dataCache: explicitDataCache ?? "kv",
-      cdnCache: explicitCdnCache ?? "data-cache",
+      cdnCache: explicitCdnCache ?? "workers-cache",
       imageOptimization: explicitImageOptimization ?? "cloudflare-images",
     };
   }
@@ -279,7 +279,7 @@ export async function resolveCloudflareInitOptions(
       "kv",
       "Please choose Cloudflare KV (1) or None (2).",
     );
-    const cdnCache = explicitCdnCache ?? "data-cache";
+    const cdnCache = explicitCdnCache ?? "workers-cache";
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
