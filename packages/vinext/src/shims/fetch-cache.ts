@@ -581,13 +581,14 @@ async function buildFetchCacheValue(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
 ): Promise<CachedFetchValue | null> {
   if (response.status !== 200) return null;
 
-  const cloned = response.clone();
-  const body = await cloned.text();
+  const responseForCache = options?.cloneForReturn === false ? response : response.clone();
+  const body = await responseForCache.text();
   const headers: Record<string, string> = {};
-  cloned.headers.forEach((v, k) => {
+  responseForCache.headers.forEach((v, k) => {
     if (k.toLowerCase() === "set-cookie") return;
     headers[k] = v;
   });
@@ -598,7 +599,7 @@ async function buildFetchCacheValue(
       headers,
       body,
       url: response.url,
-      status: cloned.status,
+      status: responseForCache.status,
     },
     tags,
     revalidate: revalidateSeconds,
@@ -611,8 +612,9 @@ async function writeFetchCacheResponse(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
+  options?: { cloneForReturn?: boolean },
 ): Promise<void> {
-  const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+  const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
   if (!cacheValue) return;
 
   await handler.set(cacheKey, cacheValue, {
@@ -1162,7 +1164,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
+      const cached = await handler.get(cacheKey, {
+        kind: "FETCH",
+        tags,
+        softTags,
+        revalidate: revalidateSeconds,
+      });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         await lowerFetchCacheRevalidateIfNeeded(
           handler,
@@ -1192,7 +1199,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (!pendingRefetches.has(cacheKey)) {
           const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
-              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds);
+              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
+                cloneForReturn: false,
+              });
             })
             .catch((err) => {
               const url =
