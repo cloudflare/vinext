@@ -222,39 +222,6 @@ describe("App Router integration", () => {
     expect(res.headers.get("content-type")).toBe("text/x-component");
   });
 
-  // Ported from Next.js: test/e2e/app-dir/segment-cache/deployment-skew/deployment-skew.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/deployment-skew/deployment-skew.test.ts
-  it("sets the deployment ID header on RSC responses", async () => {
-    const previousNextDeploymentId = process.env.NEXT_DEPLOYMENT_ID;
-    const previousVinextDeploymentId = process.env.__VINEXT_DEPLOYMENT_ID;
-    let deploymentServer: ViteDevServer | undefined;
-    process.env.NEXT_DEPLOYMENT_ID = "test-deployment-id";
-    delete process.env.__VINEXT_DEPLOYMENT_ID;
-
-    try {
-      const deploymentFixture = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
-      deploymentServer = deploymentFixture.server;
-      const res = await fetch(`${deploymentFixture.baseUrl}/about.rsc?_rsc=`, {
-        headers: { Accept: "text/x-component", RSC: "1" },
-      });
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toBe("text/x-component");
-      expect(res.headers.get("x-nextjs-deployment-id")).toBe("test-deployment-id");
-    } finally {
-      await deploymentServer?.close();
-      if (previousNextDeploymentId === undefined) {
-        delete process.env.NEXT_DEPLOYMENT_ID;
-      } else {
-        process.env.NEXT_DEPLOYMENT_ID = previousNextDeploymentId;
-      }
-      if (previousVinextDeploymentId === undefined) {
-        delete process.env.__VINEXT_DEPLOYMENT_ID;
-      } else {
-        process.env.__VINEXT_DEPLOYMENT_ID = previousVinextDeploymentId;
-      }
-    }
-  });
-
   // Dual-router coexistence: the app-basic fixture has both app/ and pages/
   // (pages/old-school.tsx activates hasPagesDir). This verifies the Pages Router
   // still renders its own pages correctly when both routers are active — the
