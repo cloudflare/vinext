@@ -9,12 +9,18 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
   createClientReuseManifest,
   createClientReusePayloadHash,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
@@ -28,11 +34,14 @@ type TestRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   isDynamic: boolean;
+  layouts?: readonly unknown[];
+  layoutTreePositions?: readonly number[];
   page?: { default?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
   routeHandler?: { GET?: () => Response; runtime?: string } | null;
   routeSegments: readonly string[];
+  slots?: AppRouteTreePrefetchRoute["slots"];
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
@@ -391,6 +400,89 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("x-response-header")).toBe("preserved");
+  });
+
+  it("preserves middleware response headers on route-tree prefetches", async () => {
+    const middleware = vi.fn(
+      () =>
+        new Response(null, {
+          headers: {
+            "x-middleware-next": "1",
+            "x-response-header": "preserved",
+          },
+        }),
+    );
+    const clearRequestContext = vi.fn();
+    const handler = createHandler({
+      clearRequestContext,
+      configHeaders: [],
+      middlewareModule: { default: middleware },
+    });
+
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, {
+        headers,
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-postponed")).toBe("2");
+    expect(response.headers.get("x-response-header")).toBe("preserved");
+    expect(clearRequestContext).toHaveBeenCalledOnce();
+  });
+
+  it("returns route-tree prefetches for layout-only App Router matches", async () => {
+    const layoutOnlyRoute = createPageRoute({
+      layouts: [{ default() {} }],
+      layoutTreePositions: [0],
+      page: null,
+      pattern: "/parallel-only",
+      routeHandler: null,
+      routeSegments: ["parallel-only"],
+      slots: {
+        sidebar: {
+          name: "sidebar",
+          default: { default() {} },
+          page: null,
+          routeSegments: null,
+        },
+      },
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute: (pathname: string) =>
+        pathname === "/parallel-only"
+          ? {
+              params: {},
+              route: layoutOnlyRoute,
+            }
+          : null,
+    });
+
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/parallel-only", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, {
+        headers,
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-postponed")).toBe("2");
+    expect(await response.text()).toContain('"tree"');
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("does not dispatch server actions directly outside basePath", async () => {
@@ -1708,8 +1800,18 @@ describe("createAppRscHandler", () => {
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
   });
 
-  it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+  it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    const dispatchMatchedPage = vi.fn(async ({ isRscRequest }) =>
+      isRscRequest
+        ? new Response("flight", { status: 200, headers: { "content-type": "text/x-component" } })
+        : new Response("<!DOCTYPE html><html>document</html>", {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }),
+    );
     const handler = createHandler({
       configHeaders: [],
       dispatchMatchedPage,
@@ -1717,16 +1819,61 @@ describe("createAppRscHandler", () => {
 
     const response = await handler(
       new Request("https://example.test/docs/about", {
-        headers: createRscRequestHeaders(),
+        headers: { [RSC_HEADER]: "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/about?_rsc");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+
+    const followedResponse = await handler(
+      new Request(`https://example.test${response.headers.get("location")}`, {
+        headers: { [RSC_HEADER]: "1" },
+      }),
+      null,
+    );
+
+    expect(followedResponse.status).toBe(200);
+    expect(followedResponse.headers.get("content-type")).toContain("text/x-component");
+    await expect(followedResponse.text()).resolves.not.toContain("<!DOCTYPE html>");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanPathname: "/about",
+        isRscRequest: true,
+      }),
+    );
+  });
+
+  it("serves full-route RSC payloads at cache-separated HTML URLs marked by RSC header", async () => {
+    const dispatchMatchedPage = vi.fn(async ({ isRscRequest }) =>
+      isRscRequest
+        ? new Response("flight", { status: 200, headers: { "content-type": "text/x-component" } })
+        : new Response("<!DOCTYPE html><html>document</html>", {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about?_rsc", {
+        headers: { [RSC_HEADER]: "1" },
       }),
       null,
     );
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/x-component");
+    await expect(response.text()).resolves.not.toContain("<!DOCTYPE html>");
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: false,
+        isRscRequest: true,
       }),
     );
   });
@@ -2221,6 +2368,43 @@ describe("createAppRscHandler", () => {
       }),
     );
   });
+
+  it.each([
+    { convention: "middleware", isProxy: false },
+    { convention: "proxy", isProxy: true },
+  ])(
+    "exposes $convention rewrites to App routes on hybrid Pages data responses",
+    async ({ isProxy }) => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const renderPagesFallback = vi.fn(async () => new Response("pages-data"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        isMiddlewareProxy: isProxy,
+        middlewareModule: {
+          default: (request: Request) =>
+            new Response(null, {
+              headers: {
+                "x-middleware-rewrite": new URL("/docs/about", request.url).toString(),
+              },
+            }),
+        },
+        renderPagesFallback,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/_next/data/build-id/rewrite-to-app.json"),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(response.headers.get("x-nextjs-rewrite")).toBe("/about");
+      expect(await response.text()).toBe("{}");
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      expect(renderPagesFallback).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses the soft redirect protocol for URL-recognized Pages data requests", async () => {
     const handler = createHandler({

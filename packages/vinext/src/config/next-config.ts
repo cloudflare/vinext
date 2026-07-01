@@ -150,6 +150,13 @@ export type MdxOptions = {
   recmaPlugins?: unknown[];
 };
 
+export type PrefetchInliningConfig =
+  | false
+  | {
+      maxBundleSize: number;
+      maxSize: number;
+    };
+
 export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
@@ -302,6 +309,12 @@ export type NextConfig = {
      * `useRouter().experimental_gesturePush()`.
      */
     gestureTransition?: boolean;
+    /**
+     * Enables App Router Segment Cache prefetch inlining. When provided as an
+     * object, thresholds are resolved with Next.js defaults and non-finite
+     * values are clamped to Number.MAX_SAFE_INTEGER.
+     */
+    prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
     [key: string]: unknown;
   };
   /**
@@ -368,11 +381,10 @@ export type ResolvedNextConfig = {
    */
   gestureTransition: boolean;
   /**
-   * Whether `experimental.prefetchInlining` is configured. Next.js uses this
-   * with the Segment Cache to fetch the route tree before the bundled inlined
-   * segment payload.
+   * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
+   * and partial object config into concrete thresholds.
    */
-  prefetchInlining: boolean;
+  prefetchInlining: PrefetchInliningConfig;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -1334,6 +1346,21 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
   };
 }
 
+function normalizePrefetchInliningConfig(value: unknown): PrefetchInliningConfig {
+  if (!value) return false;
+  const raw = isUnknownRecord(value) ? value : null;
+  const maxSize = raw ? (raw.maxSize ?? 2048) : 2048;
+  const maxBundleSize = raw ? (raw.maxBundleSize ?? 10240) : 10240;
+  const normalizedMaxSize = Number(maxSize);
+  const normalizedMaxBundleSize = Number(maxBundleSize);
+  return {
+    maxBundleSize: Number.isFinite(normalizedMaxBundleSize)
+      ? normalizedMaxBundleSize
+      : Number.MAX_SAFE_INTEGER,
+    maxSize: Number.isFinite(normalizedMaxSize) ? normalizedMaxSize : Number.MAX_SAFE_INTEGER,
+  };
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
@@ -1503,8 +1530,7 @@ export async function resolveNextConfig(
     : [];
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
-  const prefetchInlining =
-    experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
+  const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1517,7 +1543,7 @@ export async function resolveNextConfig(
     if (!config.cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
-    if (experimental?.prefetchInlining !== true) {
+    if (!prefetchInlining) {
       missingCoFlags.push("experimental.prefetchInlining");
     }
     if (experimental?.varyParams !== true) {
