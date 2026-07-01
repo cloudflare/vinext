@@ -7,6 +7,9 @@ export const VINEXT_PRERENDER_SECRET_HEADER = "x-vinext-prerender-secret";
 /** URL-encoded JSON route params for build-time prerender renders. */
 export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-params";
 
+/** Indicates a build-time prerender render is probing whether a route can be static. */
+export const VINEXT_PRERENDER_SPECULATIVE_HEADER = "x-vinext-prerender-speculative";
+
 /** Prefix for forwarded request headers (e.g. `x-middleware-request-cookie`). */
 export const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
 

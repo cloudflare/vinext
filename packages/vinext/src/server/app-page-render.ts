@@ -143,6 +143,7 @@ type RenderAppPageLifecycleOptions = {
   isForceStatic: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
+  isSpeculativePrerender?: boolean;
   isProduction: boolean;
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
@@ -719,6 +720,8 @@ export async function renderAppPageLifecycle(
 
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
+  const shouldWaitForAllReady =
+    options.isPrerender === true && options.isSpeculativePrerender !== true;
   const shouldCaptureRscForCacheMetadata =
     options.isProgressiveActionRender !== true &&
     (options.isProduction || options.isPrerender === true) &&
@@ -757,7 +760,7 @@ export async function renderAppPageLifecycle(
 
   if (options.isRscRequest) {
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
-    if (options.isPrerender === true) {
+    if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
       requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
       ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
@@ -934,7 +937,7 @@ export async function renderAppPageLifecycle(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        waitForAllReady: options.isPrerender === true,
+        waitForAllReady: shouldWaitForAllReady,
       });
     },
     renderSpecialErrorResponse(specialError) {
@@ -986,7 +989,7 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
-  if (options.isPrerender === true) {
+  if (shouldWaitForAllReady) {
     await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
     requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({

@@ -65,6 +65,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import {
@@ -840,6 +841,11 @@ function nodeToWebRequest(
     rawHeaders,
     prerenderSecret,
   );
+  const isTrustedSpeculativePrerender =
+    process.env.VINEXT_PRERENDER === "1" &&
+    prerenderSecret !== undefined &&
+    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
+    rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
@@ -847,6 +853,9 @@ function nodeToWebRequest(
   );
   if (prerenderRouteParamsHeader !== null) {
     headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+  }
+  if (isTrustedSpeculativePrerender) {
+    headers.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
   }
 
   const method = req.method ?? "GET";

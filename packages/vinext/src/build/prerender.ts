@@ -42,6 +42,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../server/headers.js";
 import {
   encodePrerenderRouteParams,
@@ -1431,6 +1432,9 @@ export async function prerenderApp({
         const htmlHeaders = new Headers();
         if (prerenderRouteParamsHeader !== null) {
           htmlHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+        }
+        if (isSpeculative) {
+          htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
         }
         const htmlRequest = new Request(`http://localhost${urlPath}`, { headers: htmlHeaders });
         const htmlRender = await runWithHeadersContext(

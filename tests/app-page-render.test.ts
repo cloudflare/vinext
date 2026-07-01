@@ -902,6 +902,46 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("does not wait for all ready or captured RSC metadata during speculative prerender", async () => {
+    const common = createCommonOptions();
+    let capturedWaitForAllReady: boolean | undefined;
+    const getRequestCacheLife = vi.fn(() => null);
+    const pendingRscData = new Promise<ArrayBuffer>(() => {});
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife,
+      isPrerender: true,
+      isSpeculativePrerender: true,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            sideStream?: ReadableStream<Uint8Array>;
+            waitForAllReady?: boolean;
+          },
+        ) {
+          capturedWaitForAllReady = options?.waitForAllReady;
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = pendingRscData;
+          }
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+          return createStream(["<html>speculative</html>"]);
+        },
+      })),
+      revalidateSeconds: 1,
+    });
+
+    expect(capturedWaitForAllReady).toBe(false);
+    expect(getRequestCacheLife).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>speculative</html>");
+  });
+
   it("captures prerender cache metadata when cacheLife provides the only revalidate value", async () => {
     const common = createCommonOptions();
     let requestCacheLife: { revalidate: number; expire: number } | null = null;
