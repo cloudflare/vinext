@@ -8091,6 +8091,22 @@ describe("resolveServerActionRequestState", () => {
     );
   });
 
+  it("falls back to the active interception context for server action requests", () => {
+    const elements = createResolvedElements("route:/dynamic-interception-revalidate/en", "/");
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "revalidate-photo",
+      basePath: "",
+      elements,
+      interceptionContext: "/dynamic-interception-revalidate/en",
+      previousNextUrl: null,
+    });
+
+    expect(headers.get("X-Vinext-Interception-Context")).toBe(
+      "/dynamic-interception-revalidate/en",
+    );
+  });
+
   it("strips the base path when deriving the interception context", () => {
     const elements = createResolvedElements("route:/photos/42", "/");
     const previousNextUrl = "/app/feed";

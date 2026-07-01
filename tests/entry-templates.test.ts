@@ -187,6 +187,47 @@ describe("App Router generated manifest construction", () => {
         siblingIntercepts: [],
       },
       {
+        pattern: "/teams/:team/dashboard",
+        patternParts: ["teams", ":team", "dashboard"],
+        pagePath: "/tmp/test/app/teams/[team]/dashboard/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/teams/[team]/layout.tsx"],
+        templates: [],
+        parallelSlots: [
+          {
+            id: "slot:analytics:/teams/:team/dashboard",
+            key: "analytics:/tmp/test/app/teams/[team]/dashboard/@analytics",
+            name: "analytics",
+            ownerDir: "/tmp/test/app/teams/[team]/dashboard/@analytics",
+            ownerTreePath: "/teams/:team/dashboard",
+            hasPage: true,
+            pagePath: "/tmp/test/app/teams/[team]/dashboard/@analytics/page.tsx",
+            defaultPath: "/tmp/test/app/teams/[team]/dashboard/@analytics/default.tsx",
+            layoutPath: null,
+            loadingPath: null,
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 1,
+            routeSegments: ["teams", ":team", "dashboard", "@analytics"],
+          },
+        ],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: null,
+        notFoundPaths: [null, null],
+        forbiddenPaths: [null, null],
+        forbiddenPath: null,
+        unauthorizedPaths: [null, null],
+        unauthorizedPath: null,
+        routeSegments: ["teams", ":team", "dashboard"],
+        templateTreePositions: [],
+        layoutTreePositions: [0, 1],
+        isDynamic: true,
+        params: ["team"],
+        siblingIntercepts: [],
+      },
+      {
         pattern: "/api",
         patternParts: ["api"],
         pagePath: null,
@@ -224,6 +265,9 @@ describe("App Router generated manifest construction", () => {
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',
