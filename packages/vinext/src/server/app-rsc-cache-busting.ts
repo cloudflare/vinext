@@ -357,7 +357,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === null && expectedHash === "") {
+  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
     return null;
   }
 

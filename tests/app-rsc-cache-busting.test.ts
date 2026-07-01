@@ -221,6 +221,19 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("redirects HTML-path RSC requests without cache-busting params to a separate URL", async () => {
+    const headers = createRscRequestHeaders();
+    const request = new Request("https://example.com/photos/42?tab=latest", { headers });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe("/photos/42?tab=latest&_rsc");
+  });
+
   it("accepts RSC requests whose cache-busting param matches the request headers", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
     const url = await createRscRequestUrl("/photos/42", headers);

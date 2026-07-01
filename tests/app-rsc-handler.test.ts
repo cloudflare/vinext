@@ -14,7 +14,10 @@ import {
   createClientReuseManifest,
   createClientReusePayloadHash,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
@@ -1708,8 +1711,18 @@ describe("createAppRscHandler", () => {
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
   });
 
-  it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+  it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts
+    const dispatchMatchedPage = vi.fn(async ({ isRscRequest }) =>
+      isRscRequest
+        ? new Response("flight", { status: 200, headers: { "content-type": "text/x-component" } })
+        : new Response("<!DOCTYPE html><html>document</html>", {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }),
+    );
     const handler = createHandler({
       configHeaders: [],
       dispatchMatchedPage,
@@ -1717,16 +1730,61 @@ describe("createAppRscHandler", () => {
 
     const response = await handler(
       new Request("https://example.test/docs/about", {
-        headers: createRscRequestHeaders(),
+        headers: { [RSC_HEADER]: "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/about?_rsc");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+
+    const followedResponse = await handler(
+      new Request(`https://example.test${response.headers.get("location")}`, {
+        headers: { [RSC_HEADER]: "1" },
+      }),
+      null,
+    );
+
+    expect(followedResponse.status).toBe(200);
+    expect(followedResponse.headers.get("content-type")).toContain("text/x-component");
+    await expect(followedResponse.text()).resolves.not.toContain("<!DOCTYPE html>");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanPathname: "/about",
+        isRscRequest: true,
+      }),
+    );
+  });
+
+  it("serves full-route RSC payloads at cache-separated HTML URLs marked by RSC header", async () => {
+    const dispatchMatchedPage = vi.fn(async ({ isRscRequest }) =>
+      isRscRequest
+        ? new Response("flight", { status: 200, headers: { "content-type": "text/x-component" } })
+        : new Response("<!DOCTYPE html><html>document</html>", {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about?_rsc", {
+        headers: { [RSC_HEADER]: "1" },
       }),
       null,
     );
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/x-component");
+    await expect(response.text()).resolves.not.toContain("<!DOCTYPE html>");
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: false,
+        isRscRequest: true,
       }),
     );
   });
