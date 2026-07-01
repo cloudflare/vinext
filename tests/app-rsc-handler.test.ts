@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { renderToReadableStream } from "react-dom/server.edge";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   computeRscCacheBustingSearchParam,
@@ -137,7 +136,6 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
         : undefined),
     publicFiles: overrides.publicFiles ?? new Set<string>(),
     registerCacheAdapters: () => {},
-    renderToReadableStream: renderToReadableStream as HandlerOptions["renderToReadableStream"],
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
