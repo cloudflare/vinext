@@ -1520,6 +1520,9 @@ export async function prerenderApp({
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
           }
+          if (isSpeculative) {
+            rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+          }
           const rscRequest = new Request(`http://localhost${urlPath}`, {
             headers: rscHeaders,
           });

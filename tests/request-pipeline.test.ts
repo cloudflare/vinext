@@ -21,6 +21,7 @@ import {
 import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
 
@@ -789,21 +790,25 @@ describe("filterInternalHeaders", () => {
     const headers = new Headers({
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
+      [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
       "user-agent": "test",
     });
 
     const result = filterInternalHeaders(headers);
 
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+      VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
     }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });
