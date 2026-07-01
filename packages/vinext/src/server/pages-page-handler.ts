@@ -314,7 +314,7 @@ export function createPagesPageHandler(
       request,
       buildId,
       vinextConfig.basePath,
-      vinextConfig.trailingSlash,
+      hasMiddleware && vinextConfig.trailingSlash,
     );
 
     // Auto-detect /_next/data/... requests by inspecting the incoming URL.

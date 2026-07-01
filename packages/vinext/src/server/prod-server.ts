@@ -1789,7 +1789,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
         isDataReq = true;
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
+        const pagePathname = normalizeNextDataPagePathname(
+          dataMatch.pagePathname,
+          hasMiddleware && trailingSlash,
+        );
         url = pagePathname + qs;
         pathname = pagePathname;
       }

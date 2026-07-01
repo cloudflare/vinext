@@ -4467,6 +4467,8 @@ export const loadServerActionClient = ${
                 url = pathname + qs;
               }
 
+              const capturedMiddlewarePath = middlewarePath;
+
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.
               //
@@ -4533,7 +4535,7 @@ export const loadServerActionClient = ${
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   const pagePathname = normalizeNextDataPagePathname(
                     dataMatch.pagePathname,
-                    nextConfig?.trailingSlash,
+                    capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
                   );
                   url = pagePathname + qs;
                   pathname = pagePathname;
@@ -4655,7 +4657,6 @@ export const loadServerActionClient = ${
               // returns a MiddlewareResult. Side-effects needed by App Router
               // hybrid mode (VINEXT_MW_CTX_HEADER) are applied here as a
               // side effect so the RSC entry sees them before rendering.
-              const capturedMiddlewarePath = middlewarePath;
               const devRunMiddlewareAdapter: PagesPipelineDeps["runMiddleware"] =
                 capturedMiddlewarePath
                   ? async (_request, _ctx, opts) => {

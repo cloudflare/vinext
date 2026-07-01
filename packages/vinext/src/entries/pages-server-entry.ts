@@ -242,7 +242,7 @@ export function normalizeDataRequest(request) {
     request,
     buildId,
     vinextConfig.basePath,
-    vinextConfig.trailingSlash,
+    hasMiddleware && vinextConfig.trailingSlash,
   );
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};

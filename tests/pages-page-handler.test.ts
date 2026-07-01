@@ -208,6 +208,45 @@ describe("createPagesPageHandler — _next/data", () => {
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
   });
+
+  it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
+    // Next.js derives Pages data resolvedUrl/asPath from the parsed data
+    // pathname. The trailingSlash data-path adjustment is middleware-only.
+    const setSSRContext = vi.fn();
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getServerSideProps: async ({ resolvedUrl }: { resolvedUrl: string }) => ({
+            props: { resolvedUrl },
+          }),
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        setSSRContext,
+        vinextConfig: {
+          basePath: "",
+          assetPrefix: "",
+          trailingSlash: true,
+          disableOptimizedLoading: true,
+        },
+      }),
+    );
+
+    const dataUrl = "/_next/data/test-build-id/about.json?x=1";
+    const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps: { resolvedUrl: string } };
+    expect(body.pageProps.resolvedUrl).toBe("/about?x=1");
+
+    const context = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+      | { asPath?: string }
+      | undefined;
+    expect(context?.asPath).toBe("/about?x=1");
+  });
 });
 
 // ---------------------------------------------------------------------------
