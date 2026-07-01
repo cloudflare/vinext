@@ -13,9 +13,10 @@ import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
-import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
+import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -87,6 +88,15 @@ export function applyRscCompatibilityIdHeader(
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, normalized);
   } else {
     headers.delete(VINEXT_RSC_COMPATIBILITY_ID_HEADER);
+  }
+}
+
+export function applyRscDeploymentIdHeader(headers: Headers): void {
+  const deploymentId = getDeploymentId();
+  if (deploymentId) {
+    headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+  } else {
+    headers.delete(NEXTJS_DEPLOYMENT_ID_HEADER);
   }
 }
 

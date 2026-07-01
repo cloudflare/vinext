@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -343,6 +344,37 @@ describe("App Router RSC cache-busting", () => {
     );
 
     expect(headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-env");
+  });
+
+  it("leaves the Next.js deployment ID header out of compatibility-only response headers", () => {
+    const headers = new Headers();
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", "deployment-a", () =>
+      applyRscCompatibilityIdHeader(headers, "compat-a"),
+    );
+
+    expect(headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+    expect(headers.has("x-nextjs-deployment-id")).toBe(false);
+  });
+
+  it("applies the Next.js deployment ID header to App Router RSC page response headers", () => {
+    const headers = new Headers();
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", "deployment-a", () => applyRscDeploymentIdHeader(headers));
+
+    expect(headers.get("x-nextjs-deployment-id")).toBe("deployment-a");
+  });
+
+  it("removes a spoofed Next.js deployment ID header when none is configured", () => {
+    const headers = new Headers({
+      "x-nextjs-deployment-id": "spoofed-deployment",
+    });
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", undefined, () =>
+      withEnvVar("NEXT_DEPLOYMENT_ID", undefined, () => applyRscDeploymentIdHeader(headers)),
+    );
+
+    expect(headers.has("x-nextjs-deployment-id")).toBe(false);
   });
 
   it("removes a spoofed compatibility ID header when no framework ID is available", () => {
