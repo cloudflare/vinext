@@ -683,6 +683,95 @@ describe("prefetch cache eviction", () => {
       expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
     });
 
+    it("uses the dynamic fallback for no-store automatic prefetch responses", async () => {
+      // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-stale-time.test.ts
+      process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = "30";
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "300";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+      const rscUrl = "/dynamic.rsc";
+      const now = 1_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      nav.prefetchRscResponse(
+        rscUrl,
+        Promise.resolve(
+          new Response("flight", {
+            headers: {
+              "Cache-Control": "no-store, must-revalidate",
+              "content-type": "text/x-component",
+            },
+          }),
+        ),
+        null,
+        null,
+        undefined,
+        {
+          cacheForNavigation: true,
+          dynamicFallbackTtlMs: nav.DYNAMIC_NAVIGATION_CACHE_TTL,
+          fallbackTtlMs: nav.PREFETCH_CACHE_TTL,
+          minimumTtlMs: 0,
+        },
+      );
+
+      await waitForPrefetchSetup(
+        () => nav.getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded",
+      );
+
+      expect(nav.getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
+
+      vi.spyOn(Date, "now").mockReturnValue(now + 29_999);
+      expect(nav.hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(true);
+
+      vi.spyOn(Date, "now").mockReturnValue(now + 30_000);
+      expect(nav.hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(false);
+    });
+
+    it("allows per-page dynamic stale metadata below the historical 30s floor", async () => {
+      // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+      process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME = "30";
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "300";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+      const rscUrl = "/per-page-config/dynamic-stale-10.rsc";
+      const now = 1_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      nav.prefetchRscResponse(
+        rscUrl,
+        Promise.resolve(
+          new Response("flight", {
+            headers: {
+              "Cache-Control": "no-store, must-revalidate",
+              [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "10",
+              "content-type": "text/x-component",
+            },
+          }),
+        ),
+        null,
+        null,
+        undefined,
+        {
+          cacheForNavigation: true,
+          dynamicFallbackTtlMs: nav.DYNAMIC_NAVIGATION_CACHE_TTL,
+          fallbackTtlMs: nav.PREFETCH_CACHE_TTL,
+          minimumTtlMs: 0,
+        },
+      );
+
+      await waitForPrefetchSetup(
+        () => nav.getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded",
+      );
+
+      expect(nav.getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 10_000);
+
+      vi.spyOn(Date, "now").mockReturnValue(now + 9_999);
+      expect(nav.hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(true);
+
+      vi.spyOn(Date, "now").mockReturnValue(now + 10_000);
+      expect(nav.hasPrefetchCacheEntryForNavigation(rscUrl, null, null)).toBe(false);
+    });
+
     it("treats a freshly prefetched entry as reusable up to the configured TTL", async () => {
       process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
       vi.resetModules();

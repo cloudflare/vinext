@@ -324,21 +324,25 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        minimumTtlMs: 0,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        minimumTtlMs: undefined,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
+        minimumTtlMs: undefined,
         prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -347,11 +351,13 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        minimumTtlMs: 0,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
+        minimumTtlMs: undefined,
         prefetchShellFirst: false,
         shouldPrefetch: false,
       });

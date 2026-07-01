@@ -53,6 +53,11 @@ export type NavigationRuntimeFunctions = {
     href: string,
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
+  hasVisitedResponseCacheEntryForNavigation?: (
+    rscUrl: string,
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+  ) => boolean;
   navigate?: NavigationRuntimeNavigate;
   /**
    * Called at the start of every App Router navigation so the <Link> shim can
@@ -113,6 +118,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "hasVisitedResponseCacheEntryForNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&

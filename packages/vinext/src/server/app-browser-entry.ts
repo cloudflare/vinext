@@ -124,6 +124,9 @@ import {
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
   createVisitedResponseCacheEntry,
+  deleteVisitedResponseCacheEntry,
+  findVisitedResponseCacheEntry,
+  hasFreshVisitedResponseCacheEntryForNavigation,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -679,8 +682,8 @@ function readVisitedResponseCacheCandidate(
   navigationKind: NavigationKind,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  const cached = visitedResponseCache.get(cacheKey);
-  if (!cached) {
+  const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
+  if (!match) {
     return {
       cacheKey,
       entry: null,
@@ -692,15 +695,16 @@ function readVisitedResponseCacheCandidate(
   }
 
   return {
-    cacheKey,
-    entry: cached,
+    cacheKey: match.cacheKey,
+    entry: match.entry,
     facts: {
       candidate: "present",
-      fresh: isVisitedResponseCacheEntryFresh(cached, {
+      fresh: isVisitedResponseCacheEntryFresh(match.entry, {
         navigationKind,
         now: Date.now(),
       }),
-      mountedSlotsMatch: cached.mountedSlotsHeader === mountedSlotsHeader,
+      mountedSlotsMatch:
+        match.entry.elements !== undefined || match.entry.mountedSlotsHeader === mountedSlotsHeader,
       navigationKind,
     },
   };
@@ -731,7 +735,41 @@ function applyVisitedResponseCacheCandidateDecision(
 }
 
 function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
-  visitedResponseCache.delete(AppElementsWire.encodeCacheKey(rscUrl, interceptionContext));
+  deleteVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
+}
+
+function createCommittedAppElements(state: AppRouterState): AppElements {
+  return {
+    ...state.elements,
+    [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
+    [AppElementsWire.keys.layoutIds]: state.layoutIds,
+    [AppElementsWire.keys.skippedLayoutIds]: [],
+    [AppElementsWire.keys.slotBindings]: state.slotBindings,
+  } satisfies AppElements;
+}
+
+function putVisitedResponseEntry(options: {
+  elements?: AppElements;
+  interceptionContext: string | null;
+  mountedSlotsHeader?: string | null;
+  params: Record<string, string | string[]>;
+  prefetchFallbackTtlMs: number;
+  rscUrl: string;
+  snapshot: CachedRscResponse;
+}): VisitedResponseCacheEntry {
+  const cacheKey = AppElementsWire.encodeCacheKey(options.rscUrl, options.interceptionContext);
+  visitedResponseCache.delete(cacheKey);
+  evictVisitedResponseCacheIfNeeded();
+  const entry = createVisitedResponseCacheEntry({
+    fallbackTtlMs: options.prefetchFallbackTtlMs,
+    elements: options.elements,
+    now: Date.now(),
+    mountedSlotsHeader: options.mountedSlotsHeader ?? options.snapshot.mountedSlotsHeader ?? null,
+    params: options.params,
+    response: options.snapshot,
+  });
+  visitedResponseCache.set(cacheKey, entry);
+  return entry;
 }
 
 function storeVisitedResponseSnapshot(
@@ -744,18 +782,15 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  visitedResponseCache.delete(cacheKey);
-  evictVisitedResponseCacheIfNeeded();
-  const now = Date.now();
-  const entry = createVisitedResponseCacheEntry({
-    fallbackTtlMs: prefetchFallbackTtlMs,
+  const entry = putVisitedResponseEntry({
     elements,
-    now,
+    interceptionContext,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
-    response: snapshot,
+    prefetchFallbackTtlMs,
+    rscUrl,
+    snapshot,
   });
-  visitedResponseCache.set(cacheKey, entry);
   seedPrefetchResponseSnapshot(
     rscUrl,
     snapshot,
@@ -769,6 +804,57 @@ function storeVisitedResponseSnapshot(
     }
     deletePrefetchResponseSnapshot(rscUrl, snapshot, interceptionContext);
   };
+}
+
+function storeCommittedElementsVisitedResponseSnapshot(options: {
+  elements: AppElements;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  navResponse: Response;
+  navResponseUrl: string | null;
+  params: Record<string, string | string[]>;
+  prefetchFallbackTtlMs: number;
+  rscUrl: string;
+}): void {
+  const metadata = AppElementsWire.readMetadata(options.elements);
+  if (isCacheRestorableAppPayloadMetadata(metadata)) return;
+
+  const responseSnapshot = createCachedRscResponseSnapshot(
+    options.navResponse,
+    new ArrayBuffer(0),
+    options.navResponseUrl,
+  );
+  const snapshot = {
+    ...responseSnapshot,
+    ...(responseSnapshot.dynamicStaleTimeSeconds === undefined &&
+    metadata.dynamicStaleTimeSeconds !== undefined
+      ? { dynamicStaleTimeSeconds: metadata.dynamicStaleTimeSeconds }
+      : {}),
+    mountedSlotsHeader: options.mountedSlotsHeader,
+  } satisfies CachedRscResponse;
+  putVisitedResponseEntry({
+    elements: options.elements,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    params: options.params,
+    prefetchFallbackTtlMs: options.prefetchFallbackTtlMs,
+    rscUrl: options.rscUrl,
+    snapshot,
+  });
+}
+
+function hasVisitedResponseCacheEntryForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): boolean {
+  return hasFreshVisitedResponseCacheEntryForNavigation(
+    visitedResponseCache,
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+    Date.now(),
+  );
 }
 
 // Build the absolute current-document href the early-intent planner compares
@@ -2105,6 +2191,22 @@ function bootstrapHydration(
           visibleCommitMode,
           (state) => {
             committedState = state;
+            const committedElements = createCommittedAppElements(state);
+            const metadata = AppElementsWire.readMetadata(committedElements);
+            const interceptionContext = resolveVisitedResponseInterceptionContext(
+              requestInterceptionContext,
+              metadata.interceptionContext,
+            );
+            storeCommittedElementsVisitedResponseSnapshot({
+              elements: committedElements,
+              interceptionContext,
+              mountedSlotsHeader: getMountedSlotIdsHeader(committedElements),
+              navResponse,
+              navResponseUrl,
+              params: navParams,
+              prefetchFallbackTtlMs: DYNAMIC_NAVIGATION_CACHE_TTL,
+              rscUrl,
+            });
             // Once React has committed this payload, its RSC stream owns the
             // mounted tree even if a Suspense boundary is still consuming it.
             // A later navigation may supersede future cache publication, but
@@ -2171,13 +2273,6 @@ function bootstrapHydration(
             getMountedSlotIdsHeader((committedState as AppRouterState).elements) === null
           ) {
             const state = committedState as AppRouterState;
-            const committedElements = {
-              ...state.elements,
-              [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
-              [AppElementsWire.keys.layoutIds]: state.layoutIds,
-              [AppElementsWire.keys.skippedLayoutIds]: [],
-              [AppElementsWire.keys.slotBindings]: state.slotBindings,
-            } satisfies AppElements;
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
@@ -2186,16 +2281,17 @@ function bootstrapHydration(
               navParams,
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
-              committedElements,
+              createCommittedAppElements(state),
             );
           } else {
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
-            seedPrefetchResponseSnapshot(
+            storeVisitedResponseSnapshot(
               rscUrl,
-              snapshot,
               interceptionContext,
-              mountedSlotsHeader,
+              snapshot,
+              navParams,
               DYNAMIC_NAVIGATION_CACHE_TTL,
+              mountedSlotsHeader,
             );
           }
         } catch {
@@ -2237,6 +2333,7 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    hasVisitedResponseCacheEntryForNavigation,
     navigate: navigateRsc,
   });
 

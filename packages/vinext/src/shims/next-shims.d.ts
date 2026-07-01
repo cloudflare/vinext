@@ -291,7 +291,9 @@ declare module "next/navigation" {
     options?: { onInvalidate?: () => void },
     behavior?: {
       cacheForNavigation?: boolean;
+      dynamicFallbackTtlMs?: number;
       fallbackTtlMs?: number;
+      minimumTtlMs?: number;
       optimisticRouteShell?: boolean;
     },
   ): void;

@@ -162,6 +162,7 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+const activeNavigationPrefetchSuppressions = new Set<string>();
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
@@ -311,19 +312,58 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
 
+function toActiveNavigationPrefetchSuppressionKey(href: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(
+      toBrowserNavigationHref(href, window.location.href, __basePath),
+      window.location.href,
+    );
+    return `${url.origin}${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function addActiveNavigationPrefetchSuppression(href: string): string | null {
+  const key = toActiveNavigationPrefetchSuppressionKey(href);
+  if (key !== null) {
+    activeNavigationPrefetchSuppressions.add(key);
+  }
+  return key;
+}
+
+function clearActiveNavigationPrefetchSuppression(key: string | null): void {
+  if (key === null) return;
+  if (typeof window === "undefined") {
+    activeNavigationPrefetchSuppressions.delete(key);
+    return;
+  }
+  const clear = () => activeNavigationPrefetchSuppressions.delete(key);
+  (window.requestIdleCallback ?? ((fn: () => void) => globalThis.setTimeout(fn, 0)))(clear);
+}
+
+function isPrefetchSuppressedByActiveNavigation(href: string): boolean {
+  const key = toActiveNavigationPrefetchSuppressionKey(href);
+  return key !== null && activeNavigationPrefetchSuppressions.has(key);
+}
+
 function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
   cacheForNavigation: boolean;
+  minimumTtlMs: number | undefined;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
   const hasLoadingShell = route.canPrefetchLoadingShell;
+  const shouldCacheForNavigation = !hasLoadingShell;
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
     // commit loading.js immediately. Dynamic routes without loading-shell
     // fallbacks are treated as exact-URL full prefetches; the prefetch cache is
     // keyed by the concrete RSC URL, so this cannot reuse data across params.
-    cacheForNavigation: !hasLoadingShell,
+    cacheForNavigation: shouldCacheForNavigation,
+    minimumTtlMs: shouldCacheForNavigation ? 0 : undefined,
     prefetchShellFirst: !route.isDynamic,
     shouldPrefetch: true,
   };
@@ -346,26 +386,47 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
+  minimumTtlMs: number | undefined;
   prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      minimumTtlMs: undefined,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      minimumTtlMs: undefined,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      minimumTtlMs: undefined,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return {
+      cacheForNavigation: false,
+      minimumTtlMs: undefined,
+      prefetchShellFirst: false,
+      shouldPrefetch: false,
+    };
   }
 
   return resolveMatchedAutoAppRoutePrefetch(match.route);
@@ -373,11 +434,13 @@ export function resolveAutoAppRoutePrefetch(href: string): {
 
 function resolveFullAppRoutePrefetch(): {
   cacheForNavigation: true;
+  minimumTtlMs: undefined;
   prefetchShellFirst: boolean;
   shouldPrefetch: true;
 } {
   return {
     cacheForNavigation: true,
+    minimumTtlMs: undefined,
     prefetchShellFirst: true,
     shouldPrefetch: true,
   };
@@ -469,6 +532,7 @@ function prefetchUrl(
           getPrefetchedUrls,
           getMountedSlotsHeader,
           hasPrefetchCacheEntryForNavigation,
+          DYNAMIC_NAVIGATION_CACHE_TTL,
           prefetchRscResponse,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -489,9 +553,15 @@ function prefetchUrl(
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchHref)
             : mode === "full-after-shell"
-              ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
+              ? {
+                  cacheForNavigation: true,
+                  minimumTtlMs: undefined,
+                  prefetchShellFirst: true,
+                  shouldPrefetch: true,
+                }
               : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
+        if (isPrefetchSuppressedByActiveNavigation(fullHref)) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
@@ -530,6 +600,16 @@ function prefetchUrl(
         if (
           autoPrefetch.cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
+          return;
+        }
+        if (
+          autoPrefetch.cacheForNavigation &&
+          getNavigationRuntime()?.functions.hasVisitedResponseCacheEntryForNavigation?.(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+          )
         ) {
           return;
         }
@@ -606,7 +686,9 @@ function prefetchUrl(
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
+            dynamicFallbackTtlMs: DYNAMIC_NAVIGATION_CACHE_TTL,
             fallbackTtlMs: PREFETCH_CACHE_TTL,
+            minimumTtlMs: autoPrefetch.minimumTtlMs,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
@@ -1239,7 +1321,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (hasAppNavigationRuntime) {
-      const { navigateClientSide } = await import("./navigation.js");
+      const prefetchSuppressionKey = addActiveNavigationPrefetchSuppression(navigateHref);
+      let navigateClientSide: (typeof import("./navigation.js"))["navigateClientSide"];
+      try {
+        ({ navigateClientSide } = await import("./navigation.js"));
+      } catch (error) {
+        clearActiveNavigationPrefetchSuppression(prefetchSuppressionKey);
+        throw error;
+      }
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked
@@ -1249,6 +1338,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       React.startTransition(() => {
         void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
           () => {
+            clearActiveNavigationPrefetchSuppression(prefetchSuppressionKey);
             if (mountedRef.current) setPending(false);
             if (setter) clearLinkForCurrentNavigation(setter);
           },

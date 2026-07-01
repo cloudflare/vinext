@@ -360,15 +360,16 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt">,
   fallbackTtlMs: number,
+  minimumTtlMs: number = MIN_PREFETCH_STALE_TIME_MS,
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
   }
   const seconds = cached.dynamicStaleTimeSeconds;
   if (!isDynamicStaleTimeSeconds(seconds)) {
-    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+    return timestamp + Math.max(fallbackTtlMs, minimumTtlMs);
   }
-  return timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
+  return timestamp + Math.max(seconds * 1000, minimumTtlMs);
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -772,6 +773,15 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   });
 }
 
+function isDynamicRscPrefetchResponse(response: Response): boolean {
+  return (
+    response.headers
+      .get("Cache-Control")
+      ?.split(",")
+      .some((directive) => directive.trim().toLowerCase() === "no-store") === true
+  );
+}
+
 /**
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
@@ -787,7 +797,9 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
+    dynamicFallbackTtlMs?: number;
     fallbackTtlMs?: number;
+    minimumTtlMs?: number;
     optimisticRouteShell?: boolean;
   } = {},
 ): void {
@@ -808,11 +820,16 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
+        const fallbackTtlMs =
+          isDynamicRscPrefetchResponse(response) && behavior.dynamicFallbackTtlMs !== undefined
+            ? behavior.dynamicFallbackTtlMs
+            : (behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL);
         entry.snapshot = await snapshotRscResponse(response);
         entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
-          behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
+          fallbackTtlMs,
+          behavior.minimumTtlMs,
         );
       } else {
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
