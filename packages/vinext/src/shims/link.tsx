@@ -642,8 +642,7 @@ function prefetchUrl(
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
           __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
-        const gateViaLoadingShell =
-          mode === "full-after-shell" && autoPrefetch.prefetchShellFirst;
+        const gateViaLoadingShell = mode === "full-after-shell" && autoPrefetch.prefetchShellFirst;
         const fetchPromise =
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
