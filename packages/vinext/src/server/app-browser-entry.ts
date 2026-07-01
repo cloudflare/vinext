@@ -2178,9 +2178,10 @@ function bootstrapHydration(
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
-            const committedMetadata = AppElementsWire.readMetadata(committedElements);
-            if (!isCompleteAppPayloadMetadata(committedMetadata)) return;
-            // Complete committed payloads include parallel-slot data, so they are safe to replay.
+            // The committed router state is the post-merge tree, including named
+            // parallel-slot state. Skip-pruned wire payloads without a committed
+            // tree stay on the fallback path below and are not replayed as full
+            // visited responses.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
