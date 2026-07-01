@@ -33,6 +33,14 @@
       "types": "./dist/tpr.d.ts",
       "import": "./dist/tpr.js"
     },
+    "./internal/cdn-warm": {
+      "types": "./dist/cdn-warm.d.ts",
+      "import": "./dist/cdn-warm.js"
+    },
+    "./internal/version-deploy": {
+      "types": "./dist/version-deploy.d.ts",
+      "import": "./dist/version-deploy.js"
+    },
     "./cache/*": {
       "types": "./dist/cache/*.d.ts",
       "import": "./dist/cache/*.js"

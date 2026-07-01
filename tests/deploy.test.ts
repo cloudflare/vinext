@@ -400,6 +400,8 @@ describe("parseDeployArgs", () => {
     expect(parsed.name).toBeUndefined();
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
+    expect(parsed.warmCdnCache).toBe(false);
+    expect(parsed.warmCdnStrict).toBe(false);
   });
 
   it("parses --env with space-separated value", () => {
@@ -462,6 +464,35 @@ describe("parseDeployArgs", () => {
   it("throws for zero --prerender-concurrency value", () => {
     expect(() => parseDeployArgs(["--prerender-concurrency=0"])).toThrow(
       '--prerender-concurrency expects a positive integer, but got "0".',
+    );
+  });
+
+  it("parses CDN warmup flags", () => {
+    const parsed = parseDeployArgs([
+      "--warm-cdn-cache",
+      "--warm-cdn-concurrency",
+      "6",
+      "--warm-cdn-timeout=1500",
+      "--warm-cdn-retries",
+      "0",
+      "--warm-cdn-strict",
+      "--warm-cdn-include-fallbacks",
+    ]);
+
+    expect(parsed.warmCdnCache).toBe(true);
+    expect(parsed.warmCdnConcurrency).toBe(6);
+    expect(parsed.warmCdnTimeout).toBe(1500);
+    expect(parsed.warmCdnRetries).toBe(0);
+    expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it("throws for invalid CDN warmup numeric flags", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-concurrency=0"])).toThrow(
+      '--warm-cdn-concurrency expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
+      '--warm-cdn-retries expects a non-negative integer, but got "-1".',
     );
   });
 

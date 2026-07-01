@@ -30,6 +30,7 @@ import {
   type ProjectInfo,
 } from "vinext/internal/utils/project";
 import { runTPR } from "./tpr.js";
+import { readPrerenderWarmPaths, warmCdnCacheFromPrerender } from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -38,6 +39,11 @@ import {
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
+import {
+  runWranglerTriggersDeploy,
+  runWranglerVersionDeploy,
+  runWranglerVersionUpload,
+} from "./version-deploy.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +64,18 @@ export type DeployOptions = {
   prerenderAll?: boolean;
   /** Maximum number of routes to prerender in parallel */
   prerenderConcurrency?: number;
+  /** Warm Cloudflare's CDN cache by requesting prerendered paths on the uploaded version preview URL */
+  warmCdnCache?: boolean;
+  /** Maximum number of CDN warmup requests to issue in parallel */
+  warmCdnConcurrency?: number;
+  /** Per-request CDN warmup timeout in milliseconds */
+  warmCdnTimeout?: number;
+  /** Number of CDN warmup retries for transient failures */
+  warmCdnRetries?: number;
+  /** Fail deployment if any CDN warmup request fails */
+  warmCdnStrict?: boolean;
+  /** Include PPR fallback-shell placeholder paths during CDN warmup */
+  warmCdnIncludeFallbacks?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -81,6 +99,17 @@ function parsePositiveIntegerArg(raw: string, flag: string): number {
   return parsed;
 }
 
+function parseNonNegativeIntegerArg(raw: string, flag: string): number {
+  if (raw === "") {
+    throw new Error(`${flag} requires a value, but none was provided.`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${flag} expects a non-negative integer, but got "${raw}".`);
+  }
+  return parsed;
+}
+
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
 /** Deploy command flag definitions for util.parseArgs. */
@@ -93,6 +122,12 @@ const deployArgOptions = {
   "dry-run": { type: "boolean", default: false },
   "prerender-all": { type: "boolean", default: false },
   "prerender-concurrency": { type: "string" },
+  "warm-cdn-cache": { type: "boolean", default: false },
+  "warm-cdn-concurrency": { type: "string" },
+  "warm-cdn-timeout": { type: "string" },
+  "warm-cdn-retries": { type: "string" },
+  "warm-cdn-strict": { type: "boolean", default: false },
+  "warm-cdn-include-fallbacks": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -124,6 +159,21 @@ export function parseDeployArgs(args: string[]) {
       values["prerender-concurrency"] === undefined
         ? undefined
         : parsePositiveIntegerArg(values["prerender-concurrency"], "--prerender-concurrency"),
+    warmCdnCache: values["warm-cdn-cache"],
+    warmCdnConcurrency:
+      values["warm-cdn-concurrency"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(values["warm-cdn-concurrency"], "--warm-cdn-concurrency"),
+    warmCdnTimeout:
+      values["warm-cdn-timeout"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(values["warm-cdn-timeout"], "--warm-cdn-timeout"),
+    warmCdnRetries:
+      values["warm-cdn-retries"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
+    warmCdnStrict: values["warm-cdn-strict"],
+    warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
     experimentalTPR: values["experimental-tpr"],
     tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
     tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
@@ -308,6 +358,43 @@ export function runWranglerDeploy(
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
 
+async function deployWithCdnWarmup(
+  root: string,
+  options: Pick<
+    DeployOptions,
+    | "preview"
+    | "env"
+    | "warmCdnConcurrency"
+    | "warmCdnTimeout"
+    | "warmCdnRetries"
+    | "warmCdnStrict"
+    | "warmCdnIncludeFallbacks"
+  >,
+): Promise<string> {
+  const upload = runWranglerVersionUpload(root, options);
+  if (upload.previewUrl) {
+    await warmCdnCacheFromPrerender({
+      root,
+      previewUrl: upload.previewUrl,
+      concurrency: options.warmCdnConcurrency,
+      timeoutMs: options.warmCdnTimeout,
+      retries: options.warmCdnRetries,
+      strict: options.warmCdnStrict,
+      includeFallbackShells: options.warmCdnIncludeFallbacks,
+    });
+  } else if (options.warmCdnStrict) {
+    throw new Error(
+      "CDN warmup failed: Wrangler did not provide a Worker version preview URL. " +
+        "Enable Worker version preview URLs for this Worker, or rerun without --warm-cdn-strict.",
+    );
+  } else {
+    console.warn("  CDN warmup skipped: Wrangler did not provide a Worker version preview URL.");
+  }
+  const deployed = runWranglerVersionDeploy(root, upload.versionId, options);
+  runWranglerTriggersDeploy(root, options);
+  return deployed.deployedUrl ?? upload.previewUrl ?? "(URL not detected in wrangler output)";
+}
+
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
@@ -393,6 +480,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
+  let didRunPrerender = false;
+
   // Step 6a: prerender — render every discovered route into dist.
   // Triggered by --prerender-all, vinext({ prerender: true }), or automatically
   // when next.config.js sets `output: 'export'` (every route must be statically
@@ -421,6 +510,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
       }
       await runPrerender({ root: info.root, concurrency: options.prerenderConcurrency });
+      didRunPrerender = true;
     }
   }
 
@@ -440,9 +530,35 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
-  const url = runWranglerDeploy(root, {
+  const wranglerOptions = {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
-  });
+  };
+  let url: string;
+
+  if (options.warmCdnCache && (didRunPrerender || options.skipBuild)) {
+    const warmPaths = readPrerenderWarmPaths(root, {
+      includeFallbackShells: options.warmCdnIncludeFallbacks,
+      strict: options.warmCdnStrict,
+    });
+    if (warmPaths.length > 0) {
+      url = await deployWithCdnWarmup(root, {
+        ...wranglerOptions,
+        warmCdnConcurrency: options.warmCdnConcurrency,
+        warmCdnTimeout: options.warmCdnTimeout,
+        warmCdnRetries: options.warmCdnRetries,
+        warmCdnStrict: options.warmCdnStrict,
+        warmCdnIncludeFallbacks: options.warmCdnIncludeFallbacks,
+      });
+    } else {
+      console.log("\n  CDN warmup skipped: no prerendered paths found.");
+      url = runWranglerDeploy(root, wranglerOptions);
+    }
+  } else {
+    if (options.warmCdnCache) {
+      console.log("\n  CDN warmup skipped: prerender was not run during this deploy.");
+    }
+    url = runWranglerDeploy(root, wranglerOptions);
+  }
 
   console.log("\n  ─────────────────────────────────────────");
   console.log(`  Deployed to: ${url}`);

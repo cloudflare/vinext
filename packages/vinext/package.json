@@ -81,6 +81,10 @@
       "types": "./dist/server/app-page-cache.d.ts",
       "import": "./dist/server/app-page-cache.js"
     },
+    "./internal/server/prerender-manifest": {
+      "types": "./dist/server/prerender-manifest.d.ts",
+      "import": "./dist/server/prerender-manifest.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
