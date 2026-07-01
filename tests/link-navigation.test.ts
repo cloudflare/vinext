@@ -198,6 +198,19 @@ async function waitForFetchCalls(
   }
 }
 
+async function waitForFetchCall(
+  fetch: { mock: { calls: unknown[][] } },
+  predicate: (call: unknown[]) => boolean,
+): Promise<unknown[]> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await flushPrefetchTasks();
+    const call = fetch.mock.calls.find(predicate);
+    if (call) return call;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for matching fetch call");
+}
+
 function expectCanonicalRscFetchCall(
   call: unknown[] | undefined,
   pathname: string,
@@ -1310,6 +1323,34 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("starts App Router viewport prefetches before browser idle callbacks", async () => {
+    const observer = stubIntersectionObserver();
+    const requestIdleCallback = vi.fn(() => 1);
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("does not prefetch visible or hovered links for a bot user agent", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/app-prefetch/prefetching.test.ts
@@ -1529,7 +1570,7 @@ describe("Link prefetch scheduling", () => {
     try {
       expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
+      await waitForFetchCalls(result.fetch, 2);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
       expectCanonicalRscFetchCall(
@@ -1605,25 +1646,32 @@ describe("Link prefetch scheduling", () => {
     try {
       expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 2);
+      await waitForFetchCalls(result.fetch, 1);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[1],
+        result.fetch.mock.calls[0],
         "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
         }),
       );
-      const shellFetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
-      expect(
-        (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
-      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
-      const fetchInit = result.fetch.mock.calls[1]?.[1] as RequestInit | undefined;
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       expect(
         (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
       ).toBeNull();
+      const shellFetchCall = await waitForFetchCall(result.fetch, (call) => {
+        const init = call[1] as RequestInit | undefined;
+        return (
+          (init?.headers as Headers | undefined)?.get?.(VINEXT_RSC_RENDER_MODE_HEADER) ===
+          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+        );
+      });
+      const shellFetchInit = shellFetchCall?.[1] as RequestInit | undefined;
+      expect(
+        (shellFetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     } finally {
       result.restoreNodeEnv();
     }
