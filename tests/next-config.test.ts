@@ -2015,6 +2015,7 @@ describe("detectNextIntlConfig", () => {
       i18n: null,
       mdx: null,
       aliases: {},
+      webpackLoaderRules: { client: [], server: [] },
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],

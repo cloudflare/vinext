@@ -137,6 +137,10 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import {
+  collectMatchingWebpackLoaderRules,
+  createWebpackLoaderCompatPlugin,
+} from "./plugins/webpack-loader-compat.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
@@ -1429,6 +1433,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createStyledJsxPlugin(earlyBaseDir),
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
+    createWebpackLoaderCompatPlugin(
+      () => nextConfig?.webpackLoaderRules ?? { client: [], server: [] },
+      () => root,
+    ),
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
@@ -5333,6 +5341,18 @@ export const loadServerActionClient = ${
             const absImagePath = normalizePathSeparators(resolvedImage.split("?", 1)[0]);
 
             if (!fs.existsSync(absImagePath)) continue;
+            if (
+              collectMatchingWebpackLoaderRules(
+                this.environment?.name === "client"
+                  ? (nextConfig?.webpackLoaderRules.client ?? [])
+                  : (nextConfig?.webpackLoaderRules.server ?? []),
+                absImagePath,
+                resolvedImage.slice(absImagePath.length),
+                id,
+              ).length > 0
+            ) {
+              continue;
+            }
             imageImports.add(absImagePath);
 
             // Replace the single import with two:
