@@ -706,6 +706,7 @@ export default createAppRscHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
+  renderToReadableStream,
   clearRequestContext() {
     __clearRequestContext();
   },
