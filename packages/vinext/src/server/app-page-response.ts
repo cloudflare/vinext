@@ -16,6 +16,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 
 export type AppPageMiddlewareContext = {
@@ -305,6 +306,7 @@ export function buildAppPageRscResponse(
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
   applyRscCompatibilityIdHeader(headers);
+  applyRscDeploymentIdHeader(headers);
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
 
   applyTimingHeader(headers, options.timing);

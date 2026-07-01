@@ -3,6 +3,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
@@ -227,6 +228,7 @@ export function buildAppPageCachedResponse(
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
+    applyRscDeploymentIdHeader(rscHeaders);
 
     return new Response(cachedValue.rscData, {
       status,
