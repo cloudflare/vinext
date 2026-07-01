@@ -1057,10 +1057,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
-  if (isRouteTreePrefetchRequest(request) && route.page) {
-    return createRouteTreePrefetchResponse(route, options.renderToReadableStream, params, {
-      buildId: options.buildId,
-    });
+  const resolvedSearchParams = getResolvedSearchParams();
+  if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
+    const response = await createRouteTreePrefetchResponse(
+      route,
+      options.renderToReadableStream,
+      params,
+      {
+        buildId: options.buildId,
+        searchParams: resolvedSearchParams,
+      },
+    );
+    options.clearRequestContext();
+    return applyMiddlewareContextToResponse(response, middlewareContext);
   }
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
@@ -1071,7 +1080,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const prerenderRouteParams = prerenderRouteParamsMatch?.params ?? null;
   const isPrerenderFallbackShell = prerenderRouteParamsMatch?.kind === "fallback-shell";
   const renderParams = prerenderRouteParams ?? params;
-  const resolvedSearchParams = getResolvedSearchParams();
   let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
   if (
     options.createPprFallbackShells &&

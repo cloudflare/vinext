@@ -32,6 +32,32 @@ const sourceTrapModule = {
     return "NoInline";
   },
 };
+const syncPropsModule = {
+  default({
+    params,
+    searchParams,
+  }: {
+    params: Promise<Record<string, string | string[]>> & Record<string, string | string[]>;
+    searchParams: Promise<Record<string, string | string[]>> & Record<string, string | string[]>;
+  }) {
+    if (params.slug !== "hello" || searchParams.q !== "world") {
+      throw new Error("route-tree prefetch sizing props did not match App Router props");
+    }
+    return "sync props are readable";
+  },
+};
+const scopedLayoutParamsModule = {
+  default({
+    params,
+  }: {
+    params: Promise<Record<string, string | string[]>> & Record<string, string | string[]>;
+  }) {
+    if (params.slug !== undefined) {
+      throw new Error("parent layout received leaf params");
+    }
+    return "parent layout without leaf params";
+  },
+};
 
 async function readTree(response: Response): Promise<RootTreePrefetch> {
   const text = await response.text();
@@ -184,6 +210,53 @@ describe("App Router route tree prefetch", () => {
     );
   });
 
+  it("uses App Router thenable params and searchParams when measuring segment size", async () => {
+    const data = await readTree(
+      await routeTreeResponse(
+        {
+          layoutTreePositions: [0, 2],
+          layouts: [smallModule, syncPropsModule],
+          page: smallModule,
+          routeSegments: ["test-dynamic", "[slug]"],
+        },
+        { slug: "hello" },
+        { searchParams: new URLSearchParams("q=world") },
+      ),
+    );
+
+    expect(renderInliningTree(data.tree)).toBe(
+      [
+        "inlined root",
+        'inlined `-- "test-dynamic"',
+        'inlined     `-- "slug"',
+        'outlined         `-- "__PAGE__" (+metadata)',
+      ].join("\n"),
+    );
+  });
+
+  it("scopes layout params to the measured layout tree position", async () => {
+    let measuredWithScopedParams = false;
+    const scopedModule = {
+      default(props: Parameters<typeof scopedLayoutParamsModule.default>[0]) {
+        scopedLayoutParamsModule.default(props);
+        measuredWithScopedParams = true;
+        return "scoped";
+      },
+    };
+
+    await routeTreeResponse(
+      {
+        layoutTreePositions: [0, 1],
+        layouts: [smallModule, scopedModule],
+        page: smallModule,
+        routeSegments: ["blog", "[slug]"],
+      },
+      { slug: "hello" },
+    );
+
+    expect(measuredWithScopedParams).toBe(true);
+  });
+
   it("orders the page segment before parallel slots", async () => {
     const data = await readTree(
       await routeTreeResponse({
@@ -212,13 +285,72 @@ describe("App Router route tree prefetch", () => {
     );
   });
 
+  it("measures active parallel slot defaults as slot page leaves", async () => {
+    let measuredDefault = false;
+    const defaultModule = {
+      default() {
+        measuredDefault = true;
+        return "slot default";
+      },
+    };
+
+    const data = await readTree(
+      await routeTreeResponse({
+        layoutTreePositions: [0, 1],
+        layouts: [smallModule, smallModule],
+        page: smallModule,
+        routeSegments: ["test-parallel-default"],
+        slots: {
+          sidebar: {
+            name: "sidebar",
+            default: defaultModule,
+            page: null,
+            routeSegments: null,
+          },
+        },
+      }),
+    );
+
+    expect(measuredDefault).toBe(true);
+    expect(data.tree.slots?.children?.slots?.sidebar?.slots?.children?.name).toBe("__PAGE__");
+  });
+
+  it("measures nested parallel slot config layouts", async () => {
+    let measuredNestedLayout = false;
+    const nestedSlotLayout = {
+      default() {
+        measuredNestedLayout = true;
+        return "nested slot layout";
+      },
+    };
+
+    await routeTreeResponse({
+      layoutTreePositions: [0, 1],
+      layouts: [smallModule, smallModule],
+      page: smallModule,
+      routeSegments: ["dashboard"],
+      slots: {
+        sidebar: {
+          name: "sidebar",
+          configLayouts: [nestedSlotLayout],
+          configLayoutTreePositions: [1],
+          page: smallModule,
+          routeSegments: ["settings"],
+        },
+      },
+    });
+
+    expect(measuredNestedLayout).toBe(true);
+  });
+
   it("serializes dynamic segment params for client-side segment cache keys", async () => {
     const response = await routeTreeResponse(
       {
         layoutTreePositions: [0, 1],
         layouts: [smallModule, largeModule],
         page: smallModule,
-        routeSegments: ["test-dynamic", ":slug"],
+        routeSegments: ["test-dynamic", "[slug]"],
+        staticSiblings: ["sale"],
       },
       { slug: "hello" },
     );
@@ -226,7 +358,7 @@ describe("App Router route tree prefetch", () => {
 
     const dynamicSegment = data.tree.slots?.children?.slots?.children;
     expect(dynamicSegment?.name).toBe("slug");
-    expect(dynamicSegment?.param).toEqual({ key: null, siblings: null, type: "d" });
+    expect(dynamicSegment?.param).toEqual({ key: null, siblings: ["sale"], type: "d" });
     expect((dynamicSegment?.prefetchHints ?? 0) & ParentInlinedIntoSelf).toBe(0);
     expect(response.headers.get("x-nextjs-postponed")).toBe("2");
   });

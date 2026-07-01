@@ -10,7 +10,9 @@ import {
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { createElement, type ComponentType } from "react";
+import { makeThenableParams } from "vinext/shims/thenable-params";
 import { getDeploymentId } from "../utils/deployment-id.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 
 const HAS_RUNTIME_PREFETCH = 0b00001;
 const PARENT_INLINED_INTO_SELF = 0b100000;
@@ -44,6 +46,9 @@ type TreePrefetchParam = {
 };
 
 type AppRouteTreePrefetchSlot = {
+  configLayouts?: readonly unknown[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
+  default?: unknown;
   layout?: unknown;
   layoutIndex?: number;
   name: string;
@@ -56,6 +61,7 @@ export type AppRouteTreePrefetchRoute = {
   layouts?: readonly unknown[];
   page?: unknown;
   routeSegments: readonly string[];
+  staticSiblings?: readonly string[] | null;
   slots?: Readonly<Record<string, AppRouteTreePrefetchSlot>> | null;
 };
 
@@ -69,6 +75,7 @@ export type TreePrefetch = {
 type RouteTreePrefetchResponseOptions = {
   buildId?: string | null;
   deploymentId?: string;
+  searchParams?: URLSearchParams | null;
 };
 
 type MutableTreePrefetch = TreePrefetch & {
@@ -88,10 +95,17 @@ async function createNode(
   segment: string,
   module: unknown,
   params: AppRouteTreePrefetchParams,
+  searchParams: AppRouteTreePrefetchParams,
   renderToReadableStream: RouteTreePrefetchRenderer,
+  staticSiblings?: readonly string[] | null,
 ): Promise<MutableTreePrefetch> {
-  const { name, param } = routeTreeSegment(segment);
-  const measuredSize = await estimatePrefetchSize(module, params, renderToReadableStream);
+  const { name, param } = routeTreeSegment(segment, staticSiblings);
+  const measuredSize = await estimatePrefetchSize(
+    module,
+    params,
+    searchParams,
+    renderToReadableStream,
+  );
   const virtualSegmentSize =
     (module === null || module === undefined) && segment !== PAGE_SEGMENT
       ? SEGMENT_INLINE_SIZE
@@ -116,25 +130,28 @@ function addChild(node: MutableTreePrefetch, key: string, child: MutableTreePref
   ensureSlots(node)[key] = child;
 }
 
-function routeTreeSegment(segment: string): { name: string; param: TreePrefetchParam | null } {
+function routeTreeSegment(
+  segment: string,
+  staticSiblings?: readonly string[] | null,
+): { name: string; param: TreePrefetchParam | null } {
   if (segment.startsWith(":")) {
     const rest = segment.slice(1);
     if (rest.endsWith("+")) {
-      return dynamicRouteTreeSegment(rest.slice(0, -1), "c");
+      return dynamicRouteTreeSegment(rest.slice(0, -1), "c", staticSiblings);
     }
     if (rest.endsWith("*")) {
-      return dynamicRouteTreeSegment(rest.slice(0, -1), "oc");
+      return dynamicRouteTreeSegment(rest.slice(0, -1), "oc", staticSiblings);
     }
-    return dynamicRouteTreeSegment(rest, "d");
+    return dynamicRouteTreeSegment(rest, "d", staticSiblings);
   }
   if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-    return dynamicRouteTreeSegment(segment.slice(5, -2), "oc");
+    return dynamicRouteTreeSegment(segment.slice(5, -2), "oc", staticSiblings);
   }
   if (segment.startsWith("[...") && segment.endsWith("]")) {
-    return dynamicRouteTreeSegment(segment.slice(4, -1), "c");
+    return dynamicRouteTreeSegment(segment.slice(4, -1), "c", staticSiblings);
   }
   if (segment.startsWith("[") && segment.endsWith("]")) {
-    return dynamicRouteTreeSegment(segment.slice(1, -1), "d");
+    return dynamicRouteTreeSegment(segment.slice(1, -1), "d", staticSiblings);
   }
   return { name: segment, param: null };
 }
@@ -142,12 +159,13 @@ function routeTreeSegment(segment: string): { name: string; param: TreePrefetchP
 function dynamicRouteTreeSegment(
   name: string,
   type: DynamicParamTypeShort,
+  staticSiblings?: readonly string[] | null,
 ): { name: string; param: TreePrefetchParam } {
   return {
     name,
     param: {
       key: null,
-      siblings: null,
+      siblings: staticSiblings?.length ? staticSiblings : null,
       type,
     },
   };
@@ -178,6 +196,7 @@ async function gzipStreamByteLength(stream: ReadableStream<Uint8Array>): Promise
 async function estimatePrefetchSize(
   module: unknown,
   params: AppRouteTreePrefetchParams,
+  searchParams: AppRouteTreePrefetchParams,
   renderToReadableStream: RouteTreePrefetchRenderer,
 ): Promise<number | null> {
   const explicitSize = explicitPrefetchSize(module);
@@ -190,8 +209,8 @@ async function estimatePrefetchSize(
   try {
     const props = {
       children: null,
-      params: Promise.resolve(params),
-      searchParams: Promise.resolve({}),
+      params: makeThenableParams(params),
+      searchParams: makeThenableParams(searchParams),
     };
     return await gzipStreamByteLength(
       await renderToReadableStream(createElement(Component as ComponentType<typeof props>, props)),
@@ -211,13 +230,31 @@ function layoutModuleByTreePosition(route: AppRouteTreePrefetchRoute): Map<numbe
   return byPosition;
 }
 
+function modulesByTreePosition(
+  modules: readonly unknown[] | null | undefined,
+  positions: readonly number[] | null | undefined,
+): Map<number, unknown> {
+  const byPosition = new Map<number, unknown>();
+  for (const [index, position] of (positions ?? []).entries()) {
+    byPosition.set(position, modules?.[index]);
+  }
+  return byPosition;
+}
+
 async function buildTree(
   route: AppRouteTreePrefetchRoute,
   params: AppRouteTreePrefetchParams,
+  searchParams: AppRouteTreePrefetchParams,
   renderToReadableStream: RouteTreePrefetchRenderer,
 ): Promise<MutableTreePrefetch> {
   const layoutsByPosition = layoutModuleByTreePosition(route);
-  const root = await createNode("", layoutsByPosition.get(0), params, renderToReadableStream);
+  const root = await createNode(
+    "",
+    layoutsByPosition.get(0),
+    resolveAppPageSegmentParams(route.routeSegments, 0, params),
+    searchParams,
+    renderToReadableStream,
+  );
   const nodesByPosition = new Map<number, MutableTreePrefetch>([[0, root]]);
   let current = root;
 
@@ -226,8 +263,10 @@ async function buildTree(
     const child = await createNode(
       segment,
       layoutsByPosition.get(position),
-      params,
+      resolveAppPageSegmentParams(route.routeSegments, position, params),
+      searchParams,
       renderToReadableStream,
+      route.staticSiblings,
     );
     addChild(current, "children", child);
     nodesByPosition.set(position, child);
@@ -237,7 +276,7 @@ async function buildTree(
   addChild(
     current,
     "children",
-    await createNode(PAGE_SEGMENT, route.page, params, renderToReadableStream),
+    await createNode(PAGE_SEGMENT, route.page, params, searchParams, renderToReadableStream),
   );
 
   for (const slot of Object.values(route.slots ?? {})) {
@@ -246,17 +285,45 @@ async function buildTree(
         ? route.routeSegments.length
         : (route.layoutTreePositions?.[slot.layoutIndex] ?? route.routeSegments.length);
     const owner = nodesByPosition.get(ownerPosition) ?? current;
-    const slotRoot = await createNode(SLOT_SEGMENT, slot.layout, params, renderToReadableStream);
+    const slotOwnerParams = resolveAppPageSegmentParams(route.routeSegments, ownerPosition, params);
+    const slotRoot = await createNode(
+      SLOT_SEGMENT,
+      slot.layout,
+      slotOwnerParams,
+      searchParams,
+      renderToReadableStream,
+    );
     let slotCurrent = slotRoot;
-    for (const segment of slot.routeSegments ?? []) {
-      const child = await createNode(segment, null, params, renderToReadableStream);
+    const slotConfigLayoutsByPosition = modulesByTreePosition(
+      slot.configLayouts,
+      slot.configLayoutTreePositions,
+    );
+    const slotRouteSegments = slot.routeSegments ?? [];
+    for (const [index, segment] of slotRouteSegments.entries()) {
+      const position = index + 1;
+      const child = await createNode(
+        segment,
+        slotConfigLayoutsByPosition.get(position),
+        {
+          ...slotOwnerParams,
+          ...resolveAppPageBranchParams(slotRouteSegments, position, params),
+        },
+        searchParams,
+        renderToReadableStream,
+      );
       addChild(slotCurrent, "children", child);
       slotCurrent = child;
     }
     addChild(
       slotCurrent,
       "children",
-      await createNode(PAGE_SEGMENT, slot.page, params, renderToReadableStream),
+      await createNode(
+        PAGE_SEGMENT,
+        slot.page ?? slot.default,
+        params,
+        searchParams,
+        renderToReadableStream,
+      ),
     );
     addChild(owner, slot.name, slotRoot);
   }
@@ -345,13 +412,35 @@ function stripMutableFields(node: MutableTreePrefetch): TreePrefetch {
   };
 }
 
+function collectSearchParams(
+  searchParams: URLSearchParams | null | undefined,
+): AppRouteTreePrefetchParams {
+  const collected: AppRouteTreePrefetchParams = Object.create(null);
+  searchParams?.forEach((value, key) => {
+    const current = collected[key];
+    if (Array.isArray(current)) {
+      collected[key] = [...current, value];
+    } else if (current !== undefined) {
+      collected[key] = [current, value];
+    } else {
+      collected[key] = value;
+    }
+  });
+  return collected;
+}
+
 export async function createRouteTreePrefetchResponse(
   route: AppRouteTreePrefetchRoute,
   renderToReadableStream: RouteTreePrefetchRenderer,
   params: AppRouteTreePrefetchParams = {},
   options: RouteTreePrefetchResponseOptions = {},
 ): Promise<Response> {
-  const tree = await buildTree(route, params, renderToReadableStream);
+  const tree = await buildTree(
+    route,
+    params,
+    collectSearchParams(options.searchParams),
+    renderToReadableStream,
+  );
   computePrefetchHints(tree, null, { inlined: false });
   const headers = new Headers({
     "Cache-Control": "no-store",
