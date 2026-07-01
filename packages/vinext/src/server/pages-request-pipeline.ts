@@ -29,6 +29,7 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "../config/config-matchers.js";
+import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import {
   applyConfigHeadersToHeaderRecord,
   cloneRequestWithUrl,
@@ -49,6 +50,10 @@ export type PagesRenderOptions = {
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
+
+type PageRouteMatch = {
+  route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
+};
 
 export async function fetchWorkerFilesystemRoute(
   request: Request,
@@ -110,12 +115,7 @@ export type PagesPipelineDeps = {
   rawSearch?: string;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?:
-    | ((
-        pathname: string,
-        request: Request,
-      ) => { route: { isDynamic: boolean; pattern?: string } } | null)
-    | null;
+  matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
   runMiddleware?:
     | ((
         request: Request,
@@ -433,6 +433,29 @@ export async function runPagesRequest(
     }
     return matchResolvedPathname(matchedPathname);
   };
+  const buildMiddlewarePrefetchSkipResult = (
+    match: PageRouteMatch | null,
+  ): PagesPipelineResult | null => {
+    if (
+      !isDataRequest ||
+      !deps.hasMiddleware ||
+      !match ||
+      match.route.dataKind === "static" ||
+      request.headers.get("x-middleware-prefetch") !== "1"
+    ) {
+      return null;
+    }
+
+    return {
+      type: "response",
+      response: mergeHeaders(
+        buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
+        middlewareHeaders,
+        undefined,
+      ),
+      defaultContentType: "application/json",
+    };
+  };
 
   // Step 7: Config headers staging
   if (configHeaders.length) {
@@ -624,6 +647,8 @@ export async function runPagesRequest(
         if (renderPageMatch) break;
       }
     }
+    const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(renderPageMatch);
+    if (prefetchSkipResult) return prefetchSkipResult;
     // A data request must not defer-render the error page or run fallback rewrites.
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
@@ -730,7 +755,7 @@ export async function runPagesRequest(
   // emitting the render intent — the SSR handler writes to res directly so
   // we cannot inspect its status code after the fact.
   // Reuse the Step 12 match unless afterFiles changed the pathname.
-  const devPageMatch = resolvedPathnameChanged
+  let devPageMatch = resolvedPathnameChanged
     ? deps.matchPageRoute
       ? deps.matchPageRoute(resolvedPathname, request)
       : null
@@ -754,9 +779,12 @@ export async function runPagesRequest(
       if (fallbackFilesystemResult) return fallbackFilesystemResult;
       const fallbackApiResult = await handleResolvedApiRoute();
       if (fallbackApiResult) return fallbackApiResult;
-      if (deps.matchPageRoute?.(resolvedPathname, request)) break;
+      devPageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+      if (devPageMatch) break;
     }
   }
+  const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(devPageMatch);
+  if (prefetchSkipResult) return prefetchSkipResult;
   refreshDataRewriteHeader();
 
   return {

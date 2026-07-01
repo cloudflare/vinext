@@ -1102,6 +1102,45 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("precomputes Pages route dataKind in the server entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-kind-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "ssr.tsx"),
+        "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "plain.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toContain('pattern: "/",');
+      expect(code).toContain('dataKind: "static"');
+      expect(code).toContain('pattern: "/ssr",');
+      expect(code).toContain('dataKind: "server"');
+      expect(code).toContain('pattern: "/plain",');
+      expect(code).toContain('dataKind: "none"');
+      expect(code).not.toContain("typeof page_");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Refs #1474: Pages Router client entry must import the user's
   // `instrumentation-client.ts` (at the project root) as a side-effect import
   // before calling `hydrateRoot()`. Mirrors Next.js's `page-bootstrap.ts`

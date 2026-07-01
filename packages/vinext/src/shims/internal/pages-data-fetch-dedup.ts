@@ -94,6 +94,7 @@ export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Prom
         if (
           !response.ok ||
           response.headers.get("x-middleware-cache") === "no-cache" ||
+          response.headers.get("x-middleware-skip") !== null ||
           (responseDeploymentId !== null && responseDeploymentId !== expectedDeploymentId)
         ) {
           delete staticDataCache[key];
@@ -116,6 +117,17 @@ export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Prom
 
 export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
   return fetchCachedPagesData(dataHref, init);
+}
+
+export function fetchUncachedPagesData(dataHref: string, init?: RequestInit): Promise<Response> {
+  return fetch(dataHref, init).then(async (response) => {
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  });
 }
 
 export function evictPagesDataCache(dataHref: string): void {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  buildMiddlewarePrefetchSkipResponse,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataJsonResponse,
@@ -87,6 +88,23 @@ describe("pages-data-route", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("application/json");
       expect(await res.json()).toEqual({ pageProps: { message: "hi" } });
+    });
+  });
+
+  describe("buildMiddlewarePrefetchSkipResponse", () => {
+    // Ported from Next.js: packages/next/src/server/base-server.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+    it("returns the middleware prefetch bail protocol for non-SSG data routes", async () => {
+      const res = buildMiddlewarePrefetchSkipResponse("/ssr");
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("application/json");
+      expect(res.headers.get("x-matched-path")).toBe("/ssr");
+      expect(res.headers.get("x-middleware-skip")).toBe("1");
+      expect(res.headers.get("Cache-Control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(await res.json()).toEqual({});
     });
   });
 

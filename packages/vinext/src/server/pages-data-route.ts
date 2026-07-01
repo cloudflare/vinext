@@ -150,6 +150,17 @@ export function buildNextDataNotFoundResponse(): Response {
   return new Response("{}", { status: 404, headers });
 }
 
+export function buildMiddlewarePrefetchSkipResponse(matchedPathname: string): Response {
+  return new Response("{}", {
+    headers: {
+      "Content-Type": "application/json",
+      "x-matched-path": matchedPathname,
+      "x-middleware-skip": "1",
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // normalizePagesDataRequest
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
+import { readFile } from "node:fs/promises";
 import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
@@ -64,7 +65,7 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import { extractMiddlewareMatcherConfig } from "./build/report.js";
+import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
@@ -4710,6 +4711,19 @@ export const loadServerActionClient = ${
                 nextConfig?.pageExtensions,
                 fileMatcher,
               );
+              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">(
+                await Promise.all(
+                  devPageRoutes.map(async (route) => {
+                    const source = await readFile(route.filePath, "utf8");
+                    const dataKind = hasExportedName(source, "getStaticProps")
+                      ? "static"
+                      : hasExportedName(source, "getServerSideProps")
+                        ? "server"
+                        : "none";
+                    return [route.pattern, dataKind] as const;
+                  }),
+                ),
+              );
 
               const pipelineDeps: PagesPipelineDeps = {
                 basePath: bp,
@@ -4742,7 +4756,13 @@ export const loadServerActionClient = ${
                     : resolvedPathname;
                   const m = matchRoute(routeUrl, devPageRoutes);
                   return m
-                    ? { route: { isDynamic: m.route.isDynamic, pattern: m.route.pattern } }
+                    ? {
+                        route: {
+                          dataKind: devPageRouteDataKinds.get(m.route.pattern) ?? "none",
+                          isDynamic: m.route.isDynamic,
+                          pattern: m.route.pattern,
+                        },
+                      }
                     : null;
                 },
                 // Dev adapter: forward body from the Node req when proxying

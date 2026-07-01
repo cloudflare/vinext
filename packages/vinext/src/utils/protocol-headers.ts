@@ -16,5 +16,8 @@ export const MIDDLEWARE_OVERRIDE_HEADERS = "x-middleware-override-headers";
 /** Carries cookies set by middleware for same-render reads. */
 export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 
+/** Signals Pages Router prefetch cache opt-out. */
+export const MIDDLEWARE_CACHE_HEADER = "x-middleware-cache";
+
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";

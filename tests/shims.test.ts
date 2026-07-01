@@ -7087,6 +7087,30 @@ describe("runMiddleware preserves x-middleware-request-* headers (dev mode)", ()
     expect(result.responseHeaders!.has("x-middleware-rewrite")).toBe(false);
   });
 
+  it("keeps x-middleware-cache on rewrite responses", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+
+    const mockRunner = {
+      import: async () => ({
+        default: () =>
+          NextResponse.rewrite("http://localhost/ssg", {
+            headers: { "x-middleware-cache": "no-cache" },
+          }),
+        config: { matcher: "/" },
+      }),
+    };
+
+    const request = new Request("http://localhost/");
+    const result = await runMiddleware(mockRunner as any, "/fake/middleware.ts", request);
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/ssg");
+    expect(result.responseHeaders).toBeDefined();
+    expect(result.responseHeaders!.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.responseHeaders!.has("x-middleware-rewrite")).toBe(false);
+  });
+
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
   it("preserves the full external URL for middleware rewrites", async () => {
@@ -10156,6 +10180,24 @@ describe("middleware request header overrides", () => {
     expect(nextRequest.headers.get("x-added")).toBe("1");
     expect(postMwReqCtx.cookies).toEqual({ a: "1", b: "2" });
     expect(middlewareHeaders).toEqual({});
+  });
+
+  it("config-matchers applyMiddlewareRequestHeaders preserves middleware cache opt-out response header", async () => {
+    const { applyMiddlewareRequestHeaders } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const middlewareHeaders: Record<string, string> = {
+      "x-middleware-cache": "no-cache",
+      "x-middleware-override-headers": "x-added",
+      "x-middleware-request-x-added": "1",
+      "x-middleware-next": "1",
+    };
+
+    const request = new Request("http://localhost/test");
+    const { request: nextRequest } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
+
+    expect(nextRequest.headers.get("x-added")).toBe("1");
+    expect(middlewareHeaders).toEqual({ "x-middleware-cache": "no-cache" });
   });
 
   it("next/headers applyMiddlewareRequestHeaders replaces the live request header set", async () => {
@@ -17936,7 +17978,7 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
-  it("reuses a middleware-prefetched SSR data response for the following navigation", async () => {
+  it("does not persist middleware-prefetched SSR data between prefetch and navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalDocument = (globalThis as any).document;
     const originalFetch = globalThis.fetch;
@@ -17974,7 +18016,7 @@ describe("Pages Router _next/data client navigation", () => {
 
       await Router.prefetch("/ssr");
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-      expect(Object.keys(dataCache.getPagesStaticDataCache())).toHaveLength(1);
+      expect(Object.keys(dataCache.getPagesStaticDataCache())).toEqual([]);
       expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
         Accept: "application/json",
         purpose: "prefetch",
@@ -17983,20 +18025,85 @@ describe("Pages Router _next/data client navigation", () => {
       });
 
       await Router.prefetch("/ssr");
-      await Promise.resolve();
-      expect(fetchMock).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
       const result = await Router.push("/ssr");
 
       expect(result).toBe(true);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
       expect(String(fetchMock.mock.calls[0][0])).toBe(`/_next/data/${buildId}/ssr.json`);
       expect(win.__NEXT_DATA__.page).toBe("/ssr");
       expect(win.__NEXT_DATA__.props.pageProps).toEqual({ from: "middleware-prefetch" });
       expect(Object.keys(dataCache.getPagesStaticDataCache())).toEqual([]);
 
       await Router.prefetch("/ssr");
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("reuses a default-locale SSG middleware prefetch for the following navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+
+    const loaderSsg = vi.fn(async () => makePageModule("ssg"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/ssg": loaderSsg },
+      locale: "en",
+      ssgPatterns: ["/ssg"],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_LOCALE__ = "en";
+    (win as any).__VINEXT_LOCALES__ = ["ja", "en", "fr", "es"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      createElement: () => ({ rel: "", as: "", href: "" }),
+      head: {
+        appendChild: vi.fn(),
+      },
+    };
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async (_url: any, _init: any) =>
+        new Response(JSON.stringify({ pageProps: { from: "default-locale-prefetch" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const dataCache =
+        await import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js");
+      const Router = routerModule.default;
+
+      await Router.prefetch("/ssg");
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      expect(String(fetchMock.mock.calls[0][0])).toBe(`/_next/data/${buildId}/en/ssg.json`);
+      expect(Object.keys(dataCache.getPagesStaticDataCache())[0]).toContain(
+        `/_next/data/${buildId}/en/ssg.json`,
+      );
+
+      const result = await Router.push("/ssg");
+
+      expect(result).toBe(true);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(win.__NEXT_DATA__.page).toBe("/ssg");
+      expect(win.__NEXT_DATA__.props.pageProps).toEqual({ from: "default-locale-prefetch" });
+      expect(Object.keys(dataCache.getPagesStaticDataCache())[0]).toContain(
+        `/_next/data/${buildId}/en/ssg.json`,
+      );
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
@@ -19243,9 +19350,64 @@ describe("Pages Router _next/data client navigation", () => {
           "x-middleware-prefetch": "1",
           "x-nextjs-data": "1",
         },
-        signal: expect.any(AbortSignal),
       });
       expect(actualLoader).toHaveBeenCalledTimes(1);
+      expect((globalThis as any).document.head.appendChild).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("prefetches middleware-matched dynamic route data before navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+
+    const dynamicLoader = vi.fn(async () => makePageModule("dynamic"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/dynamic-no-cache/[id]": dynamicLoader,
+      },
+      sspPatterns: ["/dynamic-no-cache/[id]"],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      createElement: vi.fn(() => ({ rel: "", as: "", href: "" })),
+      head: {
+        appendChild: vi.fn(),
+      },
+    };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("{}", {
+          headers: { "x-middleware-skip": "1" },
+        }),
+    );
+    globalThis.fetch = fetchMock;
+    vi.resetModules();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.prefetch("/dynamic-no-cache/1");
+
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      expect(fetchMock).toHaveBeenCalledWith(`/_next/data/${buildId}/dynamic-no-cache/1.json`, {
+        headers: {
+          Accept: "application/json",
+          purpose: "prefetch",
+          "x-middleware-prefetch": "1",
+          "x-nextjs-data": "1",
+        },
+      });
+      expect(dynamicLoader).toHaveBeenCalledTimes(1);
       expect((globalThis as any).document.head.appendChild).not.toHaveBeenCalled();
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
@@ -19482,6 +19644,63 @@ describe("Pages Router _next/data client navigation", () => {
 
       const [calledUrl] = (globalThis.fetch as any).mock.calls[0];
       expect(String(calledUrl)).toBe(`/_next/data/${buildId}/about.json`);
+      expect((win.__NEXT_DATA__ as any).locale).toBe("en");
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("uses the default locale for locale=false middleware probes from non-default pages", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderSsg = vi.fn(async () => makePageModule("ssg"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/ssg": loaderSsg,
+      },
+      locale: "fr",
+      pathname: "/fr",
+      ssgPatterns: ["/ssg"],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win.__NEXT_DATA__ as any).locale = "fr";
+    (win.__NEXT_DATA__ as any).locales = ["en", "fr"];
+    (win.__NEXT_DATA__ as any).defaultLocale = "en";
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { locale: "en" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/ssg", undefined, { locale: false });
+
+      expect(result).toBe(true);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0][0]).toBe(`/_next/data/${buildId}/en/ssg.json`);
+      expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+        "x-nextjs-data": "1",
+      });
+      expect(loaderSsg).toHaveBeenCalledTimes(1);
+      expect(win.location.pathname).toBe("/ssg");
       expect((win.__NEXT_DATA__ as any).locale).toBe("en");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {

@@ -2228,20 +2228,84 @@ describe("Link prefetch scheduling", () => {
     });
 
     try {
+      result.fetch.mockResolvedValue(
+        new Response("{}", {
+          headers: { "x-middleware-skip": "1" },
+        }),
+      );
       observer.dispatchIntersectingEntry(result.anchor, true);
       await waitForFetchCalls(result.fetch, 1);
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await flushPrefetchTasks();
+      await waitForFetchCalls(result.fetch, 2);
 
       expect(actualLoader).toHaveBeenCalled();
-      expect(result.fetch).toHaveBeenCalledTimes(1);
-      expect(result.fetch.mock.calls[0][0]).toBe("/_next/data/build-id/masked.json");
-      expect(result.fetch.mock.calls[0][1]?.headers).toMatchObject({
-        Accept: "application/json",
-        purpose: "prefetch",
-        "x-middleware-prefetch": "1",
-        "x-nextjs-data": "1",
-      });
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      for (const call of result.fetch.mock.calls) {
+        expect(call[0]).toBe("/_next/data/build-id/masked.json");
+        expect(call[1]?.headers).toMatchObject({
+          Accept: "application/json",
+          purpose: "prefetch",
+          "x-middleware-prefetch": "1",
+          "x-nextjs-data": "1",
+        });
+      }
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("refetches middleware-matched dynamic Pages Router data on hover after viewport prefetch", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    const observer = stubIntersectionObserver();
+    const dynamicLoader = vi.fn(async () => ({ default: null }));
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/dynamic-no-cache/1",
+      nodeEnv: "production",
+      windowOverrides: {
+        __NEXT_DATA__: {
+          buildId: "build-id",
+          __vinext: {
+            hasMiddleware: true,
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/:path*"],
+        __VINEXT_PAGE_LOADERS__: {
+          "/dynamic-no-cache/[id]": dynamicLoader,
+        },
+        __VINEXT_PAGE_PATTERNS__: ["/dynamic-no-cache/[id]"],
+        __VINEXT_PAGES_SSG_PATTERNS__: ["/dynamic-no-cache/[id]"],
+        __VINEXT_PAGES_SSP_PATTERNS__: [],
+      },
+    });
+
+    try {
+      result.fetch.mockResolvedValue(
+        new Response("{}", {
+          headers: { "x-middleware-cache": "no-cache" },
+        }),
+      );
+      observer.dispatchIntersectingEntry(result.anchor, true);
+      await waitForFetchCalls(result.fetch, 1);
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 2);
+
+      expect(dynamicLoader).toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      for (const call of result.fetch.mock.calls) {
+        expect(call[0]).toBe("/_next/data/build-id/dynamic-no-cache/1.json");
+        expect(call[1]?.headers).toMatchObject({
+          Accept: "application/json",
+          purpose: "prefetch",
+          "x-middleware-prefetch": "1",
+          "x-nextjs-data": "1",
+        });
+      }
       expect(result.pagePrefetchLinks).toEqual([]);
     } finally {
       result.restoreNodeEnv();

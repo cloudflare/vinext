@@ -721,6 +721,16 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
+  it("preserves x-middleware-cache response opt-outs", () => {
+    const headers = new Headers({
+      "x-middleware-cache": "no-cache",
+      "x-middleware-next": "1",
+    });
+    processMiddlewareHeaders(headers);
+    expect(headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(headers.has("x-middleware-next")).toBe(false);
+  });
+
   it("is a no-op when no x-middleware-* headers are present", () => {
     const headers = new Headers({
       "content-type": "text/html",

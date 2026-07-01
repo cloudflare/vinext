@@ -1452,6 +1452,7 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
 
 type NavigateClientOptions = {
   allowNotFoundResponse?: boolean;
+  locale?: string;
   /**
    * The history mode of the originating navigation. Used when a gSSP/gSP data
    * response carries a `__N_REDIRECT` marker so the re-entrant navigation to
@@ -1796,8 +1797,20 @@ async function resolveClientConfigRewrite(
   return matched ? { href: currentHref, kind: "rewrite" } : null;
 }
 
-function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
-  return getPagesMiddlewareDataHref(browserUrl, __basePath);
+function getMiddlewarePagesDataFetchUrl(
+  browserUrl: string,
+  dataTarget?: PagesDataTarget | null,
+): string | null {
+  const middlewareDataHref = getPagesMiddlewareDataHref(browserUrl, __basePath);
+  if (!middlewareDataHref) return null;
+  if (
+    dataTarget?.dataKind === "static" &&
+    dataTarget.middlewareDataHref === middlewareDataHref &&
+    dataTarget.prefetchDataHref
+  ) {
+    return dataTarget.prefetchDataHref;
+  }
+  return middlewareDataHref;
 }
 
 function getPagesDataCacheHref(dataHref: string): string {
@@ -1825,8 +1838,9 @@ function shouldEvictMiddlewareDataCache(
 async function resolveMiddlewareDataEffect(
   browserUrl: string,
   signal: AbortSignal,
+  dataTarget?: PagesDataTarget | null,
 ): Promise<MiddlewareDataEffect | null> {
-  const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
+  const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl, dataTarget);
   if (!dataUrl) return null;
 
   // Middleware probes use the Pages data cache so a Link prefetch can be reused
@@ -2178,7 +2192,9 @@ async function navigateClientData(
 
   const rewriteTarget = res.headers.get("x-nextjs-rewrite");
   const target = rewriteTarget
-    ? resolvePagesDataNavigationTarget(rewriteTarget, __basePath)
+    ? resolvePagesDataNavigationTarget(rewriteTarget, __basePath, {
+        locale: initialTarget.prefetchLocale,
+      })
     : initialTarget;
   if (!target) {
     scheduleHardNavigationAndThrow(
@@ -2496,11 +2512,16 @@ async function navigateClient(
       // `_next/data/<id>/something-else.json` (the page that actually renders)
       // rather than `_next/data/<id>/hello.json` (the masked address). When
       // routeUrl === url (no mask), behaviour is unchanged.
-      let dataTarget = resolvePagesDataNavigationTarget(routeLookupUrl, __basePath);
+      const pagesDataTargetOptions = { locale: options.locale };
+      let dataTarget = resolvePagesDataNavigationTarget(
+        routeLookupUrl,
+        __basePath,
+        pagesDataTargetOptions,
+      );
       let middlewareDataResponse: Response | undefined;
       let middlewareEffect: MiddlewareDataEffect | null = null;
       let middlewareRewrittenTarget: PagesDataTarget | null | undefined;
-      const middlewareProbeDataHref = getMiddlewarePagesDataFetchUrl(browserUrl);
+      const middlewareProbeDataHref = getMiddlewarePagesDataFetchUrl(browserUrl, dataTarget);
       if (middlewareProbeDataHref !== null) {
         // If this navigation is superseded before middleware responds, we do
         // not yet know whether middleware would redirect/rewrite away from a
@@ -2509,7 +2530,11 @@ async function navigateClient(
         // target is cacheable static data.
         middlewareDataCacheEvictHref = getPagesDataCacheHref(middlewareProbeDataHref);
         try {
-          middlewareEffect = await resolveMiddlewareDataEffect(browserUrl, controller.signal);
+          middlewareEffect = await resolveMiddlewareDataEffect(
+            browserUrl,
+            controller.signal,
+            dataTarget,
+          );
         } catch (err: unknown) {
           if (err instanceof DOMException && err.name === "AbortError") {
             throw new NavigationCancelledError(browserUrl);
@@ -2520,6 +2545,7 @@ async function navigateClient(
           middlewareRewrittenTarget = resolvePagesDataNavigationTarget(
             middlewareEffect.rewriteTarget,
             __basePath,
+            pagesDataTargetOptions,
           );
         }
         if (middlewareEffect) {
@@ -2555,7 +2581,11 @@ async function navigateClient(
         if (middlewareEffect.rewriteTarget) {
           const rewrittenTarget =
             middlewareRewrittenTarget ??
-            resolvePagesDataNavigationTarget(middlewareEffect.rewriteTarget, __basePath);
+            resolvePagesDataNavigationTarget(
+              middlewareEffect.rewriteTarget,
+              __basePath,
+              pagesDataTargetOptions,
+            );
           if (!rewrittenTarget) {
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
@@ -2973,8 +3003,8 @@ async function performNavigation(
   // scroll after completion.
   const scrollTarget = doScroll ? { x: 0, y: 0 } : null;
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
-    ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
-    : { mode, scroll: scrollTarget };
+    ? { allowNotFoundResponse: true, locale: navigationLocale, mode, scroll: scrollTarget }
+    : { locale: navigationLocale, mode, scroll: scrollTarget };
 
   // Next.js push→replace coercion (narrowed): when the display URL (asPath)
   // doesn't change AND the route URL DOES change AND the locale doesn't

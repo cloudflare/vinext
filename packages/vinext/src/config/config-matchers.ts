@@ -13,6 +13,7 @@ import type {
   HasCondition,
 } from "./next-config.js";
 import {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -590,7 +591,7 @@ export function applyMiddlewareRequestHeaders(
   );
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       delete middlewareHeaders[key];
     }
   }

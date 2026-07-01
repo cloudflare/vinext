@@ -260,6 +260,62 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 
+  it("skips middleware data prefetches for matched non-SSG pages", async () => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "server" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
+    expect(result.response.headers.get("x-middleware-skip")).toBe("1");
+    expect(await result.response.json()).toEqual({});
+  });
+
+  it("does not skip middleware data prefetches for matched SSG pages", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gsp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssg", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({
+          continue: true,
+          responseHeaders: [["x-middleware-cache", "no-cache"]],
+        }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssg", dataKind: "static" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(result.response.headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gsp"}}');
+  });
+
   it("uses the matched route pattern for dynamic data responses", async () => {
     const result = await runPagesRequest(
       makeRequest("/source"),
@@ -1104,6 +1160,84 @@ describe("afterFiles rewrites", () => {
       undefined,
       expect.any(Headers),
     );
+  });
+
+  it("classifies middleware prefetches after afterFiles rewrites to SSG pages", async () => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gsp"}}');
+    const matchPageRoute = vi.fn((pathname: string) => {
+      if (pathname === "/article/first") {
+        return {
+          route: { isDynamic: true, pattern: "/article/[slug]", dataKind: "server" as const },
+        };
+      }
+      if (pathname === "/ssg") {
+        return { route: { isDynamic: false, pattern: "/ssg", dataKind: "static" as const } };
+      }
+      return null;
+    });
+
+    const result = await runPagesRequest(
+      makeRequest("/article/first", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/article/:slug", destination: "/ssg" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/ssg?slug=first",
+      { isDataReq: true },
+      expect.any(Headers),
+    );
+    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
+  });
+
+  it("skips middleware prefetches after afterFiles rewrites to non-SSG pages", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/ssr"
+        ? { route: { isDynamic: false, pattern: "/ssr", dataKind: "server" as const } }
+        : null,
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/afterfiles-ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/afterfiles-ssr", destination: "/ssr" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
+    expect(result.response.headers.get("x-middleware-skip")).toBe("1");
+    expect(await result.response.json()).toEqual({});
   });
 });
 
