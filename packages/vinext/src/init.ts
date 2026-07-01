@@ -19,7 +19,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { runCheck, formatReport } from "./check.js";
 import {
   detectProject,
   ensureESModule,
@@ -102,6 +101,8 @@ export type InitOptions = {
   prerender?: boolean;
   /** Cloudflare cache and image choices. */
   cloudflare?: CloudflareInitOptions;
+  /** Install missing dependencies with the detected package manager (default: true). */
+  install?: boolean;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (
     cmd: string,
@@ -225,6 +226,75 @@ export function isDepInstalled(root: string, dep: string): boolean {
   } catch {
     return false;
   }
+}
+
+function parseDependencySpecifier(specifier: string): {
+  name: string;
+  version: string;
+  hasExplicitVersion: boolean;
+} {
+  if (specifier.startsWith("@")) {
+    const versionSeparator = specifier.indexOf("@", 1);
+    if (versionSeparator !== -1) {
+      return {
+        name: specifier.slice(0, versionSeparator),
+        version: specifier.slice(versionSeparator + 1),
+        hasExplicitVersion: true,
+      };
+    }
+    return { name: specifier, version: "latest", hasExplicitVersion: false };
+  }
+
+  const versionSeparator = specifier.indexOf("@");
+  if (versionSeparator !== -1) {
+    return {
+      name: specifier.slice(0, versionSeparator),
+      version: specifier.slice(versionSeparator + 1),
+      hasExplicitVersion: true,
+    };
+  }
+  return { name: specifier, version: "latest", hasExplicitVersion: false };
+}
+
+function addDependencyEntries(root: string, deps: string[], { dev }: { dev: boolean }): string[] {
+  if (deps.length === 0) return [];
+
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return [];
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const targetKey = dev ? "devDependencies" : "dependencies";
+  const target = (pkg[targetKey] ??= {});
+  const added: string[] = [];
+
+  for (const dep of deps) {
+    const { name, version, hasExplicitVersion } = parseDependencySpecifier(dep);
+    const existingTarget =
+      pkg.dependencies?.[name] !== undefined
+        ? pkg.dependencies
+        : pkg.devDependencies?.[name] !== undefined
+          ? pkg.devDependencies
+          : undefined;
+
+    if (existingTarget) {
+      if (!hasExplicitVersion || existingTarget[name] === version) continue;
+      existingTarget[name] = version;
+      added.push(name);
+      continue;
+    }
+
+    target[name] = version;
+    added.push(name);
+  }
+
+  if (added.length > 0) {
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+  }
+
+  return added;
 }
 
 /**
@@ -425,6 +495,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const isApp = detectProject(root).isAppRouter;
   const pmName = detectPackageManagerName(root);
+  const shouldInstall = options.install ?? true;
 
   if (platform === "cloudflare") {
     validateCloudflarePlatformSetup(
@@ -443,6 +514,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   if (!options.skipCheck) {
     console.log("  Running compatibility check...\n");
+    const { runCheck, formatReport } = await import("./check.js");
     const checkResult = runCheck(root);
     console.log(formatReport(checkResult, { calledFromInit: true }));
     console.log(); // blank line before migration steps
@@ -512,8 +584,12 @@ export async function init(options: InitOptions): Promise<InitResult> {
         ),
       );
       try {
-        const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+        if (shouldInstall) {
+          const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
+          if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+        } else {
+          dependenciesAdded = addDependencyEntries(root, reactUpgrade, { dev: false }).length > 0;
+        }
       } catch (error) {
         if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
         dependencyInstallNeedsApproval = true;
@@ -525,9 +601,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
     console.log(formatList(missingDeps, "    "));
     try {
-      const installOutput = await installDeps(root, missingDeps, exec);
-      dependenciesAdded = true;
-      if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, missingDeps, exec);
+        dependenciesAdded = true;
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        dependenciesAdded = addDependencyEntries(root, missingDeps, { dev: true }).length > 0;
+      }
     } catch (error) {
       if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
       dependencyInstallNeedsApproval = true;
@@ -537,6 +617,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   if (
     pmName === "pnpm" &&
+    shouldInstall &&
     !dependencyInstallNeedsApproval &&
     !options._exec &&
     hasAutomaticallyIgnoredBuilds(inspectPnpmIgnoredBuilds(root))
@@ -544,6 +625,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     dependencyInstallNeedsApproval = true;
   } else if (
     pmName === "pnpm" &&
+    shouldInstall &&
     !dependencyInstallNeedsApproval &&
     options._inspectPnpmIgnoredBuilds &&
     hasAutomaticallyIgnoredBuilds(options._inspectPnpmIgnoredBuilds(root))

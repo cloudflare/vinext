@@ -2,7 +2,7 @@
   "name": "vinext-monorepo",
   "private": true,
   "scripts": {
-    "build": "vp run @vinext/cloudflare#build && vp run vinext#build",
+    "build": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build",
     "check": "vp check",
     "test": "vp test run",
     "test:unit": "vp test run --project unit",
@@ -16,7 +16,7 @@
     "knip": "knip",
     "changeset": "changeset",
     "prepare": "vp config",
-    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build"
+    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",

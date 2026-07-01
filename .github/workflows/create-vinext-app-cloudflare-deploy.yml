@@ -1,4 +1,4 @@
-name: create-next-app Cloudflare Deploy
+name: create-vinext-app Cloudflare Deploy
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cna-cloudflare-deploy-${{ github.ref }}
+  group: cva-cloudflare-deploy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,10 +20,10 @@ jobs:
     name: Deploy and smoke test
     runs-on: ubuntu-latest
     env:
-      CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
+      CVA_CLOUDFLARE_WORKER: create-vinext-app-cloudflare
       # Public test namespace already used by examples/workers-cache.
-      CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
-      CNA_CLOUDFLARE_EXPECTED_TEXT: Get started
+      CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
+      CVA_CLOUDFLARE_EXPECTED_TEXT: vinext + Cloudflare Workers
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -39,12 +39,24 @@ jobs:
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../create-vinext-app
+          vp pm pack --pack-destination "${{ runner.temp }}"
 
-      - name: Scaffold a fresh create-next-app project
-        run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-cloudflare" --yes
+      - name: Scaffold a fresh create-vinext-app project
+        run: >-
+          vp dlx
+          --package "${{ runner.temp }}"/create-vinext-app-*.tgz
+          --package "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          --yes
+          --skip-install
+          --disable-git
+          --platform=cloudflare
+          --data-cache=kv
+          --image-optimization=cloudflare-images
 
       - name: Pin pnpm in scaffolded project to vinext's version
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
           PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
           node -e "
@@ -55,7 +67,7 @@ jobs:
           "
 
       - name: Allow required native dependency builds
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
           node -e '
             const fs = require("fs");
@@ -67,45 +79,37 @@ jobs:
           '
 
       - name: Install local vinext packages
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
-          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
-
-      - name: Run Cloudflare init
-        working-directory: ${{ runner.temp }}/cna-cloudflare
-        run: >-
-          vp exec vinext init --skip-check --platform=cloudflare
-          --data-cache=kv
-          --image-optimization=cloudflare-images
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Configure generated Cloudflare deployment
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
           node -e '
             const fs = require("node:fs");
             const configPath = "wrangler.jsonc";
             const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-            config.name = process.env.CNA_CLOUDFLARE_WORKER;
+            config.name = process.env.CVA_CLOUDFLARE_WORKER;
             config.preview_urls = true;
             for (const namespace of config.kv_namespaces ?? []) {
               if (namespace.binding === "VINEXT_KV_CACHE") {
-                namespace.id = process.env.CNA_CLOUDFLARE_KV_NAMESPACE_ID;
+                namespace.id = process.env.CVA_CLOUDFLARE_KV_NAMESPACE_ID;
               }
             }
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
           '
 
       - name: Build generated Cloudflare project
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: vp exec vinext build
 
       - name: Verify generated Cloudflare build output
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         run: test -f dist/server/wrangler.json
 
       - name: Deploy generated Cloudflare project
-        working-directory: ${{ runner.temp }}/cna-cloudflare
+        working-directory: ${{ runner.temp }}/cva-cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -113,14 +117,14 @@ jobs:
 
       - name: Smoke test generated Cloudflare deployment
         run: |
-          URL="https://${CNA_CLOUDFLARE_WORKER}.vinext.workers.dev/"
+          URL="https://${CVA_CLOUDFLARE_WORKER}.vinext.workers.dev/"
           BODY_FILE="$(mktemp)"
           trap 'rm -f "$BODY_FILE"' EXIT
 
           for attempt in $(seq 1 45); do
             STATUS=$(curl -sS -o "$BODY_FILE" -w "%{http_code}" -L --max-time 10 "$URL" || echo "000")
             echo "HTTP status from ${URL}: ${STATUS} (attempt ${attempt})"
-            if [ "$STATUS" = "200" ] && grep -qiF "$CNA_CLOUDFLARE_EXPECTED_TEXT" "$BODY_FILE"; then
+            if [ "$STATUS" = "200" ] && grep -qiF "$CVA_CLOUDFLARE_EXPECTED_TEXT" "$BODY_FILE"; then
               exit 0
             fi
             sleep 2

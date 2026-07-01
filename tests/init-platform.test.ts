@@ -8,6 +8,7 @@ import {
   parseImageOptimizationArg,
   parsePrerenderArg,
   resolveCloudflareInitOptions,
+  resolveInitOptions,
   resolveInitPlatform,
   resolveInitPrerender,
 } from "../packages/vinext/src/init-platform.js";
@@ -275,5 +276,24 @@ describe("resolveInitPlatform", () => {
     await expect(resolveInitPlatform([], { env: {}, isInteractive: false, output })).resolves.toBe(
       "cloudflare",
     );
+  });
+});
+
+describe("resolveInitOptions", () => {
+  it("shares the full vinext init option selection flow", async () => {
+    await expect(
+      resolveInitOptions(
+        ["--platform=cloudflare", "--data-cache=none", "--image-optimization=none", "--prerender"],
+        { env: { CODEX_THREAD_ID: "test" } },
+      ),
+    ).resolves.toEqual({
+      platform: "cloudflare",
+      prerender: true,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "data-cache",
+        imageOptimization: "none",
+      },
+    });
   });
 });

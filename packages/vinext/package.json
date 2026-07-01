@@ -85,6 +85,14 @@
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
     },
+    "./internal/init": {
+      "types": "./dist/init.d.ts",
+      "import": "./dist/init.js"
+    },
+    "./internal/init-platform": {
+      "types": "./dist/init-platform.d.ts",
+      "import": "./dist/init-platform.js"
+    },
     "./internal/config/dotenv": {
       "types": "./dist/config/dotenv.d.ts",
       "import": "./dist/config/dotenv.js"
@@ -128,6 +136,10 @@
     "./internal/utils/project": {
       "types": "./dist/utils/project.d.ts",
       "import": "./dist/utils/project.js"
+    },
+    "./internal/utils/react-version": {
+      "types": "./dist/utils/react-version.d.ts",
+      "import": "./dist/utils/react-version.js"
     }
   },
   "scripts": {

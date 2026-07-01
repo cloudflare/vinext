@@ -1237,6 +1237,43 @@ describe("init — dependency installation", () => {
     expect(installCall!.cmd).toMatch(/^pnpm add -D/);
   });
 
+  it("can write missing dependency entries without installing them", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as {
+      devDependencies?: Record<string, string>;
+    };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.devDependencies).toMatchObject({
+      vinext: "latest",
+      vite: "latest",
+      "@vitejs/plugin-react": "latest",
+      "@vitejs/plugin-rsc": "latest",
+      "react-server-dom-webpack": "latest",
+      "@cloudflare/vite-plugin": "latest",
+      "@vinext/cloudflare": "latest",
+      wrangler: "latest",
+    });
+  });
+
+  it("updates old React dependency entries without installing when install is disabled", async () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.3");
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies).toMatchObject({
+      react: "latest",
+      "react-dom": "latest",
+    });
+  });
+
   it("calls exec with bun when bun.lock exists", async () => {
     setupProject(tmpDir, { router: "pages" });
     writeFile(tmpDir, "bun.lock", "# bun lockfile");

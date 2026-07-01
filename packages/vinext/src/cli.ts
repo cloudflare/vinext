@@ -32,7 +32,7 @@ import { deploy as runDeploy, parseDeployArgs } from "@vinext/cloudflare/interna
 import { printDeployHelp } from "@vinext/cloudflare/internal/deploy-help";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
-import { INIT_PLATFORMS, resolveInitPlatform, resolveInitPrerender } from "./init-platform.js";
+import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
@@ -872,18 +872,14 @@ async function initCommand() {
   const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
-  const platform = await resolveInitPlatform(rawArgs);
-  const platformOptions = await INIT_PLATFORMS[platform].options(rawArgs);
-  const prerender = await resolveInitPrerender(rawArgs);
+  const initOptions = await resolveInitOptions(rawArgs);
 
   await runInit({
     root: process.cwd(),
     port,
     skipCheck,
     force,
-    platform,
-    prerender,
-    cloudflare: platform === "cloudflare" ? platformOptions : undefined,
+    ...initOptions,
   });
 }
 

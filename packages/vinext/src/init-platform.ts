@@ -24,15 +24,27 @@ export const INIT_PLATFORMS = {
   },
 } satisfies Record<
   InitPlatform,
-  { name: string; options: (args: string[]) => Promise<CloudflareInitOptions | undefined> }
+  {
+    name: string;
+    options: (
+      args: string[],
+      options?: PlatformPromptOptions,
+    ) => Promise<CloudflareInitOptions | undefined>;
+  }
 >;
 
-type PlatformPromptOptions = {
+export type PlatformPromptOptions = {
   env?: Record<string, string | undefined>;
   input?: Readable;
   output?: Writable;
   isInteractive?: boolean;
   question?: (prompt: string) => Promise<string>;
+};
+
+export type ResolvedInitOptions = {
+  platform: InitPlatform;
+  cloudflare?: CloudflareInitOptions;
+  prerender: boolean;
 };
 
 export function isAgentEnvironment(env: Record<string, string | undefined> = process.env): boolean {
@@ -169,6 +181,21 @@ export async function resolveInitPlatform(
   } finally {
     readline?.close();
   }
+}
+
+export async function resolveInitOptions(
+  args: string[],
+  options: PlatformPromptOptions = {},
+): Promise<ResolvedInitOptions> {
+  const platform = await resolveInitPlatform(args, options);
+  const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
+  const prerender = await resolveInitPrerender(args, options);
+
+  return {
+    platform,
+    prerender,
+    cloudflare: platform === "cloudflare" ? platformOptions : undefined,
+  };
 }
 
 export async function resolveInitPrerender(
