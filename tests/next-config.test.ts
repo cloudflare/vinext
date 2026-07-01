@@ -1609,12 +1609,34 @@ describe("resolveNextConfig prefetchInlining", () => {
     const enabledByBoolean = await resolveNextConfig({
       experimental: { prefetchInlining: true },
     });
-    expect(enabledByBoolean.prefetchInlining).toBe(true);
+    expect(enabledByBoolean.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 2048,
+    });
 
     const enabledByThresholds = await resolveNextConfig({
       experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
     });
-    expect(enabledByThresholds.prefetchInlining).toBe(true);
+    expect(enabledByThresholds.prefetchInlining).toEqual({
+      maxBundleSize: Number.MAX_SAFE_INTEGER,
+      maxSize: Number.MAX_SAFE_INTEGER,
+    });
+
+    const enabledByPartialThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: 512 } },
+    });
+    expect(enabledByPartialThresholds.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 512,
+    });
+
+    const negativeThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: -1, maxBundleSize: -1 } },
+    });
+    expect(negativeThresholds.prefetchInlining).toEqual({
+      maxBundleSize: -1,
+      maxSize: -1,
+    });
   });
 });
 
