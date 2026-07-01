@@ -827,12 +827,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("content-type")).toContain("text/x-component");
   });
 
-  it("returns HTML for header-only RSC requests at canonical page URLs", async () => {
+  it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },
+      redirect: "manual",
     });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/about?_rsc");
+
+    const followedRes = await fetch(`${baseUrl}${res.headers.get("location")}`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(followedRes.status).toBe(200);
+    expect(followedRes.headers.get("content-type")).toContain("text/x-component");
   });
 
   it("serves route handlers (GET /api/hello)", async () => {
