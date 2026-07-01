@@ -31,6 +31,7 @@ import {
   buildRenderRequestApiObservations,
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
@@ -296,6 +297,7 @@ type CreateDispatchOptionsOverrides = {
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
+  renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
   request?: Request;
   revalidateSeconds?: number | null;
@@ -388,6 +390,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
+    renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
     renderHttpAccessFallbackPage: vi.fn(async () => null),
     renderToReadableStream,
@@ -1196,6 +1199,46 @@ describe("app page dispatch", () => {
     expect(isrGet).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached force static</html>");
+  });
+
+  it("renders prefetch dynamic shells with empty page searchParams", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+    const buildQueries: string[] = [];
+    const probeQueries: string[] = [];
+    const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      async (_route, _params, _opts, searchParams) => {
+        buildQueries.push(searchParams.toString());
+        return searchParams.get("searchParam") ?? "empty";
+      },
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isRscRequest: true,
+      probePage(searchParams) {
+        probeQueries.push(searchParams?.get("searchParam") ?? "empty");
+        return null;
+      },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+      renderToReadableStream(element) {
+        if (typeof element !== "string") {
+          throw new Error("Expected string dynamic shell test element");
+        }
+        return createStream([element]);
+      },
+      searchParams: new URLSearchParams("searchParam=a_PPR"),
+      setNavigationContext,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("empty");
+    expect(buildQueries).toEqual([""]);
+    expect(probeQueries).toEqual(["empty"]);
+    const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
+    expect(navigationContext?.searchParams.toString()).toBe("");
   });
 
   it.each([

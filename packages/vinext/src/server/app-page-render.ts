@@ -196,6 +196,7 @@ type RenderAppPageLifecycleOptions = {
   clientReuseManifest?: ClientReuseManifestParseResult;
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
+  renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   waitUntil?: (promise: Promise<void>) => void;
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
@@ -843,6 +844,7 @@ export async function renderAppPageLifecycle(
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,
       policy: rscResponsePolicy,
+      renderedPathAndSearch: options.renderedPathAndSearch,
       requestCacheLife: requestCacheLifeForPrerender,
       timing: buildResponseTiming({
         compileEnd,

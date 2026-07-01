@@ -181,6 +181,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   request: Request;
+  renderedPathAndSearch?: string | null;
   route: TRoute;
   scriptNonce?: string;
   searchParams: URLSearchParams;
@@ -1165,6 +1166,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
     rootParams,
     request,
+    renderedPathAndSearch: resolvedUrl,
     route,
     scriptNonce,
     searchParams: resolvedSearchParams,

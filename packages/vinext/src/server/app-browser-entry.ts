@@ -1535,6 +1535,7 @@ function bootstrapHydration(
           : {}),
         mountedSlotsHeader,
         paramsHeader: encodeURIComponent(JSON.stringify(initialParams)),
+        renderedPathAndSearch: null,
         url: rscUrl,
       } satisfies CachedRscResponse;
       const fallbackTtlMs =

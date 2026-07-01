@@ -74,6 +74,7 @@ import {
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
@@ -341,6 +342,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   request: Request;
   revalidateSeconds: number | null;
+  renderedPathAndSearch?: string | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
@@ -563,10 +565,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
-  const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
-  const pageSearchParams = isForceStatic ? new URLSearchParams() : options.searchParams;
+  const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
+  const hasRequestSearchParams =
+    !shouldUseEmptySearchParams && hasSearchParams(options.searchParams);
+  const pageSearchParams = shouldUseEmptySearchParams
+    ? new URLSearchParams()
+    : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
     options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
@@ -1042,6 +1049,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
+    renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
