@@ -401,6 +401,7 @@ const DEV_PAGES_CLIENT_ENTRY = "/@id/__x00__virtual:vinext-client-entry";
 const STYLESHEET_IMPORT_RE = /\.(?:css|scss|sass)$/i;
 const STYLESHEET_FILE_RE = /\.(?:css|scss|sass)$/i;
 const SCRIPT_IMPORT_RE = /\.(?:[cm]?[jt]sx?)$/i;
+const GLOBAL_NOT_FOUND_CSS_QUERY = "?vinext-global-not-found-css";
 
 type ResolveFromImporter = (
   id: string,
@@ -427,6 +428,38 @@ function parserLanguageForScript(id: string): "ts" | "tsx" {
 function isStylesheetSpecifier(specifier: string): boolean {
   if (specifier.includes("?") || specifier.includes("#")) return false;
   return STYLESHEET_IMPORT_RE.test(specifier.toLowerCase());
+}
+
+function isolateGlobalNotFoundStylesheetImports(code: string, id: string): string | null {
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code, { lang: parserLanguageForScript(id) });
+  } catch {
+    return null;
+  }
+
+  let output: MagicString | null = null;
+  for (const statement of ast.body as AstStaticDependencyDeclaration[]) {
+    if (statement.type !== "ImportDeclaration" || statement.importKind === "type") continue;
+    if (statement.specifiers && statement.specifiers.length > 0) continue;
+    if (statement.attributes && statement.attributes.length > 0) continue;
+
+    const source = statement.source;
+    const specifier = source?.value;
+    if (typeof specifier !== "string" || !isStylesheetSpecifier(specifier)) continue;
+
+    const range = source as typeof source & { start?: number; end?: number };
+    if (typeof range.start !== "number" || typeof range.end !== "number") continue;
+
+    output ??= new MagicString(code);
+    output.overwrite(
+      range.start,
+      range.end,
+      JSON.stringify(specifier + GLOBAL_NOT_FOUND_CSS_QUERY),
+    );
+  }
+
+  return output?.toString() ?? null;
 }
 
 function isScriptModuleId(id: string): boolean {
@@ -1125,6 +1158,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
+  let globalNotFoundCssIsolationPath: string | null = null;
   // Resolved in the `config` hook from the user's `build.assetsInlineLimit`
   // (default 0 = always emit files, matching Next's `asset/resource`). Read by
   // the per-environment build config and the `configEnvironment` defaults
@@ -1449,6 +1483,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     commonjs({
       filter: skipCommonjsForLocalCjs,
     }),
+    {
+      name: "vinext:global-not-found-css-isolation",
+      apply: "build",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: /(?:^|[/\\])global-not-found\.[cm]?[jt]sx?(?:\?.*)?$/,
+          code: /\.(?:css|scss|sass)['"]/,
+        },
+        handler(code: string, id: string) {
+          const cleanId = normalizePathSeparators(stripViteModuleQuery(id));
+          if (
+            !globalNotFoundCssIsolationPath ||
+            cleanId !== normalizePathSeparators(globalNotFoundCssIsolationPath)
+          ) {
+            return null;
+          }
+          return isolateGlobalNotFoundStylesheetImports(code, cleanId);
+        },
+      },
+    },
     // Enable JSX in plain .js files. Next.js allows JSX in .js files
     // (Babel/SWC handle it transparently), but Vite 8's built-in `vite:oxc`
     // plugin excludes .js files by default (`exclude: /\.js$/`) AND infers
@@ -1697,6 +1752,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : createRscCompatibilityId(nextConfig);
         }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
+        globalNotFoundCssIsolationPath =
+          env?.command === "build" && nextConfig.globalNotFound
+            ? findFileWithExts(appDir, "global-not-found", fileMatcher)
+            : null;
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         const middlewareConventionDir =

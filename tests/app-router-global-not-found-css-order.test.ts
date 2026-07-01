@@ -10,25 +10,21 @@
  * Why a *production* build test (not the dev-server SSR test in
  * tests/nextjs-compat/global-not-found.test.ts):
  *
- * The bug only manifests in the production RSC build. Without React split into
- * its own chunk, the bundler colocates the root layout's CSS into the shared
- * RSC entry chunk. `app/global-not-found.tsx` imports that entry chunk for its
- * React runtime helpers and so inherits the layout's stylesheet in its
- * `serverResources` metadata. The 404 document then links the layout's CSS
- * (green) *after* global-not-found's own CSS (red), and green wins the cascade
- * — the wrong colour. The fix (createRscFrameworkChunkOutputConfig in
- * packages/vinext/src/build/client-build-config.ts) isolates React into a
- * CSS-free "framework" chunk so global-not-found no longer drags in the
- * layout's CSS.
+ * The bug only manifests in the production RSC build. When the root layout and
+ * `app/global-not-found.tsx` import the same stylesheet, Vite/Rolldown can
+ * dedupe the shared import into the layout's CSS bundle. The 404 document then
+ * links that layout bundle too, where green comes after red and wins the
+ * cascade. The fix isolates global-not-found side-effect stylesheet imports
+ * with a private query so the 404 document owns its CSS resource separately.
  *
  * Fixture: tests/fixtures/global-not-found-css-order/
- *   - layout.tsx imports layout.css      → body green (matched routes)
- *   - global-not-found.tsx imports gnf-a.css then gnf-b.css → blue then red,
- *     so red must win on route-miss 404s.
+ *   - layout.tsx imports red.css then green.css -> green wins (matched routes)
+ *   - global-not-found.tsx imports the same red.css -> red must win on
+ *     route-miss 404s, including the literal /404 path.
  *
  * Assertions mirror upstream: the 404 document must link ONLY
- * global-not-found's stylesheets, in import order (gnf-a before gnf-b), and
- * must NOT carry the root layout's stylesheet.
+ * global-not-found's stylesheet and must NOT carry the root layout's green
+ * stylesheet.
  *
  * The fixture also includes a lazy `react-dom/server.edge` import for issue
  * #2073. Importing the production RSC entry must not eagerly evaluate React's
@@ -126,41 +122,28 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     expect(links.length).toBeGreaterThanOrEqual(1);
     const css = links.map((h) => readCssAsset(clientDir, h)).join("\n");
     expect(css).toContain("green");
-    // The home page must NOT carry global-not-found's stylesheets.
-    expect(css).not.toContain("blue");
-    expect(css).not.toContain("red");
   });
 
   it("route-miss 404 serves global-not-found's CSS with red winning, and no layout CSS leak", async () => {
     await startPreviewServer();
-    const res = await fetch(`${baseUrl}/does-not-exist`);
-    expect(res.status).toBe(404);
-    const html = await res.text();
-    // global-not-found.tsx ships its own document.
-    expect(html).toContain('data-global-not-found="true"');
+    for (const pathname of ["/does-not-exist", "/404"]) {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status).toBe(404);
+      const html = await res.text();
+      // global-not-found.tsx ships its own document.
+      expect(html).toContain('data-global-not-found="true"');
 
-    const links = extractCssLinks(html);
-    expect(links.length).toBeGreaterThanOrEqual(1);
+      const links = extractCssLinks(html);
+      expect(links.length).toBeGreaterThanOrEqual(1);
 
-    const allCss = links.map((h) => readCssAsset(clientDir, h)).join("\n");
+      const allCss = links.map((h) => readCssAsset(clientDir, h)).join("\n");
 
-    // The winning `background-color` on the 404 document must be red. gnf-a.css
-    // (blue) is imported before gnf-b.css (red); both target the identical
-    // `body { background-color }`, so production minification collapses them
-    // into a single rule and source order decides the winner — gnf-b's red.
-    // Asserting on the collapsed rule (rather than substring presence of both
-    // colours) is what actually proves the import-order cascade resolved
-    // correctly.
-    expect(allCss).toContain("background-color:red");
-    // gnf-a's blue lost the cascade and was minified away.
-    expect(allCss).not.toContain("blue");
-
-    // The root layout's CSS must NOT leak onto the 404 document — this is the
-    // #1549 regression. If React is colocated with the layout's CSS chunk, the
-    // RSC entry chunk global-not-found imports for its React helpers also
-    // carries `layout.css`, so `green` reappears here last and overrides red.
-    // The framework-chunk split (createRscFrameworkChunkOutputConfig) prevents
-    // that leak.
-    expect(allCss).not.toContain("green");
+      // The literal upstream failure path is /404. The global-not-found module
+      // imports the same red.css as the root layout, so production builds must
+      // isolate that import instead of linking the layout bundle where green
+      // wins the cascade.
+      expect(allCss).toContain("background-color:red");
+      expect(allCss).not.toContain("green");
+    }
   });
 });
