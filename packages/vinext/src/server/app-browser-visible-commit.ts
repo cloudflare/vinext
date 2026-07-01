@@ -156,11 +156,27 @@ function reduceApprovedVisibleCommitState(
     case "traverse":
     case "navigate":
     case "replace": {
+      const isAuthoritativeAfterDetachedCommit =
+        action.operation.navigationCommitKind === "authoritative" &&
+        state.activeOperation?.navigationCommitKind === "detached" &&
+        state.activeOperation.navigationId === action.operation.navigationId;
       const bfcacheCompatiblePreserveElementIds =
         action.reuseCurrentBfcacheIds && action.operation.lane !== "refresh"
           ? commit.decision.preserveElementIds.filter((id) => {
               const previousBfcacheId = state.bfcacheIds[id];
-              return previousBfcacheId !== undefined && action.bfcacheIds[id] === previousBfcacheId;
+              if (previousBfcacheId === undefined || action.bfcacheIds[id] !== previousBfcacheId) {
+                return false;
+              }
+              if (
+                isAuthoritativeAfterDetachedCommit &&
+                action.layoutFlags[id] === "d" &&
+                Object.hasOwn(action.elements, id)
+              ) {
+                // The authoritative payload owns fresh dynamic output even when
+                // the detached shell minted a matching BFCache id first.
+                return false;
+              }
+              return true;
             })
           : [];
       const preservedSlotOwnerElementIdSet = new Set(bfcacheCompatiblePreserveElementIds);

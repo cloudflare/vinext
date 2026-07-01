@@ -101,6 +101,25 @@ async function createSemanticIdsFixture(appDir: string): Promise<void> {
 }
 
 describe("App Router route graph builder", () => {
+  it("records ancestor loading boundaries with their segment positions", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "loading.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/loading.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/slow/loading.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "dashboard/slow/page.tsx", EMPTY_PAGE);
+
+      const { routes } = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(routes, "/dashboard/slow");
+
+      expect(route.loadingPath).toBe(path.join(appDir, "dashboard/slow/loading.tsx"));
+      expect(route.ancestorLoadingPaths).toEqual([
+        path.join(appDir, "loading.tsx"),
+        path.join(appDir, "dashboard/loading.tsx"),
+      ]);
+      expect(route.ancestorLoadingTreePositions).toEqual([0, 1]);
+    });
+  });
+
   it("materializes pages, handlers, layouts, and inherited parallel slots", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

@@ -58,6 +58,7 @@ export type LazyLoadableRoute = {
   templates?: unknown[];
   errors?: unknown[];
   errorPaths?: unknown[];
+  ancestorLoadings?: unknown[];
   notFounds?: unknown[];
   forbiddens?: unknown[];
   unauthorizeds?: unknown[];
@@ -76,6 +77,7 @@ export type LazyLoadableRoute = {
   __loadTemplates?: LazyModuleLoaderArray | null;
   __loadErrors?: LazyModuleLoaderArray | null;
   __loadErrorPaths?: LazyModuleLoaderArray | null;
+  __loadAncestorLoadings?: LazyModuleLoaderArray | null;
   __loadNotFounds?: LazyModuleLoaderArray | null;
   __loadForbiddens?: LazyModuleLoaderArray | null;
   __loadUnauthorizeds?: LazyModuleLoaderArray | null;
@@ -177,6 +179,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushArrayLoads(loads, route.templates, route.__loadTemplates);
   pushArrayLoads(loads, route.errors, route.__loadErrors);
   pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
+  pushArrayLoads(loads, route.ancestorLoadings, route.__loadAncestorLoadings);
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
   pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
   pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);

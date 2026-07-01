@@ -168,6 +168,7 @@ type RenderAppPageLifecycleOptions = {
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
   probeLayoutAt: (layoutIndex: number) => unknown;
+  shouldProbeLayoutAt?: (layoutIndex: number) => boolean;
   probePage: () => unknown;
   expireSeconds?: number;
   formState?: ReactFormState | null;
@@ -601,6 +602,9 @@ export async function renderAppPageLifecycle(
     layoutCount: options.layoutCount,
     probeLayoutAt(layoutIndex) {
       return options.probeLayoutAt(layoutIndex);
+    },
+    shouldProbeLayoutAt(layoutIndex) {
+      return options.shouldProbeLayoutAt?.(layoutIndex) ?? true;
     },
     probePage() {
       return options.probePage();

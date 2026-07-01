@@ -125,6 +125,8 @@ export type AppPageRouteWiringRoute<
   errorPaths?: readonly TErrorModule[] | null;
   errors?: readonly (TErrorModule | null | undefined)[] | null;
   errorTreePositions?: readonly number[] | null;
+  ancestorLoadings?: readonly (TModule | null | undefined)[] | null;
+  ancestorLoadingTreePositions?: readonly number[] | null;
   layoutTreePositions?: readonly number[] | null;
   layouts: readonly (TModule | null | undefined)[];
   loading?: TModule | null;
@@ -430,6 +432,8 @@ function createAppPageParallelSlotEntries<
     slotKey: string,
     slotName: string,
   ) => AppPageSlotOverride<TModule> | undefined,
+  loadingComponent: AppPageComponent | null,
+  loadingResetKey: string,
 ): Readonly<Record<string, ReactNode>> | undefined {
   const parallelSlots: Record<string, ReactNode> = {};
 
@@ -449,11 +453,20 @@ function createAppPageParallelSlotEntries<
     const slotSegments = routeSegments
       ? resolveAppPageLayoutSegmentProviderSegments(routeSegments, 0, slotParams)
       : [];
-    parallelSlots[slotName] = (
+    let slotElement: ReactNode = (
       <LayoutSegmentProvider providerId={slotId} segmentMap={{ children: slotSegments }}>
         <Slot id={slotId} />
       </LayoutSegmentProvider>
     );
+    if (loadingComponent) {
+      const LoadingComponent = loadingComponent;
+      slotElement = (
+        <Suspense key={loadingResetKey} fallback={<LoadingComponent />}>
+          {slotElement}
+        </Suspense>
+      );
+    }
+    parallelSlots[slotName] = slotElement;
   }
 
   return Object.keys(parallelSlots).length > 0 ? parallelSlots : undefined;
@@ -589,6 +602,7 @@ export function buildAppPageElements<
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
   const errorEntriesByTreePosition = new Map<number, AppPageErrorEntry<TErrorModule>>();
+  const ancestorLoadingByTreePosition = new Map<number, TModule>();
   for (const layoutEntry of layoutEntries) {
     layoutEntriesByTreePosition.set(layoutEntry.treePosition, layoutEntry);
   }
@@ -597,6 +611,12 @@ export function buildAppPageElements<
   }
   for (const errorEntry of errorEntries) {
     errorEntriesByTreePosition.set(errorEntry.treePosition, errorEntry);
+  }
+  for (const [index, loadingModule] of (options.route.ancestorLoadings ?? []).entries()) {
+    if (!loadingModule) continue;
+    const treePosition = options.route.ancestorLoadingTreePositions?.[index];
+    if (treePosition === undefined) continue;
+    ancestorLoadingByTreePosition.set(treePosition, loadingModule);
   }
   const layoutIndicesByTreePosition = new Map<number, number>();
   for (let index = 0; index < layoutEntries.length; index++) {
@@ -620,6 +640,7 @@ export function buildAppPageElements<
       ...layoutEntries.map((entry) => entry.treePosition),
       ...templateEntries.map((entry) => entry.treePosition),
       ...errorEntries.map((entry) => entry.treePosition),
+      ...ancestorLoadingByTreePosition.keys(),
     ]),
   ).sort((left, right) => left - right);
   const resolveSlotOverride = (slotKey: string, slotName: string) => {
@@ -697,8 +718,15 @@ export function buildAppPageElements<
   }
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
+  const prefetchLoadingComponent = getDefaultExport(
+    Array.from(ancestorLoadingByTreePosition.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([, loadingModule]) => loadingModule)
+      .find((loadingModule) => Boolean(getDefaultExport(loadingModule))) ?? options.route.loading,
+  );
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
-  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
+  const shouldRenderPrefetchLoadingShell =
+    isPrefetchLoadingShell && prefetchLoadingComponent !== null;
   if (shouldRenderPrefetchLoadingShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
@@ -941,11 +969,11 @@ export function buildAppPageElements<
     // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
-    if (routeLoadingComponent === null) {
+    if (prefetchLoadingComponent === null) {
       routeChildren = null;
     } else {
-      const RouteLoadingComponent = routeLoadingComponent;
-      routeChildren = <RouteLoadingComponent />;
+      const PrefetchLoadingComponent = prefetchLoadingComponent;
+      routeChildren = <PrefetchLoadingComponent />;
     }
   } else {
     // Wrap the page slot in a per-segment RedirectBoundary so that a
@@ -1050,6 +1078,12 @@ export function buildAppPageElements<
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
     const errorEntry = errorEntriesByTreePosition.get(treePosition);
+    const ancestorLoadingComponent = getDefaultExport(
+      ancestorLoadingByTreePosition.get(treePosition),
+    );
+    const segmentLoadingComponent =
+      ancestorLoadingComponent ??
+      (treePosition === routeSegments.length ? routeLoadingComponent : null);
 
     // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > children.
     // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
@@ -1087,6 +1121,15 @@ export function buildAppPageElements<
           </UnauthorizedBoundary>
         );
       }
+    }
+
+    if (ancestorLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+      const AncestorLoadingComponent = ancestorLoadingComponent;
+      segmentChildren = (
+        <Suspense key={segmentResetKey} fallback={<AncestorLoadingComponent />}>
+          {segmentChildren}
+        </Suspense>
+      );
     }
 
     const segmentErrorComponent = getErrorBoundaryExport(
@@ -1155,6 +1198,8 @@ export function buildAppPageElements<
               options.route,
               getEffectiveSlotParams,
               resolveSlotOverride,
+              shouldSuppressLoadingBoundaries(renderMode) ? null : segmentLoadingComponent,
+              segmentResetKey,
             )}
           >
             {segmentChildren}

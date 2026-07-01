@@ -5104,6 +5104,98 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.bfcacheIds["layout:/blog/[slug]"]).not.toBe("_b_2_");
   });
 
+  it("installs fresh dynamic layout output after a detached loading-shell handoff", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const staleLayout = React.createElement("div", null, "hello-world layout");
+    const nextLayout = React.createElement("div", null, "getting-started layout");
+    const layoutId = "layout:/blog/[slug]";
+    const routeId = "route:/blog/[slug]";
+    const currentState = createState({
+      activeOperation: {
+        id: 1,
+        lane: "navigation",
+        navigationCommitKind: "detached",
+        navigationId: 7,
+        startedVisibleCommitVersion: 0,
+        state: "committed",
+        visibleCommitVersion: 1,
+      },
+      bfcacheIds: {
+        "layout:/": "0",
+        [layoutId]: "_b_2_",
+      },
+      elements: createResolvedElements(
+        routeId,
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+          [layoutId]: staleLayout,
+        },
+        ["layout:/", layoutId],
+      ),
+      layoutFlags: {
+        "layout:/": "s",
+        [layoutId]: "d",
+      },
+      layoutIds: ["layout:/", layoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/blog/getting-started",
+        { slug: "getting-started" },
+      ),
+      routeId,
+      visibleCommitVersion: 1,
+    });
+
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationCommitKind: "authoritative",
+      navigationId: 7,
+      navigationSnapshot: currentState.navigationSnapshot,
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          routeId,
+          "/",
+          null,
+          {
+            [APP_LAYOUT_FLAGS_KEY]: {
+              "layout:/": "s",
+              [layoutId]: "d",
+            },
+            "layout:/": React.createElement("div", null, "fresh root layout"),
+            [layoutId]: nextLayout,
+            "page:/blog/[slug]": React.createElement("main", null, "getting-started"),
+          },
+          ["layout:/", layoutId],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 2,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 7,
+      currentState,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+      startedNavigationId: 7,
+      targetHref: "https://example.com/blog/getting-started",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    expect(approval.decision.disposition).toBe("commit");
+    if (approval.decision.disposition !== "commit") return;
+    expect(approval.decision.preserveElementIds).toContain(layoutId);
+    expect(approval.approvedCommit.action.bfcacheIds[layoutId]).toBe("_b_2_");
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements["layout:/"]).toBe(rootLayout);
+    expect(nextState.elements[layoutId]).toBe(nextLayout);
+  });
+
   it("does not preserve a previous default slot when its dynamic owner identity changes", async () => {
     const layoutId = "layout:/blog/[slug]";
     const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
@@ -5238,6 +5330,69 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.layoutFlags).toEqual({
       "layout:/": "s",
     });
+  });
+
+  it("does not preserve skipped layouts that the target marks dynamic", async () => {
+    const dynamicLayout = React.createElement("div", null, "dynamic layout");
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": dynamicLayout,
+        },
+        ["layout:/"],
+      ),
+      layoutFlags: {
+        "layout:/": "d",
+      },
+      layoutIds: ["layout:/"],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      routeId: "route:/dashboard",
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/dashboard",
+          "/",
+          null,
+          {
+            [APP_LAYOUT_FLAGS_KEY]: { "layout:/": "d" },
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          },
+          ["layout:/"],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/dashboard",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    expect(approval.decision.disposition).toBe("commit");
+    if (approval.decision.disposition !== "commit") return;
+    expect(approval.decision.preserveElementIds).not.toContain("layout:/");
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
+    expect(nextState.layoutFlags).toEqual({ "layout:/": "d" });
   });
 
   it("does not preserve skipped layouts when target bfcache ids mismatch", async () => {

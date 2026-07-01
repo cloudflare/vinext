@@ -238,6 +238,54 @@ describe("app page probe helpers", () => {
     expect(renderLayoutSpecialError).not.toHaveBeenCalled();
   });
 
+  it("skips descendant layout probes below an active loading boundary", async () => {
+    const probedLayouts: number[] = [];
+    const pageProbe = vi.fn(() => null);
+
+    const result = await probeAppPageBeforeRender({
+      hasLoadingBoundary: true,
+      layoutCount: 3,
+      probeLayoutAt(layoutIndex) {
+        probedLayouts.push(layoutIndex);
+        return null;
+      },
+      shouldProbeLayoutAt(layoutIndex) {
+        return layoutIndex < 1;
+      },
+      probePage: pageProbe,
+      renderLayoutSpecialError() {
+        throw new Error("should not render a layout special error");
+      },
+      renderPageSpecialError() {
+        throw new Error("should not render a page special error");
+      },
+      resolveSpecialError() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([[2, "static"]]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/parent", "layout:/parent/child"][layoutIndex];
+        },
+        runWithIsolatedDynamicScope: async (probe) => ({
+          result: await probe(),
+          dynamicDetected: false,
+        }),
+      },
+    });
+
+    expect(probedLayouts).toEqual([0]);
+    expect(pageProbe).not.toHaveBeenCalled();
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/parent": "d",
+      "layout:/parent/child": "d",
+    });
+  });
+
   it("turns special page probe failures into immediate responses", async () => {
     const pageError = new Error("page failed");
     const renderPageSpecialError = vi.fn(

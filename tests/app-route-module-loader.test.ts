@@ -136,6 +136,19 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(__loadLayouts[2]).not.toHaveBeenCalled();
   });
 
+  it("hydrates ancestor loading modules positionally", async () => {
+    const rootLoading = { default: () => null };
+    const nestedLoading = { default: () => null };
+    const route: LazyLoadableRoute = {
+      ancestorLoadings: [null, null],
+      __loadAncestorLoadings: [async () => rootLoading, async () => nestedLoading],
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.ancestorLoadings).toEqual([rootLoading, nestedLoading]);
+  });
+
   it("ignores array loaders beyond the manifest placeholder length", async () => {
     const layout = { default: () => null };
     const outOfRangeLoader = vi.fn(async () => layout);

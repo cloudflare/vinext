@@ -187,6 +187,32 @@ describe("App Router generated manifest construction", () => {
         siblingIntercepts: [],
       },
       {
+        pattern: "/inherited-loading",
+        patternParts: ["inherited-loading"],
+        pagePath: "/tmp/test/app/inherited-loading/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        ancestorLoadingPaths: ["/tmp/test/app/loading.tsx"],
+        ancestorLoadingTreePositions: [0],
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: null,
+        notFoundPaths: [null],
+        forbiddenPaths: [null],
+        forbiddenPath: null,
+        unauthorizedPaths: [null],
+        unauthorizedPath: null,
+        routeSegments: ["inherited-loading"],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+      {
         pattern: "/api",
         patternParts: ["api"],
         pagePath: null,
@@ -224,6 +250,9 @@ describe("App Router generated manifest construction", () => {
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":true,"patternParts":["inherited-loading"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',
@@ -331,6 +360,8 @@ describe("App Router generated manifest construction", () => {
           },
         ],
         loadingPath: "/tmp/test/app/dashboard/loading.tsx",
+        ancestorLoadingPaths: ["/tmp/test/app/loading.tsx"],
+        ancestorLoadingTreePositions: [0],
         errorPath: "/tmp/test/app/dashboard/error.tsx",
         layoutErrorPaths: [null, "/tmp/test/app/dashboard/error.tsx"],
         notFoundPath: "/tmp/test/app/dashboard/not-found.tsx",
@@ -360,6 +391,9 @@ describe("App Router generated manifest construction", () => {
     // render) and is additionally referenced by a lazy loader for the route's
     // `layouts` array, so its path appears in both an eager and a lazy import.
     expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(2);
+    expect(imports).toContain("/tmp/test/app/loading.tsx");
+    expect(manifest.routeEntries.join("\n")).toContain("ancestorLoadingTreePositions: [0]");
+    expect(manifest.routeEntries.join("\n")).toContain("__loadAncestorLoadings:");
     // Every per-route module — pages, route handlers, layouts, templates,
     // boundaries and intercepting pages/layouts — is emitted as a lazy `() =>
     // import()` loader. Only the always-needed root boundaries (root layout,

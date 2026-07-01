@@ -299,8 +299,10 @@ ${interceptEntries.join(",\n")}
     });
     const layoutErrorPaths = route.layoutErrorPaths ?? [];
     const errorPaths = route.errorPaths ?? [];
+    const ancestorLoadingPaths = route.ancestorLoadingPaths ?? [];
     const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports);
     const errorLoaders = lazyLoaderArray(errorPaths, imports);
+    const ancestorLoadingLoaders = lazyLoaderArray(ancestorLoadingPaths, imports);
     // Page and route handler are always lazy-loaded; hydrated onto route.page /
     // route.routeHandler by ensureAppRouteModulesLoaded before any read.
     const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
@@ -334,6 +336,9 @@ ${interceptEntries.join(",\n")}
     errorPaths: ${moduleArray(errorPaths.length)},
     __loadErrorPaths: ${errorLoaders},
     errorTreePositions: ${JSON.stringify(route.errorTreePositions ?? null)},
+    ancestorLoadings: ${moduleArray(ancestorLoadingPaths.length)},
+    __loadAncestorLoadings: ${ancestorLoadingLoaders},
+    ancestorLoadingTreePositions: ${JSON.stringify(route.ancestorLoadingTreePositions ?? [])},
     slots: {
 ${slotEntries.join(",\n")}
     },

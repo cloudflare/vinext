@@ -566,6 +566,8 @@ function mergeSkippedLayoutPreservation(options: {
   for (const id of options.pending.skippedLayoutIds) {
     if (seenPreservedIds.has(id)) continue;
     if (AppElementsWire.parseElementKey(id)?.kind !== "layout") continue;
+    // Dynamic skipped layouts are loading-shell omissions, not static reuse proof.
+    if (options.pending.action.layoutFlags[id] === "d") continue;
     // Set membership here is intentionally broader than the planner's
     // prefix-based persistence (resolveSameLayoutAncestorPersistenceForTopologies
     // breaks at the first divergence). A layout present in both the current and

@@ -185,6 +185,7 @@ type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
   onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
+  shouldProbeLayoutAt?: (layoutIndex: number) => boolean;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   /** When provided, enables per-layout static/dynamic classification. */
   classification?: LayoutClassificationOptions | null;
@@ -486,6 +487,14 @@ export async function probeAppPageLayouts(
   const response = await options.runWithSuppressedHookWarning(async () => {
     for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
       const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
+
+      if (options.shouldProbeLayoutAt?.(layoutIndex) === false) {
+        if (cls) {
+          const layoutId = cls.getLayoutId(layoutIndex);
+          layoutFlags[layoutId] = "d";
+        }
+        continue;
+      }
 
       if (cls && buildTimeResult) {
         const layoutId = cls.getLayoutId(layoutIndex);
