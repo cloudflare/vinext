@@ -512,10 +512,9 @@ function prefetchUrl(
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
-          mode === "auto" &&
-          isOptimisticRouteShellPrefetch &&
-          new URL(fullHref, window.location.href).search !== "";
+          mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
         if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
         const hasSearchAgnosticShell =
           isAutomaticSearchParamShell &&
@@ -673,7 +672,14 @@ function prefetchUrl(
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
           __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
-        const gateViaLoadingShell = mode === "full-after-shell" && autoPrefetch.prefetchShellFirst;
+        const gateViaExplicitSearchShell =
+          mode === "full" &&
+          hasSearchParams &&
+          autoPrefetch.prefetchShellFirst &&
+          mountedSlotsHeader === null;
+        const gateViaLoadingShell =
+          (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
+          autoPrefetch.prefetchShellFirst;
         const fetchPromise =
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
@@ -753,7 +759,8 @@ function prefetchUrl(
           mode === "full" &&
           autoPrefetch.cacheForNavigation &&
           autoPrefetch.prefetchShellFirst &&
-          mountedSlotsHeader === null
+          mountedSlotsHeader === null &&
+          !gateViaExplicitSearchShell
         ) {
           void fetchLoadingShellForReuse();
         }

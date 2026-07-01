@@ -1104,6 +1104,7 @@ describe("prefetch cache eviction", () => {
       contentType: "text/x-component",
       mountedSlotsHeader: null,
       paramsHeader: null,
+      renderedPathAndSearch: null,
       url: sourceRscUrl,
     };
 
