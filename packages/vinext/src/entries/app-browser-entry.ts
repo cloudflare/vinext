@@ -65,12 +65,17 @@ export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute
   };
 }
 
+function requiresDynamicNavigationRequest(route: AppRoute): boolean {
+  return route.isDynamic && route.parallelSlots.length > 0;
+}
+
 /** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */
 export function toLinkPrefetchRoute(route: AppRoute): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: route.loadingPath !== null,
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
+    ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),
   };
 }
 
