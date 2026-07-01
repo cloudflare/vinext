@@ -1516,6 +1516,17 @@ function bootstrapHydration(
             mountedSlotsHeader,
           );
         }
+        if (isCompleteAppPayloadMetadata(metadata)) {
+          return storeVisitedResponseSnapshot(
+            rscUrl,
+            metadata.interceptionContext,
+            snapshot,
+            initialParams,
+            fallbackTtlMs,
+            mountedSlotsHeader,
+            elements,
+          );
+        }
         seedPrefetchResponseSnapshot(
           rscUrl,
           snapshot,
@@ -2116,13 +2127,15 @@ function bootstrapHydration(
           detachedNavigationCommits ? "authoritative" : undefined,
         );
         if (renderOutcome !== "committed") return;
-        // Don't cache the response if this navigation was superseded during
-        // renderNavigationPayload's await — the elements were never dispatched.
-        if (!browserNavigationController.isCurrentNavigation(navId)) return;
         // Store the visited response only after renderNavigationPayload succeeds.
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
+        //
+        // Once the payload has committed, a later navigation should not cancel
+        // publication. Next's segment cache learns from completed navigations
+        // even when the user immediately goes back; keep only the cache-generation
+        // guard below so refresh/action invalidations still win.
         try {
           const renderedElements = await rscPayload;
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
@@ -2166,10 +2179,7 @@ function bootstrapHydration(
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
             );
-          } else if (
-            committedState !== null &&
-            getMountedSlotIdsHeader((committedState as AppRouterState).elements) === null
-          ) {
+          } else if (committedState !== null && isCompleteAppPayloadMetadata(metadata)) {
             const state = committedState as AppRouterState;
             const committedElements = {
               ...state.elements,
