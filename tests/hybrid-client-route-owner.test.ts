@@ -23,7 +23,10 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../packages/vinext/src/client/vinext-next-data.js";
 import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
-import { resolveHybridClientRouteOwner } from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+import {
+  resolveHybridClientRewriteHref,
+  resolveHybridClientRouteOwner,
+} from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
 
 const APP_BASE = "http://localhost/";
 
@@ -158,6 +161,32 @@ describe("resolveHybridClientRouteOwner", () => {
       });
 
       expect(resolveHybridClientRouteOwner("/source", "")).toBe("app");
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "returns the %s rewrite destination href",
+    (rewritePhase) => {
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles:
+            rewritePhase === "beforeFiles"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+          afterFiles:
+            rewritePhase === "afterFiles"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+          fallback:
+            rewritePhase === "fallback"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+        },
+      });
+
+      expect(resolveHybridClientRewriteHref("/source", "")).toBe("/app-destination");
     },
   );
 

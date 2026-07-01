@@ -125,6 +125,7 @@ export default {
     "taskkill",
     "eslint",
     "gh",
+    "jq",
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",

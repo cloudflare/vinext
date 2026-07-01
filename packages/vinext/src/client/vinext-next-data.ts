@@ -13,6 +13,7 @@ export type VinextLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 /**
@@ -30,6 +31,7 @@ export type VinextPagesLinkPrefetchRoute = {
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
+  requiresDynamicNavigationRequest?: boolean;
 };
 
 export type VinextNextData = {
