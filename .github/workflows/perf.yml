@@ -229,11 +229,15 @@ jobs:
             local project_roots=(
               packages/vinext
               packages/cloudflare
+              packages/create-vinext-app
               benchmarks/vinext
               benchmarks/nextjs
             )
             for relative_path in "${project_roots[@]}"; do
               local path="$root/$relative_path"
+              if [ ! -d "$path" ]; then
+                continue
+              fi
               sudo chmod +t "$path"
               sudo setfacl -m u:"$user":rwx "$path"
               sudo setfacl -m d:u:"$user":rwx,d:u:"$USER":rwx "$path"

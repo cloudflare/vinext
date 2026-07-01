@@ -94,6 +94,16 @@ export default {
       entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "packages/create-vinext-app": {
+      entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
+      project: ["src/**/*.{ts,tsx}"],
+      ignoreDependencies: [
+        // create-vinext-app bundles vinext init helpers into dist. These are
+        // imported by the bundled helper modules, not by src/index.ts directly.
+        "am-i-vibing",
+        "magic-string",
+      ],
+    },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [
