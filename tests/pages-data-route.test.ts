@@ -112,6 +112,28 @@ describe("pages-data-route", () => {
       expect(result.normalizedPathname).toBe("/about");
       expect(result.request.url).toBe("http://localhost/about?x=1");
     });
+
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+    it("strips the locale segment before middleware while preserving the data page pathname", () => {
+      const buildId = "abc123";
+      const req = new Request(
+        `http://localhost/_next/data/${buildId}/en/dynamic-no-cache/1.json?x=1`,
+      );
+      const result = normalizePagesDataRequest(req, buildId, "", {
+        locales: ["ja", "en", "fr", "es"],
+        defaultLocale: "en",
+      });
+
+      expect(result.isDataReq).toBe(true);
+      if (!result.isDataReq) throw new Error("expected data request normalization");
+      expect(result.normalizedPathname).toBe("/en/dynamic-no-cache/1");
+      expect(result.middlewarePathname).toBe("/dynamic-no-cache/1");
+      expect(result.locale).toBe("en");
+      expect(result.search).toBe("?x=1");
+      expect(result.request.url).toBe("http://localhost/dynamic-no-cache/1?x=1");
+      expect(result.notFoundResponse).toBeNull();
+    });
   });
 
   describe("buildNextDataNotFoundResponse", () => {

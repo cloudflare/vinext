@@ -137,6 +137,28 @@ function declarationHasBindingName(declaration: Statement | null, name: string):
  *   export function foo() {}
  *   export const foo = ...
  *   export { foo }
+ *
+ * Recognised shapes (covered by tests/build-report.test.ts):
+ *   - `export function foo() {}` / `export async function foo() {}`
+ *   - `export const foo = ...` / `export let foo = ...` (with TS annotations)
+ *   - `export { foo }` and `export { foo as bar }` (alias under the new name)
+ *   - `export { foo, bar }` (multi-specifier, any matching local)
+ *
+ * Intentionally NOT recognised (so a page is treated as non-SSG / non-static):
+ *   - `export * from "./other"` (no explicit specifier to inspect)
+ *   - `export * as ns from "./other"` (namespace re-export, not a top-level binding)
+ *   - `export { default }` or `export { default as foo }` (the local is the
+ *     `default` keyword, not the string "foo")
+ *   - Dynamically-constructed exports (string concatenation, indirect specifiers)
+ *   - Exports hidden behind wrapper modules that re-export from another file
+ *     with a renamed binding
+ *
+ * When a page that should be SSG falls into one of these gaps, the manifest
+ * omits it: the runtime still works (data prefetch is best-effort and the
+ * loader map still resolves the chunk), but `router.sdc` will not warm a JSON
+ * payload for that page during hover/viewport prefetch. See
+ * tests/build-report.test.ts → "hasNamedExport" for the full supported-shape
+ * contract.
  */
 export function hasNamedExport(code: string, name: string): boolean {
   const program = parseRouteModule(code);

@@ -13,6 +13,7 @@ import type {
   HasCondition,
 } from "./next-config.js";
 import {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -563,8 +564,10 @@ export function normalizeHost(hostHeader: string | null, fallbackHostname: strin
 
 /**
  * Unpack `x-middleware-request-*` headers from the collected middleware
- * response headers into the actual request, and strip all `x-middleware-*`
- * internal signals so they never reach clients.
+ * response headers into the actual request, and strip internal
+ * `x-middleware-*` signals that should never reach clients. The public
+ * `x-middleware-cache` Pages Router cache-policy signal is preserved in
+ * `middlewareHeaders` for response staging.
  *
  * `middlewareHeaders` is mutated in-place (matching keys are deleted).
  * Returns a (possibly cloned) `Request` with the unpacked headers applied,
@@ -590,7 +593,7 @@ export function applyMiddlewareRequestHeaders(
   );
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       delete middlewareHeaders[key];
     }
   }

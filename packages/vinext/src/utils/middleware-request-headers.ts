@@ -1,4 +1,5 @@
 import {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_REQUEST_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
@@ -116,6 +117,7 @@ export function buildRequestHeadersFromMiddlewareResponse(
 
 export function shouldKeepMiddlewareHeader(key: string): boolean {
   return (
+    key === MIDDLEWARE_CACHE_HEADER ||
     key === MIDDLEWARE_OVERRIDE_HEADERS ||
     key === MIDDLEWARE_SET_COOKIE_HEADER ||
     key.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX)

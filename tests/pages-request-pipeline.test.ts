@@ -38,7 +38,7 @@ function makeMiddleware(result: Partial<MiddlewareResult>) {
 
 function makeRenderPage(status = 200, body = "ok") {
   return vi.fn(
-    async (_req: Request, _url: string, _opts?: PagesRenderOptions) =>
+    async (_req: Request, _url: string, _opts?: PagesRenderOptions, _stagedHeaders?: Headers) =>
       new Response(body, { status }),
   );
 }
@@ -205,6 +205,27 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
   });
 
+  it("uses the trusted data URL locale for locale-stripped dynamic data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/source"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        dataRequestLocale: "fr",
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: true, pattern: "/blog/:slug" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
+  });
+
   it("does not add matched-path routing metadata to HTML responses", async () => {
     const result = await runPagesRequest(
       makeRequest("/ssr-page"),
@@ -238,6 +259,28 @@ describe("middleware", () => {
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("content-type")).toContain("application/json");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
+    expect(await result.response.text()).toBe("{}");
+  });
+
+  it("uses the trusted data URL locale for locale-stripped data misses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unknown"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        dataRequestLocale: "fr",
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        renderPage: makeRenderPage(404, "not found"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/unknown");
     expect(await result.response.text()).toBe("{}");
   });
 
@@ -398,6 +441,47 @@ describe("middleware", () => {
       undefined,
       expect.any(Headers),
     );
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ("should opt out of prefetch caching for dynamic routes")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("preserves x-middleware-cache from data-request middleware rewrites", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"id":"1"}}');
+    const runMiddleware = vi.fn(async () => ({
+      continue: true,
+      rewriteUrl: "/dynamic-no-cache/1",
+      responseHeaders: new Headers({ "x-middleware-cache": "no-cache" }),
+    }));
+
+    const result = await runPagesRequest(
+      makeRequest("/dynamic-no-cache/1", {
+        purpose: "prefetch",
+        "x-nextjs-data": "1",
+        "x-middleware-prefetch": "1",
+      }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware,
+        renderPage,
+      }),
+    );
+
+    expect(runMiddleware).toHaveBeenCalledWith(expect.any(Request), null, {
+      isDataRequest: true,
+    });
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/dynamic-no-cache/1",
+      { isDataReq: true },
+      expect.any(Headers),
+    );
+    const stagedHeaders = renderPage.mock.calls[0]?.[3];
+    expect(stagedHeaders?.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-middleware-cache")).toBe("no-cache");
   });
 
   it.each([

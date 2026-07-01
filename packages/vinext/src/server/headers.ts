@@ -136,6 +136,7 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 // ---------------------------------------------------------------------------
 
 export {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
 } from "../utils/protocol-headers.js";

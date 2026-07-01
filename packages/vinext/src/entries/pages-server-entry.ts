@@ -178,6 +178,7 @@ export async function runMiddleware(request, ctx, options) {
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
+    localeOverride: options?.dataRequestLocale ?? null,
     module: middlewareModule,
     request,
     trailingSlash: vinextConfig.trailingSlash,
@@ -238,7 +239,7 @@ const i18nConfig = ${i18nConfigJson};
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(request, buildId);
+  return __normalizePagesDataRequest(request, buildId, "", i18nConfig);
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 

@@ -20,6 +20,8 @@
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import { extractLocaleFromUrl } from "./pages-i18n.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -172,10 +174,39 @@ type NormalizePagesDataRequestResult =
   | {
       isDataReq: true;
       request: Request;
+      /**
+       * The locale-stripped page pathname used for middleware/routing. The
+       * data endpoint keeps the locale segment in the wire URL, but Next.js
+       * middleware observes the route pathname without that locale prefix.
+       */
+      middlewarePathname: string;
+      /**
+       * The parsed data page pathname, locale segment included when present.
+       * Renderers use this to preserve the data request's asPath/envelope.
+       */
       normalizedPathname: string;
+      /**
+       * The locale encoded in the data URL, or the configured default locale
+       * when i18n is enabled and the data URL is unprefixed. Middleware gets
+       * the locale-stripped route pathname but `request.nextUrl.locale` must
+       * still reflect the data URL's active locale.
+       */
+      locale: string | null;
       search: string;
       notFoundResponse: null;
     };
+
+export function normalizePagesDataRouteInfo(
+  pagePathname: string,
+  i18nConfig?: NextI18nConfig | null,
+): { middlewarePathname: string; locale: string | null } {
+  if (!i18nConfig) return { middlewarePathname: pagePathname, locale: null };
+  const localeInfo = extractLocaleFromUrl(pagePathname, i18nConfig);
+  return {
+    middlewarePathname: localeInfo.hadPrefix ? localeInfo.url : pagePathname,
+    locale: localeInfo.locale,
+  };
+}
 
 /**
  * Detect and normalize `/_next/data/<buildId>/<page>.json` requests in one
@@ -199,6 +230,7 @@ export function normalizePagesDataRequest(
   request: Request,
   buildId: string | null,
   basePath = "",
+  i18nConfig?: NextI18nConfig | null,
 ): NormalizePagesDataRequestResult {
   const reqUrl = new URL(request.url);
   const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
@@ -223,13 +255,16 @@ export function normalizePagesDataRequest(
     };
   }
   const normalizedUrl = new URL(reqUrl);
+  const routeInfo = normalizePagesDataRouteInfo(dataMatch.pagePathname, i18nConfig);
   normalizedUrl.pathname = hadBasePath
-    ? addBasePathToPathname(dataMatch.pagePathname, basePath)
-    : dataMatch.pagePathname;
+    ? addBasePathToPathname(routeInfo.middlewarePathname, basePath)
+    : routeInfo.middlewarePathname;
   return {
     isDataReq: true,
     request: new Request(normalizedUrl, request),
+    middlewarePathname: routeInfo.middlewarePathname,
     normalizedPathname: dataMatch.pagePathname,
+    locale: routeInfo.locale,
     search: reqUrl.search,
     notFoundResponse: null,
   };

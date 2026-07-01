@@ -1265,7 +1265,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       : null;
     const pagesDataNormalization =
       options.renderPagesFallback && pagesDataCandidate
-        ? normalizePagesDataRequest(pagesDataCandidate, options.buildId)
+        ? normalizePagesDataRequest(pagesDataCandidate, options.buildId, "", options.i18nConfig)
         : null;
     if (pagesDataNormalization?.notFoundResponse) {
       return pagesDataNormalization.notFoundResponse;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
-import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { NextResponse, type NextRequest } from "../packages/vinext/src/shims/server.js";
 
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
 // fixtures mirror the behaviour Next.js's edge adapter applies after a
@@ -199,6 +199,84 @@ describe("middleware redirect protocol", () => {
     expect(result.redirectUrl).toBe("/new-home");
     expect(result.response?.status).toBe(307);
     expect(result.response?.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+});
+
+// Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+describe("middleware _next/data locale normalization", () => {
+  const i18nConfig = {
+    locales: ["ja", "en", "fr", "es"],
+    defaultLocale: "en",
+  };
+
+  it("exposes the data URL locale while middleware matches the stripped pathname", async () => {
+    const captured: { pathname?: string; locale?: string; urlPathname?: string } = {};
+    const module = {
+      default: (req: NextRequest) => {
+        captured.pathname = req.nextUrl.pathname;
+        captured.locale = req.nextUrl.locale;
+        captured.urlPathname = new URL(req.url).pathname;
+
+        const rewriteUrl = req.nextUrl.clone();
+        rewriteUrl.searchParams.set("locale", req.nextUrl.locale);
+        return NextResponse.rewrite(rewriteUrl);
+      },
+    };
+
+    const result = await executeMiddleware({
+      i18nConfig,
+      isDataRequest: true,
+      isProxy: false,
+      localeOverride: "ja",
+      module,
+      normalizedPathname: "/i18n",
+      request: new Request("http://localhost:3000/i18n"),
+    });
+
+    expect(captured.pathname).toBe("/i18n");
+    expect(captured.locale).toBe("ja");
+    expect(captured.urlPathname).toBe("/ja/i18n");
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/ja/i18n?locale=ja");
+  });
+
+  it("preserves x-middleware-cache on data rewrites that opt out of prefetch caching", async () => {
+    const captured: { pathname?: string; locale?: string } = {};
+    const module = {
+      default: (req: NextRequest) => {
+        captured.pathname = req.nextUrl.pathname;
+        captured.locale = req.nextUrl.locale;
+
+        if (
+          req.nextUrl.pathname === "/dynamic-no-cache/1" &&
+          req.headers.get("purpose") === "prefetch"
+        ) {
+          return NextResponse.rewrite(req.nextUrl, {
+            headers: { "x-middleware-cache": "no-cache" },
+          });
+        }
+        return undefined;
+      },
+    };
+
+    const result = await executeMiddleware({
+      i18nConfig,
+      isDataRequest: true,
+      isProxy: false,
+      localeOverride: "en",
+      module,
+      normalizedPathname: "/dynamic-no-cache/1",
+      request: new Request("http://localhost:3000/dynamic-no-cache/1", {
+        headers: { purpose: "prefetch" },
+      }),
+    });
+
+    expect(captured.pathname).toBe("/dynamic-no-cache/1");
+    expect(captured.locale).toBe("en");
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/dynamic-no-cache/1");
+    expect(result.responseHeaders?.get("x-middleware-cache")).toBe("no-cache");
   });
 });
 

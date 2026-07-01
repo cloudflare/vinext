@@ -101,6 +101,7 @@ export type PagesPipelineDeps = {
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
+  dataRequestLocale?: string | null; // trusted locale parsed from the _next/data path
   hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
@@ -120,7 +121,7 @@ export type PagesPipelineDeps = {
     | ((
         request: Request,
         ctx: unknown,
-        opts: { isDataRequest: boolean },
+        opts: { isDataRequest: boolean; dataRequestLocale?: string | null },
       ) => Promise<MiddlewareResult>)
     | null;
   renderPage?:
@@ -327,7 +328,10 @@ export async function runPagesRequest(
   };
 
   if (typeof deps.runMiddleware === "function") {
-    const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    const result = await deps.runMiddleware(request, deps.ctx ?? null, {
+      dataRequestLocale: deps.dataRequestLocale,
+      isDataRequest,
+    });
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -420,18 +424,30 @@ export async function runPagesRequest(
   });
   let resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
 
-  const matchResolvedPathname = (p: string): string =>
-    i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+  const dataMatchedPathLocale =
+    i18nConfig && (isDataReq || isDataRequest) && deps.dataRequestLocale
+      ? deps.dataRequestLocale
+      : null;
+  const localePrefixPathname = (p: string, locale: string): string =>
+    p === "/" ? `/${locale}` : `/${locale}${p}`;
+  const matchResolvedPathname = (p: string, localeOverride?: string | null): string => {
+    if (!i18nConfig) return p;
+    if (localeOverride) {
+      const existingLocale = p.split("/", 3)[1];
+      return existingLocale && i18nConfig.locales.includes(existingLocale)
+        ? p
+        : localePrefixPathname(p, localeOverride);
+    }
+    return normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname });
+  };
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
     if (!i18nConfig) return matchedPathname;
     const resolvedLocale = resolvedPathname.split("/", 3)[1];
     if (resolvedLocale && i18nConfig.locales.includes(resolvedLocale)) {
-      return matchedPathname === "/"
-        ? `/${resolvedLocale}`
-        : `/${resolvedLocale}${matchedPathname}`;
+      return localePrefixPathname(matchedPathname, resolvedLocale);
     }
-    return matchResolvedPathname(matchedPathname);
+    return matchResolvedPathname(matchedPathname, dataMatchedPathLocale);
   };
 
   // Step 7: Config headers staging
@@ -696,7 +712,7 @@ export async function runPagesRequest(
     ) {
       const headers = new Headers(response.headers);
       headers.set("content-type", "application/json");
-      headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
+      headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname, dataMatchedPathLocale));
       const notFoundResponse = new Response("{}", { status: 200, headers });
       return {
         type: "response",

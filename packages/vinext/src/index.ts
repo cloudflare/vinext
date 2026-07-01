@@ -78,9 +78,12 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
-
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
-import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
+import {
+  isNextDataPathname,
+  normalizePagesDataRouteInfo,
+  parseNextDataPathname,
+} from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -4517,6 +4520,7 @@ export const loadServerActionClient = ${
               // accept the request; if it is present and wrong, fall through
               // to the dot-extension skip below which returns 404.
               let isDataReq = false;
+              let dataRequestLocale: string | null = null;
               if (isNextDataPathname(pathname)) {
                 // Use the plugin's resolved buildId so a user-supplied
                 // `generateBuildId` in next.config.mjs is honored in dev —
@@ -4529,8 +4533,14 @@ export const loadServerActionClient = ${
                 if (dataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                  url = dataMatch.pagePathname + qs;
-                  pathname = dataMatch.pagePathname;
+                  const dataRouteInfo = normalizePagesDataRouteInfo(
+                    dataMatch.pagePathname,
+                    nextConfig?.i18n ?? null,
+                  );
+                  const middlewarePathname = dataRouteInfo.middlewarePathname;
+                  dataRequestLocale = dataRouteInfo.locale;
+                  url = middlewarePathname + qs;
+                  pathname = middlewarePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
@@ -4677,6 +4687,7 @@ export const loadServerActionClient = ${
                         nextConfig?.basePath,
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
+                        opts.dataRequestLocale,
                       );
 
                       // Forward middleware context to the RSC entry so it can
@@ -4727,6 +4738,7 @@ export const loadServerActionClient = ${
                 hadBasePath: true, // Vite strips basePath before our middleware sees the request
                 isDataReq,
                 isDataRequest,
+                dataRequestLocale,
                 hasMiddleware: capturedMiddlewarePath !== null,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
@@ -4944,6 +4956,7 @@ export const loadServerActionClient = ${
                   req.__vinextMiddlewareStatus,
                   pipelineResult.isDataReq,
                   originalRequestUrl,
+                  dataRequestLocale,
                 );
               }
             } catch (e) {

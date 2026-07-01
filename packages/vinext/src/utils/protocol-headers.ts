@@ -18,3 +18,6 @@ export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
+
+/** Public cache-policy signal consumed by the Pages Router client. */
+export const MIDDLEWARE_CACHE_HEADER = "x-middleware-cache";

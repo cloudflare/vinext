@@ -24,6 +24,7 @@ import {
   removeTrailingSlash,
   stripBasePath,
 } from "../utils/base-path.js";
+import { addLocalePrefix } from "../utils/domain-locale.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -73,6 +74,12 @@ type ExecuteMiddlewareOptions = {
    */
   isDataRequest?: boolean;
   isProxy: boolean;
+  /**
+   * Locale carried by a trusted `_next/data` URL. Data requests are normalized
+   * to the route pathname before middleware runs, but Next.js still exposes the
+   * encoded data locale through `request.nextUrl.locale`.
+   */
+  localeOverride?: string | null;
   module: MiddlewareModule;
   normalizedPathname?: string;
   request: Request;
@@ -222,6 +229,10 @@ function resolveMiddlewarePathname(request: Request): string | Response {
   }
 }
 
+function isApiRoutePathname(pathname: string): boolean {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
 function createNextRequest(
   request: Request,
   normalizedPathname: string,
@@ -229,6 +240,7 @@ function createNextRequest(
   basePath?: string,
   trailingSlash?: boolean,
   hadBasePath?: boolean,
+  localeOverride?: string | null,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -244,10 +256,12 @@ function createNextRequest(
   // configured value. Out-of-basePath ("absolute path") requests must stay
   // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
   // getNextPathnameInfo semantics).
+  let nextUrlPathname = normalizedPathname;
+  if (i18nConfig && localeOverride && !isApiRoutePathname(normalizedPathname)) {
+    nextUrlPathname = addLocalePrefix(normalizedPathname, localeOverride, "");
+  }
   const mwPathname =
-    basePath && hadBasePath
-      ? addBasePathToPathname(normalizedPathname, basePath)
-      : normalizedPathname;
+    basePath && hadBasePath ? addBasePathToPathname(nextUrlPathname, basePath) : nextUrlPathname;
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
@@ -320,6 +334,7 @@ export async function executeMiddleware(
     options.basePath,
     options.trailingSlash,
     hadBasePath,
+    options.localeOverride,
   );
   if (options.isDataRequest) {
     Object.defineProperty(nextRequest, "__isData", {

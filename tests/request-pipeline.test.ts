@@ -721,6 +721,20 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
+  // Ported from Next.js: packages/next/src/shared/lib/router/router.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/shared/lib/router/router.ts
+  it("preserves x-middleware-cache for Pages Router prefetch cache policy", () => {
+    const headers = new Headers({
+      "x-middleware-cache": "no-cache",
+      "x-middleware-next": "1",
+      "content-type": "application/json",
+    });
+    processMiddlewareHeaders(headers);
+    expect(headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(headers.has("x-middleware-next")).toBe(false);
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
   it("is a no-op when no x-middleware-* headers are present", () => {
     const headers = new Headers({
       "content-type": "text/html",

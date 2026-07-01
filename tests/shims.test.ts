@@ -16722,6 +16722,168 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  it("resolves the destination route after a middleware rewrite from a dynamic visible URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const sourceLoader = vi.fn(async () => ({ default: () => null }));
+    const aboutLoader = vi.fn(async () => ({ default: () => null }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      locale: "en",
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __VINEXT_PAGE_PATTERNS__: ["/fallback-true-blog/[slug]", "/about"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/fallback-true-blog/[slug]": sourceLoader,
+        "/about": aboutLoader,
+      },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/fr/fallback-true-blog/rewritten.json") {
+        return new Response(JSON.stringify({ pageProps: { from: "about" } }), {
+          headers: {
+            "content-type": "application/json",
+            "x-nextjs-rewrite": "/about",
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/fallback-true-blog/rewritten", undefined, {
+        locale: "fr",
+      });
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        "/_next/data/build-1/fr/fallback-true-blog/rewritten.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(aboutLoader).toHaveBeenCalledOnce();
+      expect(win.location.pathname).toBe("/fr/fallback-true-blog/rewritten");
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/about",
+        query: {},
+        props: { pageProps: { from: "about" } },
+        locale: "fr",
+      });
+      expect(Router.pathname).toBe("/about");
+      expect(Router.query).toEqual({});
+      expect(win.__VINEXT_LOCALE__).toBe("fr");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts#L398-L410
+  it("renders the destination page for recursive middleware data rewrites", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const sourceLoader = vi.fn(async () => ({ default: () => null }));
+    const aboutLoader = vi.fn(async () => ({ default: () => null }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      locale: "en",
+      locales: ["ja", "en", "fr", "es"],
+      defaultLocale: "en",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["ja", "en", "fr", "es"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __VINEXT_PAGE_PATTERNS__: ["/[param]", "/about"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/[param]": sourceLoader,
+        "/about": aboutLoader,
+      },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/rewrite-me-to-about.json?override=internal") {
+        return new Response(JSON.stringify({ pageProps: { message: "about" } }), {
+          headers: {
+            "content-type": "application/json",
+            "x-nextjs-rewrite": "/about?override=internal",
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/rewrite-me-to-about?override=internal");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        "/_next/data/build-1/rewrite-me-to-about.json?override=internal",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(aboutLoader).toHaveBeenCalledOnce();
+      expect(win.location.pathname).toBe("/rewrite-me-to-about");
+      expect(win.location.search).toBe("?override=internal");
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/about",
+        query: { override: "internal" },
+        props: { pageProps: { message: "about" } },
+        locale: "en",
+      });
+      expect(Router.pathname).toBe("/about");
+      expect(Router.query).toEqual({ override: "internal" });
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("hard-navigates when middleware rewrites an existing Pages path to App Router", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

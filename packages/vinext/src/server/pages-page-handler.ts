@@ -21,6 +21,7 @@ import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
+import { buildStaticPageNextDataQuery } from "./pages-next-data-query.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -310,7 +311,7 @@ export function createPagesPageHandler(
     const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
     let dataRequestPathname: string | null = null;
     let dataRequestSearch = "";
-    const initialDataNorm = normalizePagesDataRequest(request, buildId);
+    const initialDataNorm = normalizePagesDataRequest(request, buildId, "", i18nConfig);
 
     // Auto-detect /_next/data/... requests by inspecting the incoming URL.
     // When the worker pipeline forwards an unrewritten data URL as the `url`
@@ -323,7 +324,7 @@ export function createPagesPageHandler(
         dataRequestSearch = initialDataNorm.search;
         if (url && url.startsWith("/_next/data/")) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          url = initialDataNorm.normalizedPathname + qs;
+          url = initialDataNorm.middlewarePathname + qs;
         }
       }
     } else if (initialDataNorm.isDataReq) {
@@ -418,6 +419,7 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
+    const pageModule = route.module;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
     });
@@ -430,11 +432,16 @@ export function createPagesPageHandler(
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
         const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
 
+        const nextDataQuery =
+          typeof pageModule.getStaticProps === "function" &&
+          typeof pageModule.getServerSideProps !== "function"
+            ? buildStaticPageNextDataQuery(params, routeUrl, originalRequestUrl.search)
+            : query;
+
         // Model Pages Router readiness for `next/navigation` compat hooks. The
         // serialized `__NEXT_DATA__` flags (gssp/gsp/gip/appGip/autoExport) plus
         // the configured-rewrites flag decide the initial `router.isReady` value,
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
-        const pageModule = route.module;
         const pagesNextData = buildPagesReadinessNextData({
           pageModule,
           appComponent: AppComponent as { getInitialProps?: unknown } | null,
@@ -764,6 +771,7 @@ export function createPagesPageHandler(
           props: renderProps,
           params,
           query,
+          nextDataQuery,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },

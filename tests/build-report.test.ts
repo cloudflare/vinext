@@ -106,6 +106,41 @@ export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
   });
+
+  // The following tests document the SHAPES hasNamedExport intentionally does
+  // NOT recognise. They are negative contracts: each one is a real export
+  // shape that the analyzer cannot resolve to the searched name. Pages using
+  // these shapes are treated as non-SSG by the client prefetch manifest
+  // emitted from packages/vinext/src/entries/pages-client-entry.ts. The
+  // runtime still works (data prefetch is best-effort; the chunk loader map
+  // resolves the page module), but `router.sdc` will not warm a JSON payload
+  // for the page during hover/viewport prefetch. See the long-form note on
+  // `hasNamedExport` in packages/vinext/src/build/report.ts.
+
+  it("does not recognise namespace re-exports (export * as ...)", () => {
+    expect(hasNamedExport("export * as gsp from './gsp';", "gsp")).toBe(false);
+    expect(hasNamedExport("export * as gsp from './gsp';", "getStaticProps")).toBe(false);
+  });
+
+  it("does not recognise wildcard re-exports (export * from ...)", () => {
+    expect(hasNamedExport("export * from './gsp';", "getStaticProps")).toBe(false);
+  });
+
+  it("does not follow re-exports through renamed source bindings", () => {
+    // Source: getStaticProps is exported as `gsp` from another file, then this
+    // file re-exports `gsp` under a different alias. The static analyzer
+    // matches the LOCAL name, not the source module's name, so this resolves
+    // to false.
+    expect(hasNamedExport("export { gsp as getStaticProps } from './gsp';", "getStaticProps")).toBe(
+      false,
+    );
+  });
+
+  it("does not recognise re-exports of `default`", () => {
+    expect(
+      hasNamedExport("export { default as getStaticProps } from './gsp';", "getStaticProps"),
+    ).toBe(false);
+  });
 });
 
 // ─── extractExportConstString ─────────────────────────────────────────────────

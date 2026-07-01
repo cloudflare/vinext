@@ -4,6 +4,7 @@ import type { BasePathMatchState, RequestContext } from "../config/config-matche
 import { matchHeaders } from "../config/config-matchers.js";
 import {
   INTERNAL_HEADERS,
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_INTERNAL_HEADERS,
   VINEXT_STATIC_FILE_HEADER,
@@ -544,7 +545,9 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.
  * `x-middleware-next`, `x-middleware-rewrite`, `x-middleware-request-*`).
- * These must be removed before sending the response to the client.
+ * These must be removed before sending the response to the client. The one
+ * exception is `x-middleware-cache`, which Next.js exposes to the Pages Router
+ * client so it can evict prefetch data when middleware opts out of caching.
  *
  * @param headers - The Headers object to modify in place
  */
@@ -552,7 +555,7 @@ export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       keysToDelete.push(key);
     }
   }

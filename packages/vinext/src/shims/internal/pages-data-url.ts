@@ -78,26 +78,71 @@ type PagesPatternMatch = {
   params: Record<string, string | string[]>;
 };
 
+function routePartRank(part: string): number {
+  if (part.startsWith(":") && part.endsWith("*")) return 3;
+  if (part.startsWith(":") && part.endsWith("+")) return 2;
+  if (part.startsWith(":")) return 1;
+  return 0;
+}
+
+function comparePagesPatternSpecificity(left: string, right: string): number {
+  const leftParts = routePatternParts(left);
+  const rightParts = routePatternParts(right);
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < maxLength; index++) {
+    const leftPart = leftParts[index];
+    const rightPart = rightParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+
+    const leftRank = routePartRank(leftPart);
+    const rightRank = routePartRank(rightPart);
+    if (leftRank !== rightRank) return leftRank - rightRank;
+
+    if (leftRank === 0 && leftPart !== rightPart) {
+      return leftPart.localeCompare(rightPart);
+    }
+  }
+
+  return left.localeCompare(right);
+}
+
 /**
  * Find the route pattern (Next.js bracket format) that matches `pathname`.
  *
- * Patterns are tried in `patterns` order — callers should pre-sort so more
- * specific patterns come before catch-alls. Returns `null` when no pattern
- * matches, so the caller can fall back to a hard navigation (this is how
- * vinext handles routes that exist on the server but are not in the
- * client-side loader map, e.g. dev-only pages).
+ * Next.js resolves all matching page routes with sorted-routes specificity:
+ * static segments beat dynamic segments, dynamic beats catch-all, and optional
+ * catch-all comes last. Do that here instead of trusting global manifest order;
+ * middleware rewrites can turn a dynamic visible URL into a static destination
+ * such as `/about`, and the client must import the destination page module.
+ *
+ * Ported from Next.js:
+ * `packages/next/src/shared/lib/router/router.ts` (`resolveDynamicRoute`) and
+ * `packages/next/src/shared/lib/router/utils/sorted-routes.ts`.
+ *
+ * Returns `null` when no pattern matches, so the caller can fall back to a hard
+ * navigation (this is how vinext handles routes that exist on the server but
+ * are not in the client-side loader map, e.g. dev-only pages).
  */
 export function matchPagesPattern(
   pathname: string,
   patterns: readonly string[],
 ): PagesPatternMatch | null {
   const urlParts = pathname.split("/").filter(Boolean);
+  let bestMatch: PagesPatternMatch | null = null;
   for (const pattern of patterns) {
     const patternParts = routePatternParts(pattern);
     const params = matchRoutePattern(urlParts, patternParts);
     if (params !== null) {
-      return { pattern, params };
+      const match = { pattern, params };
+      if (
+        bestMatch === null ||
+        comparePagesPatternSpecificity(match.pattern, bestMatch.pattern) < 0
+      ) {
+        bestMatch = match;
+      }
     }
   }
-  return null;
+  return bestMatch;
 }

@@ -135,6 +135,14 @@ declare global {
     __VINEXT_MIDDLEWARE_MATCHER__: unknown;
 
     /**
+     * Pages Router route patterns that export `getStaticProps`, in the same
+     * Next.js bracket format as `__VINEXT_PAGE_PATTERNS__`. Mirrors Next.js's
+     * client `_ssgManifest`, letting Pages Router prefetch fetch JSON only for
+     * SSG routes while still warming chunks for non-SSG routes.
+     */
+    __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
+
+    /**
      * Pages Router `_app` loader. Dynamic `import()` thunk for the user's
      * `pages/_app.tsx` module, or `undefined` when the app has no `_app`.
      * Set by the generated client entry; read by `shims/router.ts`

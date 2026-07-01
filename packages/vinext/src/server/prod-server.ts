@@ -48,6 +48,7 @@ import {
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
+  normalizePagesDataRouteInfo,
 } from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -1776,6 +1777,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // here — stale clients can fall back to a hard navigation without
       // accidentally triggering middleware/SSR on a bogus path.
       let isDataReq = false;
+      let dataRequestLocale: string | null = null;
       const originalRenderUrl = url;
       if (isNextDataPathname(pathname)) {
         const dataMatch = pagesBuildId ? parseNextDataPathname(pathname, pagesBuildId) : null;
@@ -1788,8 +1790,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
         isDataReq = true;
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = dataMatch.pagePathname + qs;
-        pathname = dataMatch.pagePathname;
+        const dataRouteInfo = normalizePagesDataRouteInfo(dataMatch.pagePathname, i18nConfig);
+        const middlewarePathname = dataRouteInfo.middlewarePathname;
+        dataRequestLocale = dataRouteInfo.locale;
+        url = middlewarePathname + qs;
+        pathname = middlewarePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
@@ -1824,6 +1829,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         hadBasePath,
         isDataReq,
         isDataRequest,
+        dataRequestLocale,
         hasMiddleware,
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.

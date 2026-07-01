@@ -35,13 +35,51 @@ export type PagesDataTarget = {
   /** URL search string including the leading `?`. */
   search: string;
   /**
-   * Locale prefix detected on the URL, or `undefined` when the URL is
-   * unprefixed (default locale, or no i18n configured). Lets the caller refresh
-   * locale state on locale transitions, which the data JSON envelope itself
-   * does not carry.
+   * Active locale for this data request. Locale-prefixed browser URLs use the
+   * URL prefix; unprefixed i18n URLs use the current/default locale because
+   * Next.js still includes that segment in `/_next/data` paths.
    */
   locale: string | undefined;
 };
+
+type PagesDataLocalePath = {
+  dataPagePath: string;
+  locale: string | undefined;
+};
+
+function prefixPagesDataPathWithLocale(pagePath: string, locale: string): string {
+  return pagePath === "/" ? `/${locale}` : `/${locale}${pagePath}`;
+}
+
+function resolvePagesDataLocalePath(
+  pagePath: string,
+  locales: readonly string[] | undefined,
+  currentLocale: string | undefined,
+  defaultLocale: string | undefined,
+): PagesDataLocalePath {
+  if (!locales || locales.length === 0) {
+    return { dataPagePath: pagePath, locale: undefined };
+  }
+
+  const pathLocale = getLocalePathPrefix(pagePath, locales);
+  if (pathLocale) {
+    return { dataPagePath: pagePath, locale: pathLocale };
+  }
+
+  const activeLocale = currentLocale ?? defaultLocale;
+  if (!activeLocale || !locales.includes(activeLocale)) {
+    return { dataPagePath: pagePath, locale: undefined };
+  }
+
+  if (activeLocale === defaultLocale) {
+    return { dataPagePath: pagePath, locale: activeLocale };
+  }
+
+  return {
+    dataPagePath: prefixPagesDataPathWithLocale(pagePath, activeLocale),
+    locale: activeLocale,
+  };
+}
 
 type ClientMiddlewareMatcherObject = {
   source: string;
@@ -124,7 +162,11 @@ function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boo
   return false;
 }
 
-export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string): string | null {
+export function getPagesMiddlewareDataHref(
+  browserUrl: string,
+  basePath: string,
+  activeLocaleOverride?: string,
+): string | null {
   const nextData = window.__NEXT_DATA__;
   if (!nextData || !hasVinextMiddleware(nextData)) return null;
   const buildId = nextData.buildId;
@@ -138,12 +180,18 @@ export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string)
   }
   if (parsed.origin !== window.location.origin) return null;
 
-  const pathname = stripBasePath(parsed.pathname, basePath);
-  if (!clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__)) {
+  const pagePath = stripBasePath(parsed.pathname, basePath);
+  if (!clientMiddlewareMatcherMatches(pagePath, window.__VINEXT_MIDDLEWARE_MATCHER__)) {
     return null;
   }
 
-  return buildPagesDataHref(basePath, buildId, pathname, parsed.search);
+  const { dataPagePath } = resolvePagesDataLocalePath(
+    pagePath,
+    window.__VINEXT_LOCALES__,
+    activeLocaleOverride ?? window.__VINEXT_LOCALE__,
+    window.__VINEXT_DEFAULT_LOCALE__,
+  );
+  return buildPagesDataHref(basePath, buildId, dataPagePath, parsed.search);
 }
 
 /**
@@ -172,6 +220,7 @@ export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string)
 export function resolvePagesDataNavigationTarget(
   browserUrl: string,
   basePath: string,
+  activeLocaleOverride?: string,
 ): PagesDataTarget | null {
   if (typeof window === "undefined") return null;
 
@@ -191,10 +240,10 @@ export function resolvePagesDataNavigationTarget(
   if (parsed.origin !== window.location.origin) return null;
 
   const pagePath = stripBasePath(parsed.pathname, basePath);
-  const locale = getLocalePathPrefix(pagePath, window.__VINEXT_LOCALES__);
-  // `locale.length + 1` skips the `/<locale>` segment. If only the locale was
-  // present (`/fr`) the remainder is empty, which normalises to `/` (root).
-  const pathForMatch = locale ? pagePath.slice(locale.length + 1) || "/" : pagePath;
+  const pathLocale = getLocalePathPrefix(pagePath, window.__VINEXT_LOCALES__);
+  // `pathLocale.length + 1` skips the `/<locale>` segment. If only the locale
+  // was present (`/fr`) the remainder is empty, which normalises to `/` (root).
+  const pathForMatch = pathLocale ? pagePath.slice(pathLocale.length + 1) || "/" : pagePath;
 
   const match = matchPagesPattern(pathForMatch, patterns);
   if (!match) return null;
@@ -214,13 +263,21 @@ export function resolvePagesDataNavigationTarget(
         ? "server"
         : "none";
 
+  const { dataPagePath, locale } = resolvePagesDataLocalePath(
+    pagePath,
+    window.__VINEXT_LOCALES__,
+    activeLocaleOverride ?? window.__VINEXT_LOCALE__,
+    window.__VINEXT_DEFAULT_LOCALE__,
+  );
+
   return {
-    dataHref: buildPagesDataHref(basePath, buildId, pagePath, parsed.search),
+    dataHref: buildPagesDataHref(basePath, buildId, dataPagePath, parsed.search),
     pattern: match.pattern,
     params: match.params,
     loader,
     dataKind,
-    middlewareDataHref: getPagesMiddlewareDataHref(browserUrl, basePath) ?? undefined,
+    middlewareDataHref:
+      getPagesMiddlewareDataHref(browserUrl, basePath, activeLocaleOverride) ?? undefined,
     buildId,
     pagePath,
     search: parsed.search,

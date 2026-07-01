@@ -92,7 +92,10 @@ export type PagesRouterPublicInstance = {
    * See: `packages/next/src/shared/lib/router/router.ts:2525`.
    */
   components: Record<string, unknown>;
-  /** Persistent Pages Router static-data cache, matching Next.js `Router.sdc`. */
+  /**
+   * Mirrors Next.js's `Router.sdc`, the SSG data cache populated by Pages
+   * Router prefetches and inspected by the upstream deploy suite.
+   */
   sdc: Record<string, Promise<Response>>;
 };
 

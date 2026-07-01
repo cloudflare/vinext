@@ -61,6 +61,7 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { buildStaticPageNextDataQuery } from "./pages-next-data-query.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
@@ -554,6 +555,7 @@ export function createSSRHandler(
      */
     isDataReq: boolean = false,
     originalUrl: string = url,
+    dataRequestLocale: string | null = null,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -607,10 +609,11 @@ export function createSSRHandler(
       }
     }
 
+    const activeLocale = isDataReq && dataRequestLocale ? dataRequestLocale : locale;
     const i18nCacheVariant = i18nConfig
       ? currentDomainLocaleDomain
         ? "domain:" + currentDomainLocaleDomain.toLowerCase()
-        : "locale:" + String(locale)
+        : "locale:" + String(activeLocale)
       : null;
     const pagesIsrCacheKey = i18nCacheVariant
       ? (pathname: string) =>
@@ -634,7 +637,7 @@ export function createSSRHandler(
         const notFoundHeaders: Record<string, string> = { "Content-Type": "application/json" };
         if (hasMiddleware) {
           notFoundHeaders["x-nextjs-matched-path"] =
-            `${locale ? `/${locale}` : ""}${localeStrippedUrl}`;
+            `${activeLocale ? `/${activeLocale}` : ""}${localeStrippedUrl}`;
         }
         if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
         res.writeHead(hasMiddleware ? 200 : 404, notFoundHeaders);
@@ -722,6 +725,11 @@ export function createSSRHandler(
           appComponent: AppComponent,
           hasRewrites,
         });
+        const nextDataQuery =
+          typeof pageModule.getStaticProps === "function" &&
+          typeof pageModule.getServerSideProps !== "function"
+            ? buildStaticPageNextDataQuery(params, localeStrippedUrl, originalRequestSearch)
+            : query;
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -1302,7 +1310,7 @@ export function createSSRHandler(
                         {
                           props: freshRenderProps,
                           page: patternToNextFormat(route.pattern),
-                          query: params,
+                          query: nextDataQuery,
                           buildId: process.env.__VINEXT_BUILD_ID,
                           isFallback: false,
                           locale: locale ?? currentDefaultLocale,
@@ -1511,7 +1519,7 @@ export function createSSRHandler(
             "Content-Type": "application/json",
           };
           if ((statusCode ?? 200) === 200) {
-            const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
+            const matchedPathname = `${activeLocale ? `/${activeLocale}` : ""}${patternToNextFormat(route.pattern)}`;
             dataHeaders["x-nextjs-matched-path"] = matchedPathname;
           }
           if (gsspExtraHeaders) {
@@ -1738,7 +1746,7 @@ hydrate();
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: nextDataQuery,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
