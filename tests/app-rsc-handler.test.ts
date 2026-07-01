@@ -127,6 +127,8 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
         : undefined),
     publicFiles: overrides.publicFiles ?? new Set<string>(),
     registerCacheAdapters: () => {},
+    renderToReadableStream:
+      overrides.renderToReadableStream ?? (async () => new ReadableStream<Uint8Array>()),
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
