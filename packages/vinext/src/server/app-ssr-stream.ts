@@ -12,6 +12,10 @@ import {
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
 
+const METADATA_ICON_LINK_RE =
+  /<link\b(?=[^>]*\brel=(?:"(?:icon|apple-touch-icon)"|'(?:icon|apple-touch-icon)'|(?:icon|apple-touch-icon)(?:\s|>)))[^>]*>/i;
+const REINSERT_ICON_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => { el.setAttribute('data-vinext-relocated-metadata-icon', ''); document.head.appendChild(el) })`;
+
 type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
@@ -454,6 +458,7 @@ export function createTickBufferedTransform(
   const encoder = new TextEncoder();
   const insertsPerFlush = typeof injectHTML === "function";
   let injected = false;
+  let iconScriptInjected = false;
   let preHeadInjected = false;
   let suffixStripped = false;
   let buffered: string[] = [];
@@ -496,6 +501,24 @@ export function createTickBufferedTransform(
     if (insertion) {
       controller.enqueue(encoder.encode(insertion));
     }
+  };
+
+  const insertMetadataIconScript = (html: string): string => {
+    if (iconScriptInjected) return html;
+    const headEnd = html.indexOf("</head>");
+    const searchStart = headEnd === -1 ? 0 : headEnd + "</head>".length;
+    const bodyHtml = html.slice(searchStart);
+    const iconMatch = METADATA_ICON_LINK_RE.exec(bodyHtml);
+    if (!iconMatch) return html;
+    iconScriptInjected = true;
+    const iconEnd = searchStart + iconMatch.index + iconMatch[0].length;
+    const metadataContainerEnd = html.indexOf("</div>", iconEnd);
+    const insertAt = metadataContainerEnd === -1 ? iconEnd : metadataContainerEnd + "</div>".length;
+    return (
+      html.slice(0, insertAt) +
+      createInlineScriptTag(REINSERT_ICON_SCRIPT, inlineCssScriptNonce) +
+      html.slice(insertAt)
+    );
   };
 
   /**
@@ -560,7 +583,7 @@ export function createTickBufferedTransform(
       inlineCssPrependCss = "";
     }
 
-    let working = inlineCssResult.html;
+    let working = insertMetadataIconScript(inlineCssResult.html);
     if (!preHeadInjected) {
       const result = spliceAfterHeadOpen(working);
       if (result.spliced) {

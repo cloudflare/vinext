@@ -256,6 +256,27 @@ async function runTransform(
   return out;
 }
 
+it("adds a nonce-aware relocation script after streamed body metadata icons", async () => {
+  const out = await runTransform(
+    [
+      '<html><head></head><body><div hidden><link rel="icon" href="/heart.png"></div></body></html>',
+    ],
+    { inlineCssScriptNonce: "icon-nonce" },
+  );
+
+  expect(out).toContain('<script nonce="icon-nonce">document.querySelectorAll');
+  expect(out).toContain('body link[rel="icon"]');
+  expect(out).toContain("data-vinext-relocated-metadata-icon");
+});
+
+it("does not add a relocation script when metadata icons render in head", async () => {
+  const out = await runTransform([
+    '<html><head><link rel="icon" href="/heart.png"></head><body></body></html>',
+  ]);
+
+  expect(out).not.toContain("document.querySelectorAll");
+});
+
 async function runDelayedTransform(
   chunks: string[],
   options: {

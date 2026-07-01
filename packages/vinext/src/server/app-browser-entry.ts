@@ -282,6 +282,22 @@ const discardedServerActionRefreshScheduler = hasServerActions
     };
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
+const RELOCATED_METADATA_ICON_ATTR = "data-vinext-relocated-metadata-icon";
+
+function syncMetadataIcons(preserveExistingWhenNoBodyIcons: boolean): void {
+  const bodyIcons = document.body.querySelectorAll<HTMLLinkElement>(
+    'link[rel="icon"], link[rel="apple-touch-icon"]',
+  );
+  if (preserveExistingWhenNoBodyIcons && bodyIcons.length === 0) return;
+
+  document.head
+    .querySelectorAll(`link[${RELOCATED_METADATA_ICON_ATTR}]`)
+    .forEach((icon) => icon.remove());
+  bodyIcons.forEach((icon) => {
+    icon.setAttribute(RELOCATED_METADATA_ICON_ATTR, "");
+    document.head.appendChild(icon);
+  });
+}
 
 function syncServerActionHttpFallbackHead(status: number | null): void {
   document.head
@@ -577,6 +593,7 @@ function createNavigationCommitEffect(options: {
     // URL has been updated; the recovery hard-nav target is no longer needed.
     clearAppNavigationFailureTarget(href);
     commitClientNavigationState(navId);
+    queueMicrotask(() => syncMetadataIcons(false));
   };
 }
 
@@ -1079,8 +1096,9 @@ function BrowserRoot({
   useLayoutEffect(() => {
     setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
     removeStylesheetLinksCoveredByInlineCss();
+    syncMetadataIcons(treeState.renderId === 0);
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
-  }, [treeState.elements]);
+  }, [treeState.elements, treeState.renderId]);
 
   useLayoutEffect(() => {
     if (treeState.renderId !== 0) {
