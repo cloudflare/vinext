@@ -1516,25 +1516,15 @@ function bootstrapHydration(
             mountedSlotsHeader,
           );
         }
-        if (isCompleteAppPayloadMetadata(metadata)) {
-          return storeVisitedResponseSnapshot(
-            rscUrl,
-            metadata.interceptionContext,
-            snapshot,
-            initialParams,
-            fallbackTtlMs,
-            mountedSlotsHeader,
-            elements,
-          );
-        }
-        seedPrefetchResponseSnapshot(
+        return storeVisitedResponseSnapshot(
           rscUrl,
-          snapshot,
           metadata.interceptionContext,
-          mountedSlotsHeader,
+          snapshot,
+          initialParams,
           fallbackTtlMs,
+          mountedSlotsHeader,
+          elements,
         );
-        return () => deletePrefetchResponseSnapshot(rscUrl, snapshot, metadata.interceptionContext);
       });
     })
     .catch(() => {});
