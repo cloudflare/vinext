@@ -902,14 +902,19 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("does not wait for captured RSC metadata during speculative prerender", async () => {
+  it("captures late RSC cache metadata during speculative prerender", async () => {
     const common = createCommonOptions();
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocumentOnShellError: boolean | undefined;
-    const getRequestCacheLife = vi.fn(() => ({ revalidate: 1, expire: 3 }));
-    const pendingRscData = new Promise<ArrayBuffer>(() => {});
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+    const getRequestCacheLife = vi.fn(() => {
+      const value = requestCacheLife;
+      requestCacheLife = null;
+      return value;
+    });
+    const releaseRscData = createDeferred<ArrayBuffer>();
 
-    const response = await renderAppPageLifecycle({
+    const responsePromise = renderAppPageLifecycle({
       ...common.options,
       getRequestCacheLife,
       isPrerender: true,
@@ -930,7 +935,7 @@ describe("app page render lifecycle", () => {
           capturedFallbackToErrorDocumentOnShellError =
             options?.fallbackToErrorDocumentOnShellError;
           if (options?.capturedRscDataRef) {
-            options.capturedRscDataRef.value = pendingRscData;
+            options.capturedRscDataRef.value = releaseRscData.promise;
           }
           if (options?.sideStream) {
             void options.sideStream.getReader().cancel();
@@ -941,6 +946,12 @@ describe("app page render lifecycle", () => {
       revalidateSeconds: 1,
     });
 
+    await Promise.resolve();
+    expect(getRequestCacheLife).not.toHaveBeenCalled();
+    requestCacheLife = { revalidate: 1, expire: 3 };
+    releaseRscData.resolve(new ArrayBuffer(0));
+    const response = await responsePromise;
+
     expect(capturedWaitForAllReady).toBe(false);
     expect(capturedFallbackToErrorDocumentOnShellError).toBe(false);
     expect(getRequestCacheLife).toHaveBeenCalledOnce();
@@ -949,6 +960,56 @@ describe("app page render lifecycle", () => {
     );
     expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
     await expect(response.text()).resolves.toBe("<html>speculative</html>");
+  });
+
+  it("does not wait for speculative prerender cache metadata after dynamic usage", async () => {
+    const common = createCommonOptions();
+    let dynamicUsed = false;
+    const getRequestCacheLife = vi.fn(() => null);
+    const pendingRscData = new Promise<ArrayBuffer>(() => {});
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage() {
+        const value = dynamicUsed;
+        dynamicUsed = false;
+        return value;
+      },
+      getRequestCacheLife,
+      isPrerender: true,
+      isSpeculativePrerender: true,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            sideStream?: ReadableStream<Uint8Array>;
+          },
+        ) {
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = pendingRscData;
+          }
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+          queueMicrotask(() => {
+            dynamicUsed = true;
+          });
+          return createStream(["<html>dynamic</html>"]);
+        },
+      })),
+      peekDynamicUsage() {
+        return dynamicUsed;
+      },
+      revalidateSeconds: 1,
+    });
+
+    expect(getRequestCacheLife).toHaveBeenCalledOnce();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-prerender-cache-life")).toBeNull();
+    await expect(response.text()).resolves.toBe("<html>dynamic</html>");
   });
 
   it("captures prerender cache metadata when cacheLife provides the only revalidate value", async () => {
