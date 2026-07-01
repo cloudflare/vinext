@@ -1354,14 +1354,10 @@ function normalizePrefetchInliningConfig(value: unknown): PrefetchInliningConfig
   const normalizedMaxSize = Number(maxSize);
   const normalizedMaxBundleSize = Number(maxBundleSize);
   return {
-    maxBundleSize:
-      Number.isFinite(normalizedMaxBundleSize) && normalizedMaxBundleSize >= 0
-        ? normalizedMaxBundleSize
-        : Number.MAX_SAFE_INTEGER,
-    maxSize:
-      Number.isFinite(normalizedMaxSize) && normalizedMaxSize >= 0
-        ? normalizedMaxSize
-        : Number.MAX_SAFE_INTEGER,
+    maxBundleSize: Number.isFinite(normalizedMaxBundleSize)
+      ? normalizedMaxBundleSize
+      : Number.MAX_SAFE_INTEGER,
+    maxSize: Number.isFinite(normalizedMaxSize) ? normalizedMaxSize : Number.MAX_SAFE_INTEGER,
   };
 }
 

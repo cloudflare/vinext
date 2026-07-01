@@ -1634,8 +1634,8 @@ describe("resolveNextConfig prefetchInlining", () => {
       experimental: { prefetchInlining: { maxSize: -1, maxBundleSize: -1 } },
     });
     expect(negativeThresholds.prefetchInlining).toEqual({
-      maxBundleSize: Number.MAX_SAFE_INTEGER,
-      maxSize: Number.MAX_SAFE_INTEGER,
+      maxBundleSize: -1,
+      maxSize: -1,
     });
   });
 });
