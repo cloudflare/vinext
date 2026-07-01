@@ -295,9 +295,11 @@ async function hydrate() {
   window.__NEXT_HYDRATED_CB?.();
 
   if (nextData.isFallback) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.__vinext?.routeUrl;
     await Router.replace(
-      window.location.pathname + window.location.search + window.location.hash,
-      undefined,
+      routeUrl || currentUrl,
+      routeUrl ? currentUrl : undefined,
       { _h: 1, scroll: false },
     );
   }

@@ -1303,7 +1303,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("if (nextData.isFallback) {");
+      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
+      expect(code).toContain("routeUrl || currentUrl,");
+      expect(code).toContain("routeUrl ? currentUrl : undefined,");
       expect(code).toContain("{ _h: 1, scroll: false },");
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");

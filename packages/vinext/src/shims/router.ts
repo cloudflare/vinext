@@ -1452,6 +1452,7 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
 
 type NavigateClientOptions = {
   allowNotFoundResponse?: boolean;
+  isHydrationQueryUpdate?: boolean;
   /**
    * The history mode of the originating navigation. Used when a gSSP/gSP data
    * response carries a `__N_REDIRECT` marker so the re-entrant navigation to
@@ -2169,6 +2170,9 @@ async function navigateClientData(
   }
 
   if (!res.ok) {
+    if (options.isHydrationQueryUpdate) {
+      return;
+    }
     // 404 here is the deploy-skew signal (server buildId rotated) — hard
     // reload to land on the new build's HTML. Any other non-OK status is
     // treated the same way per the user-configured "always hard reload"
@@ -2191,6 +2195,9 @@ async function navigateClientData(
   try {
     body = (await res.json()) as PagesDataResponse;
   } catch {
+    if (options.isHydrationQueryUpdate) {
+      return;
+    }
     scheduleHardNavigationAndThrow(url, "Data navigation failed: invalid JSON response");
   }
   assertStillCurrent();
@@ -2973,8 +2980,13 @@ async function performNavigation(
   // scroll after completion.
   const scrollTarget = doScroll ? { x: 0, y: 0 } : null;
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
-    ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
-    : { mode, scroll: scrollTarget };
+    ? {
+        allowNotFoundResponse: true,
+        mode,
+        scroll: scrollTarget,
+        isHydrationQueryUpdate: options?._h === 1,
+      }
+    : { mode, scroll: scrollTarget, isHydrationQueryUpdate: options?._h === 1 };
 
   // Next.js push→replace coercion (narrowed): when the display URL (asPath)
   // doesn't change AND the route URL DOES change AND the locale doesn't
