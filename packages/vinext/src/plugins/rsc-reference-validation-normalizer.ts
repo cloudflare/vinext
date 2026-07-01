@@ -45,7 +45,9 @@ export function createRscReferenceValidationNormalizerPlugin(): Plugin {
   return {
     name: "vinext:rsc-reference-validation-normalizer",
     enforce: "pre",
-    apply: "serve",
+    apply(_config, env) {
+      return env.command === "serve" && env.isPreview !== true;
+    },
     configResolved(config) {
       rscApi = (
         config.plugins.find((plugin) => plugin.name === "rsc:minimal") as

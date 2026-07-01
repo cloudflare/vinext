@@ -32,6 +32,42 @@ async function load(plugin: Plugin, id: string): Promise<unknown> {
 }
 
 describe("rsc reference validation normalizer", () => {
+  it("only applies to the dev server, not build or preview", () => {
+    const plugin = createRscReferenceValidationNormalizerPlugin();
+    if (typeof plugin.apply !== "function") throw new Error("Expected function apply hook");
+
+    expect(
+      plugin.apply(
+        {},
+        {
+          command: "serve",
+          mode: "development",
+          isPreview: false,
+        },
+      ),
+    ).toBe(true);
+    expect(
+      plugin.apply(
+        {},
+        {
+          command: "serve",
+          mode: "production",
+          isPreview: true,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      plugin.apply(
+        {},
+        {
+          command: "build",
+          mode: "production",
+          isPreview: false,
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("accepts decoded client reference ids when plugin-rsc has encoded metadata", async () => {
     const encodedReference =
       "/@id/__x00__virtual:vite-rsc/client-in-server-package-proxy/%2Fapp%2Fnode_modules%2Fvinext%2Fdist%2Fshims%2Fdefault-global-error.js";
