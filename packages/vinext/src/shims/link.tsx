@@ -599,6 +599,7 @@ function prefetchUrl(
           mountedSlotsHeader,
           undefined,
           {
+            allowEmptySearchFallbackWithoutCacheControl: autoPrefetch.cacheForNavigation,
             cacheForNavigation: autoPrefetch.cacheForNavigation,
             fallbackTtlMs: PREFETCH_CACHE_TTL,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,

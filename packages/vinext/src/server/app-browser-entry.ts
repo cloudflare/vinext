@@ -33,6 +33,7 @@ import {
   getBfcacheIdMapContext,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
+  isNoStoreCacheControl,
   invalidatePrefetchCache,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
@@ -282,6 +283,8 @@ const discardedServerActionRefreshScheduler = hasServerActions
     };
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
+const HYDRATION_NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
+const HYDRATION_STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 
 function syncServerActionHttpFallbackHead(status: number | null): void {
   document.head
@@ -433,6 +436,14 @@ function isSettledPrefetchCacheEntry(
   );
 }
 
+function canLearnOptimisticRouteTemplateFromPrefetch(
+  entry: PrefetchCacheEntry & { snapshot: CachedRscResponse },
+): boolean {
+  if (entry.optimisticRouteShell === true) return true;
+  const cacheControl = entry.snapshot.cacheControl;
+  return typeof cacheControl !== "string" || !isNoStoreCacheControl(cacheControl);
+}
+
 function parsePrefetchCacheKey(cacheKey: string): {
   interceptionContext: string | null;
   rscUrl: string;
@@ -503,6 +514,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
     if (optimisticRouteTemplateSources.has(sourceKey)) continue;
     if (optimisticRouteTemplateLearning.has(sourceKey)) continue;
     if (!isSettledPrefetchCacheEntry(entry)) continue;
+    if (!canLearnOptimisticRouteTemplateFromPrefetch(entry)) continue;
 
     const promise = learnOptimisticRouteTemplateFromPrefetch({
       cacheKey,
@@ -1490,6 +1502,10 @@ function bootstrapHydration(
       const rscUrl = await createRscRequestUrl(initialPathAndSearch, headers);
       if (cacheGeneration !== clientNavigationCacheGeneration) return;
       const snapshot = {
+        cacheControl:
+          initialRscBootstrap?.initialCacheKind === "static"
+            ? HYDRATION_STATIC_CACHE_CONTROL
+            : HYDRATION_NO_STORE_CACHE_CONTROL,
         compatibilityIdHeader: CLIENT_RSC_COMPATIBILITY_ID,
         buffer,
         contentType: VINEXT_RSC_CONTENT_TYPE,
@@ -1767,7 +1783,7 @@ function bootstrapHydration(
             rscUrl,
             requestInterceptionContext,
             mountedSlotsHeader,
-            { notifyInvalidation: false },
+            { allowEmptySearchFallback: true, notifyInvalidation: false },
           );
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
           bypassNavigationCache: shouldBypassNavigationCache,

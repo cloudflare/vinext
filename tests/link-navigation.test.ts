@@ -45,6 +45,16 @@ type CapturedPrefetchLinkElement = {
 
 const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["viewport-prefetch-target"], isDynamic: false },
+  {
+    canPrefetchLoadingShell: false,
+    patternParts: ["search-params-shared-loading-state", "target-page"],
+    isDynamic: false,
+  },
+  {
+    canPrefetchLoadingShell: false,
+    patternParts: ["search-params-shared-loading-state", "target-page-server-search"],
+    isDynamic: false,
+  },
   { canPrefetchLoadingShell: false, patternParts: ["intent-prefetch-target"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["touch-prefetch-target"], isDynamic: false },
   {
@@ -1333,6 +1343,52 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches a searched visible link when only the no-search RSC URL is cached", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/search-params-shared-loading-state/target-page?param=test",
+      nodeEnv: "production",
+    });
+
+    try {
+      const { getPrefetchCache, getPrefetchedUrls } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const cachedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=test";
+      getPrefetchCache().set(cachedRscUrl, {
+        outcome: "cache-seeded",
+        snapshot: {
+          buffer: new TextEncoder().encode("static-flight").buffer,
+          contentType: "text/x-component",
+          mountedSlotsHeader: null,
+          paramsHeader: null,
+          url: cachedRscUrl,
+        },
+        timestamp: Date.now(),
+      });
+      getPrefetchedUrls().add(cachedRscUrl);
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/search-params-shared-loading-state/target-page",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInput = result.fetch.mock.calls[0]?.[0];
+      expect(typeof fetchInput).toBe("string");
+      if (typeof fetchInput !== "string") return;
+      const fetchUrl = new URL(fetchInput, "https://example.com");
+      expect(fetchUrl.searchParams.get("param")).toBe("test");
     } finally {
       result.restoreNodeEnv();
     }

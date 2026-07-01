@@ -317,6 +317,186 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(originalRscUrl)).toBe(false);
   });
 
+  it("reuses an empty-search prefetch for a searched navigation to the same pathname", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params-shared-loading-state.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params-shared-loading-state.test.ts
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=prefetched";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page?param=test&_rsc=navigation";
+    const snapshot = {
+      buffer: new TextEncoder().encode("static-flight").buffer,
+      cacheControl: "s-maxage=31536000",
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+
+    cache.set(prefetchedRscUrl, { outcome: "cache-seeded", snapshot, timestamp: Date.now() });
+    prefetched.add(prefetchedRscUrl);
+
+    expect(hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null)).toBe(false);
+    expect(
+      hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null, {
+        allowEmptySearchFallback: true,
+      }),
+    ).toBe(true);
+    expect(consumePrefetchResponse(targetRscUrl, null, null)).toEqual({
+      ...snapshot,
+      url: targetRscUrl,
+    });
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
+  });
+
+  it("does not reuse a no-store empty-search prefetch for a searched navigation", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=prefetched";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page?param=test&_rsc=navigation";
+    const snapshot = {
+      buffer: new TextEncoder().encode("static-flight").buffer,
+      cacheControl: "no-store, must-revalidate",
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+
+    cache.set(prefetchedRscUrl, { outcome: "cache-seeded", snapshot, timestamp: Date.now() });
+    prefetched.add(prefetchedRscUrl);
+
+    expect(hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null)).toBe(false);
+    expect(
+      hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null, {
+        allowEmptySearchFallback: true,
+      }),
+    ).toBe(false);
+    expect(consumePrefetchResponse(targetRscUrl, null, null)).toBeNull();
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
+  });
+
+  it("awaits a pending searched prefetch instead of reusing a hydration-seeded snapshot with unknown cache metadata", async () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl =
+      "/search-params-shared-loading-state/target-page-server-search?_rsc=hydration";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page-server-search?param=test&_rsc=navigation";
+    const fallbackSnapshot = {
+      buffer: new TextEncoder().encode("stale-server-search:none").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+    const deferred = createDeferredResponse();
+
+    seedPrefetchResponseSnapshot(prefetchedRscUrl, fallbackSnapshot);
+    expect(
+      hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null, {
+        allowEmptySearchFallback: true,
+      }),
+    ).toBe(false);
+
+    prefetchRscResponse(targetRscUrl, deferred.promise, null, null);
+
+    let settled = false;
+    const consumedPromise = consumePrefetchResponseForNavigation(targetRscUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    deferred.resolve(
+      new Response("fresh-server-search:test", { headers: { "content-type": "text/x-component" } }),
+    );
+
+    const consumed = await consumedPromise;
+    expect(settled).toBe(true);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("fresh-server-search:test");
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
+  });
+
+  it("does not consume a pending empty-search fallback without explicit safe cache metadata", async () => {
+    const cache = getPrefetchCache();
+    const prefetchedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=prefetched";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page?param=test&_rsc=navigation";
+    const deferred = createDeferredResponse();
+
+    prefetchRscResponse(prefetchedRscUrl, deferred.promise, null, null);
+
+    await expect(
+      consumePrefetchResponseForNavigation(targetRscUrl, null, null),
+    ).resolves.toBeNull();
+    expect(
+      hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null, {
+        allowEmptySearchFallback: true,
+      }),
+    ).toBe(false);
+
+    deferred.resolve(
+      new Response("stale-server-search:none", {
+        headers: {
+          "cache-control": "no-store, must-revalidate",
+          "content-type": "text/x-component",
+        },
+      }),
+    );
+
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(prefetchedRscUrl)?.outcome === "cache-seeded",
+    );
+    expect(cache.get(prefetchedRscUrl)?.outcome).toBe("cache-seeded");
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+  });
+
+  it("allows a completed full prefetch without cache-control to seed an empty-search fallback", async () => {
+    const cache = getPrefetchCache();
+    const prefetchedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=prefetched";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page?param=test&_rsc=navigation";
+
+    prefetchRscResponse(
+      prefetchedRscUrl,
+      Promise.resolve(
+        new Response("static-flight", { headers: { "content-type": "text/x-component" } }),
+      ),
+      null,
+      null,
+      undefined,
+      {
+        allowEmptySearchFallbackWithoutCacheControl: true,
+        cacheForNavigation: true,
+      },
+    );
+
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(prefetchedRscUrl)?.outcome === "cache-seeded",
+    );
+    expect(cache.get(prefetchedRscUrl)?.snapshot?.cacheControl).toBeNull();
+    expect(
+      hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null, {
+        allowEmptySearchFallback: true,
+      }),
+    ).toBe(true);
+    const consumed = consumePrefetchResponse(targetRscUrl, null, null);
+    expect(consumed?.url).toBe(targetRscUrl);
+    await expect(restoreRscResponse(consumed!).text()).resolves.toBe("static-flight");
+  });
+
   it("keeps learning-only prefetch responses out of navigation consumption", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
@@ -463,6 +643,156 @@ describe("prefetch cache eviction", () => {
     await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
     expect(getPrefetchCache().has(rscUrl)).toBe(false);
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+  });
+
+  it("uses an empty-search fallback instead of awaiting a pending searched navigation prefetch", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params-shared-loading-state.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params-shared-loading-state.test.ts
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl = "/search-params-shared-loading-state/target-page?_rsc=prefetched";
+    const targetRscUrl =
+      "/search-params-shared-loading-state/target-page?param=test&_rsc=navigation";
+    const fallbackSnapshot = {
+      buffer: new TextEncoder().encode("static-flight").buffer,
+      cacheControl: "s-maxage=31536000",
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+    const deferred = createDeferredResponse();
+
+    cache.set(prefetchedRscUrl, {
+      outcome: "cache-seeded",
+      snapshot: fallbackSnapshot,
+      timestamp: Date.now(),
+    });
+    prefetched.add(prefetchedRscUrl);
+    prefetchRscResponse(targetRscUrl, deferred.promise, null, null);
+
+    let settled = false;
+    const consumedPromise = consumePrefetchResponseForNavigation(targetRscUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+
+    await Promise.resolve();
+    const settledBeforeSearchedPrefetch = settled;
+    if (!settledBeforeSearchedPrefetch) {
+      deferred.resolve(
+        new Response("searched-flight", { headers: { "content-type": "text/x-component" } }),
+      );
+    }
+
+    const consumed = await consumedPromise;
+    expect(settledBeforeSearchedPrefetch).toBe(true);
+    expect(consumed).toEqual({
+      ...fallbackSnapshot,
+      url: targetRscUrl,
+    });
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
+
+    deferred.resolve(
+      new Response("searched-flight", { headers: { "content-type": "text/x-component" } }),
+    );
+  });
+
+  it("awaits a pending searched prefetch instead of reusing a no-store empty-search snapshot", async () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl = "/server-search/target-page?_rsc=prefetched";
+    const targetRscUrl = "/server-search/target-page?param=test&_rsc=navigation";
+    const fallbackSnapshot = {
+      buffer: new TextEncoder().encode("stale-server-search:none").buffer,
+      cacheControl: "no-store, must-revalidate",
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+    const deferred = createDeferredResponse();
+
+    cache.set(prefetchedRscUrl, {
+      outcome: "cache-seeded",
+      snapshot: fallbackSnapshot,
+      timestamp: Date.now(),
+    });
+    prefetched.add(prefetchedRscUrl);
+    prefetchRscResponse(targetRscUrl, deferred.promise, null, null);
+
+    let settled = false;
+    const consumedPromise = consumePrefetchResponseForNavigation(targetRscUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    deferred.resolve(
+      new Response("fresh-server-search:test", { headers: { "content-type": "text/x-component" } }),
+    );
+
+    const consumed = await consumedPromise;
+    expect(settled).toBe(true);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("fresh-server-search:test");
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
+  });
+
+  it("awaits a pending searched prefetch instead of reusing an empty-search snapshot without cache metadata", async () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const prefetchedRscUrl = "/server-search/target-page?_rsc=prefetched";
+    const targetRscUrl = "/server-search/target-page?param=test&_rsc=navigation";
+    const fallbackSnapshot = {
+      buffer: new TextEncoder().encode("stale-server-search:none").buffer,
+      cacheControl: null,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: prefetchedRscUrl,
+    };
+    const deferred = createDeferredResponse();
+
+    cache.set(prefetchedRscUrl, {
+      outcome: "cache-seeded",
+      snapshot: fallbackSnapshot,
+      timestamp: Date.now(),
+    });
+    prefetched.add(prefetchedRscUrl);
+    prefetchRscResponse(targetRscUrl, deferred.promise, null, null);
+
+    let settled = false;
+    const consumedPromise = consumePrefetchResponseForNavigation(targetRscUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    deferred.resolve(
+      new Response("fresh-server-search:test", { headers: { "content-type": "text/x-component" } }),
+    );
+
+    const consumed = await consumedPromise;
+    expect(settled).toBe(true);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("fresh-server-search:test");
+    expect(cache.has(prefetchedRscUrl)).toBe(true);
+    expect(prefetched.has(prefetchedRscUrl)).toBe(true);
   });
 
   it("honors an explicit fallback stale window above the minimum for prefetched responses", async () => {

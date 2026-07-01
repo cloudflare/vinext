@@ -231,6 +231,7 @@ declare module "next/navigation" {
 
   // RSC prefetch cache utilities (shared between link.tsx and browser entry)
   export type CachedRscResponse = {
+    cacheControl?: string | null;
     compatibilityIdHeader?: string | null;
     buffer: ArrayBuffer;
     contentType: string;
@@ -241,6 +242,7 @@ declare module "next/navigation" {
     url: string;
   };
   export type PrefetchCacheEntry = {
+    allowEmptySearchFallbackWithoutCacheControl?: boolean;
     cacheForNavigation?: boolean;
     expiresAt?: number;
     invalidationTimer?: ReturnType<typeof setTimeout>;
@@ -266,7 +268,7 @@ declare module "next/navigation" {
     rscUrl: string,
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
-    options?: { notifyInvalidation?: boolean },
+    options?: { allowEmptySearchFallback?: boolean; notifyInvalidation?: boolean },
   ): boolean;
   export function storePrefetchResponse(
     rscUrl: string,
@@ -290,6 +292,7 @@ declare module "next/navigation" {
     mountedSlotsHeader?: string | null,
     options?: { onInvalidate?: () => void },
     behavior?: {
+      allowEmptySearchFallbackWithoutCacheControl?: boolean;
       cacheForNavigation?: boolean;
       fallbackTtlMs?: number;
       optimisticRouteShell?: boolean;

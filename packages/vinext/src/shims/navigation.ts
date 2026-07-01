@@ -233,6 +233,7 @@ const MIN_PREFETCH_STALE_TIME_MS = 30_000;
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
+  cacheControl?: string | null;
   compatibilityIdHeader?: string | null;
   buffer: ArrayBuffer;
   contentType: string;
@@ -249,6 +250,7 @@ export type PrefetchOptions = {
 };
 
 export type PrefetchCacheEntry = {
+  allowEmptySearchFallbackWithoutCacheControl?: boolean;
   cacheForNavigation?: boolean;
   expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
@@ -386,14 +388,56 @@ export function resolvePrefetchCacheEntryMountedSlotsHeader(
   return entry.snapshot?.mountedSlotsHeader ?? null;
 }
 
-function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
+type NormalizedRscCacheLookupUrl = {
+  pathname: string;
+  search: string;
+};
+
+function normalizeRscCacheLookupUrl(rscUrl: string): NormalizedRscCacheLookupUrl | null {
   try {
     const url = new URL(rscUrl, "http://vinext.local");
     stripRscCacheBustingSearchParam(url);
-    return `${url.pathname}${url.search}`;
+    return {
+      pathname: url.pathname,
+      search: url.search,
+    };
   } catch {
     return null;
   }
+}
+
+function isSameRscLookupUrl(
+  left: NormalizedRscCacheLookupUrl | null,
+  right: NormalizedRscCacheLookupUrl,
+): boolean {
+  return left !== null && left.pathname === right.pathname && left.search === right.search;
+}
+
+function canUseEmptySearchPrefetchFallback(
+  source: NormalizedRscCacheLookupUrl | null,
+  target: NormalizedRscCacheLookupUrl,
+): boolean {
+  // Mirrors Next.js segment-cache's optimistic fallback: when a searched URL has
+  // no exact route entry, try the same pathname that was prefetched without
+  // search params.
+  return (
+    source !== null &&
+    target.search !== "" &&
+    source.search === "" &&
+    source.pathname === target.pathname
+  );
+}
+
+export function isNoStoreCacheControl(cacheControl: string): boolean {
+  return cacheControl.split(",").some((directive) => directive.trim().toLowerCase() === "no-store");
+}
+
+function canUseEmptySearchPrefetchFallbackEntry(entry: PrefetchCacheEntry): boolean {
+  if (entry.cacheForNavigation === false) return false;
+  if (entry.optimisticRouteShell === true) return false;
+  const cacheControl = entry.snapshot?.cacheControl;
+  if (cacheControl == null) return entry.allowEmptySearchFallbackWithoutCacheControl === true;
+  return !isNoStoreCacheControl(cacheControl);
 }
 
 function parsePrefetchCacheKey(cacheKey: string): {
@@ -427,11 +471,19 @@ function isPrefetchCacheEntryCompatibleWithMountedSlots(
   return (entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader;
 }
 
+type PrefetchCacheEntryMatch = {
+  cacheKey: string;
+  entry: PrefetchCacheEntry;
+  isEmptySearchFallback?: boolean;
+  responseUrl?: string;
+};
+
 function findPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
-): { cacheKey: string; entry: PrefetchCacheEntry } | null {
+  options: { allowEmptySearchFallback?: boolean } = {},
+): PrefetchCacheEntryMatch | null {
   const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
   const exactEntry = cache.get(exactCacheKey);
@@ -452,10 +504,62 @@ function findPrefetchCacheEntryForNavigation(
 
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
-    if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    if (!isSameRscLookupUrl(normalizeRscCacheLookupUrl(source.rscUrl), normalizedTarget)) continue;
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     return { cacheKey, entry };
+  }
+
+  if (options.allowEmptySearchFallback === true) {
+    for (const [cacheKey, entry] of cache) {
+      if (cacheKey === exactCacheKey) continue;
+      if (!canUseEmptySearchPrefetchFallbackEntry(entry)) continue;
+
+      const source = parsePrefetchCacheKey(cacheKey);
+      if (source.interceptionContext !== interceptionContext) continue;
+      if (
+        !canUseEmptySearchPrefetchFallback(
+          normalizeRscCacheLookupUrl(source.rscUrl),
+          normalizedTarget,
+        )
+      )
+        continue;
+      if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+
+      return { cacheKey, entry, isEmptySearchFallback: true, responseUrl: rscUrl };
+    }
+  }
+
+  return null;
+}
+
+function findSettledEmptySearchPrefetchFallbackForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): PrefetchCacheEntryMatch | null {
+  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const normalizedTarget = normalizeRscCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return null;
+
+  for (const [cacheKey, entry] of getPrefetchCache()) {
+    if (cacheKey === exactCacheKey) continue;
+    if (!canUseEmptySearchPrefetchFallbackEntry(entry)) continue;
+    if (entry.pending !== undefined || entry.outcome !== "cache-seeded") continue;
+
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (
+      !canUseEmptySearchPrefetchFallback(
+        normalizeRscCacheLookupUrl(source.rscUrl),
+        normalizedTarget,
+      )
+    )
+      continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+    if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) continue;
+
+    return { cacheKey, entry, isEmptySearchFallback: true, responseUrl: rscUrl };
   }
 
   return null;
@@ -465,12 +569,13 @@ export function hasPrefetchCacheEntryForNavigation(
   rscUrl: string,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
-  options: { notifyInvalidation?: boolean } = {},
+  options: { allowEmptySearchFallback?: boolean; notifyInvalidation?: boolean } = {},
 ): boolean {
   const match = findPrefetchCacheEntryForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    { allowEmptySearchFallback: options.allowEmptySearchFallback === true },
   );
   if (match === null) return false;
 
@@ -718,6 +823,7 @@ export function createCachedRscResponseSnapshot(
     response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER),
   );
   return {
+    cacheControl: response.headers.get("cache-control"),
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer,
     contentType: response.headers.get("content-type") ?? VINEXT_RSC_CONTENT_TYPE,
@@ -759,6 +865,9 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   if (cached.compatibilityIdHeader != null) {
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, cached.compatibilityIdHeader);
   }
+  if (cached.cacheControl != null) {
+    headers.set("cache-control", cached.cacheControl);
+  }
   if (isDynamicStaleTimeSeconds(cached.dynamicStaleTimeSeconds)) {
     headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(cached.dynamicStaleTimeSeconds));
   }
@@ -786,6 +895,7 @@ export function prefetchRscResponse(
   mountedSlotsHeader: string | null = null,
   options?: PrefetchOptions,
   behavior: {
+    allowEmptySearchFallbackWithoutCacheControl?: boolean;
     cacheForNavigation?: boolean;
     fallbackTtlMs?: number;
     optimisticRouteShell?: boolean;
@@ -809,6 +919,12 @@ export function prefetchRscResponse(
     .then(async (response) => {
       if (response.ok) {
         entry.snapshot = await snapshotRscResponse(response);
+        if (
+          entry.snapshot.cacheControl == null &&
+          behavior.allowEmptySearchFallbackWithoutCacheControl === true
+        ) {
+          entry.allowEmptySearchFallbackWithoutCacheControl = true;
+        }
         entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
@@ -861,16 +977,31 @@ export function consumePrefetchResponse(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    { allowEmptySearchFallback: true },
   );
   if (!match) return null;
-  const { cacheKey, entry } = match;
 
+  return consumePrefetchCacheEntryMatch(match, mountedSlotsHeader);
+}
+
+function consumePrefetchCacheEntryMatch(
+  match: PrefetchCacheEntryMatch,
+  mountedSlotsHeader: string | null,
+  options: { deleteEntry?: boolean } = {},
+): CachedRscResponse | null {
+  const cache = getPrefetchCache();
+  const { cacheKey, entry, responseUrl } = match;
   // Skip in-flight snapshots and error-path residue where pending cleared
   // without a successful transition to a cache-seeded entry.
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
   if (entry.cacheForNavigation === false) return null;
+  if (match.isEmptySearchFallback === true && !canUseEmptySearchPrefetchFallbackEntry(entry)) {
+    return null;
+  }
 
-  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+  if (options.deleteEntry !== false && match.isEmptySearchFallback !== true) {
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
+  }
 
   if (entry.snapshot) {
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
@@ -889,7 +1020,11 @@ export function consumePrefetchResponse(
       return {
         ...entry.snapshot,
         expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+        ...(responseUrl !== undefined ? { url: responseUrl } : {}),
       };
+    }
+    if (responseUrl !== undefined) {
+      return { ...entry.snapshot, url: responseUrl };
     }
     return entry.snapshot;
   }
@@ -919,18 +1054,28 @@ export async function consumePrefetchResponseForNavigation(
     rscUrl,
     interceptionContext,
     mountedSlotsHeader,
+    { allowEmptySearchFallback: true },
   );
   if (!match) return null;
   const { cacheKey, entry } = match;
 
   if (entry.pending !== undefined) {
+    const fallback = findSettledEmptySearchPrefetchFallbackForNavigation(
+      rscUrl,
+      interceptionContext,
+      mountedSlotsHeader,
+    );
+    if (fallback) {
+      if (options?.shouldConsume?.() === false) return null;
+      return consumePrefetchCacheEntryMatch(fallback, mountedSlotsHeader, { deleteEntry: false });
+    }
     await entry.pending.catch(() => {});
     if (cache.get(cacheKey) !== entry) return null;
   }
 
   if (options?.shouldConsume?.() === false) return null;
 
-  return consumePrefetchResponse(rscUrl, interceptionContext, mountedSlotsHeader);
+  return consumePrefetchCacheEntryMatch(match, mountedSlotsHeader);
 }
 
 // ---------------------------------------------------------------------------
