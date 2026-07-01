@@ -32,6 +32,7 @@ import {
   setCurrentFetchCacheMode,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
@@ -456,6 +457,20 @@ export function shouldReadAppPageCache(options: {
   );
 }
 
+function resolveAppPageCacheReadRevalidateSeconds(options: {
+  isDynamicError: boolean;
+  isForceStatic: boolean;
+  revalidateSeconds: number | null;
+}): number {
+  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
+    return Infinity;
+  }
+
+  // cacheLife-only routes discover their actual revalidate during the fresh
+  // render; this seed only gets them into the cache read path.
+  return options.revalidateSeconds ?? 0;
+}
+
 export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
   return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
 }
@@ -497,6 +512,7 @@ async function runAppPageRevalidationContext<
 
   return runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
+    setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
       pathname: options.displayPathname ?? options.cleanPathname,
@@ -631,9 +647,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
-      // cacheLife-only routes discover their actual revalidate during the
-      // fresh render; this seed only gets them into the cache read path.
-      revalidateSeconds: currentRevalidateSeconds ?? 0,
+      revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
+        isDynamicError,
+        isForceStatic,
+        revalidateSeconds: currentRevalidateSeconds,
+      }),
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,

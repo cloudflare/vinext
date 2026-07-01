@@ -224,12 +224,32 @@ function buildResponseTiming(
 }
 
 function readRequestCacheLifeForPrerender(
-  options: Pick<RenderAppPageLifecycleOptions, "getRequestCacheLife" | "peekRequestCacheLife">,
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "getRequestCacheLife" | "isEdgeRuntime" | "peekRequestCacheLife" | "revalidateSeconds"
+  >,
 ): AppPageRequestCacheLife | null {
+  if (options.isEdgeRuntime && options.revalidateSeconds === null) {
+    const requestCacheLife = options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+    return requestCacheLife?.revalidate !== undefined ? { revalidate: 0 } : null;
+  }
   // Prefer the non-destructive reader so prerender.ts can consume metadata
   // after the handler returns. The consume fallback supports older entry glue
   // and is only safe because this path reads at most once per prerender.
   return options.peekRequestCacheLife?.() ?? options.getRequestCacheLife();
+}
+
+function readRequestCacheLifeForCachePolicy(
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "getRequestCacheLife" | "isEdgeRuntime" | "revalidateSeconds"
+  >,
+): AppPageRequestCacheLife | null {
+  const requestCacheLife = options.getRequestCacheLife();
+  if (options.isEdgeRuntime && options.revalidateSeconds === null) {
+    return null;
+  }
+  return requestCacheLife;
 }
 
 function applyRequestCacheLife(options: {
@@ -254,6 +274,18 @@ function applyRequestCacheLife(options: {
   }
 
   return { expireSeconds, revalidateSeconds };
+}
+
+function resolveAppPageCacheWriteRevalidateSeconds(options: {
+  isDynamicError: boolean;
+  isForceStatic: boolean;
+  revalidateSeconds: number | null;
+}): number | null {
+  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
+    return Infinity;
+  }
+
+  return options.revalidateSeconds;
 }
 
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
@@ -854,7 +886,7 @@ export async function renderAppPageLifecycle(
         return options.getPageTags();
       },
       getRequestCacheLife() {
-        return options.getRequestCacheLife();
+        return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
@@ -864,7 +896,11 @@ export async function renderAppPageLifecycle(
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
-      revalidateSeconds,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        revalidateSeconds,
+      }),
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -1054,6 +1090,7 @@ export async function renderAppPageLifecycle(
   const shouldSpeculativelyWriteCache =
     options.isProduction &&
     shouldCaptureRscForCacheMetadata &&
+    !options.isEdgeRuntime &&
     revalidateSeconds === null &&
     !options.isDynamicError &&
     !options.isForceStatic &&
@@ -1112,7 +1149,7 @@ export async function renderAppPageLifecycle(
         return options.getPageTags();
       },
       getRequestCacheLife() {
-        return options.getRequestCacheLife();
+        return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
       isrHtmlKey: options.isrHtmlKey,
@@ -1122,7 +1159,11 @@ export async function renderAppPageLifecycle(
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
-      revalidateSeconds,
+      revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+        isDynamicError: options.isDynamicError,
+        isForceStatic: options.isForceStatic,
+        revalidateSeconds,
+      }),
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },

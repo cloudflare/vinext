@@ -221,8 +221,8 @@ export function resolveAppPageHtmlResponsePolicy(
   if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: "STATIC",
-      shouldWriteToCache: false,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 

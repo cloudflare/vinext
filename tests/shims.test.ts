@@ -5336,6 +5336,28 @@ describe("next/cache shim", () => {
     expect(() => noStore()).not.toThrow();
   });
 
+  it("unstable_noStore does not opt out when called inside unstable_cache", async () => {
+    const { unstable_cache, unstable_noStore } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext, getRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const cached = unstable_cache(
+        async () => {
+          unstable_noStore();
+          return "cached";
+        },
+        ["no-store-inside-cache"],
+        { tags: ["no-store-inside-cache"] },
+      );
+
+      await cached();
+      expect(getRequestContext().dynamicUsageDetected).toBe(false);
+      expect(getRequestContext().currentRequestTags).toContain("no-store-inside-cache");
+    });
+  });
+
   it("exports cacheLife with built-in profiles", async () => {
     const { cacheLife, cacheLifeProfiles } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheLife).toBe("function");
