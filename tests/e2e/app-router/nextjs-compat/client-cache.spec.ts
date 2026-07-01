@@ -23,6 +23,7 @@ type DelayedNavigationCachePublicationState = {
 
 type ClientCacheTestWindow = Window & {
   __VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__?: DelayedNavigationCachePublicationState;
+  __VINEXT_CLIENT_CACHE_TEE_COUNT__?: () => number;
   next?: {
     router?: {
       refresh(): void;
@@ -283,6 +284,7 @@ test.describe("Next.js compat: client cache", () => {
     const requests = trackRscRequests(page);
     await openHome(page);
     const initial = await navigateTo(page, "#client-cache-none", "2");
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"2"}');
     await navigateHome(page);
 
     await page.evaluate(() => {
@@ -297,9 +299,31 @@ test.describe("Next.js compat: client cache", () => {
       state.releaseOldNavigationTail();
     });
 
+    await page.evaluate(() => {
+      const testWindow = window as ClientCacheTestWindow;
+      let teeCount = 0;
+      const originalTee = Reflect.get(
+        ReadableStream.prototype,
+        "tee",
+      ) as typeof ReadableStream.prototype.tee;
+      ReadableStream.prototype.tee = function (this: ReadableStream<unknown>) {
+        teeCount += 1;
+        return originalTee.call(this);
+      } as typeof ReadableStream.prototype.tee;
+      testWindow.__VINEXT_CLIENT_CACHE_TEE_COUNT__ = () => teeCount;
+    });
+
     requests.length = 0;
     expect(await navigateTo(page, "#client-cache-none", "2")).toBe(initial);
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"2"}');
     expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
+    expect(
+      await page.evaluate(() => {
+        const readTeeCount = (window as ClientCacheTestWindow).__VINEXT_CLIENT_CACHE_TEE_COUNT__;
+        if (readTeeCount === undefined) throw new Error("ReadableStream.tee counter missing");
+        return readTeeCount();
+      }),
+    ).toBe(0);
   });
 
   test("router refresh invalidates committed client cache payloads", async ({ page }) => {

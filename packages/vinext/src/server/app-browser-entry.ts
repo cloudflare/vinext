@@ -2169,7 +2169,7 @@ function bootstrapHydration(
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
             );
-          } else if (committedState !== null && isCompleteAppPayloadMetadata(metadata)) {
+          } else if (committedState !== null) {
             const state = committedState as AppRouterState;
             const committedElements = {
               ...state.elements,
@@ -2178,6 +2178,9 @@ function bootstrapHydration(
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
+            const committedMetadata = AppElementsWire.readMetadata(committedElements);
+            if (!isCompleteAppPayloadMetadata(committedMetadata)) return;
+            // Complete committed payloads include parallel-slot data, so they are safe to replay.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,
