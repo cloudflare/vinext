@@ -131,6 +131,17 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain('isDev: process.env.NODE_ENV !== "production"');
   });
 
+  it("embeds resolved prefetchInlining thresholds in the RSC handler", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      prefetchInlining: {
+        maxBundleSize: Number.MAX_SAFE_INTEGER,
+        maxSize: 512,
+      },
+    });
+
+    expect(code).toContain('prefetchInlining: {"maxBundleSize":9007199254740991,"maxSize":512}');
+  });
+
   it("routes hybrid Pages API misses through the Pages server entry", () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts

@@ -5,6 +5,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
@@ -297,6 +298,7 @@ export async function renderAppPageBoundaryResponse<TElement>(
     applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
     applyRscCompatibilityIdHeader(headers);
+    applyRscDeploymentIdHeader(headers);
 
     return new Response(rscStream, {
       status: options.status,

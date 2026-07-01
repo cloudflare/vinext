@@ -249,6 +249,7 @@ type ResolveServerActionRequestStateOptions = {
   actionId: string;
   basePath: string;
   elements: AppElements;
+  interceptionContext?: string | null;
   previousNextUrl: string | null;
 };
 
@@ -274,10 +275,10 @@ export function resolveServerActionRequestState(
   headers.set(RSC_ACTION_HEADER, options.actionId);
   headers.set(NEXT_ACTION_HEADER, options.actionId);
 
-  const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
-    options.previousNextUrl,
-    options.basePath,
-  );
+  const interceptionContext =
+    resolveInterceptionContextFromPreviousNextUrl(options.previousNextUrl, options.basePath) ??
+    options.interceptionContext ??
+    null;
   if (interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
   }
