@@ -5,7 +5,7 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
-import { getRevalidateSecret } from "./isr-cache.js";
+import { getRevalidateSecret, isRevalidateSecret } from "./isr-cache.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -214,7 +214,7 @@ export function getPagesPreviewDataFromCookieHeader(
   const bypass = cookies.__prerender_bypass;
   const payload = cookies.__next_preview_data;
   if (!bypass && !payload) return false;
-  if (bypass !== getRevalidateSecret()) return false;
+  if (!isRevalidateSecret(bypass)) return false;
   if (!payload) return {};
 
   // vinext writes preview data as base64url(JSON) instead of Next.js's signed

@@ -123,6 +123,11 @@ function safeEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
+export function isRevalidateSecret(value: string | null | undefined): boolean {
+  if (typeof value !== "string" || value.length === 0) return false;
+  return safeEqual(value, getRevalidateSecret());
+}
+
 /**
  * Authorize an incoming request as an on-demand revalidation trigger. Mirrors
  * Next.js's `checkIsOnDemandRevalidate`: the {@link PRERENDER_REVALIDATE_HEADER}
@@ -133,8 +138,8 @@ export function isOnDemandRevalidateRequest(
   headerValue: string | string[] | null | undefined,
 ): boolean {
   // Reject arrays (duplicate headers) and absent values outright.
-  if (typeof headerValue !== "string" || headerValue.length === 0) return false;
-  return safeEqual(headerValue, getRevalidateSecret());
+  if (typeof headerValue !== "string") return false;
+  return isRevalidateSecret(headerValue);
 }
 
 export type ISRCacheEntry = {
