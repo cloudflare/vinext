@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
-import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
+import {
+  isAppRouterRscRequestForPath,
+  isAppRouterServerActionRequestForPath,
+  waitForAppRouterHydration,
+} from "../helpers";
 
 const BASE = "http://localhost:4174";
 const FEED_DRAFT_VALUE = "source draft survives";
@@ -408,6 +412,38 @@ test.describe("Intercepting Routes", () => {
     await waitForAppRouterHydration(page);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
+  test("revalidating server action from dynamic intercepted modal returns a result", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/app-dir/dynamic-interception-route-revalidate/dynamic-interception-route-revalidate.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-interception-route-revalidate/dynamic-interception-route-revalidate.test.ts
+    await page.goto(`${BASE}/dynamic-interception-revalidate/en`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("[href='/dynamic-interception-revalidate/en/photos/1/view']");
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).toBeVisible();
+    await expect(page.locator("h2")).toHaveText("Photo Id: 1");
+
+    const actionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(
+        request,
+        "/dynamic-interception-revalidate/en/photos/1/view",
+      ),
+    );
+    await page.click("#dynamic-interception-revalidate-button");
+    expect((await actionRequest).headers()["x-vinext-interception-context"]).toBe(
+      "/dynamic-interception-revalidate/en",
+    );
+    await expect(page.locator("#dynamic-interception-revalidate-loading")).toBeVisible();
+    await expect(page.locator("#dynamic-interception-revalidate-result")).toHaveText("Result: 0");
+
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).toBeVisible();
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).not.toBeVisible();
+    await expect(page.locator("#dynamic-interception-revalidate-full")).toBeVisible();
   });
 
   test("sibling (..) intercepted navigation mounts the modal slot", async ({ page }) => {
