@@ -7,7 +7,6 @@ import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
-import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
@@ -58,6 +57,7 @@ import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 // @ts-expect-error — resolved by the vinext build plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
+import { getReactNodeEnv, importReactDomServerEdge } from "./react-renderer-env.js";
 
 setPagesClientAssets(pagesClientAssets as PagesClientAssets);
 
@@ -69,6 +69,8 @@ setPagesClientAssets(pagesClientAssets as PagesClientAssets);
 type SsrRenderOptions = RenderToReadableStreamOptions & {
   maxHeadersLength?: number;
 };
+type ReactDomServerEdge = typeof import("react-dom/server.edge");
+type RenderToStaticMarkup = ReactDomServerEdge["renderToStaticMarkup"];
 
 /**
  * Default cap for the preload `Link` header, matching Next.js's
@@ -91,14 +93,20 @@ export type FontData = {
 
 type StaticPrerender = typeof import("react-dom/static.edge").prerender;
 
+function getLoadedReactNodeEnv(): "development" | "production" {
+  return getReactNodeEnv(createReactElement);
+}
+
 function isReactDevelopmentRuntime(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return false;
-  }
-  if (process.env.NODE_ENV === "development") {
-    return true;
-  }
-  return Function.prototype.toString.call(createReactElement).includes("getOwner");
+  return getLoadedReactNodeEnv() === "development";
+}
+
+let reactDomServerEdgePromise: Promise<ReactDomServerEdge> | null = null;
+async function loadReactDomServerEdge(): Promise<ReactDomServerEdge> {
+  if (reactDomServerEdgePromise) return reactDomServerEdgePromise;
+
+  reactDomServerEdgePromise = importReactDomServerEdge(getLoadedReactNodeEnv());
+  return reactDomServerEdgePromise;
 }
 
 function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPrerender } {
@@ -176,6 +184,7 @@ function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string)
 }
 
 function renderSsrErrorDocumentShell(
+  renderToStaticMarkup: RenderToStaticMarkup,
   bootstrapModuleUrl?: string,
   nonce?: string,
 ): ReadableStream<Uint8Array> {
@@ -228,7 +237,10 @@ function getErrorMessage(error: unknown): string {
   return Object.prototype.toString.call(error);
 }
 
-function renderInsertedHtml(insertedElements: readonly unknown[]): string {
+function renderInsertedHtml(
+  renderToStaticMarkup: RenderToStaticMarkup,
+  insertedElements: readonly unknown[],
+): string {
   let insertedHTML = "";
 
   for (const element of insertedElements) {
@@ -435,6 +447,7 @@ export async function handleSsr(
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
+        const { renderToReadableStream, renderToStaticMarkup } = await loadReactDomServerEdge();
 
         function VinextFlightRoot(): ReactNode {
           for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
@@ -643,7 +656,11 @@ export async function handleSsr(
               throw error;
             }
             shellErrorRecovered = true;
-            htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
+            htmlStream = renderSsrErrorDocumentShell(
+              renderToStaticMarkup,
+              bootstrapModuleUrl,
+              options?.scriptNonce,
+            );
           }
         }
 
@@ -674,7 +691,7 @@ export async function handleSsr(
         };
         let didInjectHeadHTML = false;
         const getInsertedHTML = (): string => {
-          const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
+          const insertedHTML = renderInsertedHtml(renderToStaticMarkup, renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
             options?.initialDevServerError,

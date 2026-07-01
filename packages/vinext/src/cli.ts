@@ -14,8 +14,6 @@
  * needed for most Next.js apps.
  */
 
-import vinext from "./index.js";
-import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -28,21 +26,7 @@ import {
   hasAppDir,
   hasViteConfig,
 } from "./utils/project.js";
-import { deploy as runDeploy, parseDeployArgs } from "@vinext/cloudflare/internal/deploy";
 import { printDeployHelp } from "@vinext/cloudflare/internal/deploy-help";
-import { runCheck, formatReport } from "./check.js";
-import { init as runInit, getReactUpgradeDeps } from "./init.js";
-import { INIT_PLATFORMS, resolveInitPlatform, resolveInitPrerender } from "./init-platform.js";
-import { loadDotenv } from "./config/dotenv.js";
-import {
-  createRscCompatibilityId,
-  loadNextConfig,
-  resolveNextConfig,
-  PHASE_PRODUCTION_BUILD,
-} from "./config/next-config.js";
-import { emitStandaloneOutput } from "./build/standalone.js";
-import { cleanBuildOutput } from "./build/clean-output.js";
-import { clearPagesClientAssetsBuildMetadata } from "./build/pages-client-assets-module.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -50,15 +34,9 @@ import {
   formatAlreadyRunningError,
   tryAcquireLockfile,
 } from "./server/dev-lockfile.js";
-import { generateRouteTypes } from "./typegen.js";
 import { normalizePathSeparators } from "./utils/path.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
-import {
-  findVinextPrerenderConfigInPlugins,
-  formatVinextPrerenderLabel,
-  resolveVinextPrerenderDecision,
-  type ResolvedVinextPrerenderConfig,
-} from "./config/prerender.js";
+import type { ResolvedVinextPrerenderConfig } from "./config/prerender.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -80,6 +58,7 @@ type ViteModule = {
 };
 
 let _viteModule: ViteModule | null = null;
+let _vinextModulePromise: Promise<typeof import("./index.js").default> | null = null;
 
 /**
  * Dynamically load Vite from the project root. Falls back to the bundled
@@ -113,6 +92,11 @@ async function loadVite(): Promise<ViteModule> {
  */
 function getViteVersion(): string {
   return _viteModule?.version ?? "unknown";
+}
+
+async function loadVinext(): Promise<typeof import("./index.js").default> {
+  _vinextModulePromise ??= import("./index.js").then((module) => module.default);
+  return _vinextModulePromise;
 }
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
@@ -245,6 +229,7 @@ async function loadBuildViteConfigMetadata(
     root,
   );
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
+  const { findVinextPrerenderConfigInPlugins } = await import("./config/prerender.js");
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
@@ -256,7 +241,10 @@ async function loadBuildViteConfigMetadata(
  * project, Vite will merge our config with it (theirs takes precedence).
  * If there's no vite.config, this provides everything needed.
  */
-function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
+async function buildViteConfig(
+  overrides: Record<string, unknown> = {},
+  logger?: import("vite").Logger,
+) {
   const hasConfig = hasViteConfig(process.cwd());
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
@@ -274,6 +262,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: impor
   // No vite.config — auto-configure everything.
   // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected,
   // so we only need vinext() in the plugins array.
+  const vinext = await loadVinext();
   const config: Record<string, unknown> = {
     root: process.cwd(),
     configFile: false,
@@ -323,6 +312,7 @@ async function dev() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("dev");
 
+  const { loadDotenv } = await import("./config/dotenv.js");
   loadDotenv({
     root: process.cwd(),
     mode: "development",
@@ -383,7 +373,7 @@ async function dev() {
 
   console.log(`\n  vinext dev  (Vite ${getViteVersion()})\n`);
 
-  const config = buildViteConfig();
+  const config = await buildViteConfig();
   const plugins = (config.plugins ??= []) as import("vite").PluginOption[];
   plugins.push(createDevServerConfigPlugin(parsed));
 
@@ -462,15 +452,23 @@ async function buildApp() {
     process.env.VINEXT_PRECOMPRESS = "1";
   }
 
+  const root = process.cwd();
+  const hasUserViteConfig = hasViteConfig(root);
+  const dotenvModulePromise = import("./config/dotenv.js");
+  const nextConfigModulePromise = import("./config/next-config.js");
+  const cleanOutputModulePromise = import("./build/clean-output.js");
+  if (!hasUserViteConfig) void loadVinext();
+
+  const { loadDotenv } = await dotenvModulePromise;
   loadDotenv({
-    root: process.cwd(),
+    root,
     mode: "production",
   });
 
   // Ensure "type": "module" in package.json before Vite loads vite.config.ts.
   // Without this, Vite bundles the config as CJS and tries require() on pure-ESM
   // packages like @cloudflare/vite-plugin, which fails on Node 22.
-  applyViteConfigCompatibility(process.cwd());
+  applyViteConfigCompatibility(root);
 
   const vite = await loadVite();
   const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
@@ -480,12 +478,15 @@ async function buildApp() {
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
-  const root = process.cwd();
   const isApp = hasAppDir(normalizePathSeparators(root));
+  const initModulePromise = isApp ? import("./init.js") : null;
+  const { PHASE_PRODUCTION_BUILD, createRscCompatibilityId, loadNextConfig, resolveNextConfig } =
+    await nextConfigModulePromise;
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
   );
+  const reportModulePromise = import("./build/report.js");
 
   // Coordinate a single build ID across every vinext() plugin instance in this
   // build. A hybrid app+pages build runs the App Router multi-environment build
@@ -548,13 +549,14 @@ async function buildApp() {
   // Without this, builds with older React versions can produce a Worker that crashes at
   // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
   if (isApp) {
-    const reactUpgrade = getReactUpgradeDeps(process.cwd());
+    const { getReactUpgradeDeps } = await initModulePromise!;
+    const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
-      const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const installCmd = detectPackageManager(root).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
       console.log("  Upgrading React for RSC compatibility...");
       execFileSync(pm, [...pmArgs, ...reactUpgrade], {
-        cwd: process.cwd(),
+        cwd: root,
         stdio: "inherit",
         shell: process.platform === "win32",
       });
@@ -562,7 +564,7 @@ async function buildApp() {
   }
 
   const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
-
+  const { cleanBuildOutput } = await cleanOutputModulePromise;
   cleanBuildOutput({
     root,
     outDir: distDir,
@@ -579,7 +581,7 @@ async function buildApp() {
     process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
   }
   try {
-    const config = buildViteConfig({}, logger);
+    const config = await buildViteConfig({}, logger);
     const builder = await vite.createBuilder(config);
     await builder.buildApp();
 
@@ -630,6 +632,7 @@ async function buildApp() {
           );
         }
       }
+      const vinext = await loadVinext();
       await vite.build({
         root,
         configFile: false,
@@ -652,6 +655,8 @@ async function buildApp() {
     }
   } finally {
     if (pagesClientAssetsBuildSession) {
+      const { clearPagesClientAssetsBuildMetadata } =
+        await import("./build/pages-client-assets-module.js");
       clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
       if (
         process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === pagesClientAssetsBuildSession
@@ -662,6 +667,7 @@ async function buildApp() {
   }
 
   if (outputMode === "standalone") {
+    const { emitStandaloneOutput } = await import("./build/standalone.js");
     const standalone = emitStandaloneOutput({
       root: process.cwd(),
       outDir: distDir,
@@ -674,6 +680,8 @@ async function buildApp() {
   }
 
   let prerenderResult;
+  const { formatVinextPrerenderLabel, resolveVinextPrerenderDecision } =
+    await import("./config/prerender.js");
   const prerenderDecision = resolveVinextPrerenderDecision({
     prerenderAllFlag: parsed.prerenderAll,
     vinextPrerenderConfig: buildConfigMetadata.prerenderConfig,
@@ -690,6 +698,7 @@ async function buildApp() {
     }
     process.stdout.write("\x1b[0m");
     console.log(`  ${formatVinextPrerenderLabel(prerenderDecision)}`);
+    const { runPrerender } = await import("./build/run-prerender.js");
     prerenderResult = await runPrerender({
       root: normalizePathSeparators(process.cwd()),
       concurrency: parsed.prerenderConcurrency,
@@ -700,7 +709,7 @@ async function buildApp() {
   // Opt-in via --precompress CLI flag or `precompress: true` in plugin options.
 
   process.stdout.write("\x1b[0m");
-  const { printBuildReport } = await import("./build/report.js");
+  const { printBuildReport } = await reportModulePromise;
   await printBuildReport({
     root: normalizePathSeparators(process.cwd()),
     pageExtensions: resolvedNextConfig.pageExtensions,
@@ -715,6 +724,7 @@ async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
 
+  const { loadDotenv } = await import("./config/dotenv.js");
   loadDotenv({
     root: process.cwd(),
     mode: "production",
@@ -797,6 +807,7 @@ async function lint() {
 }
 
 async function deployCommand() {
+  const { deploy: runDeploy, parseDeployArgs } = await import("@vinext/cloudflare/internal/deploy");
   const parsed = parseDeployArgs(rawArgs);
   if (parsed.help) {
     printDeployDeprecationWarning();
@@ -838,6 +849,7 @@ async function check() {
   console.log(`\n  vinext check\n`);
   console.log("  Scanning project...\n");
 
+  const { runCheck, formatReport } = await import("./check.js");
   const result = runCheck(normalizePathSeparators(process.cwd()));
   console.log(formatReport(result));
 }
@@ -847,14 +859,18 @@ async function typegen() {
   if (parsed.help) return printHelp("typegen");
 
   const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
+  const { loadDotenv } = await import("./config/dotenv.js");
   loadDotenv({
     root,
     mode: "production",
   });
+  const { PHASE_PRODUCTION_BUILD, loadNextConfig, resolveNextConfig } =
+    await import("./config/next-config.js");
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
   );
+  const { generateRouteTypes } = await import("./typegen.js");
   const outputPath = await generateRouteTypes({
     root,
     pageExtensions: resolvedNextConfig.pageExtensions,
@@ -872,10 +888,13 @@ async function initCommand() {
   const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const { INIT_PLATFORMS, resolveInitPlatform, resolveInitPrerender } =
+    await import("./init-platform.js");
   const platform = await resolveInitPlatform(rawArgs);
   const platformOptions = await INIT_PLATFORMS[platform].options(rawArgs);
   const prerender = await resolveInitPrerender(rawArgs);
 
+  const { init: runInit } = await import("./init.js");
   await runInit({
     root: process.cwd(),
     port,

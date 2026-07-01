@@ -25,6 +25,7 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
+const _reactRendererEnvPath = resolveEntryPath("../server/react-renderer-env.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -195,7 +196,6 @@ export async function runMiddleware(request) {
   return `
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
@@ -225,6 +225,7 @@ import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_p
 import { normalizePagesDataRequest as __normalizePagesDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
+import { getReactNodeEnv as __getReactNodeEnv, importReactDomServerEdge as __importReactDomServerEdge } from ${JSON.stringify(_reactRendererEnvPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -256,8 +257,20 @@ __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemoryS
 // by _app are included in every page's <link rel="stylesheet"> set.
 const _appAssetPath = ${appAssetPathJson};
 
+let _reactDomServerEdgePromise = null;
+async function _loadReactDomServerEdge() {
+  if (_reactDomServerEdgePromise) return _reactDomServerEdgePromise;
+  _reactDomServerEdgePromise = __importReactDomServerEdge(__getReactNodeEnv(React.createElement));
+  return _reactDomServerEdgePromise;
+}
+
+async function _renderToReadableStream(element) {
+  const { renderToReadableStream } = await _loadReactDomServerEdge();
+  return renderToReadableStream(element);
+}
+
 async function _renderToStringAsync(element) {
-  const stream = await renderToReadableStream(element);
+  const stream = await _renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
 }
@@ -401,7 +414,7 @@ const _renderPage = __createPagesPageHandler({
       return preloads;
     } catch { return []; }
   },
-  renderToReadableStream,
+  renderToReadableStream: _renderToReadableStream,
   renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
   safeJsonStringify,
   sanitizeDestination: sanitizeDestinationLocal,

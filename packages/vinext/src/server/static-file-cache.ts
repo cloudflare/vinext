@@ -16,29 +16,11 @@ import path from "node:path";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { normalizePathSeparators } from "../utils/path.js";
 
-/** Content-type lookup for static assets. Shared with prod-server.ts. */
-export const CONTENT_TYPES: Record<string, string> = {
-  ".js": "application/javascript",
-  ".mjs": "application/javascript",
-  ".css": "text/css",
-  ".html": "text/html",
-  ".json": "application/json",
-  ".txt": "text/plain; charset=utf-8",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".eot": "application/vnd.ms-fontobject",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".map": "application/json",
-  ".rsc": "text/x-component",
-};
+// Content-type lookup lives in a tiny standalone module so MIME-only consumers
+// (e.g. the font dev middleware) need not import this cache. Re-exported here
+// for existing importers such as prod-server.ts.
+import { CONTENT_TYPES } from "./content-types.js";
+export { CONTENT_TYPES };
 
 /**
  * Files below this size are buffered in memory at startup for zero-syscall

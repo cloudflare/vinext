@@ -15,8 +15,6 @@ import {
   invalidateRouteCache,
   matchRoute,
 } from "./routing/pages-router.js";
-import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
-import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
   appRouter,
@@ -30,15 +28,6 @@ import {
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
-import { createSSRHandler } from "./server/dev-server.js";
-import { handleApiRoute } from "./server/api-handler.js";
-import {
-  DEFAULT_DEVICE_SIZES,
-  DEFAULT_IMAGE_SIZES,
-  isImageOptimizationPath,
-  resolveDevImageRedirect,
-} from "./server/image-optimization.js";
-
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -81,6 +70,12 @@ import { mergeServerExternalPackages } from "./config/server-external-packages.j
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
+import { isImageOptimizationPath } from "./server/image-optimization-paths.js";
+import type {
+  StaticExportOptions,
+  AppStaticExportOptions,
+  StaticExportResult,
+} from "./build/static-export.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -104,14 +99,8 @@ import {
   runInstrumentation,
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
-import { precompressAssets } from "./build/precompress.js";
-import { ensureAssetsIgnore } from "./build/assets-ignore.js";
-import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
-import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
-
-import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
 import {
   runPagesRequest,
@@ -149,7 +138,6 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
-import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
   SSR_EXTERNAL_REACT_ENTRIES,
@@ -164,7 +152,6 @@ import {
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
-import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
   type ClientEntryManifest,
@@ -194,10 +181,6 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
-import {
-  markCssUrlAssetReferences,
-  restoreDedupedCssAssetReferences,
-} from "./build/css-url-assets.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
@@ -267,6 +250,26 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+type CreateSSRHandler = typeof import("./server/dev-server.js").createSSRHandler;
+
+let metadataRoutesModulePromise: Promise<typeof import("./server/metadata-routes.js")> | null =
+  null;
+function loadMetadataRoutesModule(): Promise<typeof import("./server/metadata-routes.js")> {
+  metadataRoutesModulePromise ??= import("./server/metadata-routes.js");
+  return metadataRoutesModulePromise;
+}
+
+let devServerModulePromise: Promise<typeof import("./server/dev-server.js")> | null = null;
+let apiHandlerModulePromise: Promise<typeof import("./server/api-handler.js")> | null = null;
+let imageOptimizationModulePromise: Promise<
+  typeof import("./server/image-optimization.js")
+> | null = null;
+let cssUrlAssetsModulePromise: Promise<typeof import("./build/css-url-assets.js")> | null = null;
+
+function loadCssUrlAssetsModule(): Promise<typeof import("./build/css-url-assets.js")> {
+  cssUrlAssetsModulePromise ??= import("./build/css-url-assets.js");
+  return cssUrlAssetsModulePromise;
+}
 
 function getCacheDirPrefix(cacheDir: string): string {
   const normalizedCacheDir = normalizePathSeparators(cacheDir);
@@ -1204,7 +1207,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
    * This is the entry point for `vite build --ssr`.
    */
   async function generateServerEntry(): Promise<string> {
-    return _generateServerEntry(
+    const { generateServerEntry } = await import("./entries/pages-server-entry.js");
+    return generateServerEntry(
       pagesDir,
       nextConfig,
       fileMatcher,
@@ -1232,7 +1236,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           isLinkPrefetchRoute(route) ? toLinkPrefetchRoute(route) : toDocumentOnlyAppRoute(route),
         )
       : [];
-    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
+    const { generateClientEntry } = await import("./entries/pages-client-entry.js");
+    return generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
       middlewareMatcher: middlewarePath
@@ -1244,6 +1249,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   async function writeRouteTypes(): Promise<void> {
     if (!hasAppDir) return;
+    const { generateRouteTypes } = await import("./typegen.js");
     await generateRouteTypes({
       root,
       appDir,
@@ -3095,15 +3101,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.command === "build" &&
           !hasCloudflarePlugin &&
           !hasNitroPlugin &&
-          hasWranglerConfig(root) &&
           !options.disableAppRouter
         ) {
-          throw new Error(
-            formatMissingCloudflarePluginError({
-              isAppRouter: hasAppDir,
-              configFile: config.configFile,
-            }),
-          );
+          if (hasWranglerConfig(root)) {
+            throw new Error(
+              formatMissingCloudflarePluginError({
+                isAppRouter: hasAppDir,
+                configFile: config.configFile,
+              }),
+            );
+          }
         }
       },
 
@@ -3264,6 +3271,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+          const { scanMetadataFiles } = await loadMetadataRoutesModule();
           const metaRoutes = scanMetadataFiles(appDir);
           const hasServerActions = await resolveHasServerActions(this.environment.config);
           // Check for global-error.tsx at app root
@@ -3532,7 +3540,8 @@ export const loadServerActionClient = ${
           id: /\.(?:css|scss|sass|less|styl|stylus)(?:\?|$)/i,
           code: "url(",
         },
-        handler(code, id) {
+        async handler(code, id) {
+          const { markCssUrlAssetReferences } = await loadCssUrlAssetsModule();
           const marked = markCssUrlAssetReferences(code, id);
           if (marked === null) return null;
           // No source map: the marker is transient — it's stripped before final
@@ -3606,7 +3615,8 @@ export const loadServerActionClient = ${
       enforce: "post",
       apply: "build",
 
-      generateBundle(_options, bundle) {
+      async generateBundle(_options, bundle) {
+        const { restoreDedupedCssAssetReferences } = await loadCssUrlAssetsModule();
         restoreDedupedCssAssetReferences(bundle, (asset) => {
           this.emitFile({ type: "asset", fileName: asset.fileName, source: asset.source });
         });
@@ -3829,7 +3839,7 @@ export const loadServerActionClient = ${
         // handler otherwise, instead of re-running it for every request.
         let cachedSSRHandler: {
           routes: Awaited<ReturnType<typeof pagesRouter>>;
-          handler: ReturnType<typeof createSSRHandler>;
+          handler: ReturnType<CreateSSRHandler>;
         } | null = null;
         function getPagesRunner() {
           if (!pagesRunner) {
@@ -3898,7 +3908,11 @@ export const loadServerActionClient = ${
 
         function invalidateAppRoutingModules() {
           invalidateAppRouteCache();
-          invalidateMetadataFileCache();
+          if (metadataRoutesModulePromise) {
+            void loadMetadataRoutesModule().then(({ invalidateMetadataFileCache }) => {
+              invalidateMetadataFileCache();
+            });
+          }
           invalidateRscEntryModule();
           invalidateRootParamsModule();
         }
@@ -4401,7 +4415,13 @@ export const loadServerActionClient = ${
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
-              if (isImageOptimizationPath(url.split("?")[0]!)) {
+              const requestPathname = url.split("?")[0]!;
+              // Cheap path predicate — gating here avoids importing the full
+              // image-optimization handler for non-image dev requests.
+              if (isImageOptimizationPath(requestPathname)) {
+                const { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, resolveDevImageRedirect } =
+                  await (imageOptimizationModulePromise ??=
+                    import("./server/image-optimization.js"));
                 const imageRequestUrl = new URL(url, requestOrigin);
                 const allowedWidths = [
                   ...(nextConfig.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
@@ -4849,13 +4869,23 @@ export const loadServerActionClient = ${
                     return next();
                   }
                 }
-                if (apiMatch) {
-                  flushStagedHeaders();
-                  flushRequestHeaders();
-                  if (pipelineResult.middlewareStatus !== undefined) {
-                    req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
-                  }
+                if (!apiMatch) {
+                  // No Pages API route matched — if app dir exists, let the RSC plugin handle it
+                  // (app/api/* route handlers live there). Otherwise hard-404.
+                  if (hasAppDir) return next();
+
+                  res.statusCode = 404;
+                  res.end("404 - API route not found");
+                  return;
                 }
+
+                flushStagedHeaders();
+                flushRequestHeaders();
+                if (pipelineResult.middlewareStatus !== undefined) {
+                  req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
+                }
+                const { handleApiRoute } = await (apiHandlerModulePromise ??=
+                  import("./server/api-handler.js"));
                 const handled = await handleApiRoute(
                   getPagesRunner(),
                   req,
@@ -4870,8 +4900,7 @@ export const loadServerActionClient = ${
                 );
                 if (handled) return;
 
-                // No API route matched — if app dir exists, let the RSC plugin handle it
-                // (app/api/* route handlers live there). Otherwise hard-404.
+                // Defensive fallback if the API handler declines a matched route.
                 if (hasAppDir) return next();
 
                 res.statusCode = 404;
@@ -4908,6 +4937,8 @@ export const loadServerActionClient = ${
                   }
                 }
                 if (!cachedSSRHandler || cachedSSRHandler.routes !== routes) {
+                  const { createSSRHandler } = await (devServerModulePromise ??=
+                    import("./server/dev-server.js"));
                   cachedSSRHandler = {
                     routes,
                     handler: createSSRHandler(
@@ -5822,13 +5853,15 @@ export const loadServerActionClient = ${
       writeBundle: {
         sequential: true,
         order: "post",
-        handler(outputOptions: { dir?: string }) {
+        async handler(outputOptions: { dir?: string }) {
           const clientDir = outputOptions.dir;
           if (!clientDir) return;
 
           const isClientBuild = this.environment?.name === "client";
           if (!isClientBuild) return;
 
+          const { emitNextClientRuntimeManifests } =
+            await import("./build/next-client-runtime-manifests.js");
           emitNextClientRuntimeManifests({
             clientDir,
             assetsSubdir: resolveAssetsDir(nextConfig.assetPrefix),
@@ -5881,6 +5914,7 @@ export const loadServerActionClient = ${
             // the full precompression cost on the critical path of step 4/5.
             pendingPrecompressError = null;
             pendingPrecompress = (async () => {
+              const { precompressAssets } = await import("./build/precompress.js");
               const result = await precompressAssets(outDir, {
                 assetsDir: assetsSubdir,
                 onProgress: (completed, total, file) => {
@@ -5943,11 +5977,13 @@ export const loadServerActionClient = ${
       closeBundle: {
         sequential: true,
         order: "post",
-        handler() {
+        async handler() {
           const envConfig = this.environment.config;
           if (this.environment.name === "client") {
             const buildRoot = envConfig.root ?? process.cwd();
             const clientDir = path.resolve(buildRoot, envConfig.build.outDir);
+            const { computeClientRuntimeMetadata } =
+              await import("./utils/client-runtime-metadata.js");
             const runtimeMetadata = computeClientRuntimeMetadata({
               clientDir,
               assetBase: envConfig.base ?? "/",
@@ -6020,13 +6056,15 @@ export const loadServerActionClient = ${
       closeBundle: {
         sequential: true,
         order: "post",
-        handler() {
+        async handler() {
           if (this.environment?.name !== "client") return;
           if (!hasAppDir || nextConfig?.inlineCss !== true) return;
 
           const envConfig = this.environment?.config;
           if (!envConfig) return;
 
+          const { collectInlineCssManifest, injectInlineCssManifestGlobal } =
+            await import("./build/inline-css.js");
           const buildRoot = envConfig.root ?? process.cwd();
           const clientDir = path.resolve(buildRoot, "dist", "client");
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
@@ -6087,6 +6125,7 @@ export const loadServerActionClient = ${
           // unlinked route paths. The Node prod server blocks `/.vite/` for the
           // same reason (server/static-file-cache.ts); `.assetsignore` is the
           // Cloudflare-side equivalent.
+          const { ensureAssetsIgnore } = await import("./build/assets-ignore.js");
           ensureAssetsIgnore(clientDir);
         },
       },
@@ -6283,8 +6322,21 @@ async function writeWebResponseToNodeRes(
   }
 }
 
-// Public exports for static export
-export { staticExportPages, staticExportApp } from "./build/static-export.js";
+// Public exports for static export. Thin async wrappers that defer the heavy
+// build/static-export module until a caller actually runs an export, while
+// keeping the underlying single-options signatures intact.
+export async function staticExportPages(options: StaticExportOptions): Promise<StaticExportResult> {
+  const { staticExportPages } = await import("./build/static-export.js");
+  return staticExportPages(options);
+}
+
+export async function staticExportApp(
+  options: AppStaticExportOptions,
+): Promise<StaticExportResult> {
+  const { staticExportApp } = await import("./build/static-export.js");
+  return staticExportApp(options);
+}
+
 export type {
   StaticExportResult,
   StaticExportOptions,
