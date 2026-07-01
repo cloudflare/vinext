@@ -197,8 +197,9 @@ export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
 // ---------------------------------------------------------------------------
 
-/** Maximum number of entries in the RSC prefetch cache. */
-export const MAX_PREFETCH_CACHE_SIZE = 50;
+/** Maximum buffered bytes in the RSC prefetch cache. Mirrors Next.js' 50 MB LRU. */
+export const MAX_PREFETCH_CACHE_SIZE = 50 * 1024 * 1024;
+const PREFETCH_CACHE_EVICTION_TARGET_SIZE = MAX_PREFETCH_CACHE_SIZE * 0.9;
 
 /**
  * TTL for prefetch cache entries in ms.
@@ -258,6 +259,7 @@ export type PrefetchCacheEntry = {
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
+  size?: number;
   timestamp: number;
 };
 
@@ -474,8 +476,14 @@ export function hasPrefetchCacheEntryForNavigation(
   );
   if (match === null) return false;
 
-  if (match.entry.pending !== undefined) return true;
-  if (resolvePrefetchCacheEntryExpiresAt(match.entry) > Date.now()) return true;
+  if (match.entry.pending !== undefined) {
+    touchPrefetchCacheEntry(getPrefetchCache(), match.cacheKey, match.entry);
+    return true;
+  }
+  if (resolvePrefetchCacheEntryExpiresAt(match.entry) > Date.now()) {
+    touchPrefetchCacheEntry(getPrefetchCache(), match.cacheKey, match.entry);
+    return true;
+  }
 
   deletePrefetchCacheEntry(
     getPrefetchCache(),
@@ -487,14 +495,34 @@ export function hasPrefetchCacheEntryForNavigation(
   return false;
 }
 
+function getPrefetchCacheEntrySize(entry: PrefetchCacheEntry): number {
+  return entry.snapshot?.buffer.byteLength ?? entry.size ?? 0;
+}
+
+function getPrefetchCacheByteSize(cache: Map<string, PrefetchCacheEntry>): number {
+  let total = 0;
+  for (const entry of cache.values()) {
+    total += getPrefetchCacheEntrySize(entry);
+  }
+  return total;
+}
+
+function touchPrefetchCacheEntry(
+  cache: Map<string, PrefetchCacheEntry>,
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  if (cache.get(cacheKey) !== entry) return;
+  cache.delete(cacheKey);
+  cache.set(cacheKey, entry);
+}
+
 /**
- * Evict prefetch cache entries if at capacity.
- * First sweeps expired entries, then falls back to FIFO eviction.
+ * Evict prefetch cache entries if buffered payloads exceed the byte budget.
+ * First sweeps expired entries, then evicts least-recently-used entries.
  */
 function evictPrefetchCacheIfNeeded(): void {
   const cache = getPrefetchCache();
-  if (cache.size < MAX_PREFETCH_CACHE_SIZE) return;
-
   const now = Date.now();
   const prefetched = getPrefetchedUrls();
 
@@ -504,11 +532,15 @@ function evictPrefetchCacheIfNeeded(): void {
     }
   }
 
-  while (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+  let totalSize = getPrefetchCacheByteSize(cache);
+  if (totalSize <= MAX_PREFETCH_CACHE_SIZE) return;
+
+  while (totalSize > PREFETCH_CACHE_EVICTION_TARGET_SIZE) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) {
       const entry = cache.get(oldest);
       if (entry) {
+        totalSize -= getPrefetchCacheEntrySize(entry);
         deletePrefetchCacheEntry(cache, prefetched, oldest, entry, true);
       } else {
         cache.delete(oldest);
@@ -629,19 +661,20 @@ export function seedPrefetchResponseSnapshot(
   if (existing) {
     deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, existing, false);
   }
-  evictPrefetchCacheIfNeeded();
   const timestamp = Date.now();
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
   };
   cache.set(cacheKey, entry);
   getPrefetchedUrls().add(cacheKey);
   schedulePrefetchInvalidation(cacheKey, entry);
+  evictPrefetchCacheIfNeeded();
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -679,7 +712,6 @@ export function storePrefetchResponse(
   options?: PrefetchOptions,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  evictPrefetchCacheIfNeeded();
   const entry: PrefetchCacheEntry = {
     mountedSlotsHeader: null,
     outcome: "pending",
@@ -688,18 +720,22 @@ export function storePrefetchResponse(
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.pending = snapshotRscResponse(response)
     .then((snapshot) => {
+      if (getPrefetchCache().get(cacheKey) !== entry) return;
       entry.mountedSlotsHeader = snapshot.mountedSlotsHeader ?? null;
       entry.snapshot = snapshot;
+      entry.size = snapshot.buffer.byteLength;
       entry.expiresAt = resolveCachedRscResponseExpiresAt(
         entry.timestamp,
         snapshot,
         PREFETCH_CACHE_TTL,
       );
+      evictPrefetchCacheIfNeeded();
     })
     .catch(() => {
       deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, false);
     })
     .finally(() => {
+      if (getPrefetchCache().get(cacheKey) !== entry) return;
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
@@ -808,12 +844,16 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
-        entry.snapshot = await snapshotRscResponse(response);
+        const snapshot = await snapshotRscResponse(response);
+        if (cache.get(cacheKey) !== entry) return;
+        entry.snapshot = snapshot;
+        entry.size = snapshot.buffer.byteLength;
         entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
           entry.timestamp,
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
         );
+        evictPrefetchCacheIfNeeded();
       } else {
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
@@ -822,6 +862,7 @@ export function prefetchRscResponse(
       deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
     })
     .finally(() => {
+      if (cache.get(cacheKey) !== entry) return;
       entry.pending = undefined;
       if (entry.snapshot) {
         entry.outcome = "cache-seeded";
