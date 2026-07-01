@@ -1262,7 +1262,7 @@ describe("init — dependency installation", () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "19.2.3");
 
-    const { execCalls } = await runInit(tmpDir, { install: false });
+    const { execCalls, output } = await runInit(tmpDir, { install: false });
     const pkg = readPkg(tmpDir) as {
       dependencies?: Record<string, string>;
     };
@@ -1272,6 +1272,9 @@ describe("init — dependency installation", () => {
       react: "latest",
       "react-dom": "latest",
     });
+    expect(output).toContain(
+      "Added dependencies to dependencies:\n      - react\n      - react-dom",
+    );
   });
 
   it("calls exec with bun when bun.lock exists", async () => {

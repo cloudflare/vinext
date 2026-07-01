@@ -136,10 +136,6 @@
     "./internal/utils/project": {
       "types": "./dist/utils/project.d.ts",
       "import": "./dist/utils/project.js"
-    },
-    "./internal/utils/react-version": {
-      "types": "./dist/utils/react-version.d.ts",
-      "import": "./dist/utils/react-version.js"
     }
   },
   "scripts": {

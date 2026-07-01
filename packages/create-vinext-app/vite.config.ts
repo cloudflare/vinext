@@ -16,6 +16,9 @@ export default defineConfig({
     inputOptions: {
       resolve: {
         alias: {
+          // A create-* package must run before vinext is installed in the new
+          // app, so bundle the shared init helpers instead of externalizing
+          // `vinext/internal/*` imports to the generated project's dependency.
           "vinext/internal": vinextSrc,
         },
       },

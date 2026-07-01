@@ -229,6 +229,7 @@ function printHelp(): void {
   Options:
     --platform <target>          Deployment target: cloudflare or node
     --data-cache <type>          Cloudflare data cache: kv or none
+    --cdn-cache <type>           Cloudflare CDN cache: data-cache or workers-cache
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering

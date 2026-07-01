@@ -568,6 +568,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
   let dependencyInstallNeedsApproval = false;
   let dependenciesAdded = false;
+  const dependencyEntriesAdded: string[] = [];
+  const devDependencyEntriesAdded: string[] = [];
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
@@ -588,7 +590,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
           const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
           if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
         } else {
-          dependenciesAdded = addDependencyEntries(root, reactUpgrade, { dev: false }).length > 0;
+          const added = addDependencyEntries(root, reactUpgrade, { dev: false });
+          dependencyEntriesAdded.push(...added);
+          dependenciesAdded = added.length > 0;
         }
       } catch (error) {
         if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
@@ -606,7 +610,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
         dependenciesAdded = true;
         if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
       } else {
-        dependenciesAdded = addDependencyEntries(root, missingDeps, { dev: true }).length > 0;
+        const added = addDependencyEntries(root, missingDeps, { dev: true });
+        devDependencyEntriesAdded.push(...added);
+        dependenciesAdded = dependenciesAdded || added.length > 0;
       }
     } catch (error) {
       if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
@@ -637,9 +643,17 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (dependenciesAdded) {
+  if (dependenciesAdded && shouldInstall) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
     console.log(formatList(missingDeps, "      "));
+  }
+  if (!shouldInstall && dependencyEntriesAdded.length > 0) {
+    console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
+    console.log(formatList(dependencyEntriesAdded, "      "));
+  }
+  if (!shouldInstall && devDependencyEntriesAdded.length > 0) {
+    console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
+    console.log(formatList(devDependencyEntriesAdded, "      "));
   }
   if (dependencyInstallNeedsApproval) {
     console.log(
