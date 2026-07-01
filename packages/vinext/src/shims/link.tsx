@@ -499,7 +499,11 @@ function prefetchUrl(
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const autoPrefetch =
           mode === "route-tree" || mode === "segment"
-            ? { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: true }
+            ? {
+                cacheForNavigation: mode === "segment",
+                prefetchShellFirst: false,
+                shouldPrefetch: true,
+              }
             : mode === "auto"
               ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
               : mode === "full-after-shell"
