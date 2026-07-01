@@ -64,6 +64,7 @@ import {
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
+import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
   url: URL;
@@ -722,48 +723,6 @@ const observedLinkPrefetches = new WeakMap<Element, LinkPrefetchInstance>();
 const visibleLinkPrefetches = new Set<LinkPrefetchInstance>();
 const visibleAppPrefetchQueue: LinkPrefetchInstance[] = [];
 let visibleAppPrefetchDrainScheduled = false;
-
-const MAX_DEFAULT_APP_PREFETCH_REQUESTS = 4;
-const defaultAppPrefetchQueue: Array<() => void> = [];
-let activeDefaultAppPrefetchRequests = 0;
-let defaultAppPrefetchDrainScheduled = false;
-
-function drainDefaultAppPrefetchQueue(): void {
-  defaultAppPrefetchDrainScheduled = false;
-  while (activeDefaultAppPrefetchRequests < MAX_DEFAULT_APP_PREFETCH_REQUESTS) {
-    const run = defaultAppPrefetchQueue.pop();
-    if (!run) return;
-    activeDefaultAppPrefetchRequests += 1;
-    run();
-  }
-}
-
-function scheduleDefaultAppPrefetchDrain(): void {
-  if (defaultAppPrefetchDrainScheduled) return;
-  defaultAppPrefetchDrainScheduled = true;
-  queueMicrotask(drainDefaultAppPrefetchQueue);
-}
-
-function scheduleAppPrefetchFetch(
-  fetcher: () => Promise<Response>,
-  priority: "low" | "high",
-): Promise<Response> {
-  if (priority === "high") {
-    return fetcher();
-  }
-
-  return new Promise<Response>((resolve, reject) => {
-    defaultAppPrefetchQueue.push(() => {
-      fetcher()
-        .then(resolve, reject)
-        .finally(() => {
-          activeDefaultAppPrefetchRequests -= 1;
-          drainDefaultAppPrefetchQueue();
-        });
-    });
-    scheduleDefaultAppPrefetchDrain();
-  });
-}
 
 function drainVisibleAppPrefetchQueue(): void {
   visibleAppPrefetchDrainScheduled = false;

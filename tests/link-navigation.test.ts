@@ -178,28 +178,31 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
   });
 }
 
-async function flushPrefetchTasks(): Promise<void> {
+async function flushPrefetchTasks(until?: () => boolean): Promise<void> {
   // requestIdleCallback is mocked as sync, then prefetchUrl enters an async
   // IIFE that may resolve lazy runtime modules before hashing headers and
   // writing caches. Low-priority App Router fetches then drain from a
-  // microtask-backed queue, so drain a few event-loop turns rather than
-  // relying on a fixed microtask depth.
-  for (let i = 0; i < 3; i++) {
+  // microtask-backed queue. Without an explicit condition, settle dynamic
+  // imports first, then yield one event-loop turn for the queue drain.
+  if (until === undefined) {
+    await vi.dynamicImportSettled();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.dynamicImportSettled();
+    return;
   }
+
+  const deadline = Date.now() + 1_000;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (until()) return;
+  } while (Date.now() < deadline);
 }
 
 async function waitForFetchCalls(
   fetch: { mock: { calls: unknown[] } },
   expectedCalls: number,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await flushPrefetchTasks();
-    if (fetch.mock.calls.length >= expectedCalls) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  await flushPrefetchTasks(() => fetch.mock.calls.length >= expectedCalls);
 }
 
 function expectCanonicalRscFetchCall(

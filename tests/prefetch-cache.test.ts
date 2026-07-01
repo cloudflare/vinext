@@ -383,6 +383,33 @@ describe("prefetch cache eviction", () => {
     await expect(restored.text()).resolves.toBe("flight");
   });
 
+  it("releases queued App prefetch fetch slots after consuming the response body", async () => {
+    let closeBody!: () => void;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("flight"));
+        closeBody = () => controller.close();
+      },
+    });
+    const response = new Response(body, {
+      headers: { "content-type": "text/x-component" },
+    });
+    const release = vi.fn();
+    (response as Response & Record<symbol, (() => void) | undefined>)[
+      Symbol.for("vinext.appPrefetchFetchSlotRelease")
+    ] = release;
+
+    const snapshotPromise = snapshotRscResponse(response);
+    await Promise.resolve();
+    expect(release).not.toHaveBeenCalled();
+
+    closeBody();
+    await expect(
+      snapshotPromise.then((snapshot) => restoreRscResponse(snapshot).text()),
+    ).resolves.toBe("flight");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it("settles router.prefetch as a consumable cache-seeded response without visible navigation", async () => {
     let resolveResponse!: (response: Response) => void;
     const fetchPromise = new Promise<Response>((resolve) => {
@@ -438,6 +465,40 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().has(cacheKey)).toBe(false);
     expect(getPrefetchedUrls().has(cacheKey)).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("limits low-priority router.prefetch requests until queued responses are snapshotted", async () => {
+    const deferredResponses: Array<{
+      resolve: (response: Response) => void;
+      promise: Promise<Response>;
+    }> = [];
+    const fetch = vi.fn(() => {
+      let resolve!: (response: Response) => void;
+      const promise = new Promise<Response>((resolveInner) => {
+        resolve = resolveInner;
+      });
+      deferredResponses.push({ promise, resolve });
+      return promise;
+    });
+    (globalThis as any).fetch = fetch;
+
+    for (let i = 0; i < 5; i++) {
+      appRouterInstance.prefetch(`/dashboard-${i}`);
+    }
+
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 4);
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    deferredResponses[0].resolve(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 5);
+    expect(fetch).toHaveBeenCalledTimes(5);
+
+    for (const deferred of deferredResponses.slice(1)) {
+      deferred.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+    }
   });
 
   it("awaits an in-flight prefetch instead of missing the navigation cache", async () => {
@@ -645,6 +706,65 @@ describe("prefetch cache eviction", () => {
     expect(cache.has("/page-1.rsc")).toBe(true);
     expect(getPrefetchedUrls().has("/page-0.rsc")).toBe(false);
     expect(getPrefetchedUrls().has("/page-1.rsc")).toBe(true);
+  });
+
+  it("skips pending prefetches when byte LRU cleanup needs to free memory", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const pendingRscUrl = "/pending.rsc";
+    const largeRscUrl = "/large.rsc";
+    const pending = createDeferredResponse();
+
+    prefetchRscResponse(pendingRscUrl, pending.promise, null, null);
+    expect(getPrefetchCache().get(pendingRscUrl)?.outcome).toBe("pending");
+
+    seedPrefetchResponseSnapshot(largeRscUrl, {
+      buffer: new ArrayBuffer(MAX_PREFETCH_CACHE_SIZE + 1024 * 1024),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: largeRscUrl,
+    });
+
+    expect(getPrefetchCache().get(pendingRscUrl)?.outcome).toBe("pending");
+    expect(getPrefetchCache().has(largeRscUrl)).toBe(false);
+
+    pending.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(pendingRscUrl)?.outcome === "cache-seeded",
+    );
+  });
+
+  it("subtracts overwritten prefetch entries before applying the byte LRU", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const largeRscUrl = "/large.rsc";
+
+    seedPrefetchResponseSnapshot(largeRscUrl, {
+      buffer: new ArrayBuffer(MAX_PREFETCH_CACHE_SIZE - 1024 * 1024),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: largeRscUrl,
+    });
+
+    storePrefetchResponse(largeRscUrl, new Response("x"));
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(largeRscUrl)?.outcome === "cache-seeded" &&
+        getPrefetchCache().get(largeRscUrl)?.pending === undefined,
+    );
+
+    seedPrefetchResponseSnapshot("/small.rsc", {
+      buffer: new ArrayBuffer(2 * 1024 * 1024),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: "/small.rsc",
+    });
+
+    expect(getPrefetchCache().has(largeRscUrl)).toBe(true);
+    expect(getPrefetchCache().has("/small.rsc")).toBe(true);
   });
 
   // Regression for issue #1490: experimental.staleTimes.static should be
@@ -893,7 +1013,7 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, snapshot.mountedSlotsHeader)).toBeNull();
   });
 
-  it("sweeps expired entries even when cache is below byte capacity", () => {
+  it("does not sweep expired entries on under-budget cache writes", () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
@@ -911,8 +1031,10 @@ describe("prefetch cache eviction", () => {
     });
 
     const cache = getPrefetchCache();
-    expect(cache.size).toBe(1);
+    expect(cache.size).toBe(3);
+    expect(cache.has("/expired-small-0.rsc")).toBe(true);
+    expect(cache.has("/expired-small-1.rsc")).toBe(true);
     expect(cache.has("/new.rsc")).toBe(true);
-    expect(getPrefetchedUrls().size).toBe(1);
+    expect(getPrefetchedUrls().size).toBe(3);
   });
 });
