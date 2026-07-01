@@ -318,11 +318,11 @@ function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
 } {
   const hasLoadingShell = route.canPrefetchLoadingShell;
   return {
-    // Automatic prefetches are only authoritative navigation payloads for
-    // static routes without a loading shell. Dynamic routes still warm an
-    // optimistic shell, but the click must issue the dynamic request so params
-    // from active parallel route branches are derived from the target tree.
-    cacheForNavigation: !hasLoadingShell && !route.isDynamic,
+    // Automatic prefetches are only unsafe as authoritative navigation
+    // payloads for dynamic routes whose active parallel branches must be
+    // derived from the click-time target tree. Other concrete dynamic URLs can
+    // match Next.js's full-prefetch behavior, including client-param routes.
+    cacheForNavigation: !hasLoadingShell && route.requiresDynamicNavigationRequest !== true,
     prefetchShellFirst: !route.isDynamic,
     shouldPrefetch: true,
   };
