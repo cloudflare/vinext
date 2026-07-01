@@ -9,33 +9,20 @@ import {
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { createElement, type ComponentType } from "react";
-import { makeThenableParams } from "vinext/shims/thenable-params";
 import { getDeploymentId } from "../utils/deployment-id.js";
-import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 
-const HAS_RUNTIME_PREFETCH = 0b00001;
 const PARENT_INLINED_INTO_SELF = 0b100000;
 const INLINED_INTO_CHILD = 0b1000000;
 const HEAD_INLINED_INTO_SELF = 0b10000000;
-const PREFETCH_DISABLED = 0b10000000000;
-const STATIC_PREFETCH_DISABLED = HAS_RUNTIME_PREFETCH | PREFETCH_DISABLED;
 
 const PAGE_SEGMENT = "__PAGE__";
 const SLOT_SEGMENT = "(__SLOT__)";
 const SEGMENT_INLINE_SIZE = 1;
 const SEGMENT_OUTLINE_SIZE = 4096;
-const SEGMENT_INLINE_THRESHOLD = 2048;
+const DEFAULT_SEGMENT_INLINE_THRESHOLD = 2048;
 const HEAD_INLINE_SIZE = 1;
-const MAX_INLINE_BUNDLE_SIZE = 10240;
+const DEFAULT_MAX_INLINE_BUNDLE_SIZE = 10240;
 const NEXT_DID_POSTPONE_HEADER = "x-nextjs-postponed";
-
-type AppRouteTreePrefetchParams = Record<string, string | string[]>;
-
-export type RouteTreePrefetchRenderer = (
-  model: unknown,
-  options?: unknown,
-) => Promise<ReadableStream<Uint8Array>>;
 
 type DynamicParamTypeShort = "d" | "c" | "oc";
 
@@ -75,8 +62,17 @@ export type TreePrefetch = {
 type RouteTreePrefetchResponseOptions = {
   buildId?: string | null;
   deploymentId?: string;
-  searchParams?: URLSearchParams | null;
+  prefetchInlining?: PrefetchInliningConfig;
 };
+
+export type PrefetchInliningConfig =
+  | false
+  | {
+      maxBundleSize: number;
+      maxSize: number;
+    };
+
+type ResolvedPrefetchInliningConfig = Exclude<PrefetchInliningConfig, false>;
 
 type MutableTreePrefetch = TreePrefetch & {
   prefetchSize: number | null;
@@ -91,21 +87,13 @@ export function isRouteTreePrefetchRequest(request: Request): boolean {
   );
 }
 
-async function createNode(
+function createNode(
   segment: string,
   module: unknown,
-  params: AppRouteTreePrefetchParams,
-  searchParams: AppRouteTreePrefetchParams,
-  renderToReadableStream: RouteTreePrefetchRenderer,
   staticSiblings?: readonly string[] | null,
-): Promise<MutableTreePrefetch> {
+): MutableTreePrefetch {
   const { name, param } = routeTreeSegment(segment, staticSiblings);
-  const measuredSize = await estimatePrefetchSize(
-    module,
-    params,
-    searchParams,
-    renderToReadableStream,
-  );
+  const measuredSize = estimatePrefetchSize(module);
   const virtualSegmentSize =
     (module === null || module === undefined) && segment !== PAGE_SEGMENT
       ? SEGMENT_INLINE_SIZE
@@ -173,66 +161,22 @@ function dynamicRouteTreeSegment(
 
 function explicitPrefetchSize(module: unknown): number | null {
   if (typeof module !== "object" || module === null) return null;
+  // Vinext-only escape hatch for tests and applications that want to tune the
+  // heuristic route-tree inlining estimate without rendering user components.
+  // Next.js measures the prerendered segment payload instead.
   const value = (module as { prefetchSize?: unknown }).prefetchSize;
   if (value === "large") return SEGMENT_OUTLINE_SIZE;
   if (value === "small") return SEGMENT_INLINE_SIZE;
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-async function gzipStreamByteLength(stream: ReadableStream<Uint8Array>): Promise<number> {
-  const ready = (stream as ReadableStream<Uint8Array> & { allReady?: Promise<void> }).allReady;
-  if (ready) {
-    await ready;
-  }
-
-  const gzip = new CompressionStream("gzip") as unknown as ReadableWritablePair<
-    Uint8Array,
-    Uint8Array
-  >;
-  const reader = stream.pipeThrough(gzip).getReader();
-  let byteLength = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return byteLength;
-
-      byteLength += value.byteLength;
-      if (byteLength >= SEGMENT_INLINE_THRESHOLD) {
-        await reader.cancel().catch(() => {});
-        return SEGMENT_INLINE_THRESHOLD;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-async function estimatePrefetchSize(
-  module: unknown,
-  params: AppRouteTreePrefetchParams,
-  searchParams: AppRouteTreePrefetchParams,
-  renderToReadableStream: RouteTreePrefetchRenderer,
-): Promise<number | null> {
+function estimatePrefetchSize(module: unknown): number | null {
   const explicitSize = explicitPrefetchSize(module);
   if (explicitSize !== null) return explicitSize;
 
   if (typeof module !== "object" || module === null) return null;
   const Component = (module as { default?: unknown }).default;
-  if (typeof Component !== "function") return null;
-
-  try {
-    const props = {
-      children: null,
-      params: makeThenableParams(params),
-      searchParams: makeThenableParams(searchParams),
-    };
-    return await gzipStreamByteLength(
-      await renderToReadableStream(createElement(Component as ComponentType<typeof props>, props)),
-    );
-  } catch {
-    return null;
-  }
+  return typeof Component === "function" ? SEGMENT_INLINE_SIZE : null;
 }
 
 function layoutModuleByTreePosition(route: AppRouteTreePrefetchRoute): Map<number, unknown> {
@@ -256,43 +200,21 @@ function modulesByTreePosition(
   return byPosition;
 }
 
-async function buildTree(
-  route: AppRouteTreePrefetchRoute,
-  params: AppRouteTreePrefetchParams,
-  searchParams: AppRouteTreePrefetchParams,
-  renderToReadableStream: RouteTreePrefetchRenderer,
-): Promise<MutableTreePrefetch> {
+async function buildTree(route: AppRouteTreePrefetchRoute): Promise<MutableTreePrefetch> {
   const layoutsByPosition = layoutModuleByTreePosition(route);
-  const root = await createNode(
-    "",
-    layoutsByPosition.get(0),
-    resolveAppPageSegmentParams(route.routeSegments, 0, params),
-    searchParams,
-    renderToReadableStream,
-  );
+  const root = createNode("", layoutsByPosition.get(0));
   const nodesByPosition = new Map<number, MutableTreePrefetch>([[0, root]]);
   let current = root;
 
   for (const [index, segment] of route.routeSegments.entries()) {
     const position = index + 1;
-    const child = await createNode(
-      segment,
-      layoutsByPosition.get(position),
-      resolveAppPageSegmentParams(route.routeSegments, position, params),
-      searchParams,
-      renderToReadableStream,
-      route.staticSiblings,
-    );
+    const child = createNode(segment, layoutsByPosition.get(position), route.staticSiblings);
     addChild(current, "children", child);
     nodesByPosition.set(position, child);
     current = child;
   }
 
-  addChild(
-    current,
-    "children",
-    await createNode(PAGE_SEGMENT, route.page, params, searchParams, renderToReadableStream),
-  );
+  addChild(current, "children", createNode(PAGE_SEGMENT, route.page));
 
   for (const slot of Object.values(route.slots ?? {})) {
     const ownerPosition =
@@ -300,14 +222,7 @@ async function buildTree(
         ? route.routeSegments.length
         : (route.layoutTreePositions?.[slot.layoutIndex] ?? route.routeSegments.length);
     const owner = nodesByPosition.get(ownerPosition) ?? current;
-    const slotOwnerParams = resolveAppPageSegmentParams(route.routeSegments, ownerPosition, params);
-    const slotRoot = await createNode(
-      SLOT_SEGMENT,
-      slot.layout,
-      slotOwnerParams,
-      searchParams,
-      renderToReadableStream,
-    );
+    const slotRoot = createNode(SLOT_SEGMENT, slot.layout);
     let slotCurrent = slotRoot;
     const slotConfigLayoutsByPosition = modulesByTreePosition(
       slot.configLayouts,
@@ -316,30 +231,11 @@ async function buildTree(
     const slotRouteSegments = slot.routeSegments ?? [];
     for (const [index, segment] of slotRouteSegments.entries()) {
       const position = index + 1;
-      const child = await createNode(
-        segment,
-        slotConfigLayoutsByPosition.get(position),
-        {
-          ...slotOwnerParams,
-          ...resolveAppPageBranchParams(slotRouteSegments, position, params),
-        },
-        searchParams,
-        renderToReadableStream,
-      );
+      const child = createNode(segment, slotConfigLayoutsByPosition.get(position));
       addChild(slotCurrent, "children", child);
       slotCurrent = child;
     }
-    addChild(
-      slotCurrent,
-      "children",
-      await createNode(
-        PAGE_SEGMENT,
-        slot.page ?? slot.default,
-        params,
-        searchParams,
-        renderToReadableStream,
-      ),
-    );
+    addChild(slotCurrent, "children", createNode(PAGE_SEGMENT, slot.page ?? slot.default));
     addChild(owner, slot.name, slotRoot);
   }
 
@@ -350,11 +246,11 @@ function computePrefetchHints(
   node: MutableTreePrefetch,
   parentGzipSize: number | null,
   headInlineState: { inlined: boolean },
+  config: ResolvedPrefetchInliningConfig,
 ): number {
-  const staticPrefetchDisabled = (node.prefetchHints & STATIC_PREFETCH_DISABLED) !== 0;
-  const currentGzipSize = staticPrefetchDisabled ? null : node.prefetchSize;
+  const currentGzipSize = node.prefetchSize;
   const sizeToInline =
-    currentGzipSize !== null && currentGzipSize < SEGMENT_INLINE_THRESHOLD ? currentGzipSize : null;
+    currentGzipSize !== null && currentGzipSize < config.maxSize ? currentGzipSize : null;
 
   let didInlineIntoChild = false;
   let acceptingChildInlinedBytes = 0;
@@ -363,12 +259,8 @@ function computePrefetchHints(
 
   for (const child of Object.values(node.slots ?? {})) {
     hasChildren = true;
-    const childParentSize = didInlineIntoChild
-      ? null
-      : staticPrefetchDisabled
-        ? parentGzipSize
-        : sizeToInline;
-    const childInlinedBytes = computePrefetchHints(child, childParentSize, headInlineState);
+    const childParentSize = didInlineIntoChild ? null : sizeToInline;
+    const childInlinedBytes = computePrefetchHints(child, childParentSize, headInlineState, config);
 
     if ((child.prefetchHints & PARENT_INLINED_INTO_SELF) !== 0) {
       didInlineIntoChild = true;
@@ -388,12 +280,12 @@ function computePrefetchHints(
   }
 
   let inlinedBytes = didInlineIntoChild ? acceptingChildInlinedBytes : smallestChildInlinedBytes;
-  const isBundleTerminal = !didInlineIntoChild && !staticPrefetchDisabled;
+  const isBundleTerminal = !didInlineIntoChild;
   if (
     !headInlineState.inlined &&
     isBundleTerminal &&
     node.name === PAGE_SEGMENT &&
-    inlinedBytes + HEAD_INLINE_SIZE < MAX_INLINE_BUNDLE_SIZE
+    inlinedBytes + HEAD_INLINE_SIZE < config.maxBundleSize
   ) {
     hints |= HEAD_INLINED_INTO_SELF;
     inlinedBytes += HEAD_INLINE_SIZE;
@@ -401,8 +293,7 @@ function computePrefetchHints(
   }
 
   if (parentGzipSize !== null) {
-    const canAcceptParent = !staticPrefetchDisabled || didInlineIntoChild;
-    if (canAcceptParent && inlinedBytes + parentGzipSize < MAX_INLINE_BUNDLE_SIZE) {
+    if (inlinedBytes + parentGzipSize < config.maxBundleSize) {
       hints |= PARENT_INLINED_INTO_SELF;
       inlinedBytes += parentGzipSize;
     }
@@ -427,36 +318,27 @@ function stripMutableFields(node: MutableTreePrefetch): TreePrefetch {
   };
 }
 
-function collectSearchParams(
-  searchParams: URLSearchParams | null | undefined,
-): AppRouteTreePrefetchParams {
-  const collected: AppRouteTreePrefetchParams = Object.create(null);
-  searchParams?.forEach((value, key) => {
-    const current = collected[key];
-    if (Array.isArray(current)) {
-      collected[key] = [...current, value];
-    } else if (current !== undefined) {
-      collected[key] = [current, value];
-    } else {
-      collected[key] = value;
-    }
-  });
-  return collected;
+function resolvePrefetchInliningConfig(
+  config: PrefetchInliningConfig | undefined,
+): ResolvedPrefetchInliningConfig {
+  if (config) return config;
+  return {
+    maxBundleSize: DEFAULT_MAX_INLINE_BUNDLE_SIZE,
+    maxSize: DEFAULT_SEGMENT_INLINE_THRESHOLD,
+  };
 }
 
 export async function createRouteTreePrefetchResponse(
   route: AppRouteTreePrefetchRoute,
-  renderToReadableStream: RouteTreePrefetchRenderer,
-  params: AppRouteTreePrefetchParams = {},
   options: RouteTreePrefetchResponseOptions = {},
 ): Promise<Response> {
-  const tree = await buildTree(
-    route,
-    params,
-    collectSearchParams(options.searchParams),
-    renderToReadableStream,
+  const tree = await buildTree(route);
+  computePrefetchHints(
+    tree,
+    null,
+    { inlined: false },
+    resolvePrefetchInliningConfig(options.prefetchInlining),
   );
-  computePrefetchHints(tree, null, { inlined: false });
   const headers = new Headers({
     "Cache-Control": "no-store",
     "Content-Type": VINEXT_RSC_CONTENT_TYPE,

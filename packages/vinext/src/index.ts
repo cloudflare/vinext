@@ -3308,6 +3308,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               inlineCss: nextConfig?.inlineCss,
               globalNotFound: nextConfig?.globalNotFound,
               cacheComponents: nextConfig?.cacheComponents,
+              prefetchInlining: nextConfig?.prefetchInlining,
               hasServerActions,
               i18n: nextConfig?.i18n,
               imageConfig: {

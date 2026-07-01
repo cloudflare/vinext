@@ -92,7 +92,7 @@ import {
   createRouteTreePrefetchResponse,
   isRouteTreePrefetchRequest,
   type AppRouteTreePrefetchRoute,
-  type RouteTreePrefetchRenderer,
+  type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -321,9 +321,9 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
+  prefetchInlining?: PrefetchInliningConfig;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
-  renderToReadableStream: RouteTreePrefetchRenderer;
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
@@ -1059,15 +1059,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
   const resolvedSearchParams = getResolvedSearchParams();
   if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
-    const response = await createRouteTreePrefetchResponse(
-      route,
-      options.renderToReadableStream,
-      params,
-      {
-        buildId: options.buildId,
-        searchParams: resolvedSearchParams,
-      },
-    );
+    const response = await createRouteTreePrefetchResponse(route, {
+      buildId: options.buildId,
+      prefetchInlining: options.prefetchInlining,
+    });
     options.clearRequestContext();
     return applyMiddlewareContextToResponse(response, middlewareContext);
   }
