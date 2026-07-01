@@ -88,6 +88,12 @@ import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
 } from "./server-action-not-found.js";
+import {
+  createRouteTreePrefetchResponse,
+  isRouteTreePrefetchRequest,
+  type AppRouteTreePrefetchRoute,
+  type RouteTreePrefetchRenderer,
+} from "./app-route-tree-prefetch.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -109,12 +115,15 @@ type AppRscHandlerRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   isDynamic: boolean;
+  layouts?: readonly unknown[];
+  layoutTreePositions?: readonly number[];
   params?: readonly string[];
   page?: unknown;
   pattern: string;
   rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments: readonly string[];
+  slots?: AppRouteTreePrefetchRoute["slots"];
 };
 
 type AppRscRouteMatch<TRoute> = {
@@ -314,6 +323,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   publicFiles: ReadonlySet<string>;
   renderNotFound: (options: RenderNotFoundOptions<TRoute>) => Promise<Response | null>;
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
+  renderToReadableStream: RouteTreePrefetchRenderer;
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
@@ -1047,6 +1057,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
+  if (isRouteTreePrefetchRequest(request) && route.page) {
+    return createRouteTreePrefetchResponse(route, options.renderToReadableStream, params, {
+      buildId: options.buildId,
+    });
+  }
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
     prerenderRouteParamsPayload,
