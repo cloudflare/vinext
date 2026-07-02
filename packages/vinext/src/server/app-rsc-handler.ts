@@ -11,8 +11,11 @@ import {
   preserveRedirectDestinationQuery,
   proxyExternalRequest,
   requestContextFromRequest,
+  requestContextConditionAccessForRule,
+  requestContextConditionAccessForMatchingRewrites,
   sanitizeDestination,
   type BasePathMatchState,
+  type RequestContextConditionAccess,
 } from "../config/config-matchers.js";
 import { headersContextFromRequest } from "vinext/shims/headers";
 import {
@@ -98,6 +101,7 @@ import {
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
 const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
+const NO_REWRITES: readonly NextRewrite[] = [];
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -405,12 +409,19 @@ function requestContextForResolvedUrl(
   requestContext: RequestContext,
   resolvedUrl: string,
   baseUrl: URL,
+  conditionAccess: RequestContextConditionAccess,
 ): RequestContext {
+  let query: URLSearchParams | undefined;
   return {
-    cookies: requestContext.cookies,
     headers: requestContext.headers,
     host: requestContext.host,
-    query: new URL(resolvedUrl, baseUrl).searchParams,
+    get cookies() {
+      return conditionAccess.cookies ? requestContext.cookies : {};
+    },
+    get query() {
+      if (!conditionAccess.query) return new URLSearchParams();
+      return (query ??= new URL(resolvedUrl, baseUrl).searchParams);
+    },
   };
 }
 
@@ -664,6 +675,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           postMiddlewareRequestContext,
           resolvedUrl,
           url,
+          requestContextConditionAccessForRule(rewrite),
         ),
         rewrites: [rewrite],
       },
@@ -699,6 +711,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             postMiddlewareRequestContext,
             resolvedUrl,
             url,
+            requestContextConditionAccessForRule(rewrite),
           ),
           rewrites: [rewrite],
         },
@@ -723,6 +736,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               postMiddlewareRequestContext,
               resolvedUrl,
               url,
+              requestContextConditionAccessForRule(rewrite),
             ),
             rewrites: [rewrite],
           },
@@ -813,6 +827,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const preActionMatch = filesystemRouteEligible ? options.matchRoute(cleanPathname) : null;
   if (preActionMatch) {
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
+  }
+
+  const canRunLateAfterFiles =
+    !resolvedLateRewritesForAction && (!preActionMatch || preActionMatch.route.isDynamic);
+  const canRunLateFallback = !resolvedLateRewritesForAction && !preActionMatch;
+  if (isProgressiveActionRequest && (canRunLateAfterFiles || canRunLateFallback)) {
+    const lateRewriteAccess = requestContextConditionAccessForMatchingRewrites(
+      matchPathname(cleanPathname),
+      {
+        beforeFiles: NO_REWRITES,
+        afterFiles: canRunLateAfterFiles ? options.configRewrites.afterFiles : NO_REWRITES,
+        fallback: canRunLateFallback ? options.configRewrites.fallback : NO_REWRITES,
+      },
+      basePathState,
+    );
+    // Progressive actions can mutate the shared cookie map before the late
+    // rewrite loops below. Cookie predicates must still see the post-middleware
+    // request snapshot that existed before user action code ran.
+    if (lateRewriteAccess.cookies) void postMiddlewareRequestContext.cookies;
   }
 
   if (!filesystemRouteEligible && isPostRequest && actionId) {
@@ -918,7 +951,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     return staticPagesFallbackResponse;
   }
-  if (!resolvedLateRewritesForAction && (!match || match.route.isDynamic)) {
+  if (canRunLateAfterFiles) {
     for (const rewrite of options.configRewrites.afterFiles) {
       const afterFilesRewrite = await applyRewrite(
         {
@@ -930,6 +963,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             postMiddlewareRequestContext,
             resolvedUrl,
             url,
+            requestContextConditionAccessForRule(rewrite),
           ),
           rewrites: [rewrite],
         },
@@ -963,7 +997,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return dynamicPagesFallbackResponse;
   }
 
-  if (!resolvedLateRewritesForAction && !match) {
+  if (canRunLateFallback && !match) {
     for (const rewrite of options.configRewrites.fallback) {
       const fallbackRewrite = await applyRewrite(
         {
@@ -975,6 +1009,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             postMiddlewareRequestContext,
             resolvedUrl,
             url,
+            requestContextConditionAccessForRule(rewrite),
           ),
           rewrites: [rewrite],
         },

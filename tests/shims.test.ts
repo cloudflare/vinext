@@ -11074,6 +11074,60 @@ describe("checkHasConditions", () => {
     expect(checkHasConditions(undefined, undefined, makeCtx())).toBe(true);
   });
 
+  it("reports cookie and query condition access separately", async () => {
+    const {
+      requestContextConditionAccessForMatchingRewrites,
+      requestContextConditionAccessForRule,
+    } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    expect(
+      requestContextConditionAccessForRule({
+        has: [{ type: "cookie", key: "session" }],
+        missing: [{ type: "header", key: "x-skip" }],
+      }),
+    ).toEqual({ cookies: true, query: false });
+
+    expect(
+      requestContextConditionAccessForRule({
+        has: [{ type: "query", key: "preview" }],
+        missing: [{ type: "host", key: "example.com" }],
+      }),
+    ).toEqual({ cookies: false, query: true });
+
+    expect(
+      requestContextConditionAccessForRule({
+        has: [{ type: "header", key: "x-user-tier" }],
+        missing: [{ type: "host", key: "example.com" }],
+      }),
+    ).toEqual({ cookies: false, query: false });
+
+    expect(
+      requestContextConditionAccessForMatchingRewrites("/account", {
+        beforeFiles: [
+          {
+            source: "/account",
+            has: [{ type: "cookie", key: "session" }],
+            destination: "/dashboard",
+          },
+        ],
+        afterFiles: [
+          {
+            source: "/other",
+            has: [{ type: "query", key: "preview" }],
+            destination: "/preview",
+          },
+        ],
+        fallback: [
+          {
+            source: "/account",
+            missing: [{ type: "query", key: "tab" }],
+            destination: "/account/default",
+          },
+        ],
+      }),
+    ).toEqual({ cookies: true, query: true });
+  });
+
   // -- header conditions --
   it("has header: passes when header present", async () => {
     const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");

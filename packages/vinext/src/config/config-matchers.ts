@@ -480,6 +480,76 @@ export type RequestContext = {
   readonly host: string;
 };
 
+export type RequestContextConditionAccess = {
+  readonly cookies: boolean;
+  readonly query: boolean;
+};
+
+const _conditionAccessCache = new WeakMap<object, RequestContextConditionAccess>();
+
+function mergeConditionAccess(
+  target: { cookies: boolean; query: boolean },
+  conditions: readonly HasCondition[] | undefined,
+): void {
+  if (!conditions) return;
+  for (const condition of conditions) {
+    if (condition.type === "cookie") {
+      target.cookies = true;
+    } else if (condition.type === "query") {
+      target.query = true;
+    }
+  }
+}
+
+function mergeMatchingRewriteConditionAccess(
+  target: { cookies: boolean; query: boolean },
+  pathname: string,
+  rewrites: readonly NextRewrite[],
+  basePathState: BasePathMatchState,
+): boolean {
+  for (const rewrite of rewrites) {
+    if (!matchesRewriteSource(pathname, rewrite, basePathState)) continue;
+    const access = requestContextConditionAccessForRule(rewrite);
+    target.cookies ||= access.cookies;
+    target.query ||= access.query;
+    if (target.cookies && target.query) return true;
+  }
+  return false;
+}
+
+export function requestContextConditionAccessForRule(rule: {
+  has?: readonly HasCondition[];
+  missing?: readonly HasCondition[];
+}): RequestContextConditionAccess {
+  const cached = _conditionAccessCache.get(rule);
+  if (cached) return cached;
+  const access = { cookies: false, query: false };
+  mergeConditionAccess(access, rule.has);
+  mergeConditionAccess(access, rule.missing);
+  _conditionAccessCache.set(rule, access);
+  return access;
+}
+
+export function requestContextConditionAccessForMatchingRewrites(
+  pathname: string,
+  rewrites: {
+    readonly beforeFiles: readonly NextRewrite[];
+    readonly afterFiles: readonly NextRewrite[];
+    readonly fallback: readonly NextRewrite[];
+  },
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): RequestContextConditionAccess {
+  const access = { cookies: false, query: false };
+  if (mergeMatchingRewriteConditionAccess(access, pathname, rewrites.beforeFiles, basePathState)) {
+    return access;
+  }
+  if (mergeMatchingRewriteConditionAccess(access, pathname, rewrites.afterFiles, basePathState)) {
+    return access;
+  }
+  mergeMatchingRewriteConditionAccess(access, pathname, rewrites.fallback, basePathState);
+  return access;
+}
+
 /**
  * basePath gating state passed alongside the pathname to every matcher.
  *

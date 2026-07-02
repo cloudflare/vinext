@@ -54,6 +54,33 @@ describe("buildPostMwRequestContext", () => {
     expect(ctx.cookies).toEqual({ token: "xyz", lang: "en" });
   });
 
+  it("does not materialise middleware cookies until cookies are read", () => {
+    const mwHeaders = new Headers({ host: "mw.example.com" });
+    const mwCookies = new Map([["token", "xyz"]]);
+    let cookieIterations = 0;
+    const iterateCookies = mwCookies[Symbol.iterator].bind(mwCookies);
+    Object.defineProperty(mwCookies, Symbol.iterator, {
+      value() {
+        cookieIterations++;
+        return iterateCookies();
+      },
+    });
+
+    setHeadersContext({ headers: mwHeaders, cookies: mwCookies });
+
+    const ctx = buildPostMwRequestContext(makeRequest("https://original.example.com/path"));
+
+    expect(ctx.headers.get("host")).toBe("mw.example.com");
+    expect(ctx.host).toBe("mw.example.com");
+    expect(cookieIterations).toBe(0);
+
+    expect(ctx.cookies).toEqual({ token: "xyz" });
+    expect(cookieIterations).toBe(1);
+
+    expect(ctx.cookies).toEqual({ token: "xyz" });
+    expect(cookieIterations).toBe(1);
+  });
+
   it("preserves query parameters from the original request URL", () => {
     setHeadersContext({
       headers: new Headers({ host: "x.com" }),

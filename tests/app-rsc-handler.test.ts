@@ -23,6 +23,8 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { NextResponse } from "../packages/vinext/src/shims/server.js";
+import { getHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import {
   handleMetadataRouteRequest,
   type MetadataRuntimeRoute,
@@ -167,6 +169,39 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("page");
+  });
+
+  it("matches a cookie-gated rewrite after middleware mutates the request cookie header", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("cookie gated page"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [
+          {
+            source: "/mw-cookie-gated",
+            has: [{ type: "cookie", key: "mw-auth" }],
+            destination: "/about",
+          },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      middlewareModule: {
+        middleware(request: NextRequest) {
+          const headers = new Headers(request.headers);
+          const existing = headers.get("cookie");
+          headers.set("cookie", existing ? `${existing}; mw-auth=1` : "mw-auth=1");
+          return NextResponse.next({ request: { headers } });
+        },
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/mw-cookie-gated"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("cookie gated page");
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
   });
 
   it("allows identity basePath: false rewrites to claim App routes", async () => {
@@ -809,6 +844,68 @@ describe("createAppRscHandler", () => {
       "__prerender_bypass=secret; Path=/",
     ]);
     expect(response.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  it("evaluates late cookie-gated rewrites against the post-middleware cookie snapshot", async () => {
+    const actionRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/late-action-cookie",
+      routeSegments: ["late-action-cookie"],
+    });
+    const aboutRoute = createPageRoute();
+    const dispatchMatchedPage = vi.fn(
+      async ({ cleanPathname }) => new Response(`page:${cleanPathname}`),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [
+          {
+            source: "/late-action-cookie",
+            has: [{ type: "cookie", key: "late-action" }],
+            destination: "/about",
+          },
+        ],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        const headersContext = getHeadersContext();
+        if (!headersContext) throw new Error("expected active headers context");
+        headersContext.cookies.set("late-action", "1");
+        return {
+          kind: "form-state",
+          formState: null,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/late-action-cookie") {
+          return { params: {}, route: actionRoute };
+        }
+        if (pathname === "/about") {
+          return { params: {}, route: aboutRoute };
+        }
+        return null;
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/late-action-cookie", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page:/late-action-cookie");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/late-action-cookie" }),
+    );
   });
 
   // When an action did not mutate cookies and did not request a revalidation,

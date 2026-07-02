@@ -15,11 +15,16 @@ export function buildPostMwRequestContext(request: Request): RequestContext {
   const url = new URL(request.url);
   const ctx = getHeadersContext();
   if (!ctx) return requestContextFromRequest(request);
-  const cookiesRecord: Record<string, string> = Object.fromEntries(ctx.cookies);
+  let cookiesRecord: Record<string, string> | undefined;
+  let query: URLSearchParams | undefined;
   return {
     headers: ctx.headers,
-    cookies: cookiesRecord,
-    query: url.searchParams,
+    get cookies() {
+      return (cookiesRecord ??= Object.fromEntries(ctx.cookies));
+    },
+    get query() {
+      return (query ??= url.searchParams);
+    },
     host: normalizeHost(ctx.headers.get("host"), url.hostname),
   };
 }
