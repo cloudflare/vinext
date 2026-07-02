@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import {
   hasExportedName,
   hasNamedExport,
+  hasPublicExportedName,
   extractExportConstString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
@@ -91,6 +92,15 @@ describe("hasNamedExport", () => {
     );
   });
 
+  it("ignores type-only export specifiers", () => {
+    expect(
+      hasNamedExport(
+        "export type { getStaticProps } from './types';\nexport default function Page() { return null; }",
+        "getStaticProps",
+      ),
+    ).toBe(false);
+  });
+
   it("detects export on a line following other code", () => {
     const code = `const x = 1;\nexport async function getStaticProps() {}`;
     expect(hasNamedExport(code, "getStaticProps")).toBe(true);
@@ -105,6 +115,56 @@ describe("hasNamedExport", () => {
 export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
+  });
+});
+
+// ─── hasPublicExportedName ────────────────────────────────────────────────────
+
+describe("hasPublicExportedName", () => {
+  it("detects direct function declaration export", () => {
+    expect(
+      hasPublicExportedName("export async function getStaticProps() {}", "getStaticProps"),
+    ).toBe(true);
+  });
+
+  it("detects direct const declaration export", () => {
+    expect(
+      hasPublicExportedName("export const getStaticProps = async () => ({});", "getStaticProps"),
+    ).toBe(true);
+  });
+
+  it("detects re-export specifier", () => {
+    expect(hasPublicExportedName("export { getStaticProps, foo };", "getStaticProps")).toBe(true);
+  });
+
+  it("detects aliased local binding exported under the searched name", () => {
+    expect(
+      hasPublicExportedName(
+        "const gsp = async () => ({ props: {} });\nexport { gsp as getStaticProps };",
+        "getStaticProps",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not detect alias exported under a different name", () => {
+    expect(hasPublicExportedName("export { getStaticProps as gsp };", "getStaticProps")).toBe(
+      false,
+    );
+  });
+
+  it("ignores type-only export specifiers", () => {
+    expect(
+      hasPublicExportedName(
+        "export type { getStaticProps } from './types';\nexport default function Page() { return null; }",
+        "getStaticProps",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when export is absent", () => {
+    expect(hasPublicExportedName("export default function Page() {}", "getStaticProps")).toBe(
+      false,
+    );
   });
 });
 

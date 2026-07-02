@@ -12,16 +12,15 @@
  * Ported from Next.js: `fetchNextData()` in
  * `packages/next/src/shared/lib/router/router.ts`. Next.js maintains an
  * `inflightCache` (keyed by the resolved data URL) and reuses the existing
- * Promise when a concurrent caller asks for the same URL. The entry is
- * dropped once the fetch settles (success or rejection) so the next
- * navigation re-fetches fresh.
+ * Promise when a concurrent caller asks for the same URL. Production prefetch
+ * entries stay cached until a real `__N_SSP` navigation consumes them; failed
+ * or uncached requests self-evict when they settle.
  *
  * Design notes:
  *
- * - Callers receive a cloned Response, so each can independently consume the
- *   body (`.json()`, `.text()`, etc.). The originating Response is never read
- *   directly by anyone, which keeps subsequent clones legal even after one
- *   caller has consumed its copy.
+ * - The shared fetch is buffered once, and callers receive a fresh `Response`
+ *   over those bytes. This mirrors Next.js' text-buffered `fetchNextData()`
+ *   cache while avoiding unread prefetch streams.
  *
  * - Each caller owns one waiter. Cancelling a waiter rejects only that caller;
  *   the shared request continues and self-evicts when it settles. This mirrors
@@ -32,13 +31,24 @@
  *   browser only, so a single `Map` is sufficient.
  */
 
-import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { getDeploymentId } from "../../utils/deployment-id.js";
 
 type InflightEntry = {
   controller: AbortController;
-  promise: Promise<Response>;
+  deleteOnSettle: boolean;
+  promise: Promise<BufferedResponse>;
   settled: boolean;
-  waiters: number;
+};
+
+type BufferedResponse = {
+  body: ArrayBuffer;
+  headers: [string, string][];
+  status: number;
+  statusText: string;
+};
+
+export type PagesDataFetchInit = RequestInit & {
+  persist?: boolean;
 };
 
 /** Inflight fetch entries keyed by the resolved data request identity. */
@@ -119,12 +129,20 @@ export function fetchStaticPagesData(dataHref: string, init?: RequestInit): Prom
 }
 
 export function evictPagesDataCache(dataHref: string): void {
-  const key = getStaticDataKey(dataHref);
-  delete staticDataCache[key];
-  staticDataSources.delete(key);
+  const staticKey = getStaticDataKey(dataHref);
+  delete staticDataCache[staticKey];
+  staticDataSources.delete(staticKey);
+  const inflightKey = getInflightKey(dataHref);
+  const entry = inflight.get(inflightKey);
+  if (!entry) return;
+  if (entry.settled) {
+    inflight.delete(inflightKey);
+  } else {
+    entry.deleteOnSettle = true;
+  }
 }
 
-function getInflightKey(dataHref: string, init?: RequestInit): string {
+function getInflightKey(dataHref: string): string {
   let resolvedHref = dataHref;
   if (typeof window !== "undefined") {
     try {
@@ -132,38 +150,30 @@ function getInflightKey(dataHref: string, init?: RequestInit): string {
     } catch {}
   }
 
-  const deploymentId = new Headers(init?.headers).get(NEXT_DEPLOYMENT_ID_HEADER) ?? "";
-  return `${resolvedHref}\n${deploymentId}`;
+  return `${resolvedHref}\n${getDeploymentId() ?? ""}`;
 }
 
-function cloneSharedResponse(
-  key: string,
-  entry: InflightEntry,
-  signal?: AbortSignal,
-): Promise<Response> {
-  entry.waiters += 1;
+function responseFromBuffered(buffered: BufferedResponse): Response {
+  return new Response(buffered.body, {
+    headers: buffered.headers,
+    status: buffered.status,
+    statusText: buffered.statusText,
+  });
+}
 
+function cloneSharedResponse(entry: InflightEntry, signal?: AbortSignal): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      entry.waiters -= 1;
-    };
     const abort = () => {
-      release();
       reject(new DOMException("Aborted", "AbortError"));
     };
     signal?.addEventListener("abort", abort, { once: true });
     entry.promise.then(
-      (response) => {
+      (buffered) => {
         signal?.removeEventListener("abort", abort);
-        release();
-        resolve(response.clone());
+        resolve(responseFromBuffered(buffered));
       },
       (error: unknown) => {
         signal?.removeEventListener("abort", abort);
-        release();
         reject(error);
       },
     );
@@ -171,19 +181,23 @@ function cloneSharedResponse(
 }
 
 /**
- * Dedupe a `fetch()` against the `_next/data` endpoint. Multiple concurrent
- * callers for the same resolved URL and deployment ID share one underlying
- * network request.
+ * Dedupe a `fetch()` against the `_next/data` endpoint. Multiple callers for
+ * the same resolved URL and deployment ID share one underlying network
+ * request, including a navigation racing a completed prefetch.
  *
- * Each call returns a freshly-cloned `Response` so consumers can read the
- * body independently. Once the in-flight Promise settles (resolve or reject)
- * the entry is removed, and the next call will hit the network again.
+ * Each call returns a fresh `Response` so consumers can read the body
+ * independently. Non-persistent entries are removed once the fetch settles.
+ * Persistent entries model Next.js' `sdc` cache and should be cleared by the
+ * navigation path after consuming an `__N_SSP` response.
  *
- * Errors propagate to every concurrent caller — the in-flight entry is
- * dropped on failure so the next navigation can retry.
+ * Errors and non-OK responses propagate to every concurrent caller, but are
+ * dropped from cache so the next navigation can retry.
  */
-export function dedupedPagesDataFetch(dataHref: string, init?: RequestInit): Promise<Response> {
-  const key = getInflightKey(dataHref, init);
+export function dedupedPagesDataFetch(
+  dataHref: string,
+  init?: PagesDataFetchInit,
+): Promise<Response> {
+  const key = getInflightKey(dataHref);
   const signal = init?.signal ?? undefined;
   if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
 
@@ -191,25 +205,45 @@ export function dedupedPagesDataFetch(dataHref: string, init?: RequestInit): Pro
   if (!entry) {
     const controller = new AbortController();
     let currentEntry: InflightEntry;
-    const promise = fetch(dataHref, { ...init, signal: controller.signal }).finally(() => {
-      currentEntry.settled = true;
-      if (inflight.get(key) === currentEntry) inflight.delete(key);
-    });
+    const { persist = false, signal: _signal, ...fetchInit } = init ?? {};
+    const promise = fetch(dataHref, { ...fetchInit, signal: controller.signal })
+      .then(async (response) => {
+        const buffered: BufferedResponse = {
+          body: await response.arrayBuffer(),
+          headers: Array.from(response.headers.entries()),
+          status: response.status,
+          statusText: response.statusText,
+        };
+        currentEntry.settled = true;
+        if (
+          (!persist || !response.ok || currentEntry.deleteOnSettle) &&
+          inflight.get(key) === currentEntry
+        ) {
+          inflight.delete(key);
+        }
+        return buffered;
+      })
+      .catch((error: unknown) => {
+        currentEntry.settled = true;
+        if (inflight.get(key) === currentEntry) inflight.delete(key);
+        throw error;
+      });
     currentEntry = {
       controller,
+      deleteOnSettle: false,
       promise,
       settled: false,
-      waiters: 0,
     };
     inflight.set(key, currentEntry);
     entry = currentEntry;
   }
-  return cloneSharedResponse(key, entry, signal);
+  return cloneSharedResponse(entry, signal);
 }
 
 /**
  * Drop every cached in-flight entry. Intended for tests; production code
- * does not need to call this because entries self-evict on settle.
+ * does not need to call this because non-persisted entries self-evict on
+ * settle, while persisted entries are retained intentionally.
  */
 export function clearPagesDataInflight(): void {
   for (const entry of inflight.values()) entry.controller.abort();

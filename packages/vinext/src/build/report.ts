@@ -148,32 +148,46 @@ export function hasNamedExport(code: string, name: string): boolean {
 export function hasExportedName(code: string, name: string): boolean {
   const program = parseRouteModule(code);
   if (!program) return false;
+  return hasNamedExportInProgram(program, name);
+}
 
+function hasNamedExportInProgram(
+  program: Program,
+  name: string,
+  which: "local" | "exported" = "local",
+): boolean {
   for (const node of program.body) {
     if (node.type !== "ExportNamedDeclaration") continue;
     if (node.exportKind === "type") continue;
+
     if (declarationHasBindingName(node.declaration, name)) return true;
+
     for (const specifier of node.specifiers) {
       if (specifier.exportKind === "type") continue;
-      if (moduleExportNameValue(specifier.local) === name) return true;
-    }
-  }
-  return false;
-}
 
-function hasNamedExportInProgram(program: Program, name: string): boolean {
-  for (const node of program.body) {
-    if (node.type !== "ExportNamedDeclaration") continue;
-
-    if (declarationHasBindingName(node.declaration, name)) return true;
-
-    for (const specifier of node.specifiers) {
-      if (moduleExportNameValue(specifier.local) === name) {
+      if (moduleExportNameValue(specifier[which]) === name) {
         return true;
       }
     }
   }
   return false;
+}
+
+/**
+ * Returns true if the source code exports the given public name.
+ *
+ * Differs from `hasNamedExport` and `hasExportedName` for re-export specifiers:
+ *   export { gsp as getStaticProps } -> true for name "getStaticProps"
+ *   export { getStaticProps as gsp } -> false for name "getStaticProps"
+ *
+ * Use this when the runtime contract is "does this module expose name X?",
+ * rather than Next.js' static-analyzer convention of tracking the original
+ * local binding name.
+ */
+export function hasPublicExportedName(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+  return hasNamedExportInProgram(program, name, "exported");
 }
 
 function unwrapStaticExpression(expression: Expression): Expression {

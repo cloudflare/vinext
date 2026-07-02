@@ -1,4 +1,5 @@
 import Router from "next/router";
+import Link from "next/link";
 
 const COUNTER_KEY = Symbol.for("vinext.tests.gsspDedupCounter");
 
@@ -6,6 +7,9 @@ export default function GsspDedupTest() {
   return (
     <main>
       <h1>gSSP Dedup Test</h1>
+      <Link href="/gssp-dedup-slow?key=same" data-testid="slow">
+        to slow
+      </Link>
       <button
         data-testid="push-identical"
         onClick={() => {
@@ -41,7 +45,9 @@ export default function GsspDedupTest() {
   );
 }
 
-export function getServerSideProps() {
-  (globalThis as typeof globalThis & { [COUNTER_KEY]?: number })[COUNTER_KEY] = 0;
+export function getServerSideProps({ query }: { query: Record<string, string | string[]> }) {
+  if (query.reset) {
+    (globalThis as typeof globalThis & { [COUNTER_KEY]?: number })[COUNTER_KEY] = 0;
+  }
   return { props: {} };
 }

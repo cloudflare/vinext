@@ -19040,6 +19040,76 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("does not cache x-nextjs-redirect responses for later navigations", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": aboutLoader,
+        "/login": vi.fn(async () => makePageModule("login")),
+      },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    function buildNavHtmlWithBuildId(page: string, pageModuleUrl: string): string {
+      const nextData = {
+        props: { pageProps: {} },
+        page,
+        query: {},
+        buildId,
+        isFallback: false,
+        __vinext: { pageModuleUrl },
+      };
+      return `<html><head></head><body><script>window.__NEXT_DATA__ = ${JSON.stringify(nextData)}</script></body></html>`;
+    }
+
+    let dataFetchCount = 0;
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const urlString = String(url);
+      if (urlString.includes("/_next/data/")) {
+        dataFetchCount += 1;
+        if (dataFetchCount === 1) {
+          return new Response("{}", {
+            status: 200,
+            headers: { "Content-Type": "application/json", "x-nextjs-redirect": "/login" },
+          });
+        }
+        return new Response(JSON.stringify({ pageProps: { ok: true } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // HTML fetch for the redirect target.
+      return new Response(buildNavHtmlWithBuildId("/login", "/@fs/pages/login.js"), {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }) as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/about");
+      expect(dataFetchCount).toBe(1);
+
+      await Router.push("/about");
+      // The second navigation must perform a fresh data fetch instead of
+      // replaying the cached redirect response.
+      expect(dataFetchCount).toBe(2);
+      expect(aboutLoader).toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("falls back to the HTML path when no loader is registered for the target route", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

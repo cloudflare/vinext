@@ -24,7 +24,7 @@ import type {
 } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { normalizePathSeparators } from "../utils/path.js";
-import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
+import { hasPublicExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 
 /**
  * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
@@ -43,11 +43,11 @@ function toPagesLinkPrefetchRoute(route: Route): VinextPagesLinkPrefetchRoute {
 }
 
 async function hasGetStaticPropsExport(filePath: string): Promise<boolean> {
-  return hasExportedName(await readFile(filePath, "utf8"), "getStaticProps");
+  return hasPublicExportedName(await readFile(filePath, "utf8"), "getStaticProps");
 }
 
 async function hasGetServerSidePropsExport(filePath: string): Promise<boolean> {
-  return hasExportedName(await readFile(filePath, "utf8"), "getServerSideProps");
+  return hasPublicExportedName(await readFile(filePath, "utf8"), "getServerSideProps");
 }
 
 export async function generateClientEntry(

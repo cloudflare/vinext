@@ -12,8 +12,9 @@
  * `packages/next/src/shared/lib/router/router.ts` and the `inflightCache`
  * parameter. The first call seeds `inflightCache[cacheKey]` with the fetch
  * Promise; subsequent concurrent calls for the same key reuse that Promise
- * instead of starting a new network request. The entry is dropped once the
- * fetch settles (success or failure) so the next navigation re-fetches fresh.
+ * instead of starting a new network request. The normal navigation path drops
+ * gSSP (`__N_SSP`) entries after consuming them, while SSG prefetch entries
+ * can persist like Next.js' `sdc` cache.
  *
  * This file pins the parity fix at the helper level: concurrent calls to
  * `dedupedPagesDataFetch()` for the same URL must share a single `fetch()`
@@ -23,12 +24,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 
 let dedupedPagesDataFetch: (typeof import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js"))["dedupedPagesDataFetch"];
 let clearPagesDataInflight: (typeof import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js"))["clearPagesDataInflight"];
+let evictPagesDataCache: (typeof import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js"))["evictPagesDataCache"];
 
 beforeEach(async () => {
   vi.resetModules();
   const mod = await import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js");
   dedupedPagesDataFetch = mod.dedupedPagesDataFetch;
   clearPagesDataInflight = mod.clearPagesDataInflight;
+  evictPagesDataCache = mod.evictPagesDataCache;
   clearPagesDataInflight();
 });
 
@@ -111,34 +114,23 @@ describe("dedupedPagesDataFetch", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps locale, basePath, deployment, and query request identities distinct", async () => {
-    let resolveFetch: (response: Response) => void = () => {};
-    const fetchPromise = new Promise<Response>((resolve) => {
-      resolveFetch = resolve;
-    });
-    const fetchSpy = vi.fn(() => fetchPromise);
+  it("keeps locale, basePath, and query request identities distinct", async () => {
+    const fetchSpy = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolve(new Response(JSON.stringify({ pageProps: {} })));
+        }),
+    );
     (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
 
     const requests = [
-      dedupedPagesDataFetch("/_next/data/id/about.json?tab=one", {
-        headers: { "x-deployment-id": "deployment-a" },
-      }),
-      dedupedPagesDataFetch("/_next/data/id/fr/about.json?tab=one", {
-        headers: { "x-deployment-id": "deployment-a" },
-      }),
-      dedupedPagesDataFetch("/docs/_next/data/id/about.json?tab=one", {
-        headers: { "x-deployment-id": "deployment-a" },
-      }),
-      dedupedPagesDataFetch("/_next/data/id/about.json?tab=two", {
-        headers: { "x-deployment-id": "deployment-a" },
-      }),
-      dedupedPagesDataFetch("/_next/data/id/about.json?tab=one", {
-        headers: { "x-deployment-id": "deployment-b" },
-      }),
+      dedupedPagesDataFetch("/_next/data/id/about.json?tab=one"),
+      dedupedPagesDataFetch("/_next/data/id/fr/about.json?tab=one"),
+      dedupedPagesDataFetch("/docs/_next/data/id/about.json?tab=one"),
+      dedupedPagesDataFetch("/_next/data/id/about.json?tab=two"),
     ];
 
-    expect(fetchSpy).toHaveBeenCalledTimes(5);
-    resolveFetch(new Response(JSON.stringify({ pageProps: {} })));
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
     await Promise.all(requests);
   });
 
@@ -231,5 +223,74 @@ describe("dedupedPagesDataFetch", () => {
     const res = await dedupedPagesDataFetch(url);
     expect(res.status).toBe(200);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts a persisted OK entry by request identity", async () => {
+    let fetchCount = 0;
+    const fetchSpy = vi.fn(() => {
+      fetchCount += 1;
+      return Promise.resolve(
+        new Response(JSON.stringify({ pageProps: { count: fetchCount } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
+
+    const url = "/_next/data/build-id/persist.json";
+    const init = { headers: { Accept: "application/json", "x-deployment-id": "deployment-a" } };
+    const first = await dedupedPagesDataFetch(url, { ...init, persist: true });
+    const second = await dedupedPagesDataFetch(url, { ...init, persist: true });
+    expect(await first.json()).toEqual({ pageProps: { count: 1 } });
+    expect(await second.json()).toEqual({ pageProps: { count: 1 } });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    evictPagesDataCache(url);
+    const afterEvict = await dedupedPagesDataFetch(url, { ...init, persist: true });
+    expect(await afterEvict.json()).toEqual({ pageProps: { count: 2 } });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an evicted in-flight entry joinable until it settles", async () => {
+    let resolveFetch: (response: Response) => void = () => {};
+    let fetchCount = 0;
+    const fetchSpy = vi.fn(() => {
+      fetchCount += 1;
+      if (fetchCount === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ pageProps: { attempt: fetchCount } }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchSpy;
+
+    const url = "/_next/data/build-id/slow.json";
+    const first = dedupedPagesDataFetch(url, { persist: true });
+    evictPagesDataCache(url);
+    const second = dedupedPagesDataFetch(url, { persist: true });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    resolveFetch(
+      new Response(JSON.stringify({ pageProps: { attempt: 1 } }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(first.then((response) => response.json())).resolves.toEqual({
+      pageProps: { attempt: 1 },
+    });
+    await expect(second.then((response) => response.json())).resolves.toEqual({
+      pageProps: { attempt: 1 },
+    });
+
+    const afterSettle = await dedupedPagesDataFetch(url, { persist: true });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(await afterSettle.json()).toEqual({ pageProps: { attempt: 2 } });
   });
 });

@@ -2110,12 +2110,11 @@ async function navigateClientData(
 
   // Fetch the page-data JSON.
   //
-  // We dedupe by URL: concurrent `Router.push` calls (or back-to-back link
-  // clicks) for the same destination share a single underlying request.
-  // The shared fetch uses `controller.signal` to release this caller's waiter.
-  // The network request stays alive while another identical navigation is
-  // waiting, and aborts once the final waiter cancels. This matches Next.js's
-  // combination of in-flight reuse and per-navigation cancellation.
+  // We dedupe by URL: a prefetched response, concurrent `Router.push` calls,
+  // and back-to-back link clicks for the same destination all share the same
+  // data promise. This matches Next.js' `sdc` cache; after consuming an
+  // `__N_SSP` payload below, or after handling a soft redirect, we delete the
+  // entry so the next navigation fetches fresh data.
   //
   // Pre-await abort still throws so callers see the documented cancellation
   // surface when supersession happened before the fetch was even attempted.
@@ -2131,12 +2130,18 @@ async function navigateClientData(
       };
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
-      const dataFetch =
-        initialTarget.dataKind === "static" ? fetchStaticPagesData : dedupedPagesDataFetch;
-      res = await dataFetch(initialTarget.dataHref, {
-        headers,
-        signal: controller.signal,
-      });
+      if (initialTarget.dataKind === "static") {
+        res = await fetchStaticPagesData(initialTarget.dataHref, {
+          headers,
+          signal: controller.signal,
+        });
+      } else {
+        res = await dedupedPagesDataFetch(initialTarget.dataHref, {
+          headers,
+          persist: true,
+          signal: controller.signal,
+        });
+      }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new NavigationCancelledError(url);
@@ -2156,6 +2161,10 @@ async function navigateClientData(
   // when middleware (or gSSP/gSP) chose a redirect for this URL.
   const softRedirect = res.headers.get("x-nextjs-redirect");
   if (softRedirect) {
+    // A redirect response must not be retained in the data cache: the
+    // redirect may be conditional on request state, and replaying it on a
+    // later navigation would skip the server decision.
+    evictPagesDataCache(initialTarget.dataHref);
     const redirectedUrl = resolveLocalRedirectUrl(softRedirect);
     if (!redirectedUrl) {
       scheduleHardNavigationAndThrow(softRedirect, "Navigation redirected externally");
@@ -2191,6 +2200,7 @@ async function navigateClientData(
   try {
     body = (await res.json()) as PagesDataResponse;
   } catch {
+    evictPagesDataCache(initialTarget.dataHref);
     scheduleHardNavigationAndThrow(url, "Data navigation failed: invalid JSON response");
   }
   assertStillCurrent();
@@ -2198,7 +2208,7 @@ async function navigateClientData(
   const props: Record<string, unknown> = isUnknownRecord(body) ? body : {};
   const rawPageProps = props.pageProps;
   const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
-  if (initialTarget.dataKind === "server") {
+  if (initialTarget.dataKind === "server" || (isUnknownRecord(body) && body.__N_SSP === true)) {
     evictPagesDataCache(initialTarget.dataHref);
   }
 

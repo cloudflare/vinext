@@ -1244,6 +1244,10 @@ describe("Pages Router entry template", () => {
         path.join(pagesDir, "local-alias.tsx"),
         "const getStaticProps = () => ({ props: {} }); export { getStaticProps as loader }; export default function Page() { return null; }",
       );
+      fs.writeFileSync(
+        path.join(pagesDir, "type-only.tsx"),
+        "export type { getStaticProps } from './types';\nexport default function Page() { return null; }",
+      );
 
       const code = await generateClientEntry(
         pagesDir,
@@ -1251,7 +1255,7 @@ describe("Pages Router entry template", () => {
         createValidFileMatcher(),
       );
 
-      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/local-alias","/ssg"]');
+      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/public-alias","/ssg"]');
       expect(code).toContain('window.__VINEXT_PAGES_SSP_PATTERNS__ = ["/dynamic"]');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
