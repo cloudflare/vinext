@@ -1,7 +1,7 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
 import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
-import DefaultGlobalError from "vinext/shims/default-global-error";
 import {
+  DefaultGlobalError,
   ErrorBoundary,
   GlobalErrorBoundary,
   SerializedErrorBoundary,

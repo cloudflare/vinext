@@ -15,9 +15,9 @@ import {
   NotFoundBoundary,
   RedirectBoundary,
   UnauthorizedBoundary,
+  DefaultGlobalError,
 } from "vinext/shims/error-boundary";
 import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
-import DefaultGlobalError from "vinext/shims/default-global-error";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import {

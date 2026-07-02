@@ -1,4 +1,4 @@
-import DefaultGlobalError from "vinext/shims/default-global-error";
+import { DefaultGlobalError } from "vinext/shims/error-boundary";
 
 /**
  * Module-shaped wrapper around vinext's built-in default global error

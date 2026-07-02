@@ -52,7 +52,7 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
-import DefaultGlobalError from "vinext/shims/default-global-error";
+import { DefaultGlobalErrorDocument } from "./default-global-error-document.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 // @ts-expect-error — resolved by the vinext build plugin in SSR environments.
@@ -180,7 +180,7 @@ function renderSsrErrorDocumentShell(
   nonce?: string,
 ): ReadableStream<Uint8Array> {
   const html = renderToStaticMarkup(
-    createReactElement(DefaultGlobalError, {
+    createReactElement(DefaultGlobalErrorDocument, {
       error: null,
     }),
   ).replace("<style>", '<style data-vinext-error-shell-style="">');

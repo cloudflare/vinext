@@ -8,12 +8,26 @@
 import type { NEXT_DATA } from "vinext/shims/internal/utils";
 import { isUnknownRecord } from "../utils/record.js";
 
+export type VinextRuntimePrefetchLoadingFallback = {
+  attributes: Record<string, string>;
+  tagName: string;
+  text: string;
+};
+
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
+  canPrefetchRuntimeShell?: boolean;
+  canPrefetchStaticRoute?: boolean;
   documentOnly?: boolean;
   isDynamic: boolean;
+  loadingShellVaryParamNames?: string[];
   patternParts: string[];
+  prefetchVaryParamNames?: string[];
+  prefetchVarySearchParams?: boolean;
   requiresDynamicNavigationRequest?: boolean;
+  runtimePrefetchLoadingFallback?: VinextRuntimePrefetchLoadingFallback;
+  runtimePrefetchVaryParamNames?: string[];
+  runtimePrefetchVarySearchParams?: boolean;
 };
 
 /**

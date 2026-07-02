@@ -3,10 +3,16 @@
 import React from "react";
 import { decodeRedirectError, isRedirectError } from "./navigation-server.js";
 import { useErrorBoundaryPathname, useErrorBoundaryRouter } from "./error-boundary-navigation.js";
-import DefaultGlobalError from "./default-global-error.js";
+import DefaultGlobalErrorImpl from "./default-global-error.js";
 import { handleAppNavigationFailure } from "../client/app-nav-failure-handler.js";
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+
+type DefaultGlobalErrorProps = React.ComponentProps<typeof DefaultGlobalErrorImpl>;
+
+export function DefaultGlobalError(props: DefaultGlobalErrorProps) {
+  return <DefaultGlobalErrorImpl {...props} />;
+}
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;

@@ -41,6 +41,7 @@ import {
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
+  resolveAppPrefetchSharedCacheKey,
   resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
@@ -490,6 +491,11 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
+  const preservePageElements =
+    options.entry.cacheForNavigation === false && options.entry.optimisticRouteShell !== true;
+  const variantKey = preservePageElements
+    ? (options.entry.runtimeTemplateVariantKey ?? options.entry.sharedCacheKey ?? null)
+    : null;
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,
@@ -497,7 +503,10 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    preservePageElements,
     routeManifest: options.routeManifest,
+    runtimeLoadingFallback: preservePageElements ? options.entry.runtimeLoadingFallback : null,
+    variantKey,
   });
   if (template === null) return false;
 
@@ -506,6 +515,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeId: template.routeId,
+      variantKey: template.variantKey,
     }),
     template,
   );
@@ -1805,6 +1815,13 @@ function bootstrapHydration(
           navigationKind,
           visitedResponse,
         });
+        const sharedPrefetchCacheKey = resolveAppPrefetchSharedCacheKey(url.href, "navigation");
+        const runtimeTemplateVariantKey =
+          sharedPrefetchCacheKey === null
+            ? null
+            : `${sharedPrefetchCacheKey}\0${
+                resolveAppPrefetchSharedCacheKey(url.href, "loading-shell") ?? ""
+              }`;
         let routeManifest = navigationKind === "navigate" ? getBrowserRouteManifest() : null;
         const hasPrefetchCandidate =
           prefetchProbeDecision.kind === "probe" &&
@@ -1815,6 +1832,7 @@ function bootstrapHydration(
             {
               additionalRscUrls: additionalPrefetchRscUrls,
               notifyInvalidation: false,
+              sharedCacheKey: sharedPrefetchCacheKey,
             },
           );
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
@@ -1931,6 +1949,7 @@ function bootstrapHydration(
             {
               additionalRscUrls: additionalPrefetchRscUrls,
               shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
+              sharedCacheKey: sharedPrefetchCacheKey,
             },
           );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -1982,6 +2001,7 @@ function bootstrapHydration(
               mountedSlotsHeader,
               routeManifest,
               templates: optimisticRouteTemplates,
+              variantKey: runtimeTemplateVariantKey,
             });
 
             if (optimisticPayload !== null) {
