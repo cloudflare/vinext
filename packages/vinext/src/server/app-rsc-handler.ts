@@ -818,6 +818,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
 
+  if (pagesDataRequest && didMiddlewareRewritePathname && preActionMatch) {
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    headers.set("content-type", "application/json");
+    headers.set("x-nextjs-rewrite", resolvedUrl);
+    options.clearRequestContext();
+    return new Response("{}", { headers });
+  }
+
   if (!filesystemRouteEligible && isPostRequest && actionId) {
     options.clearRequestContext();
     return notFoundResponse();
