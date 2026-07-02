@@ -8,7 +8,6 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { readFile } from "node:fs/promises";
 import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
@@ -4722,19 +4721,27 @@ export const loadServerActionClient = ${
                 nextConfig?.pageExtensions,
                 fileMatcher,
               );
-              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">(
-                await Promise.all(
-                  devPageRoutes.map(async (route) => {
-                    const source = await readFile(route.filePath, "utf8");
-                    const dataKind = hasExportedName(source, "getStaticProps")
-                      ? "static"
-                      : hasExportedName(source, "getServerSideProps")
-                        ? "server"
-                        : "none";
-                    return [route.pattern, dataKind] as const;
-                  }),
-                ),
-              );
+              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
+              const classifyDevPageRoute = (
+                route: (typeof devPageRoutes)[number],
+              ): "static" | "server" | "none" => {
+                const cached = devPageRouteDataKinds.get(route.filePath);
+                if (cached) return cached;
+
+                let dataKind: "static" | "server" | "none" = "none";
+                try {
+                  const source = fs.readFileSync(route.filePath, "utf8");
+                  dataKind = hasExportedName(source, "getStaticProps")
+                    ? "static"
+                    : hasExportedName(source, "getServerSideProps")
+                      ? "server"
+                      : "none";
+                } catch {
+                  // Dev can race with an editor deleting/renaming a page file.
+                }
+                devPageRouteDataKinds.set(route.filePath, dataKind);
+                return dataKind;
+              };
 
               const pipelineDeps: PagesPipelineDeps = {
                 basePath: bp,
@@ -4769,7 +4776,7 @@ export const loadServerActionClient = ${
                   return m
                     ? {
                         route: {
-                          dataKind: devPageRouteDataKinds.get(m.route.pattern) ?? "none",
+                          dataKind: classifyDevPageRoute(m.route),
                           isDynamic: m.route.isDynamic,
                           pattern: m.route.pattern,
                         },
