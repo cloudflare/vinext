@@ -58,7 +58,7 @@ export function getDepOptimizeNodeEnvOptions(nodeEnvDefine: string): {
  * Detect Vite major version at runtime. Prefer the project cwd, then fall back
  * to vinext's own dependency graph for tests and linked source checkouts.
  */
-export function getViteMajorVersion(): number {
+function getViteMajorVersion(): number {
   try {
     return getViteMajorVersionFromRequire(createRequire(path.join(process.cwd(), "package.json")));
   } catch (error) {
