@@ -6,6 +6,7 @@ import {
   type MiddlewareResult,
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 
 // Helpers
 
@@ -284,7 +285,28 @@ describe("middleware", () => {
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("content-type")).toBe("application/json");
     expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
-    expect(result.response.headers.get("x-middleware-skip")).toBe("1");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await result.response.json()).toEqual({});
+  });
+
+  it("preserves legacy middleware data prefetch behavior when route data kind is unknown", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false, pattern: "/ssr" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
     expect(await result.response.json()).toEqual({});
   });
 
@@ -307,7 +329,7 @@ describe("middleware", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(renderPage).toHaveBeenCalledOnce();
-    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
     expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
   });
 
@@ -333,7 +355,7 @@ describe("middleware", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(renderPage).toHaveBeenCalledOnce();
-    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
     expect(result.response.headers.get("x-middleware-cache")).toBe("no-cache");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
     expect(await result.response.text()).toBe('{"pageProps":{"message":"from gsp"}}');
@@ -1339,7 +1361,7 @@ describe("afterFiles rewrites", () => {
       { isDataReq: true },
       expect.any(Headers),
     );
-    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
   });
 
@@ -1372,7 +1394,7 @@ describe("afterFiles rewrites", () => {
     if (result.type !== "response") return;
     expect(renderPage).not.toHaveBeenCalled();
     expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
-    expect(result.response.headers.get("x-middleware-skip")).toBe("1");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
     expect(await result.response.json()).toEqual({});
   });
 });

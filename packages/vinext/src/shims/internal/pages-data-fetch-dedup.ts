@@ -33,6 +33,7 @@
  */
 
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../../utils/protocol-headers.js";
 
 type InflightEntry = {
   controller: AbortController;
@@ -94,7 +95,7 @@ export function fetchCachedPagesData(dataHref: string, init?: RequestInit): Prom
         if (
           !response.ok ||
           response.headers.get("x-middleware-cache") === "no-cache" ||
-          response.headers.get("x-middleware-skip") !== null ||
+          response.headers.get(MIDDLEWARE_SKIP_HEADER) !== null ||
           (responseDeploymentId !== null && responseDeploymentId !== expectedDeploymentId)
         ) {
           delete staticDataCache[key];

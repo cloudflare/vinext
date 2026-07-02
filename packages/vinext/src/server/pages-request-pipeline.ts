@@ -440,7 +440,7 @@ export async function runPagesRequest(
 
     const dataKind = match.route.dataKind;
     if (
-      (dataKind !== "static" && dataKind !== "server") ||
+      (dataKind !== undefined && dataKind !== "static" && dataKind !== "server") ||
       !isDataRequest ||
       !deps.hasMiddleware ||
       dataKind === "static" ||

@@ -12,6 +12,7 @@
 import {
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../utils/protocol-headers.js";
@@ -143,6 +144,7 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 export {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Signal from `NextResponse.next()` — value "1" means "continue to next handler". */
@@ -153,9 +155,6 @@ export const MIDDLEWARE_REWRITE_HEADER = "x-middleware-rewrite";
 
 /** Redirect URL set by middleware. */
 const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
-
-/** Skip-middleware signal. */
-const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
 
 // ---------------------------------------------------------------------------
 // Next.js / RSC flight headers (forwarded through middleware)

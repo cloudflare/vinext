@@ -20,6 +20,7 @@
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -160,7 +161,7 @@ export function buildMiddlewarePrefetchSkipResponse(matchedPathname: string): Re
     headers: {
       "Content-Type": "application/json",
       "x-matched-path": matchedPathname,
-      "x-middleware-skip": "1",
+      [MIDDLEWARE_SKIP_HEADER]: "1",
       "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
     },
   });

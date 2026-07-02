@@ -22,5 +22,8 @@ export const MIDDLEWARE_SET_COOKIE_HEADER = "x-middleware-set-cookie";
 /** Signals Pages Router prefetch cache opt-out. */
 export const MIDDLEWARE_CACHE_HEADER = "x-middleware-cache";
 
+/** Skip-middleware signal. */
+export const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
+
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
