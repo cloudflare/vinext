@@ -11,6 +11,7 @@ export type CacheHandlerValue = {
 
 export type CacheControlMetadata = {
   revalidate: number;
+  stale?: number;
   expire?: number;
 };
 
@@ -274,6 +275,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     let effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
     const effectiveExpire = readCacheControlNumberField(ctx, "expire");
+    const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
@@ -290,9 +292,11 @@ export class MemoryCacheHandler implements CacheHandler {
         : null;
     const cacheControl =
       typeof effectiveRevalidate === "number"
-        ? effectiveExpire === undefined
-          ? { revalidate: effectiveRevalidate }
-          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+        ? {
+            revalidate: effectiveRevalidate,
+            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
+            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
+          }
         : undefined;
 
     if (this.maxMemoryCacheSize === 0) return;

@@ -117,6 +117,44 @@ export function resolveAppPageChildSegments(
   return resolvedSegments;
 }
 
+export function resolveAppPageConcreteRouteSegments(
+  routeSegments: readonly string[],
+  params: AppPageParams,
+): string[] {
+  const resolvedSegments: string[] = [];
+
+  for (const segment of routeSegments) {
+    if (isOptionalCatchAllSegment(segment)) {
+      const paramName = segment.slice(5, -2);
+      const paramValue = params[paramName];
+      if (Array.isArray(paramValue) && paramValue.length === 0) {
+        continue;
+      }
+      const resolvedValue = formatParamSegmentValue(paramValue);
+      if (resolvedValue !== undefined) {
+        resolvedSegments.push(resolvedValue);
+      }
+      continue;
+    }
+
+    if (isCatchAllSegment(segment)) {
+      const paramName = segment.slice(4, -1);
+      resolvedSegments.push(formatParamSegmentValue(params[paramName]) ?? segment);
+      continue;
+    }
+
+    if (isDynamicSegment(segment)) {
+      const paramName = segment.slice(1, -1);
+      resolvedSegments.push(formatParamSegmentValue(params[paramName]) ?? segment);
+      continue;
+    }
+
+    resolvedSegments.push(segment);
+  }
+
+  return resolvedSegments;
+}
+
 export function resolveAppPageSegmentStateKey(
   routeSegments: readonly string[],
   treePosition: number,

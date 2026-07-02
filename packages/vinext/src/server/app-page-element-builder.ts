@@ -16,6 +16,7 @@ import {
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
+import { NEXT_ROUTER_SEGMENT_PREFETCH_HEADER } from "./headers.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
@@ -356,6 +357,8 @@ export async function buildPageElements<
   const pageSearchParamsThenable = searchParams ? makeThenableParams(pageSearchParams) : undefined;
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
+  const concreteSegmentIdentity =
+    isRscRequest && pageRequest.request.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) !== null;
 
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
   const metadataPlacement =
@@ -424,6 +427,7 @@ export async function buildPageElements<
     resolvedMetadataPathname: routePath,
     resolvedViewport,
     renderIdentity,
+    concreteSegmentIdentity,
     routePath,
     sourcePageSegments,
     rootNotFoundModule: rootNotFoundModule ?? null,

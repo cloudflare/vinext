@@ -72,6 +72,7 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
+import { NEXT_ROUTER_SEGMENT_PREFETCH_HEADER } from "./headers.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   shouldSuppressLoadingBoundaries,
@@ -104,6 +105,7 @@ type AppPageCacheSetter = (
   revalidateSeconds: number,
   tags: string[],
   expireSeconds?: number,
+  staleSeconds?: number,
 ) => Promise<void>;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
 type AppPageBackgroundRegenerationErrorContext = {
@@ -289,6 +291,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    segmentPrefetchPath?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -551,6 +554,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
   const pageSearchParams = isForceStatic ? new URLSearchParams() : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
+  const segmentPrefetchPath = options.isRscRequest
+    ? options.request.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
+    : null;
   const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
     options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
   )
@@ -631,6 +637,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
+      segmentPrefetchPath,
       expireSeconds: options.expireSeconds,
       // cacheLife-only routes discover their actual revalidate during the
       // fresh render; this seed only gets them into the cache read path.
@@ -1070,6 +1077,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
+    segmentPrefetchPath,
     renderErrorBoundaryResponse(renderError, errorOrigin) {
       return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },

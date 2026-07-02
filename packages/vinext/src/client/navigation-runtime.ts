@@ -62,7 +62,7 @@ export type NavigationRuntimeFunctions = {
    * through the runtime to avoid a circular import with shims/navigation.ts.
    */
   notifyLinkNavigationStart?: () => void;
-  pingVisibleLinks?: () => void;
+  pingVisibleLinks?: (options?: { force?: boolean }) => void;
 };
 
 export type NavigationRuntimeBootstrap = {

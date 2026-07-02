@@ -26,7 +26,7 @@ import { withEnvVar } from "./env-test-helpers.js";
 function buildISRCacheEntry(
   value: CachedAppPageValue,
   isStale = false,
-  cacheControl?: { revalidate: number; expire?: number },
+  cacheControl?: { revalidate: number; stale?: number; expire?: number },
 ): ISRCacheEntry {
   return {
     isStale,
@@ -551,11 +551,54 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("x-vinext-mounted-slots")).toBe("slot:auth:/");
   });
 
+  it("keys RSC cache reads by segment-prefetch path", async () => {
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/globex/portal",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet(key) {
+        expect(key).toBe("rsc:/globex/portal:none:/_tree");
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("", new TextEncoder().encode("tree-flight").buffer),
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(
+        pathname,
+        mountedSlotsHeader,
+        _renderMode,
+        _interceptionContext,
+        segmentPrefetchPath,
+      ) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${segmentPrefetchPath ?? "none"}`;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      segmentPrefetchPath: "/_tree",
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response?.text()).resolves.toBe("tree-flight");
+  });
+
   it("serves stale RSC entries and regenerates only the matching RSC cache key", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
     const isrRscKey = vi.fn(
-      (pathname: string, mountedSlotsHeader?: string | null) =>
-        `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`,
+      (
+        pathname: string,
+        mountedSlotsHeader?: string | null,
+        _renderMode?: unknown,
+        _interceptionContext?: string | null,
+        segmentPrefetchPath?: string | null,
+      ) => `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${segmentPrefetchPath ?? "none"}`,
     );
     const isrSetCalls: Array<{
       key: string;
@@ -589,6 +632,7 @@ describe("app page cache helpers", () => {
         });
       },
       mountedSlotsHeader: "slot:auth:/",
+      segmentPrefetchPath: "/_page",
       expireSeconds: 300,
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
@@ -612,7 +656,7 @@ describe("app page cache helpers", () => {
     expect(isrRscKey).toHaveBeenCalledOnce();
     expect(isrSetCalls).toEqual([
       {
-        key: "rsc:/stale:slot:auth:/",
+        key: "rsc:/stale:slot:auth:/:/_page",
         html: "",
         hasRscData: true,
         expireSeconds: 20,
@@ -718,6 +762,98 @@ describe("app page cache helpers", () => {
         expireSeconds: 20,
         linkHeader: "</fresh.css>; rel=preload; as=style",
         revalidateSeconds: 10,
+      },
+    ]);
+  });
+
+  it("foreground revalidates stale HTML entries when cacheLife stale is zero", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+    const isrSetCalls: Array<{
+      key: string;
+      expireSeconds: number | undefined;
+      html: string;
+      revalidateSeconds: number;
+      staleSeconds: number | undefined;
+      tags: string[];
+    }> = [];
+    const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
+    let didClearRequestContext = false;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/acme/dashboard",
+      clearRequestContext() {
+        didClearRequestContext = true;
+      },
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true, {
+          revalidate: 1,
+          stale: 0,
+          expire: 60,
+        });
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet(key, data, revalidateSeconds, tags, expireSeconds, staleSeconds) {
+        isrSetCalls.push({
+          key,
+          expireSeconds,
+          html: data.html,
+          revalidateSeconds,
+          staleSeconds,
+          tags,
+        });
+      },
+      recordCacheOutcome(metric) {
+        cacheOutcomes.push(metric);
+      },
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        return {
+          cacheControl: { revalidate: 1, stale: 0, expire: 60 },
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/acme/dashboard", "_N_T_/acme/dashboard"],
+        };
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("stale:0 entries should revalidate in foreground");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response?.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=59");
+    await expect(response?.text()).resolves.toBe("<h1>fresh</h1>");
+    expect(didClearRequestContext).toBe(true);
+    expect(isrSetCalls).toEqual([
+      {
+        key: "rsc:/acme/dashboard",
+        expireSeconds: 60,
+        html: "",
+        revalidateSeconds: 1,
+        staleSeconds: 0,
+        tags: ["/acme/dashboard", "_N_T_/acme/dashboard"],
+      },
+      {
+        key: "html:/acme/dashboard",
+        expireSeconds: 60,
+        html: "<h1>fresh</h1>",
+        revalidateSeconds: 1,
+        staleSeconds: 0,
+        tags: ["/acme/dashboard", "_N_T_/acme/dashboard"],
+      },
+    ]);
+    expect(cacheOutcomes).toEqual([
+      {
+        artifact: "html",
+        cacheKey: "html:/acme/dashboard",
+        outcome: "miss",
+        reason: "foreground-stale-revalidate",
       },
     ]);
   });

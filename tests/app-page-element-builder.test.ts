@@ -27,6 +27,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import { NEXT_ROUTER_SEGMENT_PREFETCH_HEADER } from "../packages/vinext/src/server/headers.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -74,6 +75,8 @@ function createBaseOptions(overrides?: {
   routePath?: string;
   opts?: Record<string, unknown> | null;
   searchParams?: URLSearchParams | null;
+  isRscRequest?: boolean;
+  request?: Request;
   mountedSlotsHeader?: string | null;
 }) {
   return {
@@ -84,8 +87,8 @@ function createBaseOptions(overrides?: {
     pageRequest: {
       opts: overrides?.opts ?? null,
       searchParams: overrides?.searchParams ?? null,
-      isRscRequest: false,
-      request: new Request("http://localhost/test"),
+      isRscRequest: overrides?.isRscRequest ?? false,
+      request: overrides?.request ?? new Request("http://localhost/test"),
       mountedSlotsHeader: overrides?.mountedSlotsHeader ?? null,
     },
     globalErrorModule: null,
@@ -440,6 +443,43 @@ describe("buildPageElements", () => {
     expect((result as Record<string, unknown>)[APP_SOURCE_PAGE_KEY]).toBe(
       "/foo/bar/(..)(..)hoge/page",
     );
+  });
+
+  it("materializes segment-prefetch route identity from matched params", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    function TestPage(): React.ReactNode {
+      return React.createElement("div", null, "Team project");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(TestPage),
+      layouts: [createSyntheticPageModule(() => null), createSyntheticPageModule(() => null)],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["[teamSlug]", "[project]"],
+      pattern: "/[teamSlug]/[project]",
+    });
+    const request = new Request("http://localhost/acme/dashboard.rsc", {
+      headers: {
+        [NEXT_ROUTER_SEGMENT_PREFETCH_HEADER]: "/_page",
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        isRscRequest: true,
+        params: { project: "dashboard", teamSlug: "acme" },
+        request,
+        route,
+        routePath: "/acme/dashboard",
+      }),
+    );
+    const record = result as Record<string, unknown>;
+
+    expect(record[APP_SOURCE_PAGE_KEY]).toBe("/acme/dashboard/page");
+    expect(record[APP_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/acme"]);
+    expect(Object.keys(record).join("\n")).not.toContain("[teamSlug]");
+    expect(Object.keys(record).join("\n")).not.toContain("[project]");
   });
 
   it("keeps interception context out of the error payload route ID", async () => {

@@ -579,6 +579,26 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it("does not tee fresh segment-prefetch RSC responses into ISR cache capture", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isRscRequest: true,
+      isrRscKey(_pathname, _mountedSlotsHeader, _renderMode, _interceptionContext, segmentPath) {
+        return `rsc:/posts/post:${segmentPath ?? "none"}`;
+      },
+      revalidateSeconds: 60,
+      segmentPrefetchPath: "/_page",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("flight-data");
+    expect(common.waitUntilPromises).toHaveLength(0);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("does not cache RSC responses when skip transport omits layout records", async () => {
     const common = createCommonOptions();
     const isrDebug = vi.fn();
@@ -1302,11 +1322,14 @@ describe("layoutFlags injection into RSC payload", () => {
     cleanPathname?: string;
     clientReuseManifest?: ClientReuseManifestParseResult;
     element?: Record<string, ReactNode>;
+    getPageTags?: () => string[];
     layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
     layoutCount?: number;
+    navigationParams?: Record<string, unknown>;
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
+    segmentPrefetchPath?: string | null;
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
@@ -1322,7 +1345,7 @@ describe("layoutFlags injection into RSC payload", () => {
       getFontPreloads: () => [],
       getFontStyles: () => [],
       getNavigationContext: () => null,
-      getPageTags: () => [],
+      getPageTags: overrides.getPageTags ?? (() => []),
       getRequestCacheLife: () => null,
       handlerStart: 0,
       hasLoadingBoundary: false,
@@ -1339,8 +1362,8 @@ describe("layoutFlags injection into RSC payload", () => {
       layoutCount: overrides.layoutCount ?? 0,
       loadSsrHandler: vi.fn(),
       middlewareContext: { headers: null, status: null },
-      navigationParams: {},
-      params: {},
+      navigationParams: overrides.navigationParams ?? {},
+      params: overrides.navigationParams ?? {},
       probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
       probePage: () => null,
       revalidateSeconds: null,
@@ -1353,6 +1376,7 @@ describe("layoutFlags injection into RSC payload", () => {
       },
       routePattern: overrides.routePattern ?? "/test",
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
+      segmentPrefetchPath: overrides.segmentPrefetchPath,
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
       skipDisposition: overrides.skipDisposition,
@@ -1524,6 +1548,95 @@ describe("layoutFlags injection into RSC payload", () => {
       "layout:/": "s",
       "layout:/blog": "d",
     });
+  });
+
+  it("materializes dynamic layout flags for concrete segment-prefetch payloads", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        ...AppElementsWire.createMetadataEntries({
+          interception: null,
+          interceptionContext: null,
+          layoutIds: ["layout:/", "layout:/acme", "layout:/acme/dashboard"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/acme/dashboard",
+          sourcePage: "/acme/dashboard/page",
+        }),
+        "layout:/": "root-layout",
+        "layout:/acme": "team-layout",
+        "layout:/acme/dashboard": "project-layout",
+        "page:/acme/dashboard": "project-page",
+      } as unknown as Record<string, ReactNode>,
+      layoutCount: 3,
+      navigationParams: { project: "dashboard", teamSlug: "acme" },
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: (index: number) =>
+          index === 0
+            ? "layout:/"
+            : index === 1
+              ? "layout:/[teamSlug]"
+              : "layout:/[teamSlug]/[project]",
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
+      "layout:/": "s",
+      "layout:/acme": "s",
+      "layout:/acme/dashboard": "s",
+    });
+  });
+
+  it("materializes dynamic cache tags only in segment-prefetch render observations", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        ...AppElementsWire.createMetadataEntries({
+          interception: null,
+          interceptionContext: null,
+          layoutIds: ["layout:/", "layout:/globex", "layout:/globex/portal"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/globex/portal",
+          sourcePage: "/globex/portal/page",
+        }),
+        "layout:/": "root-layout",
+        "layout:/globex": "team-layout",
+        "layout:/globex/portal": "project-layout",
+        "page:/globex/portal": "project-page",
+      } as unknown as Record<string, ReactNode>,
+      getPageTags: () => [
+        "/globex/portal",
+        "_N_T_/globex/portal",
+        "_N_T_/[teamSlug]/layout",
+        "_N_T_/[teamSlug]/[project]/layout",
+        "_N_T_/[teamSlug]/[project]/page",
+      ],
+      navigationParams: { project: "portal", teamSlug: "globex" },
+      segmentPrefetchPath: "/_tree",
+    });
+
+    await renderAppPageLifecycle(options);
+
+    const renderObservation = getCapturedElement()[APP_RENDER_OBSERVATION_KEY];
+    expect(renderObservation).toMatchObject({
+      cacheTags: [
+        "/globex/portal",
+        "_N_T_/globex/layout",
+        "_N_T_/globex/portal",
+        "_N_T_/globex/portal/layout",
+        "_N_T_/globex/portal/page",
+      ],
+    });
+    expect(JSON.stringify(renderObservation)).not.toContain("[teamSlug]");
+    expect(JSON.stringify(renderObservation)).not.toContain("[project]");
   });
 
   it("__layoutFlags includes flags for ALL layouts even when some are skipped", async () => {

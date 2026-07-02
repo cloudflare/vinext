@@ -256,6 +256,19 @@ describe("App Router ISR cache key primitives", () => {
     ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
   });
 
+  it("keys segment-prefetch RSC variants separately from canonical RSC payloads", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const canonical = appIsrRscKey("/globex/portal");
+    const routeTree = appIsrRscKey("/globex/portal", null, undefined, null, "/_tree");
+    const pageSegment = appIsrRscKey("/globex/portal", null, undefined, null, "/_page");
+
+    expect(routeTree).not.toBe(canonical);
+    expect(pageSegment).not.toBe(canonical);
+    expect(routeTree).not.toBe(pageSegment);
+    expect(routeTree).toMatch(/^app:\/globex\/portal:rsc:segment:[a-z0-9]+$/);
+  });
+
   it("round-trips normal and preserve-current-UI RSC payloads under separate keys", async () => {
     delete process.env.__VINEXT_BUILD_ID;
     setCacheHandler(new MemoryCacheHandler());

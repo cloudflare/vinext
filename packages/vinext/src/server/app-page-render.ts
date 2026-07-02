@@ -4,7 +4,12 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
-import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
+import {
+  AppElementsWire,
+  isAppElementsRecord,
+  type AppOutgoingElements,
+  type LayoutFlags,
+} from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import {
   finalizeAppPageHtmlCacheResponse,
@@ -81,6 +86,7 @@ import type {
   StaticLayoutObservationSkipRejection,
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
+import { resolveAppPageConcreteRouteSegments } from "./app-page-segment-state.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
 
 type AppPageBoundaryOnError = (
@@ -95,10 +101,12 @@ type AppPageCacheSetter = (
   revalidateSeconds: number,
   tags: string[],
   expireSeconds?: number,
+  staleSeconds?: number,
 ) => Promise<void>;
 
 type AppPageRequestCacheLife = {
   revalidate?: number;
+  stale?: number;
   expire?: number;
 };
 
@@ -154,6 +162,7 @@ type RenderAppPageLifecycleOptions = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    segmentPrefetchPath?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
@@ -196,6 +205,7 @@ type RenderAppPageLifecycleOptions = {
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
+  segmentPrefetchPath?: string | null;
   waitUntil?: (promise: Promise<void>) => void;
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
   // skip transport planner to reject layouts that are unsafe for static reuse.
@@ -310,6 +320,90 @@ function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDispositio
     enabled: false,
     mode: "renderAndSend",
   };
+}
+
+function toConcreteSegmentParams(
+  params: Record<string, unknown>,
+): Record<string, string | string[]> {
+  const concreteParams: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string") {
+      concreteParams[key] = value;
+    } else if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+      concreteParams[key] = value;
+    }
+  }
+  return concreteParams;
+}
+
+function materializeLayoutFlagId(
+  layoutId: string,
+  params: Record<string, string | string[]>,
+): string {
+  if (!layoutId.startsWith("layout:/") || !layoutId.includes("[")) {
+    return layoutId;
+  }
+  const treePath = layoutId.slice("layout:/".length);
+  if (!treePath) {
+    return layoutId;
+  }
+  const concreteSegments = resolveAppPageConcreteRouteSegments(treePath.split("/"), params);
+  return `layout:/${concreteSegments.join("/")}`;
+}
+
+function materializeConcreteLayoutFlags(input: {
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  layoutFlags: LayoutFlags;
+  params: Record<string, unknown>;
+}): LayoutFlags {
+  if (!isAppElementsRecord(input.element)) {
+    return input.layoutFlags;
+  }
+  const layoutFlagEntries = Object.entries(input.layoutFlags);
+  if (!layoutFlagEntries.some(([layoutId]) => layoutId.includes("["))) {
+    return input.layoutFlags;
+  }
+  const metadata = AppElementsWire.readMetadata(input.element);
+  if (metadata.sourcePage?.includes("[")) {
+    return input.layoutFlags;
+  }
+
+  const params = toConcreteSegmentParams(input.params);
+  return Object.fromEntries(
+    layoutFlagEntries.map(([layoutId, flag]) => [materializeLayoutFlagId(layoutId, params), flag]),
+  );
+}
+
+function materializeDynamicSegmentsInText(
+  value: string,
+  params: Record<string, string | string[]>,
+): string {
+  if (!value.includes("[")) {
+    return value;
+  }
+
+  return value.replace(/\[\[?\.\.\.([^\]]+)\]\]?|\[([^\]]+)\]/g, (match, catchAllName, name) => {
+    const paramValue = params[catchAllName ?? name];
+    if (paramValue === undefined) {
+      return match;
+    }
+    return Array.isArray(paramValue) ? paramValue.join("/") : paramValue;
+  });
+}
+
+function materializeSegmentPrefetchRenderObservationTags(input: {
+  params: Record<string, unknown>;
+  segmentPrefetchPath?: string | null;
+  tags: string[];
+}): string[] {
+  if (!input.segmentPrefetchPath) {
+    return input.tags;
+  }
+  const concreteParams = toConcreteSegmentParams(input.params);
+  if (Object.keys(concreteParams).length === 0) {
+    return input.tags;
+  }
+  return input.tags.map((tag) => materializeDynamicSegmentsInText(tag, concreteParams));
 }
 
 function rejectStaticLayoutObservation(
@@ -621,7 +715,11 @@ export async function renderAppPageLifecycle(
     return preRenderResult.response;
   }
 
-  const layoutFlags = preRenderResult.layoutFlags;
+  const layoutFlags = materializeConcreteLayoutFlags({
+    element: options.element,
+    layoutFlags: preRenderResult.layoutFlags,
+    params: options.navigationParams,
+  });
 
   // Render the CANONICAL element. The outgoing payload carries per-layout
   // static/dynamic flags under `__layoutFlags` so the client can later tell
@@ -648,10 +746,15 @@ export async function renderAppPageLifecycle(
   // Partial payload metadata is a pre-stream snapshot. Fetch tags may still
   // accumulate while the RSC/HTML streams are consumed; complete cache artifact
   // observations below rebuild this field after the stream drains.
+  const payloadRenderObservationTags = materializeSegmentPrefetchRenderObservationTags({
+    params: options.navigationParams,
+    segmentPrefetchPath: options.segmentPrefetchPath,
+    tags: options.getPageTags(),
+  });
   const payloadRenderObservation = createAppPageRenderObservation({
     boundaryOutcome: { kind: "unknown" },
     cacheability: "unknown",
-    cacheTags: options.getPageTags(),
+    cacheTags: payloadRenderObservationTags,
     cleanPathname: options.cleanPathname,
     completeness: "partial",
     output: rscOutputScope,
@@ -725,6 +828,7 @@ export async function renderAppPageLifecycle(
     (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
+    !options.segmentPrefetchPath &&
     !shouldBypassRscCacheForSkipTransport;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
@@ -862,6 +966,7 @@ export async function renderAppPageLifecycle(
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
+      segmentPrefetchPath: options.segmentPrefetchPath,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
       revalidateSeconds,

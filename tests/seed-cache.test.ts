@@ -339,7 +339,12 @@ describe("seedMemoryCacheFromPrerender", () => {
   it("can write through an injected app page cache writer", async () => {
     const writes: {
       key: string;
-      metadata: { expireSeconds?: number; revalidateSeconds?: number; tags?: string[] };
+      metadata: {
+        expireSeconds?: number;
+        revalidateSeconds?: number;
+        staleSeconds?: number;
+        tags?: string[];
+      };
       valueKind: string;
     }[] = [];
 
@@ -347,7 +352,16 @@ describe("seedMemoryCacheFromPrerender", () => {
       serverDir,
       {
         buildId: "seed-injected-writer-test",
-        routes: [{ route: "/isr", status: "rendered", revalidate: 60, expire: 300, router: "app" }],
+        routes: [
+          {
+            route: "/isr",
+            status: "rendered",
+            revalidate: 60,
+            stale: 0,
+            expire: 300,
+            router: "app",
+          },
+        ],
       },
       {
         "isr.html": "<html>ISR</html>",
@@ -374,12 +388,22 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(writes).toEqual([
       {
         key: baseKey + ":html",
-        metadata: { expireSeconds: 300, revalidateSeconds: 60, tags: expectedTags },
+        metadata: {
+          expireSeconds: 300,
+          revalidateSeconds: 60,
+          staleSeconds: 0,
+          tags: expectedTags,
+        },
         valueKind: "APP_PAGE",
       },
       {
         key: baseKey + ":rsc",
-        metadata: { expireSeconds: 300, revalidateSeconds: 60, tags: expectedTags },
+        metadata: {
+          expireSeconds: 300,
+          revalidateSeconds: 60,
+          staleSeconds: 0,
+          tags: expectedTags,
+        },
         valueKind: "APP_PAGE",
       },
     ]);

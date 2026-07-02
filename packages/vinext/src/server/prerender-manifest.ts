@@ -5,6 +5,7 @@ type PrerenderManifestRoute = {
   status?: string;
   revalidate?: number | false;
   expire?: number;
+  stale?: number;
   path?: string;
   router?: string;
   fallback?: boolean;

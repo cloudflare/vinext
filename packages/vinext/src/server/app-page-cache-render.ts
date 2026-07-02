@@ -155,7 +155,7 @@ export async function renderAppPageCacheArtifacts(
     tags,
     cacheControl:
       typeof cacheLife?.revalidate === "number"
-        ? { revalidate: cacheLife.revalidate, expire: cacheLife.expire }
+        ? { revalidate: cacheLife.revalidate, stale: cacheLife.stale, expire: cacheLife.expire }
         : undefined,
   };
 

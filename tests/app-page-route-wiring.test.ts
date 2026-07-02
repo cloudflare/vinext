@@ -572,6 +572,42 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("encodes concrete segment-prefetch identities from matched params", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+    const elements = buildAppPageElements({
+      concreteSegmentIdentity: true,
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { project: "dashboard", teamSlug: "acme" },
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null, null],
+        layoutTreePositions: [0, 1, 2],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null, null],
+        routeSegments: ["[teamSlug]", "[project]"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/acme/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const metadata = AppElementsWire.readMetadata(elements);
+    expect(metadata.sourcePage).toBe("/acme/dashboard/page");
+    expect(metadata.layoutIds).toEqual(["layout:/", "layout:/acme", "layout:/acme/dashboard"]);
+    expect(Object.keys(elements).join("\n")).not.toContain("[teamSlug]");
+    expect(Object.keys(elements).join("\n")).not.toContain("[project]");
+  });
+
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
     lastGroupTemplateProps = null;
     const elements = buildAppPageElements({

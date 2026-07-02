@@ -18,21 +18,38 @@ type AppPageCacheSetter = (
   revalidateSeconds: number,
   tags: string[],
   expireSeconds?: number,
+  staleSeconds?: number,
 ) => Promise<void>;
 type AppPageRscCacheKeyBuilder = (
   pathname: string,
   mountedSlotsHeader?: string | null,
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
+  segmentPrefetchPath?: string | null,
 ) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
+  stale?: number;
   expire?: number;
 };
 type BuildAppPageCacheRenderObservation = (input: {
   cacheTags: readonly string[];
   state: AppPageRenderObservationState;
 }) => RenderObservation;
+
+function setAppPageCacheEntry(
+  setter: AppPageCacheSetter,
+  key: string,
+  data: CachedAppPageValue,
+  revalidateSeconds: number,
+  tags: string[],
+  expireSeconds: number | undefined,
+  staleSeconds: number | undefined,
+): Promise<void> {
+  return staleSeconds === undefined
+    ? setter(key, data, revalidateSeconds, tags, expireSeconds)
+    : setter(key, data, revalidateSeconds, tags, expireSeconds, staleSeconds);
+}
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
@@ -71,6 +88,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
+  segmentPrefetchPath?: string | null;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
@@ -96,9 +114,10 @@ function resolveAppPageCacheWritePolicy(options: {
   expireSeconds?: number;
   requestCacheLife?: AppPageRequestCacheLife | null;
   revalidateSeconds: number | null;
-}): { expireSeconds?: number; revalidateSeconds: number } | null {
+}): { expireSeconds?: number; revalidateSeconds: number; staleSeconds?: number } | null {
   let revalidateSeconds = options.revalidateSeconds;
   let expireSeconds = options.expireSeconds;
+  let staleSeconds: number | undefined;
   const requestCacheLife = options.requestCacheLife;
 
   if (requestCacheLife?.revalidate !== undefined) {
@@ -110,12 +129,15 @@ function resolveAppPageCacheWritePolicy(options: {
   if (requestCacheLife?.expire !== undefined) {
     expireSeconds = requestCacheLife.expire;
   }
+  if (requestCacheLife?.stale !== undefined) {
+    staleSeconds = requestCacheLife.stale;
+  }
 
   if (revalidateSeconds === null || Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0) {
     return null;
   }
 
-  return { expireSeconds, revalidateSeconds };
+  return { expireSeconds, revalidateSeconds, staleSeconds };
 }
 
 export function finalizeAppPageHtmlCacheResponse(
@@ -176,7 +198,8 @@ export function finalizeAppPageHtmlCacheResponse(
       });
       const linkHeader = response.headers.get("link");
       const writes = [
-        options.isrSet(
+        setAppPageCacheEntry(
+          options.isrSet,
           htmlKey,
           buildAppPageCacheValue(
             cachedHtml,
@@ -188,18 +211,21 @@ export function finalizeAppPageHtmlCacheResponse(
           cachePolicy.revalidateSeconds,
           pageTags,
           cachePolicy.expireSeconds,
+          cachePolicy.staleSeconds,
         ),
       ];
 
       if (options.capturedRscDataPromise) {
         writes.push(
           options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(
+            setAppPageCacheEntry(
+              options.isrSet,
               rscKey,
               buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
               cachePolicy.revalidateSeconds,
               pageTags,
               cachePolicy.expireSeconds,
+              cachePolicy.staleSeconds,
             ),
           ),
         );
@@ -257,6 +283,7 @@ export function scheduleAppPageRscCacheWrite(
     options.mountedSlotsHeader,
     options.renderMode,
     options.interceptionContext,
+    options.segmentPrefetchPath,
   );
   const cachePromise = (async () => {
     try {
@@ -284,12 +311,14 @@ export function scheduleAppPageRscCacheWrite(
         cacheTags: pageTags,
         state: observationState,
       });
-      await options.isrSet(
+      await setAppPageCacheEntry(
+        options.isrSet,
         rscKey,
         buildAppPageCacheValue("", rscData, 200, rscRenderObservation),
         cachePolicy.revalidateSeconds,
         pageTags,
         cachePolicy.expireSeconds,
+        cachePolicy.staleSeconds,
       );
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {

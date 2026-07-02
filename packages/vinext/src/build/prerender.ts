@@ -142,6 +142,7 @@ export type PrerenderRouteResult =
       outputFiles: string[];
       revalidate: number | false;
       expire?: number;
+      stale?: number;
       /**
        * The concrete prerendered URL path, e.g. `/blog/hello-world`.
        * Only present when the route is dynamic and `path` differs from `route`.
@@ -1567,6 +1568,9 @@ export async function prerenderApp({
           ...(typeof renderedRevalidate === "number"
             ? { expire: renderedCacheControl.expire }
             : {}),
+          ...(typeof renderedCacheControl.stale === "number"
+            ? { stale: renderedCacheControl.stale }
+            : {}),
           router: "app",
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
@@ -1674,10 +1678,10 @@ export async function prerenderApp({
 }
 
 function resolveRenderedCacheControl(
-  requestCacheLife: { expire?: number; revalidate?: number },
+  requestCacheLife: { expire?: number; revalidate?: number; stale?: number },
   cacheControl: string,
   fallbackExpireSeconds: number,
-): { expire: number; revalidate?: number } {
+): { expire: number; revalidate?: number; stale?: number } {
   const sMaxage = parseCacheControlSeconds(cacheControl, "s-maxage");
   const staleWhileRevalidate = parseCacheControlSeconds(cacheControl, "stale-while-revalidate");
   const revalidate =
@@ -1690,26 +1694,34 @@ function resolveRenderedCacheControl(
         sMaxage,
         staleWhileRevalidate,
       }),
+    ...(requestCacheLife.stale === undefined ? {} : { stale: requestCacheLife.stale }),
     ...(revalidate === undefined ? {} : { revalidate }),
   };
 }
 
 function readPrerenderCacheLifeHeader(
   headers: Headers,
-): { expire?: number; revalidate?: number } | null {
+): { expire?: number; revalidate?: number; stale?: number } | null {
   const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
   if (!value) return null;
 
   try {
-    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown };
-    const cacheLife: { expire?: number; revalidate?: number } = {};
+    const parsed = JSON.parse(value) as { expire?: unknown; revalidate?: unknown; stale?: unknown };
+    const cacheLife: { expire?: number; revalidate?: number; stale?: number } = {};
     if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
       cacheLife.revalidate = parsed.revalidate;
+    }
+    if (typeof parsed.stale === "number" && Number.isFinite(parsed.stale)) {
+      cacheLife.stale = parsed.stale;
     }
     if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
       cacheLife.expire = parsed.expire;
     }
-    return cacheLife.revalidate === undefined && cacheLife.expire === undefined ? null : cacheLife;
+    return cacheLife.revalidate === undefined &&
+      cacheLife.stale === undefined &&
+      cacheLife.expire === undefined
+      ? null
+      : cacheLife;
   } catch {
     return null;
   }

@@ -606,6 +606,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           tags: ctx.tags,
           cacheControl: {
             revalidate: revalidateSeconds,
+            stale: effectiveLife.stale,
             expire: effectiveLife.expire,
           },
         });
@@ -651,6 +652,7 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
   if (cacheControl === undefined) return;
   _setRequestScopedCacheLife({
     revalidate: cacheControl.revalidate,
+    stale: cacheControl.stale,
     expire: cacheControl.expire,
   });
 }

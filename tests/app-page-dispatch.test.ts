@@ -2156,6 +2156,7 @@ describe("app page dispatch", () => {
       60,
       expect.arrayContaining(["/photos/123", "_N_T_/feed/page"]),
       undefined,
+      undefined,
     );
   });
 

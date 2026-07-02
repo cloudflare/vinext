@@ -178,12 +178,14 @@ export async function isrSet(
   revalidateSeconds: number,
   tags?: string[],
   expireSeconds?: number,
+  staleSeconds?: number,
 ): Promise<void> {
   await getCdnCacheAdapter().set(key, data, {
-    cacheControl:
-      expireSeconds === undefined
-        ? { revalidate: revalidateSeconds }
-        : { revalidate: revalidateSeconds, expire: expireSeconds },
+    cacheControl: {
+      revalidate: revalidateSeconds,
+      ...(staleSeconds === undefined ? {} : { stale: staleSeconds }),
+      ...(expireSeconds === undefined ? {} : { expire: expireSeconds }),
+    },
     // `revalidate` is the legacy vinext CacheHandler context field. `expire`
     // is new metadata and intentionally only lives inside cacheControl.
     revalidate: revalidateSeconds,
@@ -197,6 +199,7 @@ export async function isrSetPrerenderedAppPage(
   metadata: {
     expireSeconds?: number;
     revalidateSeconds?: number;
+    staleSeconds?: number;
     /**
      * Implicit/path tags to attach to the seeded entry. Required so that
      * `revalidatePath()` (and `revalidateTag()`) can invalidate prerender-seeded
@@ -219,10 +222,11 @@ export async function isrSetPrerenderedAppPage(
   const ctx: Record<string, unknown> = {};
   if (revalidateSeconds !== undefined) {
     ctx.revalidate = revalidateSeconds;
-    ctx.cacheControl =
-      metadata.expireSeconds === undefined
-        ? { revalidate: revalidateSeconds }
-        : { revalidate: revalidateSeconds, expire: metadata.expireSeconds };
+    ctx.cacheControl = {
+      revalidate: revalidateSeconds,
+      ...(metadata.staleSeconds === undefined ? {} : { stale: metadata.staleSeconds }),
+      ...(metadata.expireSeconds === undefined ? {} : { expire: metadata.expireSeconds }),
+    };
   }
   if (tags && tags.length > 0) {
     ctx.tags = tags;
@@ -408,16 +412,22 @@ export function appIsrRscKey(
   mountedSlotsHeader?: string | null,
   renderMode: AppRscRenderMode = APP_RSC_RENDER_MODE_NAVIGATION,
   interceptionContext?: string | null,
+  segmentPrefetchPath?: string | null,
 ): string {
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
   const sourceVariant =
     interceptionContext === undefined || interceptionContext === null
       ? null
       : normalizeInterceptionContextForCacheKey(interceptionContext);
+  const normalizedSegmentPrefetchPath =
+    typeof segmentPrefetchPath === "string" && segmentPrefetchPath.length > 0
+      ? segmentPrefetchPath
+      : null;
   const variant = [
     sourceVariant ? `source:${fnv1a64(sourceVariant)}` : null,
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
+    normalizedSegmentPrefetchPath ? `segment:${fnv1a64(normalizedSegmentPrefetchPath)}` : null,
   ]
     .filter((part) => part !== null)
     .join(":");

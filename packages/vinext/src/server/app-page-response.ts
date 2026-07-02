@@ -39,6 +39,7 @@ type AppPageResponsePolicy = {
 type AppPagePrerenderCacheLife = {
   expire?: number;
   revalidate?: number;
+  stale?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -127,10 +128,18 @@ function applyPrerenderCacheLifeHeader(
   ) {
     payload.revalidate = requestCacheLife.revalidate;
   }
+  if (typeof requestCacheLife.stale === "number" && Number.isFinite(requestCacheLife.stale)) {
+    payload.stale = requestCacheLife.stale;
+  }
   if (typeof requestCacheLife.expire === "number" && Number.isFinite(requestCacheLife.expire)) {
     payload.expire = requestCacheLife.expire;
   }
-  if (payload.revalidate === undefined && payload.expire === undefined) return;
+  if (
+    payload.revalidate === undefined &&
+    payload.stale === undefined &&
+    payload.expire === undefined
+  )
+    return;
   headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
 }
 

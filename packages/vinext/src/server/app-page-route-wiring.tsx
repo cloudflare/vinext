@@ -53,6 +53,7 @@ import {
 import {
   APP_PAGE_SEGMENT_KEY,
   resolveAppPageChildSegments,
+  resolveAppPageConcreteRouteSegments,
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
 } from "./app-page-segment-state.js";
@@ -229,6 +230,7 @@ type BuildAppPageElementsOptions<
   mountedSlotIds?: ReadonlySet<string> | null;
   renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
+  concreteSegmentIdentity?: boolean;
   routePath: string;
   sourcePageSegments?: readonly string[] | null;
 };
@@ -260,8 +262,12 @@ function getErrorBoundaryExport<TModule extends AppPageErrorModule>(
 export function createAppPageTreePath(
   routeSegments: readonly string[] | null | undefined,
   treePosition: number,
+  params?: AppPageParams | null,
 ): string {
-  const treePathSegments = routeSegments?.slice(0, treePosition) ?? [];
+  const treePathSegments =
+    params && routeSegments
+      ? resolveAppPageConcreteRouteSegments(routeSegments.slice(0, treePosition), params)
+      : (routeSegments?.slice(0, treePosition) ?? []);
   if (treePathSegments.length === 0) {
     return "/";
   }
@@ -290,6 +296,15 @@ function recordLayoutSkipObservationScope(options: {
   if (revalidateSeconds !== null) {
     options.layoutParamAccess?.recordLayoutFiniteRevalidate(options.layoutId, revalidateSeconds);
   }
+}
+
+function resolveAppPageIdentitySegments(
+  routeSegments: readonly string[] | null | undefined,
+  params: AppPageParams | null,
+): readonly string[] | null | undefined {
+  return params && routeSegments
+    ? resolveAppPageConcreteRouteSegments(routeSegments, params)
+    : routeSegments;
 }
 
 export function probeAppPageLayoutWithTracking<TModule extends AppPageModule>(options: {
@@ -354,10 +369,11 @@ export function createAppPageLayoutEntries<
     forbiddens?: readonly (TModule | null | undefined)[] | null;
     unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   },
+  identityParams: AppPageParams | null = null,
 ): AppPageLayoutEntry<TModule, TErrorModule>[] {
   return route.layouts.map((layoutModule, index) => {
     const treePosition = route.layoutTreePositions?.[index] ?? 0;
-    const treePath = createAppPageTreePath(route.routeSegments, treePosition);
+    const treePath = createAppPageTreePath(route.routeSegments, treePosition, identityParams);
     return {
       errorModule: route.errorTreePositions ? null : (route.errors?.[index] ?? null),
       forbiddenModule: route.forbiddens?.[index] ?? null,
@@ -376,10 +392,11 @@ function createAppPageTemplateEntries<TModule extends AppPageModule>(
     AppPageRouteWiringRoute<TModule>,
     "routeSegments" | "templateTreePositions" | "templates"
   >,
+  identityParams: AppPageParams | null,
 ): AppPageTemplateEntry<TModule>[] {
   return (route.templates ?? []).map((templateModule, index) => {
     const treePosition = route.templateTreePositions?.[index] ?? 0;
-    const treePath = createAppPageTreePath(route.routeSegments, treePosition);
+    const treePath = createAppPageTreePath(route.routeSegments, treePosition, identityParams);
     return {
       id: AppElementsWire.encodeTemplateId(treePath),
       templateModule,
@@ -575,15 +592,16 @@ export function buildAppPageElements<
     renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   const routeSegments = options.route.routeSegments ?? [];
+  const identityParams = options.concreteSegmentIdentity === true ? options.matchedParams : null;
   const routeResetKey = resolveAppPageRouteStateKey(routeSegments, options.matchedParams);
   const routeId =
     renderIdentity?.routeId ??
     AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
   const pageId =
     renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
-  const pageElementId = options.route.childrenSlot?.id ?? pageId;
-  const layoutEntries = createAppPageLayoutEntries(options.route);
-  const templateEntries = createAppPageTemplateEntries(options.route);
+  const pageElementId = identityParams ? pageId : (options.route.childrenSlot?.id ?? pageId);
+  const layoutEntries = createAppPageLayoutEntries(options.route, identityParams);
+  const templateEntries = createAppPageTemplateEntries(options.route, identityParams);
   const errorEntries = createAppPageErrorEntries(options.route);
   const metadataPlacement = options.metadataPlacement ?? "head";
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
@@ -648,10 +666,14 @@ export function buildAppPageElements<
     ...AppElementsWire.createMetadataEntries({
       interception: renderIdentity?.interception ?? options.interception ?? null,
       interceptionContext,
-      layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
+      layoutIds: identityParams
+        ? layoutEntries.map((entry) => entry.id)
+        : (options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id)),
       rootLayoutTreePath,
       routeId,
-      sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
+      sourcePage: createAppPageSourcePage(
+        resolveAppPageIdentitySegments(options.sourcePageSegments ?? routeSegments, identityParams),
+      ),
       slotBindings: createAppPageSlotBindings(options.route, layoutEntries, resolveSlotOverride, {
         interception: renderIdentity?.interception ?? options.interception ?? null,
         interceptionContext,
