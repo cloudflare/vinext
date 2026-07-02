@@ -200,6 +200,26 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
   );
 }
 
+function resolveRegeneratedAppPageCachePolicy(options: {
+  expireSeconds?: number;
+  renderCacheControl?: CacheControlMetadata;
+  routeRevalidateSeconds: number;
+}): { expireSeconds?: number; revalidateSeconds: number } {
+  let revalidateSeconds = options.routeRevalidateSeconds;
+  const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
+  if (renderRevalidateSeconds !== undefined) {
+    revalidateSeconds =
+      revalidateSeconds > 0
+        ? Math.min(revalidateSeconds, renderRevalidateSeconds)
+        : renderRevalidateSeconds;
+  }
+
+  return {
+    expireSeconds: options.renderCacheControl?.expire ?? options.expireSeconds,
+    revalidateSeconds,
+  };
+}
+
 export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
@@ -397,9 +417,11 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
-        const revalidateSeconds =
-          revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
-        const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
+        const cachePolicy = resolveRegeneratedAppPageCachePolicy({
+          expireSeconds: options.expireSeconds,
+          renderCacheControl: revalidatedPage.cacheControl,
+          routeRevalidateSeconds: options.revalidateSeconds,
+        });
         const writes = [
           options.isrSet(
             // For an RSC request `isrKey` is already the RSC variant key, so
@@ -419,9 +441,9 @@ export async function readAppPageCacheResponse(
               200,
               revalidatedPage.rscRenderObservation,
             ),
-            revalidateSeconds,
+            cachePolicy.revalidateSeconds,
             revalidatedPage.tags,
-            expireSeconds,
+            cachePolicy.expireSeconds,
           ),
         ];
 
@@ -440,9 +462,9 @@ export async function readAppPageCacheResponse(
                 revalidatedPage.htmlRenderObservation,
                 revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
-              revalidateSeconds,
+              cachePolicy.revalidateSeconds,
               revalidatedPage.tags,
-              expireSeconds,
+              cachePolicy.expireSeconds,
             ),
           );
         }

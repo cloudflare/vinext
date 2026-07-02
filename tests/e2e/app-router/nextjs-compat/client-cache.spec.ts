@@ -23,6 +23,7 @@ type DelayedNavigationCachePublicationState = {
 
 type ClientCacheTestWindow = Window & {
   __VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__?: DelayedNavigationCachePublicationState;
+  __VINEXT_CLIENT_CACHE_TEE_COUNT__?: () => number;
   next?: {
     router?: {
       refresh(): void;
@@ -215,6 +216,114 @@ test.describe("Next.js compat: client cache", () => {
     await expect(page.locator("#client-cache-id")).toHaveText("2");
     expect(await readRandom(page)).toBe(initial);
     expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
+  });
+
+  test("committed no-prefetch navigations publish cache snapshots after immediate back", async ({
+    page,
+  }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts
+    await page.addInitScript((targetPath) => {
+      const testWindow = window as ClientCacheTestWindow;
+      const originalFetch = window.fetch.bind(window);
+      const state: DelayedNavigationCachePublicationState = {
+        releaseOldNavigationTail: null,
+      };
+      testWindow.__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__ = state;
+
+      window.fetch = async (input, init) => {
+        const rawUrl =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(rawUrl, window.location.href);
+        const headers = new Headers(input instanceof Request ? input.headers : undefined);
+        if (init?.headers) {
+          new Headers(init.headers).forEach((value, key) => {
+            headers.set(key, value);
+          });
+        }
+
+        const response = await originalFetch(input, init);
+        if (
+          state.releaseOldNavigationTail !== null ||
+          url.pathname !== targetPath ||
+          !url.searchParams.has("_rsc") ||
+          headers.get("rsc") !== "1" ||
+          response.body === null
+        ) {
+          return response;
+        }
+
+        const targetBody = response.body;
+        const originalTee = targetBody.tee.bind(targetBody);
+        targetBody.tee = function () {
+          const [reactBranch, cacheBranch] = originalTee();
+          const cacheReader = cacheBranch.getReader();
+          const delayedCacheBranch = new ReadableStream<Uint8Array<ArrayBuffer>>({
+            async start(controller) {
+              while (true) {
+                const result = await cacheReader.read();
+                if (result.done) break;
+                controller.enqueue(result.value);
+              }
+              await new Promise<void>((resolve) => {
+                state.releaseOldNavigationTail = resolve;
+              });
+              controller.close();
+            },
+            cancel(reason) {
+              return cacheReader.cancel(reason);
+            },
+          });
+          return [reactBranch, delayedCacheBranch];
+        };
+        return response;
+      };
+    }, `${ROOT}/2`);
+
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    const initial = await navigateTo(page, "#client-cache-none", "2");
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"2"}');
+    await navigateHome(page);
+
+    await page.evaluate(() => {
+      const state = (window as ClientCacheTestWindow)
+        .__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__;
+      if (
+        state?.releaseOldNavigationTail === null ||
+        state?.releaseOldNavigationTail === undefined
+      ) {
+        throw new Error("Old navigation tail was not delayed");
+      }
+      state.releaseOldNavigationTail();
+    });
+
+    await page.evaluate(() => {
+      const testWindow = window as ClientCacheTestWindow;
+      let teeCount = 0;
+      const originalTee = Reflect.get(
+        ReadableStream.prototype,
+        "tee",
+      ) as typeof ReadableStream.prototype.tee;
+      ReadableStream.prototype.tee = function (this: ReadableStream<unknown>) {
+        teeCount += 1;
+        return originalTee.call(this);
+      } as typeof ReadableStream.prototype.tee;
+      testWindow.__VINEXT_CLIENT_CACHE_TEE_COUNT__ = () => teeCount;
+    });
+
+    requests.length = 0;
+    expect(await navigateTo(page, "#client-cache-none", "2")).toBe(initial);
+    await expect(page.locator("#client-cache-breadcrumbs")).toHaveText('Catchall {"id":"2"}');
+    expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
+    expect(
+      await page.evaluate(() => {
+        const readTeeCount = (window as ClientCacheTestWindow).__VINEXT_CLIENT_CACHE_TEE_COUNT__;
+        if (readTeeCount === undefined) throw new Error("ReadableStream.tee counter missing");
+        return readTeeCount();
+      }),
+    ).toBe(0);
   });
 
   test("router refresh invalidates committed client cache payloads", async ({ page }) => {

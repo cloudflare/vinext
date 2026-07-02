@@ -468,6 +468,31 @@ describe("KVCacheHandler", () => {
       await expect(handler.get("expire-test")).resolves.toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
     });
+
+    it("serves stale when a shorter read-time revalidate has elapsed", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "shorter-read-revalidate",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "cached", url: "https://example.com/data" },
+          tags: [],
+          revalidate: 60,
+        },
+        { revalidate: 60 },
+      );
+
+      vi.setSystemTime(3_500);
+      const stale = await handler.get("shorter-read-revalidate", { revalidate: 2 });
+
+      expect(stale?.cacheState).toBe("stale");
+      const value = stale?.value;
+      expect(value?.kind).toBe("FETCH");
+      if (value?.kind !== "FETCH") throw new Error("expected FETCH cache value");
+      expect(value.data.body).toBe("cached");
+    });
   });
 
   describe("tag invalidation", () => {

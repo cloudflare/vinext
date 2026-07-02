@@ -7,6 +7,7 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
@@ -14,6 +15,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -25,6 +27,13 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
+
+async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+  const source = await readFile(filePath, "utf8");
+  if (hasExportedName(source, "getStaticProps")) return "static";
+  if (hasExportedName(source, "getServerSideProps")) return "server";
+  return "none";
+}
 
 /**
  * Generate the virtual SSR server entry module.
@@ -53,10 +62,13 @@ export async function generateServerEntry(
   });
 
   // Build the route table — include filePath for SSR manifest lookup
-  const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-  });
+  const pageRouteEntries = await Promise.all(
+    pageRoutes.map(async (r: Route, i: number) => {
+      const absPath = normalizePathSeparators(r.filePath);
+      const dataKind = await getPagesDataKind(r.filePath);
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+    }),
+  );
 
   const apiRouteEntries = apiRoutes.map(
     (r: Route, i: number) =>
@@ -238,7 +250,12 @@ const i18nConfig = ${i18nConfigJson};
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(request, buildId);
+  return __normalizePagesDataRequest(
+    request,
+    buildId,
+    vinextConfig.basePath,
+    hasMiddleware && vinextConfig.trailingSlash,
+  );
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 

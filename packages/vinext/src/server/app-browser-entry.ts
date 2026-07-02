@@ -1535,6 +1535,7 @@ function bootstrapHydration(
           : {}),
         mountedSlotsHeader,
         paramsHeader: encodeURIComponent(JSON.stringify(initialParams)),
+        renderedPathAndSearch: null,
         url: rscUrl,
       } satisfies CachedRscResponse;
       const fallbackTtlMs =
@@ -1553,14 +1554,15 @@ function bootstrapHydration(
             mountedSlotsHeader,
           );
         }
-        seedPrefetchResponseSnapshot(
+        return storeVisitedResponseSnapshot(
           rscUrl,
-          snapshot,
           metadata.interceptionContext,
-          mountedSlotsHeader,
+          snapshot,
+          initialParams,
           fallbackTtlMs,
+          mountedSlotsHeader,
+          elements,
         );
-        return () => deletePrefetchResponseSnapshot(rscUrl, snapshot, metadata.interceptionContext);
       });
     })
     .catch(() => {});
@@ -2170,13 +2172,15 @@ function bootstrapHydration(
           detachedNavigationCommits ? "authoritative" : undefined,
         );
         if (renderOutcome !== "committed") return;
-        // Don't cache the response if this navigation was superseded during
-        // renderNavigationPayload's await — the elements were never dispatched.
-        if (!browserNavigationController.isCurrentNavigation(navId)) return;
         // Store the visited response only after renderNavigationPayload succeeds.
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
+        //
+        // Once the payload has committed, a later navigation should not cancel
+        // publication. Next's segment cache learns from completed navigations
+        // even when the user immediately goes back; keep only the cache-generation
+        // guard below so refresh/action invalidations still win.
         try {
           const renderedElements = await rscPayload;
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
@@ -2220,10 +2224,7 @@ function bootstrapHydration(
               PREFETCH_CACHE_TTL,
               mountedSlotsHeader,
             );
-          } else if (
-            committedState !== null &&
-            getMountedSlotIdsHeader((committedState as AppRouterState).elements) === null
-          ) {
+          } else if (committedState !== null) {
             const state = committedState as AppRouterState;
             const committedElements = {
               ...state.elements,
@@ -2232,6 +2233,10 @@ function bootstrapHydration(
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
+            // The committed router state is the post-merge tree, including named
+            // parallel-slot state. Skip-pruned wire payloads without a committed
+            // tree stay on the fallback path below and are not replayed as full
+            // visited responses.
             if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;
             storeVisitedResponseSnapshot(
               rscUrl,

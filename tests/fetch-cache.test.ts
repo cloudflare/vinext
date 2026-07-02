@@ -47,6 +47,7 @@ const {
   setCurrentFetchCacheMode,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
   getOriginalFetch,
   _resetPendingRefetches,
   consumeDynamicFetchObservations,
@@ -851,6 +852,107 @@ describe("fetch cache shim", () => {
     // Wait for background refetch
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchMock).toHaveBeenCalledTimes(2); // Original + background refetch
+  });
+
+  it("refreshes stale fetch entries when foreground fetch refresh is enabled", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-stale", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-stale", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
+    const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes in the background when a shorter current revalidate makes a fetch stale", async () => {
+    const res1 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 60 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.lastModified = Date.now() - 2_000;
+      entry.revalidateAt = Date.now() + 58_000;
+    }
+    startNewFetchCacheScope();
+
+    const res2 = await fetch("https://api.example.com/background-shorter-revalidate", {
+      next: { revalidate: 1 },
+    });
+    expect((await res2.json()).count).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not clone the upstream response body for stale background revalidation", async () => {
+    const res1 = await fetch("https://api.example.com/background-no-returned-clone", {
+      next: { revalidate: 1 },
+    });
+    expect((await res1.json()).count).toBe(1);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    const cloneSpy = vi.spyOn(Response.prototype, "clone");
+    try {
+      const res2 = await fetch("https://api.example.com/background-no-returned-clone", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(cloneSpy).not.toHaveBeenCalled();
+    } finally {
+      cloneSpy.mockRestore();
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("preserves Request bodies for stale background revalidation", async () => {

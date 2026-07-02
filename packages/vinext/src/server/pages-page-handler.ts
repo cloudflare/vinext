@@ -16,7 +16,7 @@ import type { ComponentType, ReactNode } from "react";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { resolvePagesI18nRequest } from "./pages-i18n.js";
-import { createPagesReqRes } from "./pages-node-compat.js";
+import { createPagesReqRes, getPagesPreviewData } from "./pages-node-compat.js";
 import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
@@ -24,6 +24,11 @@ import { renderPagesPageResponse } from "./pages-page-response.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
+import {
+  BROWSER_REVALIDATE_CACHE_CONTROL,
+  shouldUseNextDeployCacheControl,
+  applyCdnResponseHeaders,
+} from "./cache-control.js";
 import {
   buildNextDataPropsJsonResponse,
   buildNextDataNotFoundResponse,
@@ -46,7 +51,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
-import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
+import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
 
@@ -310,7 +315,12 @@ export function createPagesPageHandler(
     const originalRequestPathAndSearch = originalRequestUrl.pathname + originalRequestUrl.search;
     let dataRequestPathname: string | null = null;
     let dataRequestSearch = "";
-    const initialDataNorm = normalizePagesDataRequest(request, buildId);
+    const initialDataNorm = normalizePagesDataRequest(
+      request,
+      buildId,
+      vinextConfig.basePath,
+      hasMiddleware && vinextConfig.trailingSlash,
+    );
 
     // Auto-detect /_next/data/... requests by inspecting the incoming URL.
     // When the worker pipeline forwards an unrewritten data URL as the `url`
@@ -435,6 +445,7 @@ export function createPagesPageHandler(
         // the configured-rewrites flag decide the initial `router.isReady` value,
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
+        const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
         const pagesNextData = buildPagesReadinessNextData({
           pageModule,
           appComponent: AppComponent as { getInitialProps?: unknown } | null,
@@ -519,6 +530,7 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            routeUrl,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
@@ -554,6 +566,9 @@ export function createPagesPageHandler(
             url: originalRequestPathAndSearch,
           });
 
+        const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+          request.headers.get(PRERENDER_REVALIDATE_HEADER),
+        );
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -578,6 +593,8 @@ export function createPagesPageHandler(
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
+          validatePropsSerialization:
+            process.env.NODE_ENV !== "production" || process.env.VINEXT_PRERENDER === "1",
           // `res.revalidate()` issues an internal request carrying the
           // `x-prerender-revalidate` header set to the process revalidate
           // secret; treat it as an on-demand revalidation so getStaticProps
@@ -587,9 +604,8 @@ export function createPagesPageHandler(
           // mirrors Next.js's `checkIsOnDemandRevalidate`, preventing an
           // external client from forcing synchronous regeneration via an
           // arbitrary header value (cache-stampede/DoS vector).
-          isOnDemandRevalidate: isOnDemandRevalidateRequest(
-            request.headers.get(PRERENDER_REVALIDATE_HEADER),
-          ),
+          isOnDemandRevalidate,
+          previewData: getPagesPreviewData(request, { isOnDemandRevalidate }),
           pageModule,
           AppComponent,
           params,
@@ -694,6 +710,21 @@ export function createPagesPageHandler(
             if (!hasUserCacheControl) {
               init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
+          } else if (isStaticPropsRoute) {
+            if (isrRevalidateSeconds) {
+              const headers = new Headers(init.headers);
+              applyCdnResponseHeaders(headers, {
+                cacheControl: buildMissIsrCacheControl(
+                  isrRevalidateSeconds,
+                  vinextConfig.expireTime,
+                ),
+              });
+              for (const [key, value] of headers) {
+                init.headers[key] = value;
+              }
+            } else if (shouldUseNextDeployCacheControl()) {
+              init.headers["Cache-Control"] = BROWSER_REVALIDATE_CACHE_CONTROL;
+            }
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -757,6 +788,7 @@ export function createPagesPageHandler(
           isrCacheKey: pageIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds,
+          isStaticPropsRoute,
           isrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,

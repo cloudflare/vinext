@@ -32,6 +32,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
+  stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
@@ -40,6 +41,7 @@ import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../server/headers.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -245,6 +247,7 @@ export type CachedRscResponse = {
   expiresAt?: number;
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
+  renderedPathAndSearch: string | null;
   url: string;
 };
 
@@ -264,8 +267,10 @@ export type PrefetchCacheEntry = {
   optimisticRouteShell?: boolean;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
+  cacheKeys?: Set<string>;
   pending?: Promise<void>;
   prefetchKind?: PrefetchCacheKind;
+  searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
 };
@@ -405,6 +410,15 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   }
 }
 
+function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
+  try {
+    const url = new URL(rscUrl, "http://vinext.local");
+    return stripRscSuffix(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
 function parsePrefetchCacheKey(cacheKey: string): {
   interceptionContext: string | null;
   rscUrl: string;
@@ -512,6 +526,32 @@ export function hasPrefetchCacheEntryForNavigation(
   return false;
 }
 
+export function hasSearchAgnosticPrefetchShellForRoute(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+): boolean {
+  const normalizedTargetPathname = normalizeRscCacheLookupPathname(rscUrl);
+  if (normalizedTargetPathname === null) return false;
+
+  const cache = getPrefetchCache();
+  for (const [cacheKey, entry] of cache) {
+    if (entry.searchAgnosticShell !== true) continue;
+
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeRscCacheLookupPathname(source.rscUrl) !== normalizedTargetPathname) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+
+    if (entry.pending !== undefined) return true;
+    if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return true;
+
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  }
+
+  return false;
+}
+
 function getPrefetchCacheEntrySize(entry: PrefetchCacheEntry): number {
   return entry.snapshot?.buffer.byteLength ?? entry.size ?? 0;
 }
@@ -525,7 +565,10 @@ function getPrefetchCacheByteSize(cache: Map<string, PrefetchCacheEntry>): numbe
   }
 
   let total = 0;
+  const seen = new Set<PrefetchCacheEntry>();
   for (const entry of cache.values()) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
     total += getPrefetchCacheEntrySize(entry);
   }
   trackedPrefetchCache = cache;
@@ -546,6 +589,11 @@ function touchPrefetchCacheEntry(
   if (cache.get(cacheKey) !== entry) return;
   cache.delete(cacheKey);
   cache.set(cacheKey, entry);
+  for (const key of entry.cacheKeys ?? []) {
+    if (key === cacheKey || cache.get(key) !== entry) continue;
+    cache.delete(key);
+    cache.set(key, entry);
+  }
 }
 
 /**
@@ -630,8 +678,14 @@ function deletePrefetchCacheEntry(
   notify: boolean,
 ): void {
   adjustPrefetchCacheByteSize(cache, -getPrefetchCacheEntrySize(entry));
-  cache.delete(cacheKey);
-  prefetched.delete(cacheKey);
+  const cacheKeys = entry.cacheKeys ?? new Set([cacheKey]);
+  for (const key of cacheKeys) {
+    if (cache.get(key) === entry) {
+      cache.delete(key);
+    }
+    prefetched.delete(key);
+  }
+  entry.cacheKeys = undefined;
   if (notify) {
     notifyPrefetchInvalidated(entry);
   } else {
@@ -709,6 +763,7 @@ export function seedPrefetchResponseSnapshot(
   const timestamp = Date.now();
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
+    cacheKeys: new Set([cacheKey]),
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
@@ -765,6 +820,7 @@ export function storePrefetchResponse(
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
   }
   const entry: PrefetchCacheEntry = {
+    cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader: null,
     outcome: "pending",
     timestamp: Date.now(),
@@ -814,8 +870,21 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+      response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ),
     url: responseUrl ?? response.url,
   };
+}
+
+function parseRenderedPathAndSearchHeader(value: string | null): string | null {
+  if (value === null || value === "") return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.startsWith("/") ? decoded : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -859,6 +928,12 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
   }
+  if (cached.renderedPathAndSearch != null) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(cached.renderedPathAndSearch),
+    );
+  }
 
   return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
@@ -884,6 +959,7 @@ export function prefetchRscResponse(
     fallbackTtlMs?: number;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
+    searchAgnosticShell?: boolean;
   } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
@@ -897,12 +973,14 @@ export function prefetchRscResponse(
 
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: behavior.cacheForNavigation ?? true,
+    cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     prefetchKind:
       behavior.prefetchKind ??
       (behavior.optimisticRouteShell === true ? "loading-shell" : "navigation"),
+    searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
@@ -921,6 +999,7 @@ export function prefetchRscResponse(
           entry.snapshot,
           behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
         );
+        addRenderedPathAndSearchPrefetchAlias(cache, prefetched, cacheKey, entry);
         evictPrefetchCacheIfNeeded();
       } else {
         releaseAppPrefetchFetchSlot(response);
@@ -944,6 +1023,62 @@ export function prefetchRscResponse(
   // entries inserted before it are candidates for removal.
   cache.set(cacheKey, entry);
   evictPrefetchCacheIfNeeded();
+}
+
+function addRenderedPathAndSearchPrefetchAlias(
+  cache: Map<string, PrefetchCacheEntry>,
+  prefetched: Set<string>,
+  primaryCacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  if (entry.cacheForNavigation === false) return;
+  const renderedPathAndSearch = entry.snapshot?.renderedPathAndSearch;
+  if (!renderedPathAndSearch) return;
+
+  const source = parsePrefetchCacheKey(primaryCacheKey);
+  const aliasCacheKey = AppElementsWire.encodeCacheKey(
+    renderedPathAndSearch,
+    source.interceptionContext,
+  );
+  if (aliasCacheKey === primaryCacheKey) return;
+
+  const existing = cache.get(aliasCacheKey);
+  if (existing && existing !== entry) {
+    deletePrefetchCacheEntry(cache, prefetched, aliasCacheKey, existing, false);
+  }
+
+  entry.cacheKeys ??= new Set([primaryCacheKey]);
+  entry.cacheKeys.add(aliasCacheKey);
+  cache.set(aliasCacheKey, entry);
+  prefetched.add(aliasCacheKey);
+}
+
+export function peekPrefetchResponseForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+): CachedRscResponse | null {
+  const match = findPrefetchCacheEntryForNavigation(
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!match) return null;
+
+  const { cacheKey, entry } = match;
+  if (entry.pending || entry.outcome !== "cache-seeded") return null;
+  if (entry.cacheForNavigation === false || !entry.snapshot) return null;
+  if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
+    deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, true);
+    return null;
+  }
+  if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
+    return {
+      ...entry.snapshot,
+      expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+    };
+  }
+  return entry.snapshot;
 }
 
 /**

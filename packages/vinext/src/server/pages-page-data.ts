@@ -7,6 +7,7 @@ import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import type { PagesPreviewData } from "./pages-node-compat.js";
 import {
   buildPagesNextDataScript,
   etagMatches,
@@ -100,12 +101,18 @@ export type PagesPageModule = {
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    draftMode?: true;
+    preview?: true;
+    previewData?: PagesPreviewData;
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
   getStaticProps?: (context: {
     params: Record<string, unknown> | null;
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    draftMode?: true;
+    preview?: true;
+    previewData?: PagesPreviewData;
     /**
      * Indicates why `getStaticProps` was invoked.
      *
@@ -173,6 +180,7 @@ export type ResolvePagesPageDataOptions = {
    * `.nextjs-ref/packages/next/src/server/render.tsx`.
    */
   isBuildTimePrerendering?: boolean;
+  validatePropsSerialization?: boolean;
   /**
    * When true, this dispatch was triggered by an on-demand revalidation
    * request (e.g. `res.revalidate()` in a Pages Router API route, or an
@@ -189,6 +197,7 @@ export type ResolvePagesPageDataOptions = {
    * presence — see the security note in `isr-cache.ts`.
    */
   isOnDemandRevalidate?: boolean;
+  previewData?: PagesPreviewData | false;
   /**
    * The deployment ID used for deployment-skew protection. When set, it is
    * included as `x-nextjs-deployment-id` on all `_next/data` responses
@@ -710,6 +719,15 @@ export async function resolvePagesPageData(
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
+  const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
+  const previewContext =
+    previewData === false
+      ? {}
+      : {
+          draftMode: true as const,
+          preview: true as const,
+          previewData,
+        };
 
   let sharedReqRes: PagesGsspContextResponse | null = null;
   function getSharedReqRes(): PagesGsspContextResponse {
@@ -768,6 +786,7 @@ export async function resolvePagesPageData(
       locale: options.i18n.locale,
       locales: options.i18n.locales,
       defaultLocale: options.i18n.defaultLocale,
+      ...previewContext,
     });
 
     if (isResponseSent(res)) {
@@ -808,7 +827,7 @@ export async function resolvePagesPageData(
     // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
     // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
     // vinext#1478.
-    if (result?.props !== undefined) {
+    if (result?.props !== undefined && options.validatePropsSerialization !== false) {
       isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
     }
 
@@ -836,7 +855,8 @@ export async function resolvePagesPageData(
       cached &&
       !cached.isStale &&
       !options.scriptNonce &&
-      !options.isDataReq
+      !options.isDataReq &&
+      previewData === false
     ) {
       const hitResponse = buildPagesCacheResponse(
         cachedValue.html,
@@ -866,7 +886,8 @@ export async function resolvePagesPageData(
       cached &&
       cached.isStale &&
       !options.scriptNonce &&
-      !options.isDataReq
+      !options.isDataReq &&
+      previewData === false
     ) {
       options.triggerBackgroundRegeneration(
         cacheKey,
@@ -964,6 +985,7 @@ export async function resolvePagesPageData(
 
     const generatedPageData =
       !options.isOnDemandRevalidate &&
+      previewData === false &&
       cached?.isStale === false &&
       cachedValue?.kind === "PAGES" &&
       cachedValue.generatedFromDataRequest &&
@@ -981,6 +1003,7 @@ export async function resolvePagesPageData(
           locale: options.i18n.locale,
           locales: options.i18n.locales,
           defaultLocale: options.i18n.defaultLocale,
+          ...previewContext,
           revalidateReason: options.isOnDemandRevalidate
             ? "on-demand"
             : options.isBuildTimePrerendering
@@ -1017,17 +1040,21 @@ export async function resolvePagesPageData(
     // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
     // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
     // vinext#1478.
-    if (result?.props !== undefined) {
+    if (result?.props !== undefined && options.validatePropsSerialization !== false) {
       isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
-    if (typeof result?.revalidate === "number" && result.revalidate > 0) {
+    if (previewData === false && typeof result?.revalidate === "number" && result.revalidate > 0) {
       isrRevalidateSeconds = result.revalidate;
-    } else if (cachedValue?.kind === "PAGES" && cachedValue.generatedFromDataRequest) {
+    } else if (
+      previewData === false &&
+      cachedValue?.kind === "PAGES" &&
+      cachedValue.generatedFromDataRequest
+    ) {
       isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
     }
 
-    if (shouldPersistFallbackData) {
+    if (shouldPersistFallbackData && previewData === false) {
       const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
       await options.isrSet(
         cacheKey,

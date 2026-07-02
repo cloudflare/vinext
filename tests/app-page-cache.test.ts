@@ -722,6 +722,66 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it("preserves route-level revalidate when regenerated App page fetches live longer", async () => {
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrSetCalls: Array<{
+      key: string;
+      expireSeconds: number | undefined;
+      revalidateSeconds: number;
+    }> = [];
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/config-and-fetch-revalidate",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname, mountedSlotsHeader) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
+      },
+      async isrSet(key, _data, revalidateSeconds, _tags, expireSeconds) {
+        isrSetCalls.push({
+          key,
+          expireSeconds,
+          revalidateSeconds,
+        });
+      },
+      revalidateSeconds: 3,
+      async renderFreshPageForCache() {
+        return {
+          cacheControl: { revalidate: 9 },
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/config-and-fetch-revalidate", "_N_T_/config-and-fetch-revalidate"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    await scheduledRegenerations[0]();
+
+    expect(isrSetCalls).toEqual([
+      {
+        key: "rsc:/config-and-fetch-revalidate:none",
+        expireSeconds: undefined,
+        revalidateSeconds: 3,
+      },
+      {
+        key: "html:/config-and-fetch-revalidate",
+        expireSeconds: undefined,
+        revalidateSeconds: 3,
+      },
+    ]);
+  });
+
   it("serves stale static fallback shells without regenerating the shared shell key", async () => {
     const debugCalls: Array<[string, string]> = [];
 
