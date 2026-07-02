@@ -473,10 +473,10 @@ async function buildApp() {
   applyViteConfigCompatibility(process.cwd());
 
   const vite = await loadVite();
-  const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
 
-  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
-    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
+  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) => ({
+    rolldownOptions: bundlerOptions,
+  });
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
@@ -622,8 +622,6 @@ async function buildApp() {
               // @vitejs/plugin-rsc and its sub-plugins — App Router only
               !p.name.startsWith("rsc:") &&
               p.name !== "vite-rsc-load-module-dev-proxy" &&
-              // vite-tsconfig-paths — auto-registered by vinext
-              p.name !== "vite-tsconfig-paths" &&
               // cloudflare() — injects multi-env environments block which
               // conflicts with the plain SSR build config below
               !p.name.startsWith("vite-plugin-cloudflare"),

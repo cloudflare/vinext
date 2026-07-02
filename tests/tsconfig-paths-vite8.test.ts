@@ -65,22 +65,20 @@ afterEach(() => {
 });
 
 describe("Vite tsconfig paths support", () => {
-  it("keeps vite-tsconfig-paths on Vite 7", async () => {
+  it("rejects Vite 7", () => {
     const root = setupProject({ name: "vite", version: "7.3.1" });
     process.chdir(root);
 
-    const plugins = vinext({ appDir: root });
-
-    expect(await findNamedPlugin(plugins, "vite-tsconfig-paths")).toBeDefined();
+    expect(() => vinext({ appDir: root })).toThrow(
+      "[vinext] Vite 8 or newer is required. Detected Vite 7.",
+    );
   });
 
-  it("uses resolve.tsconfigPaths on Vite 8 instead of vite-tsconfig-paths", async () => {
+  it("uses resolve.tsconfigPaths on Vite 8", async () => {
     const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);
 
     const plugins = vinext({ appDir: root });
-
-    expect(await findNamedPlugin(plugins, "vite-tsconfig-paths")).toBeUndefined();
 
     const configPlugin = (await findNamedPlugin(plugins, "vinext:config")) as {
       config?: (
@@ -220,8 +218,6 @@ describe("Vite tsconfig paths support", () => {
 
     const plugins = vinext({ appDir: root });
 
-    expect(await findNamedPlugin(plugins, "vite-tsconfig-paths")).toBeUndefined();
-
     const configPlugin = (await findNamedPlugin(plugins, "vinext:config")) as {
       config?: (
         config: { root: string },
@@ -238,20 +234,15 @@ describe("Vite tsconfig paths support", () => {
     expect(resolvedConfig?.resolve?.tsconfigPaths).toBe(true);
   });
 
-  it("falls back to Vite 7 for npm alias packages without bundled versions", async () => {
+  it("rejects npm alias packages without bundled Vite versions", () => {
     const root = setupProject({
       name: "@voidzero-dev/vite-plus-core",
       version: "0.1.11",
     });
     process.chdir(root);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const plugins = vinext({ appDir: root });
-
-    expect(await findNamedPlugin(plugins, "vite-tsconfig-paths")).toBeDefined();
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn).toHaveBeenCalledWith(
-      "[vinext] Could not determine Vite major version from @voidzero-dev/vite-plus-core; assuming Vite 7",
+    expect(() => vinext({ appDir: root })).toThrow(
+      "[vinext] Vite 8 or newer is required, but could not determine Vite version from @voidzero-dev/vite-plus-core",
     );
   });
 });

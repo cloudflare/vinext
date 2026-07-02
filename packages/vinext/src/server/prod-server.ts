@@ -115,10 +115,9 @@ function resolveCanonicalServerEntry(entryPath: string): { href: string; mtime: 
  *
  * The first import of a given path uses the plain file:// URL with NO query
  * string. This is load-bearing: code-split builds emit lazy chunks that
- * import the entry back by bare specifier (default Vite builds on both
- * supported majors — Rollup on Vite 7 and Rolldown on Vite 8 — hoist modules
- * shared between the entry's static graph and lazy route chunks into the
- * entry chunk, which the chunks then import as e.g. "../../index.js").
+ * import the entry back by bare specifier (default Vite/Rolldown builds hoist
+ * modules shared between the entry's static graph and lazy route chunks into
+ * the entry chunk, which the chunks then import as e.g. "../../index.js").
  * Node keys its ESM cache on the full URL including the query string, so if
  * the server imported the entry as `index.js?t=<mtime>`, a chunk's bare
  * back-import would evaluate the entire server bundle a second time and

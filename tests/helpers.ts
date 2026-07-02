@@ -242,7 +242,7 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
       outDir: serverOutDir,
       emptyOutDir: true,
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: {
+      rolldownOptions: {
         output: { entryFileNames: "entry.js" },
       },
     },

@@ -90,7 +90,6 @@ catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.1
   vite-plugin-commonjs: ^0.10.4
   vite-plus: 0.2.1
-  vite-tsconfig-paths: ^6.1.1
   vitest: 4.1.9
   web-vitals: ^4.2.4
   wrangler: ^4.80.0

@@ -154,8 +154,7 @@
     "am-i-vibing": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:",
-    "vite-tsconfig-paths": "catalog:"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
@@ -164,8 +163,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-server-dom-webpack": "^19.2.6",
-    "vite": "^7.0.0 || ^8.0.0",
-    "vite-tsconfig-paths": "^6.1.1"
+    "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "@mdx-js/rollup": {
@@ -175,9 +173,6 @@
       "optional": true
     },
     "react-server-dom-webpack": {
-      "optional": true
-    },
-    "vite-tsconfig-paths": {
       "optional": true
     }
   },

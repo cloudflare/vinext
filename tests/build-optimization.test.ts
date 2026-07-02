@@ -19,8 +19,7 @@ import {
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
   createClientManualChunks,
-  clientTreeshakeConfig,
-  getClientTreeshakeConfigForVite,
+  getClientTreeshakeConfig,
   createRscFrameworkChunkOutputConfig,
   RSC_FRAMEWORK_CHUNK_TEST,
   isRscFrameworkModule,
@@ -70,27 +69,12 @@ afterEach(() => {
 });
 
 function getBuildBundlerOptions(result: any) {
-  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+  return result.build?.rolldownOptions;
 }
 
 function getEnvBuildBundlerOptions(env: any) {
-  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+  return env?.build?.rolldownOptions;
 }
-
-// ─── clientTreeshakeConfig ────────────────────────────────────────────────────
-
-describe("clientTreeshakeConfig", () => {
-  it("uses 'recommended' preset for safe defaults", () => {
-    expect(clientTreeshakeConfig.preset).toBe("recommended");
-  });
-
-  it("sets moduleSideEffects to 'no-external' for aggressive vendor DCE", () => {
-    // 'no-external' marks node_modules as side-effect-free (enabling DCE for
-    // barrel-heavy libraries) while preserving side effects for local modules
-    // (CSS imports, polyfills).
-    expect(clientTreeshakeConfig.moduleSideEffects).toBe("no-external");
-  });
-});
 
 // ─── clientManualChunks ───────────────────────────────────────────────────────
 
@@ -107,7 +91,7 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
 
-  it("returns undefined for other node_modules (Rollup default splitting)", () => {
+  it("returns undefined for other node_modules (default graph splitting)", () => {
     expect(clientManualChunks("/node_modules/mermaid/dist/mermaid.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/lodash-es/lodash.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/@mui/material/index.js")).toBeUndefined();
@@ -3502,32 +3486,12 @@ export const getStaticPaths = () => [
   });
 });
 
-// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+// ─── getClientTreeshakeConfig ─────────────────────────────────────────────────
 
-describe("getClientTreeshakeConfigForVite", () => {
-  it("returns preset for Vite 7 (Rollup compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(7);
+describe("getClientTreeshakeConfig", () => {
+  it("returns Rolldown treeshake config without a Rollup preset", () => {
+    const config = getClientTreeshakeConfig();
     expect(config).toEqual({
-      preset: "recommended",
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(8);
-    expect(config).toEqual({
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 9+", () => {
-    const config9 = getClientTreeshakeConfigForVite(9);
-    expect(config9).toEqual({
-      moduleSideEffects: "no-external",
-    });
-
-    const config10 = getClientTreeshakeConfigForVite(10);
-    expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
   });
@@ -3536,68 +3500,11 @@ describe("getClientTreeshakeConfigForVite", () => {
 // ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
 
 describe("createRscFrameworkChunkOutputConfig", () => {
-  it("returns manualChunks for Vite 7 (Rollup) routing framework modules to 'framework'", () => {
-    const config = createRscFrameworkChunkOutputConfig(7);
-    expect(config).not.toHaveProperty("codeSplitting");
-    expect(config).toHaveProperty("manualChunks");
-    const manualChunks = (
-      config as {
-        manualChunks: (
-          id: string,
-          meta: {
-            getModuleInfo(id: string): { importers: string[]; isEntry: boolean } | null;
-          },
-        ) => string | undefined;
-      }
-    ).manualChunks;
-    const moduleInfo = new Map([
-      ["/app/src/entry.js", { importers: [], isEntry: true }],
-      ["/app/src/middleman.js", { importers: ["/app/src/entry.js"], isEntry: false }],
-      ["/app/src/lazy.js", { importers: [], isEntry: false }],
-      [
-        "/app/node_modules/react/index.js",
-        { importers: ["/app/src/middleman.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-server-dom-webpack/client.js",
-        { importers: ["/app/src/entry.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-dom/server.react-server.js",
-        { importers: ["/app/src/lazy.js"], isEntry: false },
-      ],
-    ]);
-    const meta = { getModuleInfo: (id: string) => moduleInfo.get(id) ?? null };
-    expect(manualChunks("/app/node_modules/react/index.js", meta)).toBe("framework");
-    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js", meta)).toBe(
-      "framework",
-    );
-    expect(
-      manualChunks("/app/node_modules/react-dom/server.react-server.js", meta),
-    ).toBeUndefined();
-    // Non-framework node_modules and local files are left to the default algo.
-    expect(manualChunks("/app/node_modules/react-icons/lib/index.js", meta)).toBeUndefined();
-    expect(manualChunks("/app/src/page.tsx", meta)).toBeUndefined();
-  });
-
-  it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
-    const config = createRscFrameworkChunkOutputConfig(8);
+  it("returns Rolldown codeSplitting, not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig();
     expect(config).not.toHaveProperty("advancedChunks");
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
-      codeSplitting: {
-        groups: [
-          {
-            name: "framework",
-            test: RSC_FRAMEWORK_CHUNK_TEST,
-            entriesAware: true,
-          },
-        ],
-      },
-    });
-
-    // Vite 9+ uses the same Rolldown shape.
-    expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
       codeSplitting: {
         groups: [
           {
@@ -3621,7 +3528,7 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-server-dom-webpack/client.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
-    // Windows-style path used by the Vite 7 getPackageName predicate.
+    // Windows-style path used by the shared package-name predicate.
     "C:\\app\\node_modules\\react-dom\\server.js",
   ];
   const notMatching = [
