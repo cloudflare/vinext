@@ -12030,8 +12030,10 @@ describe("matchRewrite with external URLs", () => {
 
   it("substitutes named captures from has conditions into rewrite destinations", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
-    // Ported from documented Next.js behavior:
+    // The named capture substitution shape is ported from documented Next.js behavior:
     // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/rewrites.mdx
+    // Deliberate hardening: Next.js prepareDestination substitutes non-path
+    // values verbatim here, but vinext keeps query value boundaries intact.
     const rewrites = [
       {
         source: "/:path*",
@@ -12043,7 +12045,49 @@ describe("matchRewrite with external URLs", () => {
       ...emptyCtx,
       headers: new Headers({ "x-authorized": "yes" }),
     });
-    expect(result).toBe("/home?authorized=yes&path=docs/intro");
+    expect(result).toBe("/home?authorized=yes&path=docs%2Fintro");
+  });
+
+  it("escapes source params substituted into rewrite destination query values", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    // Deliberate hardening: Next.js prepareDestination substitutes non-path
+    // values verbatim here, but vinext keeps query value boundaries intact.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+    const rewrites = [{ source: "/search/:term", destination: "/api/search?q=:term&fixed=1" }];
+    const pathname = normalizePathnameForRouteMatchStrict("/search/foo%26admin=true");
+    const result = matchRewrite(pathname, rewrites, emptyCtx);
+
+    expect(result).toBe("/api/search?q=foo%26admin%3Dtrue&fixed=1&term=foo%26admin%3Dtrue");
+    const params = new URLSearchParams(result!.split("?", 2)[1]);
+    expect(params.get("q")).toBe("foo&admin=true");
+    expect(params.get("term")).toBe("foo&admin=true");
+    expect(params.has("admin")).toBe(false);
+  });
+
+  it("keeps path substitution raw while escaping the same param in a query value", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    const rewrites = [{ source: "/search/:term", destination: "/api/:term?q=:term" }];
+    const pathname = normalizePathnameForRouteMatchStrict("/search/foo%26admin=true");
+    const result = matchRewrite(pathname, rewrites, emptyCtx);
+
+    expect(result).toBe("/api/foo&admin=true?q=foo%26admin%3Dtrue");
+  });
+
+  it("uses the same query value encoding for inline and appended rewrite params", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    const rewrites = [{ source: "/search/:term", destination: "/api/search?q=:term&fixed=1" }];
+    const pathname = normalizePathnameForRouteMatchStrict("/search/a%20b!(c)~'%26x=1");
+    const result = matchRewrite(pathname, rewrites, emptyCtx);
+
+    expect(result).toBe(
+      "/api/search?q=a+b%21%28c%29%7E%27%26x%3D1&fixed=1&term=a+b%21%28c%29%7E%27%26x%3D1",
+    );
   });
 
   it("appends source params not referenced by the rewrite destination", async () => {
@@ -12145,6 +12189,25 @@ describe("matchRedirect destination param substitution", () => {
       headers: new Headers({ "x-authorized": "yes" }),
     });
     expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
+  });
+
+  it("escapes source params substituted into redirect destination query values", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    // Deliberate hardening: Next.js prepareDestination substitutes non-path
+    // values verbatim here, but vinext keeps query value boundaries intact.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+    const redirects = [
+      { source: "/go/:next", destination: "/login?next=/:next&safe=1", permanent: false },
+    ];
+    const pathname = normalizePathnameForRouteMatchStrict("/go/foo%26next%3Devil.example");
+    const result = matchRedirect(pathname, redirects, emptyCtx);
+
+    expect(result).toEqual({
+      destination: "/login?next=/foo%26next%3Devil.example&safe=1",
+      permanent: false,
+    });
   });
 });
 
