@@ -5,6 +5,7 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import { getRevalidateSecret, isRevalidateSecret } from "./isr-cache.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -41,6 +42,10 @@ export type PagesReqResResponse = Writable & {
   redirect: (statusOrUrl: number | string, url?: string) => void;
   getHeaders: () => PagesReqResHeaders;
   revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
+  setPreviewData: (
+    data: object | string,
+    options?: { maxAge?: number; path?: string },
+  ) => PagesReqResResponse;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -62,6 +67,8 @@ type CreatePagesReqResResult = {
   res: PagesReqResResponse;
   responsePromise: Promise<Response>;
 };
+
+export type PagesPreviewData = object | string;
 
 async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) {
@@ -163,6 +170,71 @@ function createRequestReadable(request: Request): Readable {
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
+}
+
+function serializePreviewCookie(
+  name: "__prerender_bypass" | "__next_preview_data",
+  value: string,
+  options: { maxAge?: number; path?: string } = {},
+): string {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "HttpOnly",
+    `Path=${options.path ?? "/"}`,
+    process.env.NODE_ENV !== "development" ? "SameSite=None" : "SameSite=Lax",
+  ];
+  if (process.env.NODE_ENV !== "development") {
+    parts.push("Secure");
+  }
+  if (options.maxAge !== undefined) {
+    parts.push(`Max-Age=${Math.trunc(options.maxAge)}`);
+  }
+  return parts.join("; ");
+}
+
+function decodePagesPreviewPayload(payload: string): PagesPreviewData | false {
+  try {
+    const decoded = Buffer.from(payload, "base64url").toString("utf8");
+    const value = JSON.parse(decoded);
+    return typeof value === "object" && value !== null ? value : String(value);
+  } catch {
+    return false;
+  }
+}
+
+export function getPagesPreviewDataFromCookieHeader(
+  cookieHeader: string | string[] | null | undefined,
+  options: { isOnDemandRevalidate?: boolean } = {},
+): PagesPreviewData | false {
+  // Next.js disables preview mode during on-demand revalidation so preview
+  // cookies cannot poison the regenerated ISR entry.
+  if (options.isOnDemandRevalidate) return false;
+
+  const cookies = parsePagesRequestCookies(cookieHeader);
+  const bypass = cookies.__prerender_bypass;
+  const payload = cookies.__next_preview_data;
+  if (!bypass && !payload) return false;
+  if (!isRevalidateSecret(bypass)) return false;
+  if (!payload) return {};
+
+  // vinext writes preview data as base64url(JSON) instead of Next.js's signed
+  // encrypted JWT. The writer and reader are intentionally paired internally.
+  return decodePagesPreviewPayload(payload);
+}
+
+export function getPagesPreviewData(
+  request: Request,
+  options: { isOnDemandRevalidate?: boolean } = {},
+): PagesPreviewData | false {
+  return getPagesPreviewDataFromCookieHeader(request.headers.get("cookie"), options);
+}
+
+function normalizeSetCookieHeader(
+  value: string | number | boolean | string[] | undefined,
+): string[] {
+  if (value === undefined) return [];
+  if (Array.isArray(value)) return value.map(String);
+  return [String(value)];
 }
 
 export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
@@ -300,6 +372,25 @@ class PagesResponseStream extends Writable {
 
   async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
     await performOnDemandRevalidate(this.requestHeaders, urlPath, opts);
+  }
+
+  setPreviewData(
+    data: object | string,
+    options: { maxAge?: number; path?: string } = {},
+  ): PagesReqResResponse {
+    const payload = Buffer.from(JSON.stringify(data)).toString("base64url");
+    if (payload.length > 2048) {
+      throw new Error(
+        "Preview data is limited to 2KB currently, reduce how much data you are storing as preview data to continue",
+      );
+    }
+
+    this.setHeader("Set-Cookie", [
+      ...normalizeSetCookieHeader(this.getHeader("Set-Cookie")),
+      serializePreviewCookie("__prerender_bypass", getRevalidateSecret(), options),
+      serializePreviewCookie("__next_preview_data", payload, options),
+    ]);
+    return this as PagesReqResResponse;
   }
 
   override _write(

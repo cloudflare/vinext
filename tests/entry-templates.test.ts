@@ -1105,7 +1105,9 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).toContain(
+        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+      );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
@@ -1386,7 +1388,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("if (nextData.isFallback) {");
+      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
+      expect(code).toContain("routeUrl || currentUrl,");
+      expect(code).toContain("routeUrl ? currentUrl : undefined,");
       expect(code).toContain("{ _h: 1, scroll: false },");
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");

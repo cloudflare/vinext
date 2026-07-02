@@ -288,6 +288,30 @@ describe("middleware", () => {
     expect(await result.response.json()).toEqual({});
   });
 
+  it("does not skip middleware data prefetches for unexpected prefetch modes", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        middlewarePrefetch: "invalid",
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "server" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get("x-middleware-skip")).toBeNull();
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
+  });
+
   it("does not skip middleware data prefetches for matched SSG pages", async () => {
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gsp"}}');
     const result = await runPagesRequest(

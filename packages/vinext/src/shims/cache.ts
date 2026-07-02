@@ -32,6 +32,7 @@ import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import { addCollectedRequestTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
@@ -188,6 +189,9 @@ export function updateTag(tag: string): Promise<void> {
  * It's provided for API compatibility so apps importing it don't break.
  */
 export function unstable_noStore(): void {
+  if (isInsideUnstableCacheScope()) {
+    return;
+  }
   // Signal dynamic usage so ISR-configured routes bypass the cache
   _markDynamic();
 }
@@ -586,6 +590,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+    addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
       keyHash: fnv1a64(cacheKey),

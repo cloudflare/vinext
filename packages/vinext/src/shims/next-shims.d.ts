@@ -238,6 +238,7 @@ declare module "next/navigation" {
     expiresAt?: number;
     mountedSlotsHeader?: string | null;
     paramsHeader: string | null;
+    renderedPathAndSearch: string | null;
     url: string;
   };
   export type PrefetchCacheEntry = {
@@ -249,8 +250,10 @@ declare module "next/navigation" {
     optimisticRouteShell?: boolean;
     outcome: "pending" | "cache-seeded";
     snapshot?: CachedRscResponse;
+    cacheKeys?: Set<string>;
     pending?: Promise<void>;
     prefetchKind?: "loading-shell" | "navigation" | "route-tree";
+    searchAgnosticShell?: boolean;
     timestamp: number;
   };
   export const MAX_PREFETCH_CACHE_SIZE: number;
@@ -269,6 +272,16 @@ declare module "next/navigation" {
     mountedSlotsHeader?: string | null,
     options?: { notifyInvalidation?: boolean },
   ): boolean;
+  export function hasSearchAgnosticPrefetchShellForRoute(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+  ): boolean;
+  export function peekPrefetchResponseForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+  ): CachedRscResponse | null;
   export function storePrefetchResponse(
     rscUrl: string,
     response: Response,

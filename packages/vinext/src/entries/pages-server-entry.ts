@@ -250,7 +250,12 @@ const i18nConfig = ${i18nConfigJson};
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(request, buildId);
+  return __normalizePagesDataRequest(
+    request,
+    buildId,
+    vinextConfig.basePath,
+    hasMiddleware && vinextConfig.trailingSlash,
+  );
 }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
