@@ -101,6 +101,7 @@ type HandlePagesApiRouteOptions = {
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
   };
+  trustedRevalidateOrigin?: string;
 };
 
 function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesRequestQuery {
@@ -192,6 +193,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       body,
       query,
       request: options.request,
+      trustedRevalidateOrigin: options.trustedRevalidateOrigin,
       url: options.url,
     });
 

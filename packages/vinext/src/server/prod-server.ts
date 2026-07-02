@@ -1040,6 +1040,26 @@ function createNodeExecutionContext(): ExecutionContextLike {
   };
 }
 
+function resolveTrustedNodeRevalidateOrigin(
+  req: IncomingMessage,
+  configuredHost: string,
+  configuredPort: number,
+): string {
+  const port = req.socket.localPort ?? configuredPort;
+  const host = normalizeInternalFetchHost(configuredHost);
+  return `http://${host}:${port}`;
+}
+
+function normalizeInternalFetchHost(host: string): string {
+  if (!host || host === "0.0.0.0" || host === "::") {
+    return "localhost";
+  }
+  if (host.includes(":") && !host.startsWith("[")) {
+    return `[${host}]`;
+  }
+  return host;
+}
+
 function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<Response> {
   if (typeof entry === "function") {
     return (request) => Promise.resolve(entry(request));
@@ -1548,7 +1568,8 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - handleApiRoute(request, url, ctx?, trustedRevalidateOrigin?) — API route handling
+ *   (ctx optional; pass for ctx.waitUntil() on Workers)
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1866,7 +1887,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         handleApi:
           typeof handleApi === "function"
             ? (request: Request, apiUrl: string) =>
-                handleApi(request, apiUrl, createNodeExecutionContext())
+                handleApi(
+                  request,
+                  apiUrl,
+                  createNodeExecutionContext(),
+                  resolveTrustedNodeRevalidateOrigin(req, host, port),
+                )
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served

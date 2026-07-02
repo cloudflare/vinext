@@ -191,7 +191,7 @@ async function handleRequest(
           : null,
       handleApi:
         typeof handleApiRoute === "function"
-          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)
+          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)
           : null,
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
         if (!env?.ASSETS) return false;

@@ -3923,6 +3923,22 @@ export const loadServerActionClient = ${
         // fully registered before we inspect them. We prefer "ssr", then any
         // non-"rsc" environment, then whatever is available.
         let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        const getTrustedDevRevalidateOrigin = () => {
+          const resolved = server.resolvedUrls?.local[0];
+          if (resolved) {
+            try {
+              return new URL(resolved).origin;
+            } catch {
+              // Fall through to the HTTP server address below.
+            }
+          }
+          const address = server.httpServer?.address();
+          const port =
+            typeof address === "object" && address
+              ? address.port
+              : (server.config.server.port ?? 3000);
+          return `http://localhost:${port}`;
+        };
         // Reuse the Pages SSR handler across requests. Every createSSRHandler
         // input is stable for the dev session (server, runner, config,
         // middlewarePath) except `routes`, which is the cached pagesRouter array
@@ -4999,6 +5015,7 @@ export const loadServerActionClient = ${
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
+                    trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
                     trailingSlash: nextConfig?.trailingSlash,
                   },
                 );

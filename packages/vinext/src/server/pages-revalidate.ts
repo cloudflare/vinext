@@ -24,6 +24,8 @@ import {
 } from "./isr-cache.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 
+const MAX_REVALIDATE_REDIRECTS = 10;
+
 export type RevalidateOptions = {
   /**
    * Only revalidate the path if it was already generated (cached). Mirrors
@@ -38,6 +40,7 @@ export async function performOnDemandRevalidate(
   source: IncomingMessage | Headers,
   urlPath: string,
   opts: RevalidateOptions = {},
+  trustedOrigin?: string,
 ): Promise<void> {
   if (typeof urlPath !== "string" || !urlPath.startsWith("/")) {
     throw new Error(
@@ -45,9 +48,7 @@ export async function performOnDemandRevalidate(
     );
   }
 
-  const proto = resolveRequestProtocol(source);
-  const host = resolveRequestHost(source, "localhost");
-  const target = new URL(urlPath, `${proto}://${host}`);
+  const target = createRevalidateTarget(source, urlPath, trustedOrigin);
 
   const headers: Record<string, string> = {
     [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret(),
@@ -56,7 +57,7 @@ export async function performOnDemandRevalidate(
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
 
-  const res = await fetch(target, { method: "HEAD", headers });
+  const res = await fetchRevalidateTarget(target, headers);
 
   // Success detection mirrors Next.js's api-resolver: a successful revalidate
   // can return a non-200 status (e.g. `notFound: true` yields 404). Accept when
@@ -76,4 +77,80 @@ export async function performOnDemandRevalidate(
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
   }
+}
+
+async function fetchRevalidateTarget(
+  initialTarget: URL,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const origin = initialTarget.origin;
+  let target = initialTarget;
+
+  // Next.js lets fetch handle this request, but vinext follows same-origin
+  // redirects manually so the revalidate secret is never forwarded off-origin.
+  for (let redirects = 0; ; redirects++) {
+    const request = new Request(target, { method: "HEAD", headers, redirect: "manual" });
+    const res = await fetch(request);
+    if (!isRedirectStatus(res.status)) {
+      return res;
+    }
+
+    const location = res.headers.get("location");
+    if (!location) {
+      return res;
+    }
+
+    const nextTarget = new URL(location, target);
+    if (nextTarget.origin !== origin) {
+      throw new Error(
+        `Failed to revalidate ${initialTarget.pathname}: redirect resolved outside application origin`,
+      );
+    }
+    if (redirects >= MAX_REVALIDATE_REDIRECTS) {
+      break;
+    }
+    target = nextTarget;
+  }
+
+  throw new Error(`Failed to revalidate ${initialTarget.pathname}: too many redirects`);
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function createRevalidateTarget(
+  source: IncomingMessage | Headers,
+  urlPath: string,
+  trustedOrigin?: string,
+): URL {
+  const origin = resolveRevalidateOrigin(source, trustedOrigin);
+  const target = new URL(`${origin}${urlPath}`);
+  if (target.origin !== origin) {
+    throw new Error(
+      `Invalid urlPath provided to revalidate(), resolved outside application origin`,
+    );
+  }
+  return target;
+}
+
+function resolveRevalidateOrigin(
+  source: IncomingMessage | Headers,
+  trustedOrigin?: string,
+): string {
+  if (trustedOrigin) {
+    return normalizeRevalidateOrigin(trustedOrigin);
+  }
+
+  const proto = resolveRequestProtocol(source);
+  const host = resolveRequestHost(source, "localhost");
+  return normalizeRevalidateOrigin(`${proto}://${host}`);
+}
+
+function normalizeRevalidateOrigin(origin: string): string {
+  const parsed = new URL(origin);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Invalid revalidate origin protocol: ${parsed.protocol}`);
+  }
+  return parsed.origin;
 }

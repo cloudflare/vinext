@@ -466,7 +466,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx) {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin) {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
@@ -474,6 +474,7 @@ export async function handleApiRoute(request, url, ctx) {
     match,
     nextConfig: vinextConfig,
     request,
+    trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
       console.error("[vinext] API error:", error);
