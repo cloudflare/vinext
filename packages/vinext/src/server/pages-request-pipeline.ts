@@ -101,7 +101,6 @@ export type PagesPipelineDeps = {
     fallback: NextRewrite[];
   };
   configHeaders: NextHeader[];
-  middlewarePrefetch?: unknown;
 
   // Pre-computed per-request values (adapter sets these)
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
@@ -437,13 +436,14 @@ export async function runPagesRequest(
   const buildMiddlewarePrefetchSkipResult = (
     match: PageRouteMatch | null,
   ): PagesPipelineResult | null => {
-    const middlewarePrefetch = deps.middlewarePrefetch ?? "flexible";
+    if (!match) return null;
+
+    const dataKind = match.route.dataKind;
     if (
-      (middlewarePrefetch !== "strict" && middlewarePrefetch !== "flexible") ||
+      (dataKind !== "static" && dataKind !== "server") ||
       !isDataRequest ||
       !deps.hasMiddleware ||
-      !match ||
-      match.route.dataKind === "static" ||
+      dataKind === "static" ||
       request.headers.get("x-middleware-prefetch") !== "1"
     ) {
       return null;

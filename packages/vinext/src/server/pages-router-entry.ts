@@ -174,7 +174,6 @@ async function handleRequest(
       configRedirects,
       configRewrites,
       configHeaders,
-      middlewarePrefetch: vinextConfig?.proxyPrefetch ?? null,
       hadBasePath,
       isDataReq,
       isDataRequest: isDataReq,

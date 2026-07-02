@@ -4747,7 +4747,6 @@ export const loadServerActionClient = ${
                   fallback: [],
                 },
                 configHeaders: nextConfig?.headers ?? [],
-                middlewarePrefetch: nextConfig?.proxyPrefetch ?? null,
                 hadBasePath: true, // Vite strips basePath before our middleware sees the request
                 isDataReq,
                 isDataRequest,

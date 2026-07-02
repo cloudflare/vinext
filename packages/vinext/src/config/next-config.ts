@@ -304,10 +304,6 @@ export type NextConfig = {
   experimental?: {
     /** Enables hard-navigation recovery when App Router navigation rendering fails. */
     appNavFailHandling?: boolean;
-    /** Controls whether Pages middleware/proxy data prefetches can be skipped. */
-    middlewarePrefetch?: "strict" | "flexible";
-    /** Controls whether Pages proxy data prefetches can be skipped. */
-    proxyPrefetch?: "strict" | "flexible";
     /**
      * Enables the experimental App Router gesture transition API:
      * `useRouter().experimental_gesturePush()`.
@@ -389,8 +385,6 @@ export type ResolvedNextConfig = {
    * and partial object config into concrete thresholds.
    */
   prefetchInlining: PrefetchInliningConfig;
-  /** Raw `experimental.proxyPrefetch` mode; validated by request handlers before use. */
-  proxyPrefetch: unknown;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -1392,7 +1386,6 @@ export async function resolveNextConfig(
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
-      proxyPrefetch: "flexible",
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -1538,8 +1531,6 @@ export async function resolveNextConfig(
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
-  const proxyPrefetch: unknown =
-    experimental?.proxyPrefetch ?? experimental?.middlewarePrefetch ?? "flexible";
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1738,7 +1729,6 @@ export async function resolveNextConfig(
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
-    proxyPrefetch,
     redirects,
     rewrites,
     headers,

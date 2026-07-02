@@ -1835,7 +1835,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         configRedirects,
         configRewrites,
         configHeaders,
-        middlewarePrefetch: vinextConfig?.proxyPrefetch ?? null,
         hadBasePath,
         isDataReq,
         isDataRequest,

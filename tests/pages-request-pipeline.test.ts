@@ -288,7 +288,7 @@ describe("middleware", () => {
     expect(await result.response.json()).toEqual({});
   });
 
-  it("does not skip middleware data prefetches for unexpected prefetch modes", async () => {
+  it("does not skip middleware data prefetches for unexpected route data kinds", async () => {
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
     const result = await runPagesRequest(
       makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
@@ -296,11 +296,10 @@ describe("middleware", () => {
         isDataReq: true,
         isDataRequest: true,
         hasMiddleware: true,
-        middlewarePrefetch: "invalid",
         runMiddleware: makeMiddleware({ continue: true }),
         matchPageRoute: vi
           .fn()
-          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "server" } }),
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "none" } }),
         renderPage,
       }),
     );
