@@ -136,13 +136,32 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("does not treat an identical URL as a same-document scroll", () => {
+  it("classifies an identical URL as a cache-bypassing flight navigation", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
     const decision = classify({
       currentHref: "https://example.com/docs?q=1",
       targetHref: "https://example.com/docs?q=1",
     });
 
-    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageSearch, {
+      targetHref: "https://example.com/docs?q=1",
+    });
+  });
+
+  it("classifies a repeated hash URL as a cache-bypassing flight navigation", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const decision = classify({
+      currentHref: "https://example.com/docs?q=1#section",
+      targetHref: "https://example.com/docs?q=1#section",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageSearch, {
+      targetHref: "https://example.com/docs?q=1#section",
+    });
   });
 
   it("treats hash removal as a flight navigation, not a same-document scroll", () => {

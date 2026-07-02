@@ -518,6 +518,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
   routeManifest: RouteManifest | null;
 }): Promise<void> {
   if (options.routeManifest === null) return;
+  const routeManifest = options.routeManifest;
 
   const learning: Promise<void>[] = [...optimisticRouteTemplateLearning.values()];
   for (const [cacheKey, entry] of getPrefetchCache()) {
@@ -536,7 +537,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
       entry,
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      routeManifest: options.routeManifest,
+      routeManifest,
     })
       .then((learned) => {
         if (learned) optimisticRouteTemplateSources.add(sourceKey);
@@ -804,6 +805,21 @@ function storeVisitedResponseSnapshot(
 // an already-stripped path) so both sides reduce to the same canonical form.
 function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot): string {
   return `${window.location.origin}${createSnapshotPathAndSearch(snapshot)}`;
+}
+
+function isSamePathAndSearchNavigation(currentHref: string, nextUrl: URL): boolean {
+  let current: URL;
+  try {
+    current = new URL(currentHref);
+  } catch {
+    return false;
+  }
+
+  return (
+    current.origin === nextUrl.origin &&
+    current.pathname === nextUrl.pathname &&
+    current.searchParams.toString() === nextUrl.searchParams.toString()
+  );
 }
 
 type NavigationRequestState = {
@@ -1741,11 +1757,12 @@ function bootstrapHydration(
         // already short-circuited before reaching this loop, so for a "navigate"
         // here the decision is always a flight navigation and only its
         // cache-bypass bit is consumed.
+        const navStartHref = clientNavigationSnapshotHref(routerStateAtNavStart.navigationSnapshot);
         const earlyIntentDecision =
           navigationKind === "navigate"
             ? navigationPlanner.classifyEarlyNavigationIntent({
                 basePath: __basePath,
-                currentHref: clientNavigationSnapshotHref(routerStateAtNavStart.navigationSnapshot),
+                currentHref: navStartHref,
                 // This loop only consumes the flight-navigation cache policy;
                 // hash-only intents already return before a request is queued.
                 mode: "push",
@@ -1756,16 +1773,23 @@ function bootstrapHydration(
         const shouldBypassNavigationCache =
           earlyIntentDecision?.kind === "flightNavigation" &&
           earlyIntentDecision.bypassNavigationCache;
+        const shouldPreserveLayoutsForSameUrlNavigation =
+          navigationKind === "navigate" &&
+          shouldBypassNavigationCache &&
+          isSamePathAndSearchNavigation(navStartHref, url);
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates
         // the visible layout ids and binary-searches a byte budget, which is
         // pure waste on the cache-hit soft-nav path.
+        const renderMode =
+          navigationKind === "refresh" || shouldPreserveLayoutsForSameUrlNavigation
+            ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI
+            : undefined;
         const requestHeaders = createRscRequestHeaders({
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
-          renderMode:
-            navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
+          renderMode,
         });
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const rewrittenNavigationHref =
@@ -1966,6 +1990,7 @@ function bootstrapHydration(
         // real fetch commits, but that shell is a detached commit (see below)
         // that is always superseded by the authoritative fetch — the same as
         // cross-route navigations — so it never persists stale page content.
+        let optimisticShellElementsForClientReuse: AppElements | null = null;
         if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
@@ -1986,6 +2011,7 @@ function bootstrapHydration(
 
             if (optimisticPayload !== null) {
               detachedNavigationCommits = true;
+              optimisticShellElementsForClientReuse = optimisticPayload.elements;
               const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
                 currentHref,
                 optimisticPayload.params,
@@ -2012,7 +2038,7 @@ function bootstrapHydration(
                 scrollIntent,
                 restoredBfcacheIds,
                 reuseCurrentBfcacheIds,
-                visibleCommitMode,
+                "synchronous",
                 undefined,
                 "detached",
               ).catch((error) => {
@@ -2030,8 +2056,21 @@ function bootstrapHydration(
           // Computed from the nav-start router state so it matches the snapshot
           // the request would have carried if produced earlier.
           if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(routerStateAtNavStart);
+            const clientReuseManifestState =
+              optimisticShellElementsForClientReuse === null
+                ? routerStateAtNavStart
+                : {
+                    elements: optimisticShellElementsForClientReuse,
+                    visibleCommitVersion: routerStateAtNavStart.visibleCommitVersion + 1,
+                  };
+            const clientReuseManifestHeader = createClientReuseManifestHeaderFromVisibleAppState(
+              clientReuseManifestState,
+              {
+                includeDynamicLayouts: shouldPreserveLayoutsForSameUrlNavigation,
+                includeUnclassifiedStaticShellLayouts:
+                  optimisticShellElementsForClientReuse !== null,
+              },
+            );
             if (clientReuseManifestHeader !== null) {
               requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
             }

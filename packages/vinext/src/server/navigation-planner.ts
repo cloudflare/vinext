@@ -625,13 +625,21 @@ function classifyEarlyNavigationIntent(
   // key order. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
-  if (samePathname && sameSearch && next.hash !== "") {
+  if (samePathname && sameSearch && current.hash !== next.hash && next.hash !== "") {
     return {
       hash: next.hash,
       kind: "sameDocumentScroll",
       mode: facts.mode,
       scroll: facts.scroll,
       trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.sameDocumentScroll, facts),
+    };
+  }
+
+  if (samePathname && sameSearch && current.search === next.search && current.hash === next.hash) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageSearch, facts),
     };
   }
 

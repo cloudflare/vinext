@@ -33,6 +33,18 @@ const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 type TsconfigPathResolution = {
   aliases: Record<string, string>;
   baseUrl: string | null;
+  pathAliases: TsconfigPathAlias[];
+};
+
+type TsconfigPathAlias = {
+  find: string;
+  kind: "exact" | "prefix";
+  replacement: string;
+};
+
+type MaterializedAliases = {
+  aliases: Record<string, string>;
+  pathAliases: TsconfigPathAlias[];
 };
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
@@ -86,8 +98,9 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
 function materializeAliases(
   pathsConfig: Record<string, unknown>,
   baseUrl: string,
-): Record<string, string> {
+): MaterializedAliases {
   const aliases: Record<string, string> = {};
+  const pathAliases: TsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
     const target = Array.isArray(rawTargets)
@@ -108,18 +121,35 @@ function materializeAliases(
       const targetDir = target.slice(0, -2);
       if (!aliasKey || !targetDir) continue;
 
-      aliases[aliasKey] = path.resolve(baseUrl, targetDir);
+      const replacement = path.resolve(baseUrl, targetDir);
+      aliases[aliasKey] = replacement;
+      pathAliases.push({ find: aliasKey, kind: "prefix", replacement });
       continue;
     }
 
-    aliases[find] = path.resolve(baseUrl, target);
+    const replacement = path.resolve(baseUrl, target);
+    aliases[find] = replacement;
+    pathAliases.push({ find, kind: "exact", replacement });
   }
 
-  return aliases;
+  return { aliases, pathAliases };
+}
+
+function mergePathAliases(
+  current: readonly TsconfigPathAlias[],
+  next: readonly TsconfigPathAlias[],
+): TsconfigPathAlias[] {
+  return [
+    ...current.filter(
+      (entry) =>
+        !next.some((nextEntry) => nextEntry.find === entry.find && nextEntry.kind === entry.kind),
+    ),
+    ...next,
+  ];
 }
 
 function emptyResolution(): TsconfigPathResolution {
-  return { aliases: {}, baseUrl: null };
+  return { aliases: {}, baseUrl: null, pathAliases: [] };
 }
 
 function loadResolutionFromTsconfigFile(
@@ -149,6 +179,7 @@ function loadResolutionFromTsconfigFile(
       resolution = {
         aliases: { ...resolution.aliases, ...parent.aliases },
         baseUrl: parent.baseUrl ?? resolution.baseUrl,
+        pathAliases: mergePathAliases(resolution.pathAliases, parent.pathAliases),
       };
     }
   }
@@ -166,17 +197,20 @@ function loadResolutionFromTsconfigFile(
     return {
       aliases: resolution.aliases,
       baseUrl,
+      pathAliases: resolution.pathAliases,
     };
   }
 
   const pathsBaseUrl = baseUrl ?? path.dirname(configPath);
+  const materialized = materializeAliases(pathsConfig, pathsBaseUrl);
 
   return {
     aliases: {
       ...resolution.aliases,
-      ...materializeAliases(pathsConfig, pathsBaseUrl),
+      ...materialized.aliases,
     },
     baseUrl,
+    pathAliases: mergePathAliases(resolution.pathAliases, materialized.pathAliases),
   };
 }
 

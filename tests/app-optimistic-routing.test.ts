@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, lazy, Suspense, type ReactNode } from "react";
+import ReactDOMServer from "react-dom/server";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -136,6 +137,31 @@ function createBlogLoadingShellElements(): AppElements {
     [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
     [pageId]: null,
     [routeId]: createElement("p", { id: "loading-message" }, "Loading post-1..."),
+  };
+}
+
+function createBlogDynamicShellElements(): AppElements {
+  const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+  const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+  return {
+    ...AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId,
+    }),
+    [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "DynamicShell",
+    [pageId]: createElement(
+      "article",
+      null,
+      createElement("span", null, "Static shell with Suspense fallback"),
+      createElement(
+        Suspense,
+        { fallback: createElement("p", { id: "loading-message" }, "Loading dynamic...") },
+        createElement("div", { id: "closed-flight-child" }, "Closed stream child"),
+      ),
+    ),
+    [routeId]: createElement("main", { id: "shell" }, "Static shell"),
   };
 }
 
@@ -281,6 +307,111 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("replaces dynamic-shell Suspense children with optimistic placeholders", () => {
+    const routeManifest = blogManifest();
+    const elements = createBlogDynamicShellElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const optimisticElements = createOptimisticRouteElements(template);
+    expect(optimisticElements[pageId]).not.toBe(elements[pageId]);
+
+    const html = ReactDOMServer.renderToStaticMarkup(
+      optimisticElements[pageId] as React.ReactElement,
+    );
+    expect(html).toContain("Static shell with Suspense fallback");
+    expect(html).toContain("Loading dynamic...");
+    expect(html).not.toContain("Closed stream child");
+  });
+
+  it("preserves lazy shell elements outside Suspense in dynamic-shell templates", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const LazyShell = lazy(async () => ({
+      default: function LazyShell() {
+        return createElement("section", null, "Lazy shell");
+      },
+    }));
+    const lazyShellElement = createElement(LazyShell, null, "Static shell");
+    const elements = {
+      ...createBlogDynamicShellElements(),
+      [routeId]: lazyShellElement,
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    expect(optimisticElements[routeId]).toBe(lazyShellElement);
+  });
+
+  it("sanitizes fulfilled lazy RSC shell nodes in dynamic-shell templates", () => {
+    const routeManifest = blogManifest();
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const fulfilledLazyShell = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init: () =>
+        createElement(
+          "article",
+          null,
+          createElement("span", null, "Static fulfilled shell"),
+          createElement(
+            Suspense,
+            { fallback: createElement("p", null, "Loading fulfilled dynamic...") },
+            createElement("div", null, "Closed fulfilled child"),
+          ),
+        ),
+      _payload: null,
+    } as unknown as ReactNode;
+    const elements = {
+      ...createBlogDynamicShellElements(),
+      [pageId]: fulfilledLazyShell,
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc?_rsc=abc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    const html = ReactDOMServer.renderToStaticMarkup(
+      optimisticElements[pageId] as React.ReactElement,
+    );
+    expect(html).toContain("Static fulfilled shell");
+    expect(html).toContain("Loading fulfilled dynamic...");
+    expect(html).not.toContain("Closed fulfilled child");
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

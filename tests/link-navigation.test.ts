@@ -8,7 +8,10 @@ import {
   type LinkPrefetchDecision,
   type LinkPrefetchRouterMode,
 } from "../packages/vinext/src/shims/link-prefetch.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -56,6 +59,13 @@ const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: false,
+    patternParts: ["streaming"],
+    isDynamic: false,
+    prefetchDynamicShell: true,
+    requiresDynamicNavigationRequest: true,
+  },
   {
     canPrefetchLoadingShell: false,
     patternParts: ["teams", ":team", "dashboard"],
@@ -1641,29 +1651,44 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("starts App Router viewport prefetches without waiting for browser idle", async () => {
+  it("prefetches visible dynamic-request links as dynamic shells", async () => {
     const observer = stubIntersectionObserver();
-    const requestIdleCallback = vi.fn();
 
     const result = await renderIsolatedLink({
-      href: "/viewport-prefetch-target",
+      href: "/streaming",
       nodeEnv: "production",
-      windowOverrides: { requestIdleCallback },
     });
 
     try {
+      expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      expect(requestIdleCallback).not.toHaveBeenCalled();
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
       expectCanonicalRscFetchCall(
         result.fetch.mock.calls[0],
-        "/viewport-prefetch-target",
+        "/streaming",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
         }),
       );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+      expect(
+        (fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
+      ).toBe("1");
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(entry?.optimisticRouteShell).toBe(true);
     } finally {
       result.restoreNodeEnv();
     }

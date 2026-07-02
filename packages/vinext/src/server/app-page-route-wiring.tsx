@@ -46,6 +46,7 @@ import {
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
@@ -698,13 +699,17 @@ export function buildAppPageElements<
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
-  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
-  if (shouldRenderPrefetchLoadingShell) {
+  const isPrefetchDynamicShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
+  const shouldMarkPrefetchShell =
+    isPrefetchDynamicShell || (isPrefetchLoadingShell && routeLoadingComponent !== null);
+  if (shouldMarkPrefetchShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
     // diagnostics can recognize this as a loading-boundary response without
     // requiring source text to appear in client component references.
-    elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
+    elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = isPrefetchDynamicShell
+      ? "DynamicShell"
+      : "LoadingBoundary";
   }
 
   elements[pageElementId] = isPrefetchLoadingShell

@@ -1,4 +1,11 @@
-import { createElement, isValidElement, Suspense } from "react";
+import {
+  cloneElement,
+  createElement,
+  isValidElement,
+  Suspense,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -42,6 +49,8 @@ const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
+const REACT_LAZY_TYPE = Symbol.for("react.lazy");
+const REACT_SUSPENSE_TYPE = Symbol.for("react.suspense");
 
 export function getOptimisticRouteTemplateKey(options: {
   interceptionContext: string | null;
@@ -300,6 +309,94 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
+function cloneElementWithChildren(element: ReactElement, children: unknown): ReactElement {
+  return Array.isArray(children)
+    ? cloneElement(element, undefined, ...(children as ReactNode[]))
+    : cloneElement(element, undefined, children as ReactNode);
+}
+
+function readResolvedLazyNode(value: Record<string, unknown>): unknown {
+  const init = Reflect.get(value, "_init");
+  if (typeof init !== "function") return undefined;
+
+  try {
+    return init(Reflect.get(value, "_payload"));
+  } catch {
+    return undefined;
+  }
+}
+
+function replaceSuspenseChildrenWithOptimisticSegments(
+  value: unknown,
+  depth = 0,
+  withinSuspense = false,
+): unknown {
+  if (depth > 100) return value;
+
+  if (isUnknownRecord(value) && Reflect.get(value, "$$typeof") === REACT_LAZY_TYPE) {
+    if (withinSuspense) {
+      return createElement(OptimisticRouteSegment);
+    }
+
+    const resolved = readResolvedLazyNode(value);
+    if (resolved === undefined || resolved === value) return value;
+    return replaceSuspenseChildrenWithOptimisticSegments(resolved, depth + 1, withinSuspense);
+  }
+
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((entry) => {
+      const replaced = replaceSuspenseChildrenWithOptimisticSegments(
+        entry,
+        depth + 1,
+        withinSuspense,
+      );
+      if (replaced !== entry) changed = true;
+      return replaced;
+    });
+    return changed ? next : value;
+  }
+
+  if (!isValidElement(value)) return value;
+
+  const props = Reflect.get(value, "props");
+  const elementType: unknown = Reflect.get(value, "type");
+  if (
+    withinSuspense &&
+    isUnknownRecord(elementType) &&
+    Reflect.get(elementType, "$$typeof") === REACT_LAZY_TYPE
+  ) {
+    return createElement(OptimisticRouteSegment);
+  }
+
+  if ((elementType === Suspense || elementType === REACT_SUSPENSE_TYPE) && isUnknownRecord(props)) {
+    const fallback = Reflect.get(props, "fallback");
+    if (fallback !== null && fallback !== undefined) {
+      return cloneElement(value, undefined, createElement(OptimisticRouteSegment));
+    }
+  }
+
+  if (!isUnknownRecord(props)) return value;
+
+  const children = Reflect.get(props, "children");
+  const nextChildren = replaceSuspenseChildrenWithOptimisticSegments(
+    children,
+    depth + 1,
+    withinSuspense,
+  );
+  if (nextChildren === children) return value;
+
+  return cloneElementWithChildren(value, nextChildren);
+}
+
+function createDynamicShellOptimisticElements(elements: AppElements): AppElements {
+  const next: Record<string, AppElementValue> = {};
+  for (const [key, value] of Object.entries(elements)) {
+    next[key] = replaceSuspenseChildrenWithOptimisticSegments(value) as AppElementValue;
+  }
+  return next;
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
@@ -326,22 +423,29 @@ export function createOptimisticRouteTemplate(options: {
   // Suspense fallback. Authoritative loading-shell prefetches use the marker
   // check below instead.
   if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
-  if (
-    options.allowLoadingShell &&
-    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
-  ) {
+  const shellMarker = options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY];
+  const isLoadingBoundaryShell = shellMarker === "LoadingBoundary";
+  const isDynamicShell = shellMarker === "DynamicShell";
+  if (options.allowLoadingShell && !isLoadingBoundaryShell && !isDynamicShell) {
     return null;
   }
   // Shell prefetches must include the eagerly-rendered loading component. A
   // null route element means the server had no route loading boundary.
-  if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
+  if (
+    options.allowLoadingShell &&
+    isLoadingBoundaryShell &&
+    (routeElement === undefined || routeElement === null)
+  ) {
     return null;
+  }
 
-  const pageElementIds = getPageElementIds(options.elements, match.route);
-  if (pageElementIds.length === 0) return null;
+  const pageElementIds = isDynamicShell ? [] : getPageElementIds(options.elements, match.route);
+  if (!isDynamicShell && pageElementIds.length === 0) return null;
 
   return {
-    elements: options.elements,
+    elements: isDynamicShell
+      ? createDynamicShellOptimisticElements(options.elements)
+      : options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
     routeId: match.route.id,

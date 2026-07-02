@@ -3377,6 +3377,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             graph.routeManifest,
             pagesPrefetchRoutes,
             nextConfig.rewrites,
+            root,
           );
         }
         if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {

@@ -8,7 +8,14 @@ import {
 } from "vinext/shims/cache-request-state";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
-import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
+import {
+  beginPprFallbackShellFinalRender,
+  createPprFallbackShellState,
+  getPprFallbackShellState,
+  preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellState,
+  type PprFallbackShellState,
+} from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
@@ -74,6 +81,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -530,6 +538,18 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  if (
+    !options.pprFallbackShell &&
+    options.isRscRequest &&
+    options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+  ) {
+    const fallbackShellState = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: options.route.pattern,
+    });
+    preparePprFallbackShellFinalRender(fallbackShellState);
+    return await runWithPprFallbackShellState(fallbackShellState, dispatch);
+  }
   if (!options.pprFallbackShell || !options.pprRuntime) {
     return await dispatch();
   }
@@ -960,7 +980,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     route,
     options.debugClassification,
   );
-  const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
+  const activeFallbackShellState = getPprFallbackShellState();
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
 
@@ -1019,11 +1039,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
-    abortPprFallbackShell: activeFallbackShellState
-      ? () => {
-          options.pprRuntime!.beginFinalRender(activeFallbackShellState);
-        }
-      : undefined,
+    abortPprFallbackShell:
+      activeFallbackShellState !== null
+        ? () => {
+            if (options.pprRuntime) {
+              options.pprRuntime.beginFinalRender(activeFallbackShellState);
+            } else {
+              beginPprFallbackShellFinalRender(activeFallbackShellState);
+            }
+          }
+        : undefined,
     layoutParamAccess,
     rootParams: options.rootParams,
     peekRenderObservationState() {

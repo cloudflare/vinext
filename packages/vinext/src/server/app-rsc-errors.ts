@@ -1,5 +1,6 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { HANGING_PROMISE_REJECTION_DIGEST } from "vinext/shims/internal/make-hanging-promise";
 
 type DigestError = Error & { digest?: string };
 
@@ -53,7 +54,8 @@ export function getDigestForWellKnownError(error: unknown): string | undefined {
   if (
     isNavigationSignalError(error) ||
     digest === BAILOUT_TO_CSR_DIGEST ||
-    digest === DYNAMIC_SERVER_USAGE_DIGEST
+    digest === DYNAMIC_SERVER_USAGE_DIGEST ||
+    digest === HANGING_PROMISE_REJECTION_DIGEST
   ) {
     return digest;
   }

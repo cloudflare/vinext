@@ -7,6 +7,7 @@ import {
 import {
   CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET,
   countUtf8Bytes,
+  createClientReusePayloadHash,
   DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS,
   serializeClientReuseManifest,
 } from "./client-reuse-manifest.js";
@@ -31,6 +32,8 @@ type BrowserClientReuseManifestEntry = Readonly<{
 }>;
 
 type CreateClientReuseManifestHeaderOptions = Readonly<{
+  includeDynamicLayouts?: boolean;
+  includeUnclassifiedStaticShellLayouts?: boolean;
   limits?: ClientReuseManifestLimits;
 }>;
 
@@ -130,6 +133,19 @@ function createStaticLayoutEntry(input: {
   };
 }
 
+function createVisibleLayoutEntry(input: {
+  artifactCompatibility: ArtifactCompatibilityEnvelope;
+  layoutId: string;
+}): BrowserClientReuseManifestEntry {
+  return {
+    artifactCompatibility: input.artifactCompatibility,
+    id: input.layoutId,
+    payloadHash: createClientReusePayloadHash(input.layoutId),
+    privacy: "public",
+    variantCacheKey: "visible-layout",
+  };
+}
+
 export function createClientReuseManifestHeaderFromVisibleAppState(
   state: VisibleAppState,
   options: CreateClientReuseManifestHeaderOptions = {},
@@ -143,16 +159,25 @@ export function createClientReuseManifestHeaderFromVisibleAppState(
   for (const layoutId of metadata.layoutIds) {
     if (entries.length >= limits.maxEntryCount) break;
     if (layoutId.length > limits.maxEntryIdLength) continue;
-    if (metadata.layoutFlags[layoutId] !== "s") continue;
+    const layoutFlag = metadata.layoutFlags[layoutId];
+    const isStaticLayout =
+      layoutFlag === "s" ||
+      (layoutFlag === undefined && options.includeUnclassifiedStaticShellLayouts === true);
+    if (!isStaticLayout && options.includeDynamicLayouts !== true) continue;
     if (!hasRetainedElement(state.elements, layoutId)) continue;
 
     const parsedKey = AppElementsWire.parseElementKey(layoutId);
     if (parsedKey?.kind !== "layout") continue;
 
-    const entry = createStaticLayoutEntry({
-      artifactCompatibility: metadata.artifactCompatibility,
-      layoutId,
-    });
+    const entry = isStaticLayout
+      ? createStaticLayoutEntry({
+          artifactCompatibility: metadata.artifactCompatibility,
+          layoutId,
+        })
+      : createVisibleLayoutEntry({
+          artifactCompatibility: metadata.artifactCompatibility,
+          layoutId,
+        });
     if (entry) {
       entries.push(entry);
     }

@@ -73,6 +73,33 @@ describe("app browser client reuse manifest", () => {
     });
   });
 
+  it("can propose retained unclassified dynamic-shell layouts for server verification", () => {
+    // Mirrors the static-layout skip expectation from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const header = createClientReuseManifestHeaderFromVisibleAppState(
+      createVisibleState({
+        extraEntries: {
+          "layout:/partially-static/target-page": "shell layout",
+        },
+        layoutFlags: {},
+        layoutIds: ["layout:/partially-static/target-page"],
+        routeId: "route:/partially-static/target-page",
+      }),
+      { includeUnclassifiedStaticShellLayouts: true },
+    );
+
+    const parsed = parseClientReuseManifestHeader(header);
+
+    expect(parsed.kind).toBe("parsed");
+    if (parsed.kind !== "parsed") {
+      throw new Error("Expected client reuse manifest to parse");
+    }
+    expect(parsed.manifest.entries.map((entry) => entry.id)).toEqual([
+      "layout:/partially-static/target-page",
+    ]);
+  });
+
   it("keeps retained static layout proofs stable across source routes", () => {
     function readLayoutEntry(routeId: string, graphVersion: string) {
       const header = createClientReuseManifestHeaderFromVisibleAppState(

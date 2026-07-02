@@ -136,6 +136,71 @@ describe("App Router generated manifest construction", () => {
   });
 
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prefetch-manifest-"));
+    const appDir = path.join(tmpDir, "app");
+    fs.mkdirSync(path.join(appDir, "streaming"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "lib"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "features"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "src", "ui"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "src", "features"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "@acme", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            "@/*": ["./*"],
+            "@/features/*": ["./src/features/*"],
+            "@acme/ui": ["./src/ui"],
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.join(tmpDir, "src", "ui", "index.ts"), "export const local = true;\n");
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "@acme", "ui", "button.js"),
+      "exports.Button = function Button() { return null; };\n",
+    );
+    fs.writeFileSync(
+      path.join(appDir, "streaming", "streaming-text.tsx"),
+      'import { connection } from "next/server";\nexport async function StreamingText() { await connection(); return null; }\n',
+    );
+    fs.writeFileSync(
+      path.join(appDir, "streaming", "page.tsx"),
+      'import { StreamingText } from "./streaming-text";\nexport default function Page() { return <StreamingText />; }\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "lib", "aliased-streaming-text.tsx"),
+      'import { connection } from "next/server";\nexport async function AliasedStreamingText() { await connection(); return null; }\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "features", "streaming.tsx"),
+      "export function OverlappingAliasedStreamingText() { return null; }\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "src", "features", "streaming.tsx"),
+      'import { connection } from "next/server";\nexport async function OverlappingAliasedStreamingText() { await connection(); return null; }\n',
+    );
+    fs.mkdirSync(path.join(appDir, "alias-streaming"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "alias-streaming", "page.tsx"),
+      'import { AliasedStreamingText } from "@/lib/aliased-streaming-text";\nexport default function Page() { return <AliasedStreamingText />; }\n',
+    );
+    fs.mkdirSync(path.join(appDir, "alias-cookies"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "alias-cookies", "page.tsx"),
+      'import { cookies as getCookies } from "next/headers";\nexport default async function Page() { await getCookies(); return null; }\n',
+    );
+    fs.mkdirSync(path.join(appDir, "overlapping-alias-streaming"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "overlapping-alias-streaming", "page.tsx"),
+      'import { OverlappingAliasedStreamingText } from "@/features/streaming";\nexport default function Page() { return <OverlappingAliasedStreamingText />; }\n',
+    );
+    fs.mkdirSync(path.join(appDir, "package-subpath"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "package-subpath", "page.tsx"),
+      'import { Button } from "@acme/ui/button";\nexport default function Page() { return <Button />; }\n',
+    );
     const code = generateBrowserEntry([
       ...minimalAppRoutes,
       {
@@ -184,6 +249,126 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: true,
         params: ["slug"],
+        siblingIntercepts: [],
+      },
+      {
+        pattern: "/streaming",
+        patternParts: ["streaming"],
+        pagePath: path.join(appDir, "streaming", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: null,
+        notFoundPaths: [],
+        forbiddenPaths: [],
+        forbiddenPath: null,
+        unauthorizedPaths: [],
+        unauthorizedPath: null,
+        routeSegments: ["streaming"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+      {
+        pattern: "/alias-streaming",
+        patternParts: ["alias-streaming"],
+        pagePath: path.join(appDir, "alias-streaming", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: null,
+        notFoundPaths: [],
+        forbiddenPaths: [],
+        forbiddenPath: null,
+        unauthorizedPaths: [],
+        unauthorizedPath: null,
+        routeSegments: ["alias-streaming"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+      {
+        pattern: "/overlapping-alias-streaming",
+        patternParts: ["overlapping-alias-streaming"],
+        pagePath: path.join(appDir, "overlapping-alias-streaming", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: null,
+        notFoundPaths: [],
+        forbiddenPaths: [],
+        forbiddenPath: null,
+        unauthorizedPaths: [],
+        unauthorizedPath: null,
+        routeSegments: ["overlapping-alias-streaming"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+      {
+        pattern: "/alias-cookies",
+        patternParts: ["alias-cookies"],
+        pagePath: path.join(appDir, "alias-cookies", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: null,
+        notFoundPaths: [],
+        forbiddenPaths: [],
+        forbiddenPath: null,
+        unauthorizedPaths: [],
+        unauthorizedPath: null,
+        routeSegments: ["alias-cookies"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+      {
+        pattern: "/package-subpath",
+        patternParts: ["package-subpath"],
+        pagePath: path.join(appDir, "package-subpath", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [],
+        notFoundPath: null,
+        notFoundPaths: [],
+        forbiddenPaths: [],
+        forbiddenPath: null,
+        unauthorizedPaths: [],
+        unauthorizedPath: null,
+        routeSegments: ["package-subpath"],
+        templateTreePositions: [],
+        layoutTreePositions: [],
+        isDynamic: false,
+        params: [],
         siblingIntercepts: [],
       },
       {
@@ -265,6 +450,27 @@ describe("App Router generated manifest construction", () => {
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["streaming"],"isDynamic":false,"prefetchDynamicShell":true,"requiresDynamicNavigationRequest":true}',
+    );
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["alias-streaming"],"isDynamic":false,"prefetchDynamicShell":true,"requiresDynamicNavigationRequest":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["alias-cookies"],"isDynamic":false,"prefetchDynamicShell":true,"requiresDynamicNavigationRequest":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["overlapping-alias-streaming"],"isDynamic":false,"prefetchDynamicShell":true,"requiresDynamicNavigationRequest":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["package-subpath"],"isDynamic":false}',
+    );
+    expect(code).not.toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["package-subpath"],"isDynamic":false,"requiresDynamicNavigationRequest":true}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',

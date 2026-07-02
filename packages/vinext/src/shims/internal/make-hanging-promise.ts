@@ -10,7 +10,11 @@
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/dynamic-rendering-utils.ts
  */
 
+export const HANGING_PROMISE_REJECTION_DIGEST = "HANGING_PROMISE_REJECTION";
+
 class HangingPromiseRejectionError extends Error {
+  digest = HANGING_PROMISE_REJECTION_DIGEST;
+
   constructor(route: string, expression: string) {
     super(
       `Route ${route} used ${expression} during prerendering but the render was aborted. ` +

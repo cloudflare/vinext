@@ -5,7 +5,7 @@ import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
-import { hasDigest } from "./app-rsc-errors.js";
+import { getDigestForWellKnownError, hasDigest } from "./app-rsc-errors.js";
 import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -37,7 +37,11 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -204,6 +208,59 @@ type RenderAppPageLifecycleOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
+async function readAppPageInitialBinaryStream(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  try {
+    while (true) {
+      const aborted = Symbol("aborted");
+      let removeAbortListener = () => {};
+      const abortPromise =
+        signal === undefined
+          ? null
+          : new Promise<typeof aborted>((resolve) => {
+              const onAbort = () => resolve(aborted);
+              if (signal.aborted) {
+                resolve(aborted);
+                return;
+              }
+              signal.addEventListener("abort", onAbort, { once: true });
+              removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+            });
+      let result: ReadableStreamReadResult<Uint8Array> | typeof aborted;
+      try {
+        result = await (abortPromise === null
+          ? reader.read()
+          : Promise.race([reader.read(), abortPromise]));
+      } finally {
+        removeAbortListener();
+      }
+
+      if (result === aborted || result.done) {
+        break;
+      }
+
+      chunks.push(result.value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const out = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
 function buildResponseTiming(
   options: Pick<RenderAppPageLifecycleOptions, "handlerStart" | "isProduction"> & {
     compileEnd?: number;
@@ -312,6 +369,17 @@ function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDispositio
   };
 }
 
+function createPreserveUiLayoutSkipDisposition(
+  skippedEntryIds: readonly string[],
+): ClientReuseManifestSkipDisposition {
+  return {
+    code: "SKIP_STATIC_LAYOUT_VERIFIED",
+    enabled: true,
+    mode: "skipStaticLayout",
+    skippedEntryIds: [...skippedEntryIds],
+  };
+}
+
 function rejectStaticLayoutObservation(
   entry: ClientReuseManifestEntry,
   code: StaticLayoutObservationSkipRejection["code"],
@@ -361,6 +429,7 @@ function createRenderLifecycleSkipDisposition(input: {
   isRscRequest: boolean;
   layoutFlags: Readonly<Record<string, "s" | "d">>;
   layoutParamAccess: AppLayoutParamAccessTracker | undefined;
+  renderMode: AppRscRenderMode | undefined;
 }): ClientReuseManifestSkipDisposition | undefined {
   if (!input.isRscRequest || input.clientReuseManifest === undefined) {
     return undefined;
@@ -384,9 +453,30 @@ function createRenderLifecycleSkipDisposition(input: {
       .filter(([, flag]) => flag === "s")
       .map(([layoutId]) => layoutId),
   );
+  const canPreserveVisibleLayouts = input.renderMode === APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI;
   const plan = createClientReuseSkipTransportPlan({
     manifest: clientReuseManifest,
     verifyEntry(entry) {
+      if (
+        canPreserveVisibleLayouts &&
+        entry.kind === "layout" &&
+        Object.hasOwn(input.layoutFlags, entry.id) &&
+        Object.hasOwn(element, entry.id) &&
+        AppElementsWire.parseElementKey(entry.id)?.kind === "layout"
+      ) {
+        return {
+          code: "SKIP_CACHE_CROSS_CHECK_PASSED",
+          entryId: entry.id,
+          fields: {
+            entryKind: entry.kind,
+            reuseClass: "visible-layout",
+            variantCacheKeyHash: entry.variantCacheKey,
+          },
+          kind: "verified",
+          skipDisposition: createPreserveUiLayoutSkipDisposition([entry.id]),
+        };
+      }
+
       if (
         entry.kind !== "layout" ||
         !staticLayoutIds.has(entry.id) ||
@@ -668,6 +758,7 @@ export async function renderAppPageLifecycle(
       isRscRequest: options.isRscRequest,
       layoutFlags,
       layoutParamAccess: options.layoutParamAccess,
+      renderMode: options.renderMode,
     });
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
@@ -687,6 +778,29 @@ export async function renderAppPageLifecycle(
   const compileEnd = options.isProduction ? undefined : performance.now();
   const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
+  const isPrefetchDynamicShell =
+    options.isRscRequest && options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
+  const onRscRenderError = (
+    error: unknown,
+    requestInfo: unknown,
+    errorContext: unknown,
+  ): unknown => {
+    const specialError = resolveAppPageSpecialError(error);
+    if (specialError !== null && isPrefetchDynamicShell) {
+      return rscErrorTracker.onRenderError(error, requestInfo, errorContext);
+    }
+    if (options.pprFallbackShellSignal?.aborted) {
+      return getDigestForWellKnownError(error);
+    }
+    if (specialError !== null) {
+      return rscErrorTracker.onRenderError(error, requestInfo, errorContext);
+    }
+    const digest = getDigestForWellKnownError(error);
+    if (digest !== undefined) {
+      return digest;
+    }
+    return rscErrorTracker.onRenderError(error, requestInfo, errorContext);
+  };
   // Defensive wrap for standalone callers. In the normal dispatch path this is
   // a no-op since dispatchAppPage already activated dedupe. Note that
   // renderToReadableStream returns synchronously — the actual fetch calls
@@ -694,11 +808,17 @@ export async function renderAppPageLifecycle(
   // standalone call would establish here is only effective if the caller has
   // an outer runWithRequestContext / runWithFetchDedupe scope keeping the ALS
   // store alive across that consumption.
-  let rscStream = await runWithFetchDedupe(async () => {
-    if (options.pprFallbackShellSignal && options.prerenderToReadableStream) {
+  let rscStream: ReadableStream<Uint8Array>;
+  let pprFallbackShellRsc: Uint8Array | null = null;
+  rscStream = await runWithFetchDedupe(async () => {
+    if (
+      !isPrefetchDynamicShell &&
+      options.pprFallbackShellSignal &&
+      options.prerenderToReadableStream
+    ) {
       const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
       const pendingResult = options.prerenderToReadableStream(outgoingElement, {
-        onError: rscErrorTracker.onRenderError,
+        onError: onRscRenderError,
         signal: reactSignal,
       });
       if (options.abortPprFallbackShell) {
@@ -708,13 +828,25 @@ export async function renderAppPageLifecycle(
     }
 
     return options.renderToReadableStream(outgoingElement, {
-      onError: rscErrorTracker.onRenderError,
+      onError: onRscRenderError,
     });
   });
 
-  let pprFallbackShellRsc: Uint8Array | null = null;
-  if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+  if (isPrefetchDynamicShell) {
+    if (options.abortPprFallbackShell) {
+      setTimeout(options.abortPprFallbackShell, 0);
+    }
+    pprFallbackShellRsc = new Uint8Array(
+      await readAppPageInitialBinaryStream(rscStream, options.pprFallbackShellSignal),
+    );
+  } else if (options.pprFallbackShellSignal) {
+    try {
+      pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    } catch (error) {
+      if (!options.pprFallbackShellSignal.aborted) {
+        throw error;
+      }
+    }
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -739,7 +871,7 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
