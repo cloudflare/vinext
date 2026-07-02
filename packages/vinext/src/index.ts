@@ -2417,9 +2417,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // continue to use `vite:oxc`'s default `lang` inference.
           //
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`.
+          //
+          // `typescript.onlyRemoveTypeImports: false` matches Next.js (SWC)
+          // type-import elision: `import { type Metadata } from "next"` is
+          // removed entirely when every specifier is type-only. Without it,
+          // OXC/esbuild honour `"verbatimModuleSyntax": true` from the app's
+          // tsconfig (emitted stock by create-t3-app and other scaffolds) and
+          // keep a side-effect `import "next"` — which pulls the real Next.js
+          // server runtime into the RSC graph, and pulls server-only modules
+          // into the client bundle when a `"use client"` file imports only
+          // types from them.
           ...(viteMajorVersion >= 8
-            ? { oxc: { jsx: { runtime: "automatic" } } }
-            : { esbuild: { jsx: "automatic" } }),
+            ? {
+                oxc: {
+                  jsx: { runtime: "automatic" },
+                  typescript: { onlyRemoveTypeImports: false },
+                },
+              }
+            : {
+                esbuild: {
+                  jsx: "automatic",
+                  tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: false } },
+                },
+              }),
           // Define env vars for client bundle
           define: defines,
           // Set base path if configured.
