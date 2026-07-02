@@ -11,6 +11,8 @@ import { isUnknownRecord } from "../utils/record.js";
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
   documentOnly?: boolean;
+  hasRuntimePrefetch?: boolean;
+  prefetchMode?: "inherited-runtime" | "runtime" | "static";
   isDynamic: boolean;
   patternParts: string[];
   requiresDynamicNavigationRequest?: boolean;

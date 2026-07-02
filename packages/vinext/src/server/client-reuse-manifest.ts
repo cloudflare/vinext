@@ -150,6 +150,12 @@ export type ClientReuseManifestSkipDisposition =
       mode: "renderAndSend";
     }>
   | Readonly<{
+      code: "SKIP_RETAINED_PREFETCH_LAYOUTS";
+      enabled: true;
+      mode: "skipRetainedPrefetchLayouts";
+      skippedEntryIds: readonly string[];
+    }>
+  | Readonly<{
       code: "SKIP_STATIC_LAYOUT_VERIFIED";
       enabled: true;
       mode: "skipStaticLayout";

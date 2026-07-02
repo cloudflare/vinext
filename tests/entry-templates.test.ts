@@ -277,6 +277,89 @@ describe("App Router generated manifest construction", () => {
     );
   });
 
+  it("marks routes with runtime-prefetch segment config in the Link manifest", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-runtime-prefetch-route-"));
+    const appDir = path.join(tmpDir, "app");
+    const layoutPath = path.join(appDir, "runtime-prefetchable", "layout.tsx");
+    const pagePath = path.join(appDir, "runtime-prefetchable", "page.tsx");
+    const configPath = path.join(appDir, "runtime-prefetchable", "instant-config.ts");
+    const typedPagePath = path.join(appDir, "typed-runtime-prefetchable", "page.tsx");
+    const inlineTypedPagePath = path.join(appDir, "inline-typed-runtime-prefetchable", "page.tsx");
+
+    try {
+      fs.mkdirSync(path.dirname(layoutPath), { recursive: true });
+      fs.mkdirSync(path.dirname(typedPagePath), { recursive: true });
+      fs.mkdirSync(path.dirname(inlineTypedPagePath), { recursive: true });
+      fs.writeFileSync(
+        configPath,
+        'export const runtimeInstant = { prefetch: "runtime" } as const;\n',
+      );
+      fs.writeFileSync(
+        layoutPath,
+        [
+          'import { runtimeInstant } from "./instant-config";',
+          "export const unstable_instant = runtimeInstant;",
+          "export default function Layout({ children }) { return children; }",
+        ].join("\n"),
+      );
+      fs.writeFileSync(pagePath, "export default function Page() { return null; }\n");
+      fs.writeFileSync(
+        typedPagePath,
+        [
+          'type Instant = { prefetch: "runtime" | "static" };',
+          'export const unstable_instant: Instant = { prefetch: "runtime" };',
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        inlineTypedPagePath,
+        [
+          'export const unstable_instant: { prefetch: "runtime" | "static"; } = { prefetch: "runtime" };',
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+
+      const code = generateBrowserEntry([
+        {
+          ...minimalAppRoutes[1],
+          pattern: "/runtime-prefetchable",
+          patternParts: ["runtime-prefetchable"],
+          pagePath,
+          layouts: [layoutPath],
+          routeSegments: ["runtime-prefetchable"],
+        },
+        {
+          ...minimalAppRoutes[1],
+          pattern: "/typed-runtime-prefetchable",
+          patternParts: ["typed-runtime-prefetchable"],
+          pagePath: typedPagePath,
+          layouts: [],
+          routeSegments: ["typed-runtime-prefetchable"],
+        },
+        {
+          ...minimalAppRoutes[1],
+          pattern: "/inline-typed-runtime-prefetchable",
+          patternParts: ["inline-typed-runtime-prefetchable"],
+          pagePath: inlineTypedPagePath,
+          layouts: [],
+          routeSegments: ["inline-typed-runtime-prefetchable"],
+        },
+      ]);
+
+      expect(code).toContain(
+        '{"canPrefetchLoadingShell":false,"hasRuntimePrefetch":true,"prefetchMode":"inherited-runtime","patternParts":["runtime-prefetchable"],"isDynamic":false}',
+      );
+      expect(code).toContain(
+        '{"canPrefetchLoadingShell":false,"hasRuntimePrefetch":true,"prefetchMode":"runtime","patternParts":["typed-runtime-prefetchable"],"isDynamic":false}',
+      );
+      expect(code).toContain(
+        '{"canPrefetchLoadingShell":false,"hasRuntimePrefetch":true,"prefetchMode":"runtime","patternParts":["inline-typed-runtime-prefetchable"],"isDynamic":false}',
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("embeds the RouteManifest read model in the browser entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-browser-route-manifest-"));
     const appDir = path.join(tmpDir, "app");

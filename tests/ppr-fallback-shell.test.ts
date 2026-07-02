@@ -5,6 +5,7 @@ import {
   createPprFallbackShellSuspensePromise,
   isPprFallbackShellAbortError,
   preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellRequestApiBypass,
   runWithPprFallbackShellState,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheReady,
@@ -171,6 +172,22 @@ describe("ppr fallback shell render lifecycle", () => {
   it("createPprFallbackShellSuspensePromise returns null outside shell context", () => {
     const promise = createPprFallbackShellSuspensePromise("params");
     expect(promise).toBeNull();
+  });
+
+  it("request API bypass suppresses fallback-shell suspension inside an active shell", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/runtime-prefetchable",
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      const promise = runWithPprFallbackShellRequestApiBypass(() =>
+        createPprFallbackShellSuspensePromise("cookies"),
+      );
+
+      expect(promise).toBeNull();
+      expect(state.hasDynamicBoundary).toBe(false);
+    });
   });
 
   it("waitForPprFallbackShellCacheReady resolves immediately in final phase", async () => {

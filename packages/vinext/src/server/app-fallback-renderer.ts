@@ -169,12 +169,11 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const { rootForbiddenModule, rootLayouts, rootNotFoundModule, rootUnauthorizedModule } =
     rootBoundaries;
 
-  // When the app does not define `app/global-error.tsx`, fall back to vinext's
-  // built-in default global error component so that uncaught render errors
-  // produce the same UI Next.js ships out of the box (matching markup, inline
-  // styles, theme CSS, and the "ERROR <digest>" footer for server errors).
-  // See packages/vinext/src/shims/default-global-error.tsx and
-  // packages/vinext/src/server/default-global-error-module.ts.
+  // Unlike normal page rendering, the fallback/error-boundary renderer must
+  // provide a concrete default global-error module when the app has no
+  // app/global-error.tsx. These paths render the fallback UI directly instead
+  // of relying on the outer GlobalErrorBoundary's implicit client fallback, so
+  // passing null would leave renderErrorBoundary without a response body.
   const effectiveGlobalErrorModule: TModule | null =
     globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TModule);
 

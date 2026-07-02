@@ -40,6 +40,11 @@ type CapturedError = {
   thrownValue: unknown;
 };
 
+const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType<{
+  error: unknown;
+  reset: () => void;
+}>;
+
 type RedirectBoundaryState = {
   redirect: string | null;
   redirectType: "push" | "replace" | null;
@@ -287,10 +292,10 @@ export function ErrorBoundary({ fallback, children, resetKey }: ErrorBoundaryPro
 // ---------------------------------------------------------------------------
 
 export function GlobalErrorBoundary({
-  fallback,
+  fallback = DEFAULT_GLOBAL_ERROR_COMPONENT,
   children,
 }: {
-  fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
+  fallback?: React.ComponentType<{ error: unknown; reset: () => void }>;
   children: React.ReactNode;
 }) {
   const pathname = useErrorBoundaryPathname();
@@ -301,7 +306,7 @@ export function GlobalErrorBoundary({
     <ErrorBoundaryInner
       pathname={pathname}
       fallback={fallback}
-      isImplicitRootErrorBoundary={fallback === DefaultGlobalError}
+      isImplicitRootErrorBoundary={fallback === DEFAULT_GLOBAL_ERROR_COMPONENT}
     >
       {children}
     </ErrorBoundaryInner>

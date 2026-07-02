@@ -1,4 +1,13 @@
-import { Fragment, Suspense, type ComponentType, type ReactNode } from "react";
+import {
+  Children as ReactChildren,
+  Fragment,
+  Suspense,
+  cloneElement,
+  isValidElement,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -17,7 +26,6 @@ import {
   UnauthorizedBoundary,
 } from "vinext/shims/error-boundary";
 import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
-import DefaultGlobalError from "vinext/shims/default-global-error";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import {
@@ -47,6 +55,7 @@ import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_RUNTIME,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -57,6 +66,7 @@ import {
   resolveAppPageSegmentStateKey,
 } from "./app-page-segment-state.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
+import { runWithPprFallbackShellRequestApiBypass } from "vinext/shims/ppr-fallback-shell";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
@@ -68,9 +78,112 @@ type AppPageComponentProps = {
 } & Record<string, unknown>;
 
 type AppPageComponent = ComponentType<AppPageComponentProps>;
+type AppPageServerFunctionComponent = (
+  props: AppPageComponentProps,
+) => ReactNode | Promise<ReactNode>;
 type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }>;
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
-const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
+const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
+
+type RuntimePrefetchableServerComponentProps = {
+  component: AppPageComponent;
+  props: AppPageComponentProps;
+};
+
+type StaticPrefetchShellServerComponentProps = RuntimePrefetchableServerComponentProps;
+
+function isClassComponent(component: AppPageComponent): boolean {
+  return component.prototype?.isReactComponent != null;
+}
+
+function isClientReferenceType(type: unknown): boolean {
+  return (
+    typeof type === "object" &&
+    type !== null &&
+    (type as { $$typeof?: unknown }).$$typeof === REACT_CLIENT_REFERENCE
+  );
+}
+
+function isRuntimePrefetchableSegment(module: AppPageModule | null | undefined): boolean {
+  const instant = module?.unstable_instant;
+  return typeof instant === "object" && instant !== null && instant.prefetch === "runtime";
+}
+
+function RuntimePrefetchableServerComponent({
+  component: Component,
+  props,
+}: RuntimePrefetchableServerComponentProps) {
+  return runWithPprFallbackShellRequestApiBypass(() => {
+    const result = (Component as AppPageServerFunctionComponent)(props);
+    return result instanceof Promise
+      ? result.then((resolved) => wrapRuntimePrefetchableSubtree(resolved))
+      : wrapRuntimePrefetchableSubtree(result);
+  });
+}
+
+function StaticPrefetchShellServerComponent({
+  component: Component,
+  props,
+}: StaticPrefetchShellServerComponentProps) {
+  const result = (Component as AppPageServerFunctionComponent)(props);
+  return result instanceof Promise
+    ? result.then((resolved) => wrapStaticPrefetchShellSubtree(resolved))
+    : wrapStaticPrefetchShellSubtree(result);
+}
+
+function wrapRuntimePrefetchableSubtree(node: ReactNode): ReactNode {
+  if (Array.isArray(node)) {
+    return node.map((child) => wrapRuntimePrefetchableSubtree(child));
+  }
+
+  if (!isValidElement<AppPageComponentProps>(node)) {
+    return node;
+  }
+
+  const children =
+    "children" in node.props
+      ? ReactChildren.map(node.props.children, (child) => wrapRuntimePrefetchableSubtree(child))
+      : undefined;
+  const props = children === undefined ? node.props : { ...node.props, children };
+
+  if (
+    typeof node.type === "function" &&
+    !isClassComponent(node.type as AppPageComponent) &&
+    !isClientReferenceType(node.type)
+  ) {
+    return (
+      <RuntimePrefetchableServerComponent component={node.type as AppPageComponent} props={props} />
+    );
+  }
+
+  return children === undefined ? node : cloneElement(node as ReactElement, undefined, children);
+}
+
+function wrapStaticPrefetchShellSubtree(node: ReactNode): ReactNode {
+  if (Array.isArray(node)) {
+    return node.map((child) => wrapStaticPrefetchShellSubtree(child));
+  }
+
+  if (!isValidElement<AppPageComponentProps>(node)) {
+    return node;
+  }
+
+  if (node.type === Suspense) {
+    const props = node.props as { fallback?: ReactNode };
+    const fallback = "fallback" in props ? wrapStaticPrefetchShellSubtree(props.fallback) : null;
+    return cloneElement(node as ReactElement, undefined, fallback);
+  }
+
+  const children =
+    "children" in node.props
+      ? ReactChildren.map(node.props.children, (child) => wrapStaticPrefetchShellSubtree(child))
+      : undefined;
+  if (children !== undefined) {
+    return cloneElement(node as ReactElement, undefined, children);
+  }
+
+  return node;
+}
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -82,6 +195,7 @@ function resolveSlotLayoutParams(
 
 export type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
+  unstable_instant?: { prefetch?: unknown } | false | null | undefined;
 };
 
 export type AppPageErrorModule = Record<string, unknown> & {
@@ -130,6 +244,7 @@ export type AppPageRouteWiringRoute<
   loading?: TModule | null;
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
+  page?: TModule | null;
   forbidden?: TModule | null;
   forbiddens?: readonly (TModule | null | undefined)[] | null;
   unauthorized?: TModule | null;
@@ -707,9 +822,15 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
+  const pageElement =
+    renderMode === APP_RSC_RENDER_MODE_PREFETCH_RUNTIME &&
+    isRuntimePrefetchableSegment(options.route.page)
+      ? wrapRuntimePrefetchableSubtree(options.element)
+      : options.element;
+
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+    : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     const templateComponent = getDefaultExport(templateEntry.templateModule);
@@ -773,18 +894,21 @@ export function buildAppPageElements<
 
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
-    const layoutElement = layoutDependency ? (
-      renderWithAppDependencyBarrier(
+    const renderedLayoutElement =
+      renderMode === APP_RSC_RENDER_MODE_PREFETCH_RUNTIME &&
+      !isRuntimePrefetchableSegment(layoutEntry.layoutModule) ? (
+        <StaticPrefetchShellServerComponent
+          component={LayoutComponent}
+          props={{ ...layoutProps, children: <Children /> }}
+        />
+      ) : (
         <LayoutComponent {...layoutProps}>
           <Children />
-        </LayoutComponent>,
-        layoutDependency,
-      )
-    ) : (
-      <LayoutComponent {...layoutProps}>
-        <Children />
-      </LayoutComponent>
-    );
+        </LayoutComponent>
+      );
+    const layoutElement = layoutDependency
+      ? renderWithAppDependencyBarrier(renderedLayoutElement, layoutDependency)
+      : renderedLayoutElement;
     elements[layoutEntry.id] = renderAfterAppDependencies(
       layoutElement,
       layoutDependenciesBefore[index] ?? [],
@@ -1168,7 +1292,7 @@ export function buildAppPageElements<
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);
   routeChildren = (
-    <GlobalErrorBoundary fallback={DEFAULT_GLOBAL_ERROR_COMPONENT}>
+    <GlobalErrorBoundary>
       {globalErrorComponent ? (
         <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>
       ) : (

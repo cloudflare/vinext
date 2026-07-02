@@ -33,6 +33,7 @@ import {
   getBfcacheIdMapContext,
   getMountedSlotsHeader,
   getPrefetchCache,
+  getRetainedPrefetchLayoutIdsHeader,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
   seedPrefetchResponseSnapshot,
@@ -169,6 +170,7 @@ import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.j
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
+  fillSkippedLayoutsFromElementSources,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   resolveOptimisticNavigationPayload,
@@ -487,8 +489,10 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   }
   if (options.interceptionContext !== null) return false;
 
-  const elements = await decodeAppElementsPromise(
-    createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
+  const elements = await fillSkippedLayoutsFromPrefetchCache(
+    decodeAppElementsPromise(
+      createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
+    ),
   );
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
@@ -497,6 +501,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     href: options.entry.snapshot.url || source.rscUrl,
     interceptionContext: options.interceptionContext,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    preservePageElements: options.entry.runtimePrefetch === true,
     routeManifest: options.routeManifest,
   });
   if (template === null) return false;
@@ -992,6 +997,52 @@ function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<Ap
   // React Flight thenable whose .then() returns undefined (not a new Promise).
   // Without the wrap, chaining .then() produces undefined → use() crashes.
   return Promise.resolve(payload).then((elements) => AppElementsWire.decode(elements));
+}
+
+async function decodePrefetchCacheEntryElements(
+  entry: PrefetchCacheEntry,
+): Promise<AppElements | null> {
+  if (entry.elements) return entry.elements;
+  if (!entry.snapshot || entry.cacheForNavigation === false) return null;
+
+  try {
+    const elements = await decodeAppElementsPromise(
+      createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(entry.snapshot))),
+    );
+    entry.elements = elements;
+    return elements;
+  } catch {
+    return null;
+  }
+}
+
+async function fillSkippedLayoutsFromPrefetchCache(
+  payload: Promise<AppElements>,
+): Promise<AppElements> {
+  const elements = await payload;
+  const metadata = AppElementsWire.readMetadata(elements);
+  const missingLayoutIds = metadata.skippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
+  if (missingLayoutIds.length === 0) return elements;
+
+  const missing = new Set(missingLayoutIds);
+  const sources: AppElements[] = [];
+  for (const entry of getPrefetchCache().values()) {
+    if (missing.size === 0) break;
+    if (entry.outcome !== "cache-seeded" || !entry.snapshot) continue;
+    const sourceElements = await decodePrefetchCacheEntryElements(entry);
+    if (!sourceElements) continue;
+
+    for (const layoutId of missing) {
+      if (!Object.hasOwn(sourceElements, layoutId)) continue;
+      sources.push(sourceElements);
+      missing.delete(layoutId);
+    }
+  }
+
+  if (missing.size === missingLayoutIds.length) return elements;
+  return fillSkippedLayoutsFromElementSources(elements, sources);
 }
 
 function BrowserRoot({
@@ -1764,6 +1815,9 @@ function bootstrapHydration(
         const requestHeaders = createRscRequestHeaders({
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
+          retainedPrefetchLayoutsHeader: getRetainedPrefetchLayoutIdsHeader({
+            targetHref: url.href,
+          }),
           renderMode:
             navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
@@ -1882,9 +1936,11 @@ function bootstrapHydration(
           );
           const cachedPayload = cachedRoute.elements
             ? Promise.resolve(cachedRoute.elements)
-            : decodeAppElementsPromise(
-                createFromFetch<AppWireElements>(
-                  Promise.resolve(restoreRscResponse(cachedRoute.response)),
+            : fillSkippedLayoutsFromPrefetchCache(
+                decodeAppElementsPromise(
+                  createFromFetch<AppWireElements>(
+                    Promise.resolve(restoreRscResponse(cachedRoute.response)),
+                  ),
                 ),
               );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2133,8 +2189,10 @@ function bootstrapHydration(
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
-        const rscPayload = decodeAppElementsPromise(
-          createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
+        const rscPayload = fillSkippedLayoutsFromPrefetchCache(
+          decodeAppElementsPromise(
+            createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
+          ),
         );
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2155,7 +2213,7 @@ function bootstrapHydration(
           activeTraversalIntent,
           scrollIntent,
           restoredBfcacheIds,
-          reuseCurrentBfcacheIds,
+          detachedNavigationCommits ? false : reuseCurrentBfcacheIds,
           visibleCommitMode,
           (state) => {
             committedState = state;
@@ -2170,13 +2228,13 @@ function bootstrapHydration(
           detachedNavigationCommits ? "authoritative" : undefined,
         );
         if (renderOutcome !== "committed") return;
-        // Don't cache the response if this navigation was superseded during
-        // renderNavigationPayload's await — the elements were never dispatched.
-        if (!browserNavigationController.isCurrentNavigation(navId)) return;
         // Store the visited response only after renderNavigationPayload succeeds.
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
-        // never actually rendered successfully.
+        // never actually rendered successfully. Once the visible commit lands,
+        // a later ordinary navigation must not cancel publication of this
+        // response snapshot; the generation checks below still prevent stale
+        // tails from republishing after refresh invalidation.
         try {
           const renderedElements = await rscPayload;
           if (navigationCacheGeneration !== clientNavigationCacheGeneration) return;

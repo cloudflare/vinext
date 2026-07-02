@@ -163,6 +163,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
+  retainedPrefetchLayoutIds: readonly string[];
   pprFallbackCacheShells?:
     | readonly {
         fallbackParamNames: readonly string[];
@@ -517,6 +518,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
+    retainedPrefetchLayoutIds,
     hadBasePath,
   } = normalized;
   let { pathname, cleanPathname } = normalized;
@@ -1150,6 +1152,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     middlewareContext,
     mountedSlotsHeader,
     params: renderParams,
+    retainedPrefetchLayoutIds,
     pprFallbackCacheShells: runtimeFallbackShells,
     pprFallbackShell: isPrerenderFallbackShell
       ? {

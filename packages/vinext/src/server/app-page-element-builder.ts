@@ -17,7 +17,6 @@ import {
 } from "./app-page-route-wiring.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
-import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
@@ -408,12 +407,11 @@ export async function buildPageElements<
         ? createPageElement(EffectivePageComponent, pageProps)
         : null,
     createPageElement,
-    // Fall back to vinext's built-in default global error module so that
-    // uncaught client render errors are caught by the route-level
-    // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
-    // Next.js's behavior when the user has not defined app/global-error.tsx.
-    globalErrorModule:
-      globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
+    // Only pass through a user-defined app/global-error module. The route-level
+    // GlobalErrorBoundary owns vinext's built-in default fallback internally;
+    // threading that fallback as a normal RSC prop would serialize an otherwise
+    // unused client reference into every cold page payload.
+    globalErrorModule: globalErrorModule ?? null,
     isRscRequest,
     layoutParamAccess: options.layoutParamAccess,
     mountedSlotIds,

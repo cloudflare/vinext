@@ -8,6 +8,7 @@ import {
 import {
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  fillSkippedLayoutsFromElementSources,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
@@ -474,6 +475,49 @@ describe("App Router optimistic routing", () => {
       pageElementIds: [AppElementsWire.encodePageId("/blog/post-1", null)],
       routeId: "route:/blog/:slug",
     });
+  });
+
+  it("fills skipped retained layouts before optimistic runtime payload commits", () => {
+    const routeId = AppElementsWire.encodeRouteId("/dashboard/settings", null);
+    const payload = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [AppElementsWire.keys.skippedLayoutIds]: ["layout:/", "layout:/dashboard"],
+      "layout:/dashboard/settings": createElement("section", null, "settings shell"),
+      "page:/dashboard/settings": createElement("main", null, "settings page"),
+      [routeId]: createElement("main", null, "route"),
+    };
+    const rootLayout = createElement("div", null, "root layout");
+    const dashboardLayout = createElement("div", null, "dashboard layout");
+
+    const filled = fillSkippedLayoutsFromElementSources(payload, [
+      {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/dashboard",
+        }),
+        "layout:/": rootLayout,
+      },
+      {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/", "layout:/dashboard"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/dashboard",
+        }),
+        "layout:/dashboard": dashboardLayout,
+      },
+    ]);
+
+    expect(filled["layout:/"]).toBe(rootLayout);
+    expect(filled["layout:/dashboard"]).toBe(dashboardLayout);
+    expect(Object.hasOwn(filled, AppElementsWire.keys.skippedLayoutIds)).toBe(false);
   });
 
   it("learns static route templates from loading-shell prefetch payloads", () => {

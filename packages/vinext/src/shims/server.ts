@@ -1060,6 +1060,12 @@ export async function connection(): Promise<void> {
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  const fallbackShellPromise = (
+    await import("./ppr-fallback-shell.js")
+  ).createPprFallbackShellSuspensePromise<void>("`connection()`");
+  if (fallbackShellPromise) {
+    await fallbackShellPromise;
+  }
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;

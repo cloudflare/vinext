@@ -29,6 +29,7 @@ export type OptimisticRouteTemplate = {
   elements: AppElements;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
+  preservePageElements: boolean;
   routeId: string;
 };
 
@@ -307,6 +308,7 @@ export function createOptimisticRouteTemplate(options: {
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  preservePageElements?: boolean;
   routeManifest: RouteManifest;
 }): OptimisticRouteTemplate | null {
   const match = matchOptimisticRouteManifestRoute({
@@ -328,7 +330,8 @@ export function createOptimisticRouteTemplate(options: {
   if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
   if (
     options.allowLoadingShell &&
-    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary"
+    options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary" &&
+    !options.preservePageElements
   ) {
     return null;
   }
@@ -344,16 +347,56 @@ export function createOptimisticRouteTemplate(options: {
     elements: options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
+    preservePageElements: options.preservePageElements === true,
     routeId: match.route.id,
   };
 }
 
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
-  for (const pageElementId of template.pageElementIds) {
-    elements[pageElementId] = createElement(OptimisticRouteSegment);
+  if (!template.preservePageElements) {
+    for (const pageElementId of template.pageElementIds) {
+      elements[pageElementId] = createElement(OptimisticRouteSegment);
+    }
   }
   return elements;
+}
+
+export function fillSkippedLayoutsFromElementSources(
+  elements: AppElements,
+  sources: Iterable<AppElements | null | undefined>,
+): AppElements {
+  const metadata = AppElementsWire.readMetadata(elements);
+  const missingLayoutIds = metadata.skippedLayoutIds.filter(
+    (layoutId) => !Object.hasOwn(elements, layoutId),
+  );
+  if (missingLayoutIds.length === 0) return elements;
+
+  const missing = new Set(missingLayoutIds);
+  const merged: Record<string, AppElementValue> = { ...elements };
+  for (const sourceElements of sources) {
+    if (missing.size === 0) break;
+    if (!sourceElements) continue;
+
+    for (const layoutId of missing) {
+      if (!Object.hasOwn(sourceElements, layoutId)) continue;
+      merged[layoutId] = sourceElements[layoutId];
+      missing.delete(layoutId);
+    }
+  }
+
+  if (missing.size === missingLayoutIds.length) return elements;
+
+  const remainingSkippedLayoutIds = metadata.skippedLayoutIds.filter((layoutId) =>
+    missing.has(layoutId),
+  );
+  if (remainingSkippedLayoutIds.length > 0) {
+    merged[AppElementsWire.keys.skippedLayoutIds] = remainingSkippedLayoutIds;
+  } else {
+    delete merged[AppElementsWire.keys.skippedLayoutIds];
+  }
+
+  return merged as AppElements;
 }
 
 export function resolveOptimisticNavigationPayload(options: {

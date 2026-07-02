@@ -70,6 +70,12 @@ export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
 
+/** Client hint listing App Router layout IDs already held by full-prefetch payloads. */
+export const VINEXT_RETAINED_PREFETCH_LAYOUTS_HEADER = "X-Vinext-Retained-Prefetch-Layouts";
+
+/** Response metadata listing the layout IDs present in an App Router RSC payload. */
+export const VINEXT_RSC_LAYOUT_IDS_HEADER = "X-Vinext-Rsc-Layout-Ids";
+
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
  * thrown during render. The header value is the redirect target (path-only

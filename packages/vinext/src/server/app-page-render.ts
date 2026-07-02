@@ -196,6 +196,7 @@ type RenderAppPageLifecycleOptions = {
   skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
+  retainedPrefetchLayoutIds?: readonly string[];
   waitUntil?: (promise: Promise<void>) => void;
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
   // skip transport planner to reject layouts that are unsafe for static reuse.
@@ -541,10 +542,78 @@ function createRenderLifecycleSkipDisposition(input: {
   return plan.skipDisposition;
 }
 
+function createRetainedPrefetchLayoutSkipDisposition(input: {
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  isRscRequest: boolean;
+  retainedPrefetchLayoutIds: readonly string[] | undefined;
+}): ClientReuseManifestSkipDisposition | undefined {
+  if (
+    !input.isRscRequest ||
+    !input.retainedPrefetchLayoutIds ||
+    input.retainedPrefetchLayoutIds.length === 0 ||
+    !isAppElementsRecord(input.element)
+  ) {
+    return undefined;
+  }
+
+  const skippedEntryIds: string[] = [];
+  const seen = new Set<string>();
+  for (const layoutId of input.retainedPrefetchLayoutIds) {
+    if (seen.has(layoutId)) continue;
+    if (AppElementsWire.parseElementKey(layoutId)?.kind !== "layout") continue;
+    if (!Object.hasOwn(input.element, layoutId)) continue;
+    seen.add(layoutId);
+    skippedEntryIds.push(layoutId);
+  }
+
+  if (skippedEntryIds.length === 0) return undefined;
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    skippedEntryIds,
+  };
+}
+
+function mergeSkipDispositions(
+  first: ClientReuseManifestSkipDisposition | undefined,
+  second: ClientReuseManifestSkipDisposition | undefined,
+): ClientReuseManifestSkipDisposition | undefined {
+  if (first?.enabled !== true) return second ?? first;
+  if (second?.enabled !== true) return first;
+
+  const skippedEntryIds = [...first.skippedEntryIds];
+  const seen = new Set(skippedEntryIds);
+  for (const id of second.skippedEntryIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    skippedEntryIds.push(id);
+  }
+
+  // Downstream transport only observes enabled + skippedEntryIds; the concrete
+  // skip reason is collapsed when multiple skip sources contribute entries.
+  return {
+    code: "SKIP_RETAINED_PREFETCH_LAYOUTS",
+    enabled: true,
+    mode: "skipRetainedPrefetchLayouts",
+    skippedEntryIds,
+  };
+}
+
 function isSkipTransportEnabled(
   skipDisposition: ClientReuseManifestSkipDisposition | undefined,
 ): boolean {
   return skipDisposition?.enabled === true;
+}
+
+function collectResponseLayoutIds(input: {
+  element: ReactNode | AppOutgoingElements;
+  layoutFlags: Readonly<Record<string, "s" | "d">>;
+}): readonly string[] {
+  const layoutIds = Object.keys(input.layoutFlags);
+  const element = input.element;
+  if (!isAppElementsRecord(element)) return layoutIds;
+  return layoutIds.filter((layoutId) => Object.hasOwn(element, layoutId));
 }
 
 /**
@@ -690,7 +759,7 @@ export async function renderAppPageLifecycle(
     params: options.navigationParams,
     state: options.peekRenderObservationState?.() ?? createEmptyAppPageRenderObservationState(),
   });
-  const skipDisposition =
+  const clientReuseSkipDisposition =
     options.skipDisposition ??
     createRenderLifecycleSkipDisposition({
       artifactCompatibility,
@@ -701,6 +770,14 @@ export async function renderAppPageLifecycle(
       layoutFlags,
       layoutParamAccess: options.layoutParamAccess,
     });
+  const skipDisposition = mergeSkipDispositions(
+    clientReuseSkipDisposition,
+    createRetainedPrefetchLayoutSkipDisposition({
+      element: options.element,
+      isRscRequest: options.isRscRequest,
+      retainedPrefetchLayoutIds: options.retainedPrefetchLayoutIds,
+    }),
+  );
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -714,6 +791,10 @@ export async function renderAppPageLifecycle(
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
     renderObservation: payloadRenderObservation,
     skipDisposition: options.isRscRequest ? skipDisposition : undefined,
+  });
+  const responseLayoutIds = collectResponseLayoutIds({
+    element: outgoingElement,
+    layoutFlags,
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
@@ -737,6 +818,18 @@ export async function renderAppPageLifecycle(
         setTimeout(options.abortPprFallbackShell, 0);
       }
       return (await pendingResult).prelude;
+    }
+
+    if (options.pprFallbackShellSignal) {
+      const reactSignal = options.pprFallbackShellReactSignal ?? options.pprFallbackShellSignal;
+      const stream = options.renderToReadableStream(outgoingElement, {
+        onError: rscErrorTracker.onRenderError,
+        signal: reactSignal,
+      });
+      if (options.abortPprFallbackShell) {
+        setTimeout(options.abortPprFallbackShell, 0);
+      }
+      return stream;
     }
 
     return options.renderToReadableStream(outgoingElement, {
@@ -771,7 +864,7 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
@@ -833,6 +926,7 @@ export async function renderAppPageLifecycle(
         ? options.dynamicStaleTimeSeconds
         : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
+      layoutIds: responseLayoutIds,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,

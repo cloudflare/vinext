@@ -269,6 +269,21 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("accepts previous SHA cache-busting params after adding retained prefetch layouts", async () => {
+    const headers = createRscRequestHeaders({
+      mountedSlotsHeader: "slot:modal:/",
+      retainedPrefetchLayoutsHeader: "layout:/photos",
+    });
+    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/");
+    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+      headers,
+    });
+
+    await expect(
+      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
+    ).resolves.toBeNull();
+  });
+
   it("does not accept a bare previous hash for preserve-current-UI payloads", async () => {
     const headers = createRscRequestHeaders({
       renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
@@ -324,7 +339,7 @@ describe("App Router RSC cache-busting", () => {
 
   it("exports the full Vary value for RSC-bearing App Router responses", () => {
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Retained-Prefetch-Layouts, X-Vinext-Rsc-Render-Mode",
     );
   });
 

@@ -37,6 +37,9 @@ const pprFallbackShellAls = getOrCreateAls<PprFallbackShellState>("vinext.pprFal
 const pprFallbackShellCacheTaskStackAls = getOrCreateAls<PprFallbackShellCacheTask[]>(
   "vinext.pprFallbackShell.cacheTaskStack.als",
 );
+const pprFallbackShellRequestApiBypassAls = getOrCreateAls<boolean>(
+  "vinext.pprFallbackShell.requestApiBypass.als",
+);
 
 function noop(): void {}
 
@@ -167,6 +170,10 @@ export function getPprFallbackShellState(): PprFallbackShellState | null {
   return pprFallbackShellAls.getStore() ?? null;
 }
 
+export function runWithPprFallbackShellRequestApiBypass<T>(fn: () => T): T {
+  return pprFallbackShellRequestApiBypassAls.run(true, fn);
+}
+
 export function trackPprFallbackShellCacheTask<T>(
   fn: () => Promise<T>,
   cacheVariant: string,
@@ -239,7 +246,7 @@ export function markPprFallbackShellDynamicBoundary(): void {
 
 export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
   const state = getPprFallbackShellState();
-  if (state === null) return null;
+  if (state === null || pprFallbackShellRequestApiBypassAls.getStore() === true) return null;
   return createPprFallbackShellSuspensePromiseForState<T>(state, expression);
 }
 
@@ -277,6 +284,12 @@ export function beginPprFallbackShellFinalRender(state: PprFallbackShellState): 
   if (state.phase !== "final") return;
   state.isFinalRenderStarted = true;
   scheduleAbortIfReady(state);
+}
+
+export function abortPprFallbackShellFinalRender(state: PprFallbackShellState): void {
+  if (state.reactAbortController.signal.aborted) return;
+  state.reactAbortController.abort();
+  state.abortController.abort();
 }
 
 export function isPprFallbackShellAbortError(error: unknown): boolean {

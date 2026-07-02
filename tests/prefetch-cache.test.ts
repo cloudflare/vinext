@@ -15,6 +15,7 @@ import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/serve
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_LAYOUT_IDS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -34,6 +35,7 @@ let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavi
 let appRouterInstance: Navigation["appRouterInstance"];
 let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
 let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
+let getRetainedPrefetchLayoutIdsHeader: Navigation["getRetainedPrefetchLayoutIdsHeader"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -70,6 +72,7 @@ beforeEach(async () => {
   appRouterInstance = nav.appRouterInstance;
   consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
   seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
+  getRetainedPrefetchLayoutIdsHeader = nav.getRetainedPrefetchLayoutIdsHeader;
 });
 
 afterEach(() => {
@@ -732,6 +735,140 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has("/page-1.rsc")).toBe(true);
   });
 
+  it("evicts navigation-cacheable retained-layout dependents when their source layout is evicted", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const sharedLayoutId = "layout:/shared-layout";
+    const sourceRscUrl = "/shared-layout/one.rsc";
+    const targetRscUrl = "/shared-layout/two.rsc";
+    const pressureRscUrl = "/pressure.rsc";
+
+    seedPrefetchResponseSnapshot(sourceRscUrl, {
+      buffer: new ArrayBuffer(46 * 1024 * 1024),
+      contentType: "text/x-component",
+      layoutIds: [sharedLayoutId],
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: sourceRscUrl,
+    });
+    prefetchRscResponse(
+      targetRscUrl,
+      Promise.resolve(
+        new Response("target", {
+          headers: { "content-type": "text/x-component" },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { retainedLayoutIdsHeader: sharedLayoutId },
+    );
+    getPrefetchedUrls().add(targetRscUrl);
+    await waitForPrefetchSetup(
+      () => getPrefetchCache().get(targetRscUrl)?.outcome === "cache-seeded",
+    );
+
+    expect(hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null)).toBe(true);
+
+    seedPrefetchResponseSnapshot(pressureRscUrl, {
+      buffer: new ArrayBuffer(5 * 1024 * 1024),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: pressureRscUrl,
+    });
+
+    expect(getPrefetchCache().has(sourceRscUrl)).toBe(false);
+    expect(getPrefetchCache().has(targetRscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(targetRscUrl)).toBe(false);
+    expect(hasPrefetchCacheEntryForNavigation(targetRscUrl, null, null)).toBe(false);
+  });
+
+  it("does not retain layout ids from a cached payload for the same target URL", () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const sharedLayoutId = "layout:/shared-layout";
+
+    seedPrefetchResponseSnapshot("/shared-layout/one.rsc?_rsc=same", {
+      buffer: new ArrayBuffer(1024),
+      contentType: "text/x-component",
+      layoutIds: [sharedLayoutId],
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: "/shared-layout/one.rsc?_rsc=same",
+    });
+    seedPrefetchResponseSnapshot("/shared-layout/two.rsc?_rsc=sibling", {
+      buffer: new ArrayBuffer(1024),
+      contentType: "text/x-component",
+      layoutIds: [sharedLayoutId],
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: "/shared-layout/two.rsc?_rsc=sibling",
+    });
+
+    expect(getRetainedPrefetchLayoutIdsHeader({ targetHref: "/shared-layout/one" })).toBe(
+      sharedLayoutId,
+    );
+
+    getPrefetchCache().delete("/shared-layout/two.rsc?_rsc=sibling");
+    expect(getRetainedPrefetchLayoutIdsHeader({ targetHref: "/shared-layout/one" })).toBeNull();
+  });
+
+  it("stops byte LRU cleanup after retained-layout cascade deletion frees enough memory", () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const oneMiB = 1024 * 1024;
+    const sharedLayoutId = "layout:/shared-layout";
+    const sourceRscUrl = "/shared-layout/one.rsc";
+    const dependentRscUrl = "/shared-layout/two.rsc";
+
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    cache.set(sourceRscUrl, {
+      outcome: "cache-seeded",
+      snapshot: {
+        buffer: new ArrayBuffer(oneMiB),
+        contentType: "text/x-component",
+        layoutIds: [sharedLayoutId],
+        paramsHeader: null,
+        url: sourceRscUrl,
+      },
+      timestamp: now,
+    });
+    prefetched.add(sourceRscUrl);
+    cache.set(dependentRscUrl, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      retainedLayoutDependencies: [sharedLayoutId],
+      snapshot: {
+        buffer: new ArrayBuffer(40 * oneMiB),
+        contentType: "text/x-component",
+        paramsHeader: null,
+        url: dependentRscUrl,
+      },
+      timestamp: now,
+    });
+    prefetched.add(dependentRscUrl);
+
+    fillCache(6, now, "/survivor-", 2 * oneMiB);
+
+    seedPrefetchResponseSnapshot("/pressure.rsc", {
+      buffer: new ArrayBuffer(oneMiB),
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: "/pressure.rsc",
+    });
+
+    expect(cache.has(sourceRscUrl)).toBe(false);
+    expect(cache.has(dependentRscUrl)).toBe(false);
+    for (let i = 0; i < 6; i++) {
+      expect(cache.has(`/survivor-${i}.rsc`)).toBe(true);
+      expect(prefetched.has(`/survivor-${i}.rsc`)).toBe(true);
+    }
+    expect(cache.has("/pressure.rsc")).toBe(true);
+  });
+
   it("skips pending prefetches when byte LRU cleanup needs to free memory", async () => {
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
@@ -1078,7 +1215,27 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(rscUrl, null, snapshot.mountedSlotsHeader)).toBeNull();
   });
 
-  it("does not sweep expired entries on under-budget cache writes", () => {
+  it("round-trips retained layout ids when restoring cached RSC responses", async () => {
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      layoutIds: ["layout:/", "layout:/segment-config/runtime-prefetchable"],
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: "/segment-config/runtime-prefetchable.rsc",
+    };
+
+    const restored = restoreRscResponse(snapshot);
+
+    expect(restored.headers.get(VINEXT_RSC_LAYOUT_IDS_HEADER)).toBe(
+      "layout:/ layout:/segment-config/runtime-prefetchable",
+    );
+
+    const resnapshot = await snapshotRscResponse(restored);
+    expect(resnapshot.layoutIds).toEqual(snapshot.layoutIds);
+  });
+
+  it("does not sweep when cache is below capacity", () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
