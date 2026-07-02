@@ -440,10 +440,9 @@ export async function runPagesRequest(
 
     const dataKind = match.route.dataKind;
     if (
-      (dataKind !== undefined && dataKind !== "static" && dataKind !== "server") ||
+      dataKind !== "server" ||
       !isDataRequest ||
       !deps.hasMiddleware ||
-      dataKind === "static" ||
       request.headers.get("x-middleware-prefetch") !== "1"
     ) {
       return null;

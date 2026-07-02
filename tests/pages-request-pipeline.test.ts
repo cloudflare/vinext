@@ -289,7 +289,7 @@ describe("middleware", () => {
     expect(await result.response.json()).toEqual({});
   });
 
-  it("preserves legacy middleware data prefetch behavior when route data kind is unknown", async () => {
+  it("falls back to normal data handling when route data kind is unknown", async () => {
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
     const result = await runPagesRequest(
       makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
@@ -305,9 +305,9 @@ describe("middleware", () => {
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(renderPage).not.toHaveBeenCalled();
-    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
-    expect(await result.response.json()).toEqual({});
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
   });
 
   it("does not skip middleware data prefetches for unexpected route data kinds", async () => {
