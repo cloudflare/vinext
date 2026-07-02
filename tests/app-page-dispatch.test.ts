@@ -2089,7 +2089,7 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("regenerates stale intercepted RSC cache entries from the source route", async () => {
+  it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
     const currentRoute = createRoute({
       params: ["id"],
@@ -2172,20 +2172,15 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-    await expect(response.text()).resolves.toBe("stale-flight");
-    expect(typeof scheduledRender).toBe("function");
-    if (typeof scheduledRender !== "function") {
-      throw new Error("expected stale intercepted RSC response to schedule regeneration");
-    }
-
-    await scheduledRender();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight");
+    expect(scheduledRender).toBeNull();
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
     expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
-    expect(searchParamsArg.toString()).toBe("");
+    expect(searchParamsArg.toString()).toBe("tab=popular");
     expect(optsArg).toMatchObject({
       interceptionContext: "/feed",
       interceptParams: { id: "123" },
@@ -2193,13 +2188,8 @@ describe("app page dispatch", () => {
       interceptSlotKey: "modal@app/feed/@modal",
       interceptSourceMatchedUrl: "/feed",
     });
-    expect(options.isrSet).toHaveBeenCalledWith(
-      "rsc:/photos/123:slot:modal:/feed:/feed",
-      expect.objectContaining({ kind: "APP_PAGE" }),
-      60,
-      expect.arrayContaining(["/photos/123", "_N_T_/feed/page"]),
-      undefined,
-    );
+    expect(options.isrGet).not.toHaveBeenCalled();
+    expect(options.isrSet).not.toHaveBeenCalled();
   });
 
   it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {
@@ -2777,14 +2767,9 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(typeof scheduledRender).toBe("function");
-    if (typeof scheduledRender !== "function") {
-      throw new Error("expected stale response to schedule regeneration");
-    }
-
-    await scheduledRender();
-
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight");
+    expect(scheduledRender).toBeNull();
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
     const [routeArg] = buildPageElement.mock.calls[0];
     expect(routeArg).toBe(targetRoute);
