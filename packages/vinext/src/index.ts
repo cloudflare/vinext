@@ -419,6 +419,18 @@ type AstStaticDependencyDeclaration = ASTNode & {
   attributes?: unknown[];
 };
 
+type MagicStringTransformResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+};
+
+function toMagicStringTransformResult(output: MagicString): MagicStringTransformResult {
+  return {
+    code: output.toString(),
+    map: output.generateMap({ hires: "boundary" }),
+  };
+}
+
 function parserLanguageForScript(id: string): "ts" | "tsx" {
   const cleanId = stripViteModuleQuery(id).toLowerCase();
   return cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")
@@ -431,7 +443,33 @@ function isStylesheetSpecifier(specifier: string): boolean {
   return STYLESHEET_IMPORT_RE.test(specifier.toLowerCase());
 }
 
-function isolateGlobalNotFoundStylesheetImports(code: string, id: string): string | null {
+function isMdxModuleId(id: string): boolean {
+  return stripViteModuleQuery(id).toLowerCase().endsWith(".mdx");
+}
+
+function isolateMdxStylesheetImports(code: string): MagicStringTransformResult | null {
+  const importRe = /(^|[;\n])(\s*import\s*)(["'])([^"'\n;]+)(\3)/g;
+  let output: MagicString | null = null;
+  for (const match of code.matchAll(importRe)) {
+    const specifier = match[4];
+    if (!isStylesheetSpecifier(specifier)) continue;
+
+    const specifierStart = match.index! + match[1].length + match[2].length + match[3].length;
+    const specifierEnd = specifierStart + specifier.length;
+    output ??= new MagicString(code);
+    output.overwrite(specifierStart, specifierEnd, specifier + GLOBAL_NOT_FOUND_CSS_QUERY);
+  }
+  return output ? toMagicStringTransformResult(output) : null;
+}
+
+function isolateGlobalNotFoundStylesheetImports(
+  code: string,
+  id: string,
+): MagicStringTransformResult | null {
+  if (isMdxModuleId(id)) {
+    return isolateMdxStylesheetImports(code);
+  }
+
   let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, { lang: parserLanguageForScript(id) });
@@ -460,7 +498,7 @@ function isolateGlobalNotFoundStylesheetImports(code: string, id: string): strin
     );
   }
 
-  return output?.toString() ?? null;
+  return output ? toMagicStringTransformResult(output) : null;
 }
 
 function isScriptModuleId(id: string): boolean {
@@ -1490,14 +1528,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
       transform: {
         filter: {
-          id: /(?:^|[/\\])global-not-found\.[cm]?[jt]sx?(?:\?.*)?$/,
+          id: /(?:^|[/\\])global-not-found(?:\.[^./?\\]+)+(?:\?.*)?$/,
           code: /\.(?:css|scss|sass)['"]/,
         },
         handler(code: string, id: string) {
           const cleanId = normalizePathSeparators(stripViteModuleQuery(id));
           if (
             !globalNotFoundCssIsolationPath ||
-            cleanId !== normalizePathSeparators(globalNotFoundCssIsolationPath)
+            canonicalize(cleanId) !== canonicalize(globalNotFoundCssIsolationPath)
           ) {
             return null;
           }
