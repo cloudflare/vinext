@@ -1238,6 +1238,53 @@ describe("app page cache helpers", () => {
     expect(isrSetCalls).toEqual(["rsc:/fresh-rsc"]);
   });
 
+  it("omits provisional RSC cache state when pending dynamic usage may depend on query params", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSetCalls: string[] = [];
+
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("flight", {
+        headers: {
+          "Content-Type": "text/x-component",
+          "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/fresh-rsc",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/fresh-rsc"];
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet(key) {
+          isrSetCalls.push(key);
+        },
+        omitPendingDynamicCacheState: true,
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight");
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSetCalls).toEqual(["rsc:/fresh-rsc"]);
+  });
+
   it("skips RSC cache writes when dynamic usage appears during stream rendering", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const debugCalls: Array<[string, string]> = [];

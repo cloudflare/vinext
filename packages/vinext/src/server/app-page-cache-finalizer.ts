@@ -70,6 +70,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -235,7 +236,9 @@ export function finalizeAppPageRscCacheResponse(
   }
 
   const clientHeaders = new Headers(response.headers);
-  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
+  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+    omitCacheState: options.omitPendingDynamicCacheState === true,
+  });
 
   return new Response(response.body, {
     status: response.status,

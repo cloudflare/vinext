@@ -579,6 +579,50 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it("omits RSC cache state and skips cache writes when stream-time searchParams usage is dynamic", async () => {
+    const common = createCommonOptions();
+    const streamGate = createDeferred();
+    let dynamicUsed = false;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage() {
+        const value = dynamicUsed;
+        dynamicUsed = false;
+        return value;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      omitPendingDynamicCacheState: true,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            sent = true;
+            await streamGate.promise;
+            dynamicUsed = true;
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+          },
+        });
+      },
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(common.waitUntilPromises).toHaveLength(1);
+
+    streamGate.resolve();
+    await expect(response.text()).resolves.toBe("flight-data");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("does not cache RSC responses when skip transport omits layout records", async () => {
     const common = createCommonOptions();
     const isrDebug = vi.fn();

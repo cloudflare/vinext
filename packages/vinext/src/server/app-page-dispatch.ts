@@ -995,7 +995,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: hasActiveLoadingBoundary,
-    omitPendingDynamicCacheState: !options.isRscRequest && hasRequestSearchParams,
+    omitPendingDynamicCacheState: hasRequestSearchParams,
     formState: options.formState ?? null,
     isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
