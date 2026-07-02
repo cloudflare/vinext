@@ -41,7 +41,7 @@ const externalizeBareThirdPartySpecifiers = (
   if (isFirstParty(id)) return false;
   // Packages inlined into `dist` via `alwaysBundle` must keep resolving so they
   // get bundled rather than externalized.
-  if (id === "am-i-vibing" || id === "process-ancestry") return false;
+  if (id === "am-i-vibing" || id === "process-ancestry" || id === "pathslash") return false;
   return true;
 };
 
@@ -51,12 +51,15 @@ export default defineConfig({
     clean: true,
     deps: {
       // Agent detection is a CLI implementation detail, so inline it rather
-      // than requiring vinext consumers to install it.
-      alwaysBundle: ["am-i-vibing", "process-ancestry"],
+      // than requiring vinext consumers to install it. Same for pathslash:
+      // it is our own ~90-line node:path wrapper (zero deps), so bundling it
+      // keeps it out of consumers' install graphs.
+      alwaysBundle: ["am-i-vibing", "process-ancestry", "pathslash"],
       neverBundle: (id) =>
         id.includes("node_modules") &&
         !id.includes("am-i-vibing") &&
-        !id.includes("process-ancestry"),
+        !id.includes("process-ancestry") &&
+        !id.includes("pathslash"),
     },
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,

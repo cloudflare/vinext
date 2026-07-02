@@ -17,7 +17,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { spawn, spawnSync } from "node:child_process";
 import {
   detectProject,

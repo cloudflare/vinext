@@ -175,6 +175,7 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"

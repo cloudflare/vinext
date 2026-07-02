@@ -16,7 +16,7 @@
 import vinext from "./index.js";
 import { runPrerender } from "./build/run-prerender.js";
 import { emitPrerenderPathManifest } from "./build/prerender-paths.js";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -49,7 +49,6 @@ import {
   tryAcquireLockfile,
 } from "./server/dev-lockfile.js";
 import { generateRouteTypes } from "./typegen.js";
-import { normalizePathSeparators } from "./utils/path.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 import {
   findVinextRouteRootConfigInPlugins,
@@ -482,8 +481,8 @@ async function buildApp() {
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
-  const root = process.cwd();
-  const isApp = hasAppDir(normalizePathSeparators(root));
+  const root = toSlash(process.cwd());
+  const isApp = hasAppDir(root);
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
@@ -691,7 +690,7 @@ async function buildApp() {
     process.stdout.write("\x1b[0m");
     console.log(`  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     prerenderResult = await runPrerender({
-      root: normalizePathSeparators(process.cwd()),
+      root,
       concurrency: parsed.prerenderConcurrency,
     });
     await emitPrerenderPathManifest({
@@ -707,7 +706,7 @@ async function buildApp() {
   process.stdout.write("\x1b[0m");
   const { printBuildReport } = await import("./build/report.js");
   await printBuildReport({
-    root: normalizePathSeparators(process.cwd()),
+    root,
     pageExtensions: resolvedNextConfig.pageExtensions,
     prerenderResult: prerenderResult ?? undefined,
   });
@@ -816,7 +815,7 @@ async function check() {
   console.log(`\n  vinext check\n`);
   console.log("  Scanning project...\n");
 
-  const result = runCheck(normalizePathSeparators(process.cwd()));
+  const result = runCheck(toSlash(process.cwd()));
   console.log(formatReport(result));
 }
 
