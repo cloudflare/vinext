@@ -278,6 +278,10 @@ function isInsideDirectory(dir: string, filePath: string): boolean {
   return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
 
@@ -2143,6 +2147,47 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
         clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
+        // Next.js skips bundling a default native/heavy package list plus
+        // `serverExternalPackages`. Apply that single policy to every Node
+        // server build boundary; Vite's top-level `ssr.*` does not cover
+        // custom RSC/SSR environments.
+        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
+          ? uniqueStrings([...config.ssr.external, ...nextServerExternal])
+          : config.ssr?.external === true
+            ? true
+            : nextServerExternal;
+        const externalizeSsrReactInDev =
+          env.command === "serve" && !hasCloudflarePlugin && !hasNitroPlugin;
+        const pagesNodeServerExternal: string[] | true =
+          userSsrExternal === true
+            ? true
+            : uniqueStrings([
+                "react",
+                "react-dom",
+                "react-dom/server",
+                "ipaddr.js",
+                ...userSsrExternal,
+              ]);
+        const appRscServerExternal: string[] | true =
+          userSsrExternal === true
+            ? true
+            : uniqueStrings([
+                "satori",
+                "@resvg/resvg-js",
+                "yoga-wasm-web",
+                ...(env?.command === "serve" && _canExternalizeAppRscHandler
+                  ? ["vinext/server/app-rsc-handler"]
+                  : []),
+                ...userSsrExternal,
+              ]);
+        const appSsrServerExternal: string[] | true =
+          userSsrExternal === true
+            ? true
+            : uniqueStrings([
+                ...userSsrExternal,
+                "ipaddr.js",
+                ...(externalizeSsrReactInDev ? SSR_EXTERNAL_REACT_ENTRIES : []),
+              ]);
         const devHmrConfig =
           config.server?.hmr === false
             ? false
@@ -2371,14 +2416,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? { ssr: { external: true as const } }
               : {
                   ssr: {
-                    external: [
-                      "react",
-                      "react-dom",
-                      "react-dom/server",
-                      "ipaddr.js",
-                      ...(Array.isArray(config.ssr?.external) ? config.ssr.external : []),
-                      ...nextServerExternal,
-                    ],
+                    external: pagesNodeServerExternal,
                     noExternal: true,
                   },
                 }),
@@ -2551,29 +2589,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           },
         };
 
-        // Collect user-provided ssr.external so we can propagate it into
-        // both the RSC and SSR environment configs. Vite's `ssr.*` config
-        // only applies to the default `ssr` environment, not custom ones
-        // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
-        // in ssr.external must be externalized from ALL server environments.
-        // Vite's SSROptions.external is `string[] | true`; handle both forms.
-        //
-        // Also merge in `serverExternalPackages` from next.config (and the
-        // legacy `experimental.serverComponentsExternalPackages` alias). These
-        // are packages that Next.js intentionally skips bundling and loads
-        // natively — e.g. packages that import Node-specific entry points via
-        // conditional exports (like `file-type` which exports `fileTypeFromFile`
-        // only from its `node` condition, not from the universal `default` one).
-        // Without externalizing them, Vite's optimizer picks the wrong export
-        // condition and the build fails with MISSING_EXPORT errors.
-        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
-          ? [...config.ssr.external, ...nextServerExternal]
-          : config.ssr?.external === true
-            ? true
-            : nextServerExternal;
-        const externalizeSsrReactInDev =
-          env.command === "serve" && !hasCloudflarePlugin && !hasNitroPlugin;
-
         // Capture top-level optimizeDeps populated by earlier plugins
         // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
         // Moved above the hasAppDir branch so both Pages Router and App
@@ -2660,18 +2675,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // Note: Do NOT externalize react/react-dom here — they must
                       // be bundled with the "react-server" condition for RSC.
                       // Skip when targeting bundled runtimes (Cloudflare/Nitro).
-                      external:
-                        userSsrExternal === true
-                          ? true
-                          : [
-                              "satori",
-                              "@resvg/resvg-js",
-                              "yoga-wasm-web",
-                              ...(env?.command === "serve" && _canExternalizeAppRscHandler
-                                ? ["vinext/server/app-rsc-handler"]
-                                : []),
-                              ...userSsrExternal,
-                            ],
+                      external: appRscServerExternal,
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -2711,17 +2715,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? {}
                 : {
                     resolve: {
-                      external:
-                        userSsrExternal === true
-                          ? true
-                          : [
-                              ...userSsrExternal,
-                              "ipaddr.js",
-                              // Node can load the SSR React runtime natively.
-                              // Keeping it out of Vite's transform graph avoids
-                              // reparsing the large Flight client decoder.
-                              ...(externalizeSsrReactInDev ? SSR_EXTERNAL_REACT_ENTRIES : []),
-                            ],
+                      external: appSsrServerExternal,
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -2779,13 +2773,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               consumer: "client",
               optimizeDeps: {
                 // Exclude server-external packages from the client dep optimizer.
-                // These packages are server-only by design (listed in next.config's
-                // `serverExternalPackages`). If the client optimizer crawls into
-                // them through app/ entries, it will use browser export conditions
-                // and pick the wrong conditional export (e.g. `file-type` exports
-                // `fileTypeFromFile` only from its `node` condition via `index.js`,
-                // but the browser optimizer resolves to `core.js` which lacks it,
-                // causing MISSING_EXPORT build failures).
+                // These packages are server-only by design (Next.js defaults plus
+                // next.config's `serverExternalPackages`). If the client optimizer
+                // crawls into them through app/ entries, it will use browser export
+                // conditions and pick the wrong conditional export (e.g. `file-type`
+                // exports `fileTypeFromFile` only from its `node` condition via
+                // `index.js`, but the browser optimizer resolves to `core.js` which
+                // lacks it, causing MISSING_EXPORT build failures).
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
@@ -2884,16 +2878,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
             ssr: {
-              resolve: {
-                external: [
-                  "react",
-                  "react-dom",
-                  "react-dom/server",
-                  "ipaddr.js",
-                  ...nextServerExternal,
-                ],
-                noExternal: true as const,
-              },
+              resolve:
+                pagesNodeServerExternal === true
+                  ? { external: true as const }
+                  : {
+                      external: pagesNodeServerExternal,
+                      noExternal: true as const,
+                    },
               optimizeDeps: {
                 // `ipaddr.js` is imported by the next/image shim for
                 // private-IP validation and is externalized via

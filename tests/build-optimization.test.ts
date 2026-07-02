@@ -35,6 +35,7 @@ import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { NEXT_SERVER_EXTERNAL_PACKAGES } from "../packages/vinext/src/config/server-external-packages.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -507,6 +508,112 @@ describe("optimizeDeps.exclude for vinext", () => {
       }
     } finally {
       await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("externalizes Next.js default server packages in App Router Node environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-default-server-externals-app-"),
+    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { serverExternalPackages: ["custom-native-package"] };`,
+    );
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      expect(NEXT_SERVER_EXTERNAL_PACKAGES).toContain("sqlite3");
+
+      const rscExternal = result.environments.rsc.resolve?.external ?? [];
+      expect(rscExternal).toContain("sqlite3");
+      expect(rscExternal).toContain("custom-native-package");
+
+      const ssrExternal = result.environments.ssr.resolve?.external ?? [];
+      expect(ssrExternal).toContain("sqlite3");
+      expect(ssrExternal).toContain("custom-native-package");
+      expect(ssrExternal).toContain("ipaddr.js");
+      expect(result.environments.ssr.resolve?.noExternal).toBe(true);
+
+      const clientExclude = result.environments.client.optimizeDeps?.exclude ?? [];
+      expect(clientExclude).toContain("sqlite3");
+      expect(clientExclude).toContain("custom-native-package");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("externalizes Next.js default server packages in plain Pages Router Node builds", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-ts-test-default-server-externals-pages-"),
+    );
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { serverExternalPackages: ["custom-native-package"] };`,
+    );
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const topLevelExternal = result.ssr?.external ?? [];
+      expect(topLevelExternal).toContain("sqlite3");
+      expect(topLevelExternal).toContain("custom-native-package");
+      expect(topLevelExternal).toContain("react");
+      expect(result.ssr?.noExternal).toBe(true);
+
+      const pagesExternal = result.environments?.ssr?.resolve?.external ?? [];
+      expect(pagesExternal).toContain("sqlite3");
+      expect(pagesExternal).toContain("custom-native-package");
+      expect(pagesExternal).toContain("react");
+      expect(result.environments?.ssr?.resolve?.noExternal).toBe(true);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
 

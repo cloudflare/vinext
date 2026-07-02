@@ -1,6 +1,6 @@
 // Keep in sync with Next.js 16.2.6:
 // packages/next/src/lib/server-external-packages.jsonc
-const DEFAULT_SERVER_EXTERNAL_PACKAGES = [
+export const NEXT_SERVER_EXTERNAL_PACKAGES = [
   "@alinea/generated",
   "@appsignal/nodejs",
   "@aws-sdk/client-s3",
@@ -93,6 +93,6 @@ export function mergeServerExternalPackages(
       `The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': ${conflicts.join(", ")}`,
     );
   }
-  const defaults = DEFAULT_SERVER_EXTERNAL_PACKAGES.filter((name) => !transpiled.has(name));
+  const defaults = NEXT_SERVER_EXTERNAL_PACKAGES.filter((name) => !transpiled.has(name));
   return [...new Set([...defaults, ...userPackages])];
 }
