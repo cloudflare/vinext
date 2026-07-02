@@ -141,6 +141,7 @@
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
+    "pathslash": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },

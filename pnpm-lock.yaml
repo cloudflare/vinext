@@ -174,6 +174,9 @@ catalogs:
     nuqs:
       specifier: ^2.8.8
       version: 2.8.8
+    pathslash:
+      specifier: ^0.1.0
+      version: 0.1.0
     playwright:
       specifier: ^1.60.0
       version: 1.60.0
@@ -1002,6 +1005,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      pathslash:
+        specifier: 'catalog:'
+        version: 0.1.0
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.2.1
         version: '@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)'
@@ -7004,6 +7010,10 @@ packages:
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
+  pathslash@0.1.0:
+    resolution: {integrity: sha512-mJSfhMv8Ra0gN4xGqzRQ7IpUSc4v6rV+r3X5FY9HrxC9Te2ZvtZe6RPS6UDmgOVUI5DKGDHuPXRuNzhffawG2Q==}
+    engines: {node: '>=22'}
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -12760,6 +12770,8 @@ snapshots:
   path-type@4.0.0: {}
 
   pathe@2.0.3: {}
+
+  pathslash@0.1.0: {}
 
   picocolors@1.1.1: {}
 

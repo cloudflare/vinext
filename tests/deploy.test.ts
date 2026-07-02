@@ -44,6 +44,7 @@ import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import {
   buildPagesClientAssetsModule,
   writePagesClientAssetsModuleIfMissing,
@@ -2608,13 +2609,17 @@ describe("findInNodeModules", () => {
   it("finds a package in the immediate node_modules", () => {
     mkdir(tmpDir, "node_modules/@cloudflare/vite-plugin");
     const result = findInNodeModules(tmpDir, "@cloudflare/vite-plugin");
-    expect(result).toBe(path.join(tmpDir, "node_modules", "@cloudflare", "vite-plugin"));
+    expect(result).toBe(
+      normalizePathSeparators(path.join(tmpDir, "node_modules", "@cloudflare", "vite-plugin")),
+    );
   });
 
   it("finds a binary in node_modules/.bin", () => {
     writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
     const result = findInNodeModules(tmpDir, ".bin/wrangler");
-    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+    expect(result).toBe(
+      normalizePathSeparators(path.join(tmpDir, "node_modules", ".bin", "wrangler")),
+    );
   });
 
   it("returns null when not found anywhere", () => {
@@ -2627,7 +2632,9 @@ describe("findInNodeModules", () => {
     fs.mkdirSync(appDir, { recursive: true });
 
     const result = findInNodeModules(appDir, ".bin/wrangler");
-    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+    expect(result).toBe(
+      normalizePathSeparators(path.join(tmpDir, "node_modules", ".bin", "wrangler")),
+    );
   });
 
   it("prefers the closest node_modules when both app and root have the package", () => {
@@ -2636,7 +2643,9 @@ describe("findInNodeModules", () => {
     mkdir(appDir, "node_modules/@cloudflare/vite-plugin");
 
     const result = findInNodeModules(appDir, "@cloudflare/vite-plugin");
-    expect(result).toBe(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin"));
+    expect(result).toBe(
+      normalizePathSeparators(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin")),
+    );
   });
 });
 
