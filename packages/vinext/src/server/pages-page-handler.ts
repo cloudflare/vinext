@@ -428,13 +428,16 @@ export function createPagesPageHandler(
         const routePattern = patternToNextFormat(route.pattern);
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
-        const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
+        const pageModule = route.module;
+        const query =
+          typeof pageModule.getStaticProps === "function"
+            ? { ...params }
+            : mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
 
         // Model Pages Router readiness for `next/navigation` compat hooks. The
         // serialized `__NEXT_DATA__` flags (gssp/gsp/gip/appGip/autoExport) plus
         // the configured-rewrites flag decide the initial `router.isReady` value,
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
-        const pageModule = route.module;
         const pagesNextData = buildPagesReadinessNextData({
           pageModule,
           appComponent: AppComponent as { getInitialProps?: unknown } | null,
