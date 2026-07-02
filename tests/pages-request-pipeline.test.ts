@@ -43,6 +43,10 @@ function makeRenderPage(status = 200, body = "ok") {
   );
 }
 
+function makePageMatch(pattern: string, isDynamic = pattern.includes(":")) {
+  return { route: { isDynamic, pattern } };
+}
+
 // 1. Trailing-slash: /foo/ with trailingSlash: false → {type:"response"} with status 308
 describe("trailing slash normalization", () => {
   it("redirects /foo/ to /foo when trailingSlash is false", async () => {
@@ -400,16 +404,45 @@ describe("middleware", () => {
     );
   });
 
+  it("exposes the matched route on ordinary Pages data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        matchPageRoute: () => makePageMatch("/ssr-page", false),
+        renderPage: makeRenderPage(200, '{"pageProps":{"message":"Hello"}}'),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-rewrite")).toBeNull();
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssr-page");
+  });
+
   it.each([
-    { i18nConfig: null, requestPath: "/ssr-page", rewritePath: "/ssr-page-2" },
+    {
+      i18nConfig: null,
+      requestPath: "/ssr-page",
+      rewritePath: "/ssr-page-2",
+      expectedMatchedPath: "/ssr-page-2",
+    },
     {
       i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
       requestPath: "/en/ssr-page",
       rewritePath: "/en/ssr-page-2",
+      expectedMatchedPath: "/en/ssr-page-2",
+    },
+    {
+      i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+      requestPath: "/en/ssr-page",
+      rewritePath: "/ssr-page-2",
+      expectedMatchedPath: "/en/ssr-page-2",
     },
   ])(
     "exposes the middleware rewrite target on real Pages data responses ($requestPath)",
-    async ({ i18nConfig, requestPath, rewritePath }) => {
+    async ({ i18nConfig, requestPath, rewritePath, expectedMatchedPath }) => {
       const result = await runPagesRequest(
         makeRequest(requestPath),
         baseDeps({
@@ -427,9 +460,33 @@ describe("middleware", () => {
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
       expect(result.response.headers.get("x-nextjs-rewrite")).toBe(rewritePath);
+      expect(result.response.headers.get("x-nextjs-matched-path")).toBe(expectedMatchedPath);
       expect(result.response.headers.get("x-middleware-rewrite")).toBeNull();
     },
   );
+
+  it("exposes the matched dynamic route pattern on Pages data middleware rewrites", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/mw-rewrite-dynamic-query?hello=world"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        matchPageRoute: (pathname) =>
+          pathname === "/posts/first" ? makePageMatch("/posts/:id", true) : null,
+        runMiddleware: makeMiddleware({
+          continue: true,
+          rewriteUrl: "/posts/first?hello=world",
+        }),
+        renderPage: makeRenderPage(200, '{"pageProps":{"id":"first"}}'),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/posts/first?hello=world");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/posts/[id]");
+    expect(result.response.headers.get("x-middleware-rewrite")).toBeNull();
+  });
 
   it("does not expose the middleware rewrite target on HTML responses", async () => {
     const result = await runPagesRequest(
@@ -446,6 +503,7 @@ describe("middleware", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.headers.get("x-nextjs-rewrite")).toBeNull();
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 
   it("exposes the final config rewrite URL with appended source params", async () => {
@@ -463,6 +521,7 @@ describe("middleware", () => {
           afterFiles: [],
           fallback: [],
         },
+        matchPageRoute: (pathname) => (pathname === "/ssg" ? makePageMatch("/ssg", false) : null),
         renderPage: makeRenderPage(200),
       }),
     );
@@ -470,6 +529,7 @@ describe("middleware", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/ssg?rewriteSlug=post-2");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
   });
 
   // 6. Middleware response short-circuit → {type:"response"} with middleware response
@@ -687,7 +747,7 @@ describe("beforeFiles rewrites", () => {
 
   it("excludes beforeFiles fragments from Pages route matching", async () => {
     const matchPageRoute = vi.fn((pathname: string) =>
-      pathname === "/to" ? { route: { isDynamic: false } } : null,
+      pathname === "/to" ? makePageMatch("/to", false) : null,
     );
     await runPagesRequest(
       makeRequest("/from"),
@@ -975,7 +1035,7 @@ describe("afterFiles rewrites", () => {
     const result = await runPagesRequest(
       makeRequest("/after-control"),
       baseDeps({
-        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false } }),
+        matchPageRoute: vi.fn().mockReturnValue(makePageMatch("/after-control", false)),
         configRewrites: {
           beforeFiles: [],
           afterFiles: [{ source: "/after-control", destination: "/file.txt" }],
@@ -1031,7 +1091,7 @@ describe("afterFiles rewrites", () => {
     const result = await runPagesRequest(
       req,
       baseDeps({
-        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: true } }),
+        matchPageRoute: vi.fn().mockReturnValue(makePageMatch("/dynamic-route", true)),
         configRewrites: {
           beforeFiles: [],
           afterFiles: [{ source: "/dynamic-route", destination: "/rewritten" }],
@@ -1056,7 +1116,7 @@ describe("afterFiles rewrites", () => {
     const result = await runPagesRequest(
       req,
       baseDeps({
-        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false } }),
+        matchPageRoute: vi.fn().mockReturnValue(makePageMatch("/static-page", false)),
         configRewrites: {
           beforeFiles: [],
           afterFiles: [{ source: "/static-page", destination: "/rewritten" }],
@@ -1079,7 +1139,7 @@ describe("afterFiles rewrites", () => {
   it("continues afterFiles rewrites until a Pages destination resolves", async () => {
     const renderPage = makeRenderPage(200);
     const matchPageRoute = vi.fn((pathname: string) =>
-      pathname === "/resolved" ? { route: { isDynamic: false } } : null,
+      pathname === "/resolved" ? makePageMatch("/resolved", false) : null,
     );
     await runPagesRequest(
       makeRequest("/from"),
@@ -1351,7 +1411,7 @@ describe("deferred error page re-render on 404", () => {
       async (_request: Request, url: string) => new Response(`data ${url}`, { status: 200 }),
     );
     const matchPageRoute = vi.fn((pathname: string) =>
-      pathname === "/fallback-target" ? ({ route: { isDynamic: false } } as any) : null,
+      pathname === "/fallback-target" ? makePageMatch("/fallback-target", false) : null,
     );
 
     const result = await runPagesRequest(

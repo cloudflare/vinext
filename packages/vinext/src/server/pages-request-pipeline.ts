@@ -40,6 +40,7 @@ import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pa
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { addLocalePrefix, getLocalePathPrefix } from "../utils/domain-locale.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -83,6 +84,10 @@ export type MiddlewareResult = {
   waitUntilPromises?: Promise<unknown>[];
 };
 
+type PagesRouteMatch = {
+  route: { isDynamic: boolean; pattern?: string };
+};
+
 // The deps object injected by each runtime adapter
 export type PagesPipelineDeps = {
   // Config values
@@ -110,12 +115,7 @@ export type PagesPipelineDeps = {
   rawSearch?: string;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?:
-    | ((
-        pathname: string,
-        request: Request,
-      ) => { route: { isDynamic: boolean; pattern?: string } } | null)
-    | null;
+  matchPageRoute?: ((pathname: string, request: Request) => PagesRouteMatch | null) | null;
   runMiddleware?:
     | ((
         request: Request,
@@ -422,18 +422,22 @@ export async function runPagesRequest(
 
   const matchResolvedPathname = (p: string): string =>
     i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+  const localizeMatchedPathname = (routePathname: string, concretePathname: string): string => {
+    if (!i18nConfig) return routePathname;
+
+    if (getLocalePathPrefix(routePathname, i18nConfig.locales)) return routePathname;
+
+    const concreteLocale = getLocalePathPrefix(concretePathname, i18nConfig.locales);
+    if (concreteLocale) return addLocalePrefix(routePathname, concreteLocale, "");
+
+    return normalizeDefaultLocalePathname(routePathname, i18nConfig, {
+      hostname: requestHostname,
+    });
+  };
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
-    if (!i18nConfig) return matchedPathname;
-    const resolvedLocale = resolvedPathname.split("/", 3)[1];
-    if (resolvedLocale && i18nConfig.locales.includes(resolvedLocale)) {
-      return matchedPathname === "/"
-        ? `/${resolvedLocale}`
-        : `/${resolvedLocale}${matchedPathname}`;
-    }
-    return matchResolvedPathname(matchedPathname);
+    return localizeMatchedPathname(matchedPathname, resolvedPathname);
   };
-
   // Step 7: Config headers staging
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
@@ -580,11 +584,14 @@ export async function runPagesRequest(
   }
 
   const refreshDataRewriteHeader = () => {
-    if (
-      (isDataReq || isDataRequest) &&
-      resolvedUrl !== originalResolvedUrl &&
-      !isExternalUrl(resolvedUrl)
-    ) {
+    const isPagesDataRequest = isDataReq || isDataRequest;
+    if (!isPagesDataRequest || isExternalUrl(resolvedUrl)) {
+      delete middlewareHeaders["x-nextjs-rewrite"];
+      delete middlewareHeaders["x-nextjs-matched-path"];
+      return;
+    }
+
+    if (resolvedUrl !== originalResolvedUrl) {
       middlewareHeaders["x-nextjs-rewrite"] = resolvedUrl;
     } else {
       delete middlewareHeaders["x-nextjs-rewrite"];
@@ -704,11 +711,7 @@ export async function runPagesRequest(
         defaultContentType: "application/json",
       };
     }
-    if (
-      (isDataReq || isDataRequest) &&
-      renderPageMatch &&
-      (middlewareStatus ?? response.status) === 200
-    ) {
+    if ((isDataReq || isDataRequest) && (middlewareStatus ?? response.status) === 200) {
       matchedPathHeaders["x-nextjs-matched-path"] = matchedPathnameForRoute(
         renderPageMatch?.route.pattern,
       );
@@ -735,7 +738,8 @@ export async function runPagesRequest(
       ? deps.matchPageRoute(resolvedPathname, request)
       : null
     : pageMatch;
-  if (!devPageMatch && configRewrites.fallback?.length) {
+  let finalDevPageMatch = devPageMatch;
+  if (!finalDevPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
       const fallbackRewrite = matchRewrite(
         matchResolvedPathname(resolvedPathname),
@@ -754,7 +758,10 @@ export async function runPagesRequest(
       if (fallbackFilesystemResult) return fallbackFilesystemResult;
       const fallbackApiResult = await handleResolvedApiRoute();
       if (fallbackApiResult) return fallbackApiResult;
-      if (deps.matchPageRoute?.(resolvedPathname, request)) break;
+      finalDevPageMatch = deps.matchPageRoute
+        ? deps.matchPageRoute(resolvedPathname, request)
+        : null;
+      if (finalDevPageMatch) break;
     }
   }
   refreshDataRewriteHeader();
