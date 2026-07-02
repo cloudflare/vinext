@@ -1,4 +1,11 @@
-import { Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import {
+  Fragment,
+  Suspense,
+  createElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -188,6 +195,27 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
       createElement(Slot, { id: routeId }),
     ),
   );
+}
+
+async function renderRouteEntryFirstChunk(elements: AppElements, routeId: string): Promise<string> {
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  const stream = await renderToReadableStream(
+    createElement(
+      ElementsContext.Provider,
+      { value: elements },
+      createElement(Slot, { id: routeId }),
+    ),
+    {
+      onError(error: unknown) {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    },
+  );
+  const reader = stream.getReader();
+  const { value } = await reader.read();
+  await reader.cancel().catch(() => {});
+  return new TextDecoder().decode(value);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -905,9 +933,19 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("renders page Suspense fallbacks for loading-shell prefetches without a route loading boundary", async () => {
+    function DynamicContent(): ReactNode {
+      throw new Promise<never>(() => {});
+    }
+    function SuspensePage() {
+      return createElement(
+        Suspense,
+        { fallback: createElement("div", null, "Loading dynamic data...") },
+        createElement(DynamicContent),
+      );
+    }
     const elements = buildAppPageElements({
-      element: createElement(PageProbe),
+      element: createElement(SuspensePage),
       makeThenableParams(params) {
         return Promise.resolve(params);
       },
@@ -931,11 +969,11 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["page:/dashboard"]).not.toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+    const html = await withTimeout(renderRouteEntryFirstChunk(elements, "route:/dashboard"), 1_000);
 
-    expect(html).not.toContain("Page");
+    expect(html).toContain("Loading dynamic data...");
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {

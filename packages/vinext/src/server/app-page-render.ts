@@ -37,7 +37,10 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -541,6 +544,36 @@ function createRenderLifecycleSkipDisposition(input: {
   return plan.skipDisposition;
 }
 
+function createDynamicPrefetchAfterShellSkipDisposition(input: {
+  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  isRscRequest: boolean;
+  layoutFlags: Readonly<Record<string, "s" | "d">>;
+  renderMode: AppRscRenderMode | undefined;
+}): ClientReuseManifestSkipDisposition | undefined {
+  if (
+    !input.isRscRequest ||
+    input.renderMode !== APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL ||
+    !isAppElementsRecord(input.element)
+  ) {
+    return undefined;
+  }
+
+  const skippedEntryIds = Object.entries(input.layoutFlags)
+    .filter(([id, flag]) => flag === "s" && AppElementsWire.parseElementKey(id)?.kind === "layout")
+    .map(([id]) => id);
+
+  if (skippedEntryIds.length === 0) {
+    return undefined;
+  }
+
+  return {
+    code: "SKIP_STATIC_LAYOUT_VERIFIED",
+    enabled: true,
+    mode: "skipStaticLayout",
+    skippedEntryIds,
+  };
+}
+
 function isSkipTransportEnabled(
   skipDisposition: ClientReuseManifestSkipDisposition | undefined,
 ): boolean {
@@ -692,6 +725,12 @@ export async function renderAppPageLifecycle(
   });
   const skipDisposition =
     options.skipDisposition ??
+    createDynamicPrefetchAfterShellSkipDisposition({
+      element: options.element,
+      isRscRequest: options.isRscRequest,
+      layoutFlags,
+      renderMode: options.renderMode,
+    }) ??
     createRenderLifecycleSkipDisposition({
       artifactCompatibility,
       cleanPathname: options.cleanPathname,

@@ -23,6 +23,10 @@ import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+  type AppRscRenderMode,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
   type ClientReuseManifestSkipDisposition,
@@ -1308,6 +1312,7 @@ describe("layoutFlags injection into RSC payload", () => {
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
     skipDisposition?: ClientReuseManifestSkipDisposition;
+    renderMode?: AppRscRenderMode;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
 
@@ -1355,6 +1360,7 @@ describe("layoutFlags injection into RSC payload", () => {
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
+      renderMode: overrides.renderMode,
       skipDisposition: overrides.skipDisposition,
     };
 
@@ -1586,6 +1592,49 @@ describe("layoutFlags injection into RSC payload", () => {
       "layout:/": "s",
       "layout:/blog": "s",
     });
+  });
+
+  it("omits static layouts from dynamic-on-hover payloads after a shell prefetch", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/dynamic-on-hover/dynamic-on-hover.test.ts
+    let classificationCallCount = 0;
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/dynamic": "static-layout",
+        "layout:/dynamic/private": "dynamic-layout",
+        "page:/dynamic/private": "dynamic-page",
+      },
+      layoutCount: 3,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId(index: number) {
+          return index === 0
+            ? "layout:/"
+            : index === 1
+              ? "layout:/dynamic"
+              : "layout:/dynamic/private";
+        },
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          classificationCallCount++;
+          const result = await fn();
+          return { result, dynamicDetected: classificationCallCount === 1 };
+        },
+      },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+    });
+
+    await renderAppPageLifecycle(options);
+
+    expect(Object.hasOwn(getCapturedElement(), "layout:/")).toBe(false);
+    expect(Object.hasOwn(getCapturedElement(), "layout:/dynamic")).toBe(false);
+    expect(getCapturedElement()["layout:/dynamic/private"]).toBe("dynamic-layout");
+    expect(getCapturedElement()["page:/dynamic/private"]).toBe("dynamic-page");
+    expect(getCapturedElement()[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(
+      expect.arrayContaining(["layout:/", "layout:/dynamic"]),
+    );
   });
 
   it("does not apply skip transport while producing an HTML response", async () => {

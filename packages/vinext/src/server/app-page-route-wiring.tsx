@@ -707,7 +707,7 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
-  elements[pageElementId] = isPrefetchLoadingShell
+  elements[pageElementId] = shouldRenderPrefetchLoadingShell
     ? null
     : renderAfterAppDependencies(options.element, pageDependencies);
 
@@ -936,17 +936,13 @@ export function buildAppPageElements<
     </LayoutSegmentProvider>
   );
 
-  if (isPrefetchLoadingShell) {
+  if (isPrefetchLoadingShell && routeLoadingComponent !== null) {
     // A prefetch loading shell is a cached payload, not a committed navigation,
     // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
-    if (routeLoadingComponent === null) {
-      routeChildren = null;
-    } else {
-      const RouteLoadingComponent = routeLoadingComponent;
-      routeChildren = <RouteLoadingComponent />;
-    }
+    const RouteLoadingComponent = routeLoadingComponent;
+    routeChildren = <RouteLoadingComponent />;
   } else {
     // Wrap the page slot in a per-segment RedirectBoundary so that a
     // redirect() thrown from a server component (or a client component

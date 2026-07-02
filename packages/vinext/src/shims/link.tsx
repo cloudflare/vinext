@@ -115,7 +115,7 @@ type LinkProps = {
   children?: React.ReactNode;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
 
-type LinkPrefetchMode = "disabled" | "auto" | "full" | "full-after-shell";
+type LinkPrefetchMode = "disabled" | "auto" | "auto-shell" | "full" | "full-after-shell";
 
 declare global {
   // Window is an ambient interface from lib.dom; interface merging is required
@@ -446,7 +446,10 @@ function prefetchUrl(
           navigation,
           { AppElementsWire },
           rscCacheBusting,
-          { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+          {
+            APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL,
+            APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+          },
           headersModule,
           { resolveHybridClientRewriteHref, resolveHybridClientRouteOwner },
         ] = await Promise.all([
@@ -488,9 +491,11 @@ function prefetchUrl(
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
-            : mode === "full-after-shell"
-              ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
-              : resolveFullAppRoutePrefetch();
+            : mode === "auto-shell"
+              ? { cacheForNavigation: false, prefetchShellFirst: true, shouldPrefetch: true }
+              : mode === "full-after-shell"
+                ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
+                : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -501,7 +506,9 @@ function prefetchUrl(
           interceptionContext,
           renderMode: isOptimisticRouteShellPrefetch
             ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-            : undefined,
+            : mode === "full-after-shell"
+              ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_AFTER_SHELL
+              : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
@@ -545,7 +552,7 @@ function prefetchUrl(
               }),
             priority,
           );
-        const fetchLoadingShellForReuse = async (): Promise<void> => {
+        const fetchLoadingShellForReuse = async (requireFresh = false): Promise<void> => {
           const shellHeaders = createRscRequestHeaders({
             interceptionContext,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
@@ -586,6 +593,16 @@ function prefetchUrl(
             shellEntry = shellCache.get(shellCacheKey);
           }
           await shellEntry?.pending?.catch(() => {});
+          if (requireFresh) {
+            const settledShellEntry = shellCache.get(shellCacheKey);
+            if (
+              settledShellEntry?.outcome !== "cache-seeded" ||
+              settledShellEntry.expiresAt === undefined ||
+              settledShellEntry.expiresAt <= Date.now()
+            ) {
+              throw new Error("Unable to upgrade prefetch without a fresh shell payload");
+            }
+          }
         };
         const fetchAliasCacheHitProbe = async (): Promise<Response> => {
           const probeHeaders = createRscRequestHeaders({
@@ -647,7 +664,7 @@ function prefetchUrl(
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
-                  await fetchLoadingShellForReuse();
+                  await fetchLoadingShellForReuse(true);
                   return fetchFullRscPayload();
                 }
                 const shellHeaders = createRscRequestHeaders({
@@ -693,6 +710,14 @@ function prefetchUrl(
                   shellEntry = shellCache.get(shellCacheKey);
                 }
                 await shellEntry?.pending?.catch(() => {});
+                const settledShellEntry = shellCache.get(shellCacheKey);
+                if (
+                  settledShellEntry?.outcome !== "cache-seeded" ||
+                  settledShellEntry.expiresAt === undefined ||
+                  settledShellEntry.expiresAt <= Date.now()
+                ) {
+                  throw new Error("Unable to upgrade prefetch without a fresh shell payload");
+                }
                 return fetchFullRscPayload();
               })()
             : fetchFullRscPayload();
@@ -1170,10 +1195,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!observer) return;
 
     registerVisibleLinkPing();
+    const viewportPrefetchMode =
+      unstable_dynamicOnHover && prefetchMode === "auto" ? "auto-shell" : prefetchMode;
     const instance: LinkPrefetchInstance = {
       href: hrefToPrefetch,
       isVisible: false,
-      mode: prefetchMode,
+      mode: viewportPrefetchMode,
       pagesRouteHref:
         normalizedRouteHref === normalizedHref
           ? undefined
@@ -1195,7 +1222,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref]);
+  }, [
+    shouldViewportPrefetch,
+    prefetchMode,
+    normalizedHref,
+    normalizedRouteHref,
+    unstable_dynamicOnHover,
+  ]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
