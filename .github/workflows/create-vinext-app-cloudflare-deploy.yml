@@ -45,6 +45,7 @@ jobs:
       - name: Scaffold a fresh create-vinext-app project
         run: >-
           vp dlx
+          --config.minimumReleaseAgeExclude=vinext
           --package "${{ runner.temp }}"/create-vinext-app-*.tgz
           --package "${{ runner.temp }}"/vinext-[0-9]*.tgz
           create-vinext-app "${{ runner.temp }}/cva-cloudflare"
