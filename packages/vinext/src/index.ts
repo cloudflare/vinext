@@ -5401,6 +5401,42 @@ export const loadServerActionClient = ${
         return { define: serverDefines };
       },
     },
+    // Client-side `global` polyfill. Next.js exposes the Node-style `global`
+    // alias in browser bundles: webpack via its `node.global` runtime shim,
+    // Turbopack by compile-time rewriting the free `global` identifier to its
+    // globalThis shortcut and folding `typeof global` to "object" (see
+    // turbopack/crates/turbopack-ecmascript/src/references/mod.rs). Client
+    // dependencies (e.g. use-dark-mode) read `global` directly and throw
+    // `ReferenceError: global is not defined` in the browser without it.
+    //
+    // Mirror that with a client-environment-scoped
+    // `define: { global: "globalThis" }`. In builds Vite statically rewrites
+    // free `global` references (Turbopack-style); in dev it injects
+    // `"global": globalThis` into the client env entry's runtime defines
+    // (`__DEFINES__` in /@vite/env), which assigns `globalThis.global`
+    // before user code runs — webpack-style. Either way `typeof global` is
+    // "object" in the browser, matching Next.js. Server environments are
+    // deliberately left alone — `global` is the real Node global there.
+    //
+    // Pre-bundled dependencies never go through the plugin transform
+    // pipeline and dev runtime defines don't reach the optimizer, so the
+    // same define is layered into the client dep optimizer
+    // (rolldownOptions.transform.define / esbuildOptions.define), the same
+    // channel getDepOptimizeNodeEnvOptions uses for NODE_ENV.
+    {
+      name: "vinext:client-global-define",
+      configEnvironment(name) {
+        if (name !== "client") return null;
+        // A user-configured `compiler.define.global` wins — Turbopack's
+        // free-var map inserts the built-in with or_insert semantics.
+        if (Object.hasOwn(nextConfig.compilerDefine, "global")) return null;
+        const define = { global: "globalThis" };
+        return {
+          define,
+          optimizeDeps: { rolldownOptions: { transform: { define } } },
+        };
+      },
+    },
     // Local image import transform:
     // When a source file imports a local image (e.g., `import hero from './hero.jpg'`),
     // this plugin transforms the default import to a StaticImageData object with
