@@ -892,9 +892,7 @@ describe("app page route wiring helpers", () => {
       rootNotFoundModule: null,
     });
 
-    expect(
-      Object.values(elements).some((element) => containsElementType(element, SlotLoadingProbe)),
-    ).toBe(true);
+    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(true);
   });
 
   it("serializes route loading UI instead of page content for loading-shell prefetches", async () => {
