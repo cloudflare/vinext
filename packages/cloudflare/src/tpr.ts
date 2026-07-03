@@ -26,7 +26,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { VINEXT_REVALIDATE_HEADER } from "vinext/internal/server/headers";
-import { isrCacheKey } from "vinext/internal/server/isr-cache";
+import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 import {
@@ -710,7 +710,7 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
  * Build KV bulk API pairs from pre-rendered entries.
  *
  * Key format matches the runtime KVCacheHandler exactly:
- *   ENTRY_PREFIX + isrCacheKey("app", pathname, buildId) + ":html"
+ *   ENTRY_PREFIX + appIsrCacheKey(pathname, "html", buildId)
  *   → "cache:app:<buildId>:<pathname>:html"
  */
 export function buildTprKVPairs(
@@ -752,7 +752,7 @@ export function buildTprKVPairs(
       revalidateAt,
     };
 
-    const cacheKey = ENTRY_PREFIX + isrCacheKey("app", routePath, buildId) + ":html";
+    const cacheKey = ENTRY_PREFIX + appIsrCacheKey(routePath, "html", buildId);
     const metadata = { tags };
 
     pairs.push({

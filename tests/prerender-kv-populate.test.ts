@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import { buildPrerenderKVPairs } from "../packages/cloudflare/src/prerender-kv-populate.js";
+import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
 
 let serverDir: string;
 
@@ -30,6 +31,7 @@ describe("buildPrerenderKVPairs", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(serverDir, { recursive: true, force: true });
   });
 
@@ -141,6 +143,29 @@ describe("buildPrerenderKVPairs", () => {
     expect(htmlEntry.value.html).toBe("<html>Normalized path</html>");
   });
 
+  it("includes artifact suffixes in the cache-key hash threshold", () => {
+    const pathname = "/" + "a".repeat(188);
+    writePrerenderFixture(
+      {
+        buildId: "abc123",
+        routes: [{ route: pathname, status: "rendered", revalidate: 60, router: "app" }],
+      },
+      {
+        [`${"a".repeat(188)}.html`]: "<html>Long path</html>",
+        [`${"a".repeat(188)}.rsc`]: "flight",
+      },
+    );
+
+    const { pairs } = buildPrerenderKVPairs(serverDir);
+
+    expect(pairs.map((pair) => pair.key)).toEqual([
+      `cache:${appIsrCacheKey(pathname, "html", "abc123")}`,
+      `cache:${appIsrCacheKey(pathname, "rsc", "abc123")}`,
+    ]);
+    expect(pairs[0].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:html$/);
+    expect(pairs[1].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:rsc$/);
+  });
+
   it("returns no pairs when the prerender manifest or artifacts are absent", () => {
     expect(buildPrerenderKVPairs(serverDir)).toEqual({ routeCount: 0, pairs: [] });
 
@@ -154,11 +179,18 @@ describe("buildPrerenderKVPairs", () => {
     expect(buildPrerenderKVPairs(serverDir)).toEqual({ routeCount: 0, pairs: [] });
   });
 
-  it("rejects prerender artifact paths that escape the prerender directory", () => {
+  it("skips prerender artifact paths that escape the prerender directory", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     writePrerenderFixture(
       {
         buildId: "build-escape",
         routes: [
+          {
+            route: "/safe",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+          },
           {
             route: "/escape",
             path: "/../escape",
@@ -168,10 +200,14 @@ describe("buildPrerenderKVPairs", () => {
           },
         ],
       },
-      {},
+      { "safe.html": "<html>Safe</html>" },
     );
     fs.mkdirSync(path.join(serverDir, "prerendered-routes"), { recursive: true });
 
-    expect(() => buildPrerenderKVPairs(serverDir)).toThrow(/outside/);
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir);
+
+    expect(routeCount).toBe(1);
+    expect(pairs.map((pair) => pair.key)).toEqual(["cache:app:build-escape:/safe:html"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Skipping prerender KV seed"));
   });
 });

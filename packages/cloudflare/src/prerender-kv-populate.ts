@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Buffer } from "node:buffer";
-import { isrCacheKey } from "vinext/internal/server/isr-cache";
+import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import {
   getRenderedAppRoutes,
@@ -63,6 +63,11 @@ function resolveContainedFile(rootDir: string, relativePath: string): string {
     throw new Error(`[vinext] Refusing to read prerender artifact outside ${resolvedRoot}`);
   }
   return resolvedFile;
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
 }
 
 function buildKVKey(appPrefix: string | undefined, cacheKey: string): string {
@@ -126,10 +131,17 @@ export function buildPrerenderKVPairs(
   for (const route of getRenderedAppRoutes(manifest.routes)) {
     const artifactPathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
-    const htmlPath = resolveContainedFile(
-      prerenderDir,
-      getOutputPath(artifactPathname, trailingSlash),
-    );
+    let htmlPath: string;
+    let rscPath: string;
+    try {
+      htmlPath = resolveContainedFile(prerenderDir, getOutputPath(artifactPathname, trailingSlash));
+      rscPath = resolveContainedFile(prerenderDir, getRscOutputPath(artifactPathname));
+    } catch (error) {
+      console.warn(
+        `[vinext] Skipping prerender KV seed for ${artifactPathname}: ${formatUnknownError(error)}`,
+      );
+      continue;
+    }
     if (!fs.existsSync(htmlPath)) continue;
 
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
@@ -137,10 +149,11 @@ export function buildPrerenderKVPairs(
     const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
     const tags = buildAppPageCacheTags(cachePathname, []);
     const metadata = buildMetadata(tags);
-    const baseKey = isrCacheKey("app", cachePathname, manifest.buildId);
+    const htmlKey = appIsrCacheKey(cachePathname, "html", manifest.buildId);
+    const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);
 
     pairs.push({
-      key: buildKVKey(options?.appPrefix, `${baseKey}:html`),
+      key: buildKVKey(options?.appPrefix, htmlKey),
       value: buildCacheEntry(
         {
           kind: "APP_PAGE",
@@ -156,11 +169,10 @@ export function buildPrerenderKVPairs(
       ...(metadata ? { metadata } : {}),
     });
 
-    const rscPath = resolveContainedFile(prerenderDir, getRscOutputPath(artifactPathname));
     if (fs.existsSync(rscPath)) {
       const rscData = toArrayBuffer(fs.readFileSync(rscPath));
       pairs.push({
-        key: buildKVKey(options?.appPrefix, `${baseKey}:rsc`),
+        key: buildKVKey(options?.appPrefix, rscKey),
         value: buildCacheEntry(
           {
             kind: "APP_PAGE",

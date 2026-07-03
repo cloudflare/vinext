@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  appIsrCacheKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -149,6 +150,10 @@ describe("App Router ISR cache key primitives", () => {
     process.env.__VINEXT_BUILD_ID = "build-42";
 
     expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
+  });
+
+  it("supports explicit build ids when deriving suffixed app keys", () => {
+    expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe("app:build-42:/dashboard:html");
   });
 
   it("hashes long pathname keys while preserving the cache entry suffix", () => {

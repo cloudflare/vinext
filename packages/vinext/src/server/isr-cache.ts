@@ -371,7 +371,7 @@ export function isrCacheKey(router: string, pathname: string, buildId?: string):
  * The suffix mirrors Next.js's separate on-disk app artifacts while keeping the
  * Cloudflare KV key under its 512-byte limit for long pathnames.
  */
-function appIsrCacheKey(
+export function appIsrCacheKey(
   pathname: string,
   suffix: string,
   buildId = process.env.__VINEXT_BUILD_ID,
