@@ -391,20 +391,25 @@ export async function deployWithCdnWarmup(
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
-      await warmCdnCache({
-        targetUrl,
-        paths,
-        headers,
-        concurrency: options.warmCdnConcurrency,
-        timeoutMs: options.warmCdnTimeout,
-        retries: options.warmCdnRetries,
-        strict: options.warmCdnStrict,
-      });
+      try {
+        await warmCdnCache({
+          targetUrl,
+          paths,
+          headers,
+          concurrency: options.warmCdnConcurrency,
+          timeoutMs: options.warmCdnTimeout,
+          retries: options.warmCdnRetries,
+          strict: options.warmCdnStrict,
+        });
+      } catch (error) {
+        throw withStagedVersionCleanupNote(error);
+      }
       warmedBeforePromotion = true;
     } else if (options.warmCdnStrict) {
       throw new Error(
         "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
-          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict.",
+          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict. " +
+          getStagedVersionCleanupNote(),
       );
     }
   } else {
@@ -532,6 +537,20 @@ export function buildVersionOverrideHeaders(
   return {
     "Cloudflare-Workers-Version-Overrides": `${workerName}=${quoteStructuredHeaderString(versionId)}`,
   };
+}
+
+function withStagedVersionCleanupNote(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`${message} ${getStagedVersionCleanupNote()}`, {
+    cause: error,
+  });
+}
+
+function getStagedVersionCleanupNote(): string {
+  return (
+    "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
+    "rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
+  );
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────

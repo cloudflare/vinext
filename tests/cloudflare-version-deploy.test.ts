@@ -138,6 +138,24 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("does not treat unrelated nested JSON IDs and URLs as upload metadata", () => {
+    expect(
+      parseWranglerVersionUploadOutput(
+        JSON.stringify({
+          version_id: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+          preview_url: "https://app-warm.example.workers.dev",
+          diagnostics: {
+            id: "not-the-version",
+            url: "https://not-preview.example.workers.dev",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      previewUrl: "https://app-warm.example.workers.dev",
+    });
+  });
+
   it("throws when upload output lacks a version ID", () => {
     expect(() => parseWranglerVersionUploadOutput("uploaded")).toThrow(
       "Could not detect Worker version ID",

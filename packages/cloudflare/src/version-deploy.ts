@@ -41,18 +41,6 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function findStringByKey(value: unknown, keys: readonly string[]): string | null {
-  if (!isRecord(value)) return null;
-  for (const [key, field] of Object.entries(value)) {
-    if (keys.includes(key) && typeof field === "string" && field.length > 0) {
-      return field;
-    }
-    const nested = findStringByKey(field, keys);
-    if (nested) return nested;
-  }
-  return null;
-}
-
 function parseJsonObject(output: string): JsonRecord | unknown[] | null {
   const trimmed = output.trim();
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
@@ -62,6 +50,33 @@ function parseJsonObject(output: string): JsonRecord | unknown[] | null {
   } catch {
     return null;
   }
+}
+
+function findStringInRecord(value: unknown, keys: readonly string[]): string | null {
+  if (!isRecord(value)) return null;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string" && field.length > 0) return field;
+  }
+  return null;
+}
+
+function findVersionIdInUploadJson(parsed: JsonRecord | unknown[] | null): string | null {
+  if (!isRecord(parsed)) return null;
+  return (
+    findStringInRecord(parsed, ["version_id", "versionId", "id"]) ??
+    findStringInRecord(parsed.version, ["version_id", "versionId", "id"]) ??
+    findStringInRecord(parsed.result, ["version_id", "versionId", "id"])
+  );
+}
+
+function findPreviewUrlInUploadJson(parsed: JsonRecord | unknown[] | null): string | null {
+  if (!isRecord(parsed)) return null;
+  return (
+    findStringInRecord(parsed, ["preview_url", "previewUrl", "url"]) ??
+    findStringInRecord(parsed.version, ["preview_url", "previewUrl", "url"]) ??
+    findStringInRecord(parsed.result, ["preview_url", "previewUrl", "url"])
+  );
 }
 
 export function parseVersionId(output: string): string | null {
@@ -74,10 +89,8 @@ export function parseVersionId(output: string): string | null {
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
   const parsed = parseJsonObject(output);
-  const versionId =
-    findStringByKey(parsed, ["id", "version_id", "versionId"]) ?? parseVersionId(output);
-  const previewUrl =
-    findStringByKey(parsed, ["preview_url", "previewUrl", "url"]) ?? parseWorkersDevUrl(output);
+  const versionId = findVersionIdInUploadJson(parsed) ?? parseVersionId(output);
+  const previewUrl = findPreviewUrlInUploadJson(parsed) ?? parseWorkersDevUrl(output);
 
   if (!versionId) {
     throw new Error("Could not detect Worker version ID from `wrangler versions upload` output.");
