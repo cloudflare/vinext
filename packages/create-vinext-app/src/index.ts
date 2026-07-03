@@ -93,12 +93,12 @@ function getTemplateFiles(platform: InitPlatform): Record<string, string> {
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Deploy</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with Wrangler.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">npx vinext-cloudflare deploy</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm exec vinext-cloudflare deploy</code>
           </div>`
     : `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Start</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Start the vinext production server locally.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">npm run start:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run start:vinext</code>
           </div>`;
 
   return {
@@ -170,12 +170,12 @@ export default function Home() {
           <div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Develop</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Run the vinext dev server locally.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">npm run dev:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run dev:vinext</code>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Build</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Create ${buildOutput}.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">npm run build:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run build:vinext</code>
           </div>
           ${actionCard}
         </div>
@@ -233,10 +233,10 @@ This project was created with create-vinext-app.
 
 ## Scripts
 
-- \`npm run dev:vinext\` starts the vinext dev server.
-- \`npm run build:vinext\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
-- \`npm run start:vinext\` starts the production server locally.
-- \`npm run dev\` starts Next.js for compatibility checks.
+- \`pnpm run dev:vinext\` starts the vinext dev server.
+- \`pnpm run build:vinext\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
+- \`pnpm run start:vinext\` starts the production server locally.
+- \`pnpm run dev\` starts Next.js for compatibility checks.
 `,
     "tsconfig.json": `{
   "compilerOptions": {
