@@ -34,6 +34,11 @@ const cloudflareInitOptions: ResolvedInitOptions = {
   },
 };
 
+const nodeInitOptions: ResolvedInitOptions = {
+  platform: "node",
+  prerender: false,
+};
+
 async function withQuietConsole<T>(task: () => Promise<T>): Promise<T> {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   try {
@@ -123,6 +128,39 @@ describe("createVinextApp", () => {
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
+  });
+
+  it("does not include Cloudflare Workers copy for the Node target", async () => {
+    const appPath = path.join(tmpDir, "node-app");
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "npm",
+        install: false,
+        git: false,
+        initOptions: nodeInitOptions,
+      }),
+    );
+
+    const generatedCopy = ["app/api/hello/route.ts", "app/layout.tsx", "app/page.tsx", "README.md"]
+      .map((file) => readFile(appPath, file))
+      .join("\n");
+
+    expect(generatedCopy).not.toMatch(/Cloudflare|Workers|Worker|Wrangler|vinext-cloudflare/);
+    expect(generatedCopy).toContain("Build Next.js-style apps with Vite.");
+    expect(generatedCopy).toContain("https://vite.dev/");
+    expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(false);
+    expect(readFile(appPath, "vite.config.ts")).not.toContain("@cloudflare/vite-plugin");
+
+    const pkg = readPkg(appPath);
+    expect(pkg.dependencies).toMatchObject({
+      vinext: "latest",
+      "react-server-dom-webpack": "latest",
+    });
+    expect(pkg.dependencies).not.toHaveProperty("@vinext/cloudflare");
+    expect(pkg.devDependencies).not.toHaveProperty("@cloudflare/vite-plugin");
+    expect(pkg.devDependencies).not.toHaveProperty("wrangler");
   });
 
   it("rejects non-empty target directories", async () => {
