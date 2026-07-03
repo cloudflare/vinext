@@ -1806,10 +1806,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(sidebarSlots).toHaveLength(2);
 
       const sidebarByOwner = new Map(
-        sidebarSlots.map((slot) => [
-          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
-          slot,
-        ]),
+        sidebarSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);

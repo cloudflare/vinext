@@ -592,7 +592,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
         const resolved = await container.resolveId("private-next-instrumentation-client");
         expect(resolved).toBeTruthy();
         expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-        expect(resolved!.id.replace(/\\/g, "/")).toContain("instrumentation-client.js");
+        expect(toSlash(resolved!.id)).toContain("instrumentation-client.js");
       },
     );
   });
@@ -602,7 +602,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
       const resolved = await container.resolveId("private-next-instrumentation-client");
       expect(resolved).toBeTruthy();
       expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-      expect(resolved!.id.replace(/\\/g, "/")).toContain("empty-module");
+      expect(toSlash(resolved!.id)).toContain("empty-module");
     });
   });
 

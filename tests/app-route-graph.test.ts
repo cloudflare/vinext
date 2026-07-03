@@ -20,7 +20,16 @@ import {
 // paths contain no backslashes, so both are identities for them.
 vi.mock("pathslash", async (importOriginal) => {
   const actual = await importOriginal<typeof import("pathslash")>();
-  return { ...actual, default: actual.win32, toSlash: (p: string) => p.replace(/\\/g, "/") };
+  // Spread win32's members too so future named imports (`import { dirname }`)
+  // stay win32-forced instead of silently reverting to the host flavor.
+  return {
+    ...actual,
+    ...actual.win32,
+    default: actual.win32,
+    win32: actual.win32,
+    posix: actual.posix,
+    toSlash: (p: string) => p.replace(/\\/g, "/"),
+  };
 });
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";

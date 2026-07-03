@@ -584,7 +584,7 @@ describe("App Router route sorting (additional)", () => {
       expect(settingsRoute).toBeDefined();
       const teamSlots = settingsRoute!.parallelSlots.filter((slot) => slot.name === "team");
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect(teamSlots).toHaveLength(2);
@@ -650,7 +650,7 @@ describe("App Router route sorting (additional)", () => {
 
       const teamSlots = memberRoute!.parallelSlots.filter((slot) => slot.name === "team");
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect(teamSlots).toHaveLength(2);
