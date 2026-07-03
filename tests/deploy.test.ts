@@ -8,7 +8,9 @@ import {
   buildNodeCliInvocation,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
+  getZeroPercentStagingTraffic,
   parseDeployArgs,
+  resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerDeploy,
   validateWranglerEnvName,
@@ -122,6 +124,13 @@ describe("buildWranglerDeployArgs", () => {
   it("passes through explicit env names", () => {
     expect(buildWranglerDeployArgs({ env: "staging" })).toEqual({
       args: ["deploy", "--env", "staging"],
+      env: "staging",
+    });
+  });
+
+  it("passes through explicit Worker names", () => {
+    expect(buildWranglerDeployArgs({ name: "custom-worker", env: "staging" })).toEqual({
+      args: ["deploy", "--name", "custom-worker", "--env", "staging"],
       env: "staging",
     });
   });
@@ -2851,5 +2860,134 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.kvNamespaceId).toBe("abc123");
+  });
+
+  it("extracts environment Worker names and custom domains", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        env: {
+          staging: {
+            name: "my-worker-staging-custom",
+            custom_domains: ["staging.example.com"],
+          },
+        },
+      }),
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging-custom",
+      customDomain: "staging.example.com",
+    });
+  });
+
+  it("extracts environment custom domains from TOML route arrays", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[env.staging]
+routes = ["staging.example.com/*"]
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+  });
+
+  it("extracts environment custom domains from TOML route blocks", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[env.staging]
+name = "my-worker-staging"
+
+[[env.staging.routes]]
+pattern = "staging.example.com/*"
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging",
+      customDomain: "staging.example.com",
+    });
+  });
+});
+
+// ─── CDN warmup Worker version overrides ───────────────────────────────────
+
+describe("resolveWorkerNameForVersionOverride", () => {
+  it("uses the top-level Worker name for production", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    expect(resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {})).toBe("my-worker");
+  });
+
+  it("uses the CLI Worker name exactly when provided", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "config-worker" }));
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {
+        name: "cli-worker",
+        env: "staging",
+      }),
+    ).toBe("cli-worker");
+  });
+
+  it("appends the target environment for Wrangler legacy environments", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("my-worker-staging");
+  });
+
+  it("uses env-specific Worker names for Wrangler legacy environments", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        env: { staging: { name: "custom-staging-worker" } },
+      }),
+    );
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("custom-staging-worker");
+  });
+
+  it("keeps the service name for Wrangler service environments", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        legacy_env: false,
+        env: { staging: {} },
+      }),
+    );
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("my-worker");
+  });
+});
+
+describe("getZeroPercentStagingTraffic", () => {
+  it("does not stage the uploaded version when it is already the current deployment", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBeNull();
   });
 });

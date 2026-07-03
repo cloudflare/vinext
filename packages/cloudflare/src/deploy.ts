@@ -47,6 +47,7 @@ import {
   type WranglerDeploymentStatus,
   type WranglerVersionTraffic,
 } from "./version-deploy.js";
+import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -268,10 +269,13 @@ export function validateWranglerEnvName(env: string): string {
 }
 
 export function buildWranglerDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "name">,
 ): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.name) {
+    args.push("--name", options.name);
+  }
   if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
@@ -316,7 +320,7 @@ export function buildNodeCliInvocation(
 
 export function buildWranglerInvocation(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "name">,
   nodeExecutable: string = process.execPath,
 ): { file: string; args: string[]; env: string | undefined } {
   const wranglerBin = resolveWranglerBin(root);
@@ -326,7 +330,7 @@ export function buildWranglerInvocation(
 
 export function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "name">,
   execute: typeof execFileSync = execFileSync,
 ): string {
   const execOpts: ExecFileSyncOptions = {
@@ -348,8 +352,7 @@ export function runWranglerDeploy(
 
   // Parse the deployed URL from wrangler output
   // Wrangler prints: "Published <name> (version_id)\n  https://<name>.<subdomain>.workers.dev"
-  const urlMatch = output.match(/https:\/\/[^\s]+\.workers\.dev[^\s]*/);
-  const deployedUrl = urlMatch ? urlMatch[0] : null;
+  const deployedUrl = parseWorkersDevUrl(output);
 
   // Also print raw output for transparency
   if (output.trim()) {
@@ -366,7 +369,13 @@ export async function deployWithCdnWarmup(
   paths: readonly string[],
   options: Pick<
     DeployOptions,
-    "preview" | "env" | "warmCdnConcurrency" | "warmCdnTimeout" | "warmCdnRetries" | "warmCdnStrict"
+    | "preview"
+    | "env"
+    | "name"
+    | "warmCdnConcurrency"
+    | "warmCdnTimeout"
+    | "warmCdnRetries"
+    | "warmCdnStrict"
   >,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
@@ -378,8 +387,9 @@ export async function deployWithCdnWarmup(
 
   if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options);
-    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl);
-    const headers = buildVersionOverrideHeaders(wranglerConfig?.name, upload.versionId);
+    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl, options);
+    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
+    const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       await warmCdnCache({
         targetUrl,
@@ -409,7 +419,7 @@ export async function deployWithCdnWarmup(
     options,
   );
   if (!warmedBeforePromotion) {
-    const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl);
+    const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl, options);
     if (targetUrl) {
       await warmCdnCache({
         targetUrl,
@@ -439,8 +449,20 @@ export async function deployWithCdnWarmup(
   );
 }
 
-export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | null): string | null {
-  const customDomain = parseWranglerConfig(root)?.customDomain;
+export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | null): string | null;
+export function resolveCdnWarmupTargetUrl(
+  root: string,
+  deployedUrl: string | null,
+  options: Pick<DeployOptions, "preview" | "env">,
+): string | null;
+export function resolveCdnWarmupTargetUrl(
+  root: string,
+  deployedUrl: string | null,
+  options?: Pick<DeployOptions, "preview" | "env">,
+): string | null {
+  const config = parseWranglerConfig(root);
+  const env = getWranglerTargetEnv(options ?? {});
+  const customDomain = (env ? config?.env?.[env]?.customDomain : undefined) ?? config?.customDomain;
   if (customDomain) {
     return `https://${customDomain}`;
   }
@@ -449,7 +471,7 @@ export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | nu
 
 function readWranglerDeploymentStatus(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "name">,
 ): WranglerDeploymentStatus | null {
   try {
     return runWranglerDeploymentStatus(root, options);
@@ -466,7 +488,36 @@ export function getZeroPercentStagingTraffic(
   if (current.length !== 1 || current[0].percentage !== 100) {
     return null;
   }
+  if (current[0].versionId === versionId) {
+    return null;
+  }
   return [current[0], { versionId, percentage: 0 }];
+}
+
+function getWranglerTargetEnv(options: Pick<DeployOptions, "preview" | "env">): string | undefined {
+  return options.env || (options.preview ? "preview" : undefined);
+}
+
+type ParsedWranglerConfig = NonNullable<ReturnType<typeof parseWranglerConfig>>;
+
+export function resolveWorkerNameForVersionOverride(
+  config: ParsedWranglerConfig | null,
+  options: Pick<DeployOptions, "preview" | "env" | "name">,
+): string | undefined {
+  if (options.name) {
+    return options.name;
+  }
+
+  const env = getWranglerTargetEnv(options);
+  if (!env) {
+    return config?.name;
+  }
+
+  if (config?.legacyEnv === false) {
+    return config.name;
+  }
+
+  return config?.env?.[env]?.name ?? (config?.name ? `${config.name}-${env}` : undefined);
 }
 
 function quoteStructuredHeaderString(value: string): string {
@@ -620,6 +671,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // Step 7: Deploy via wrangler
   const wranglerOptions = {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
+    name: options.name,
   };
   let url: string;
 

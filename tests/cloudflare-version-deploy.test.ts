@@ -25,6 +25,28 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("builds version upload args for an explicit Worker name", () => {
+    expect(
+      buildWranglerVersionUploadArgs({
+        name: "custom-worker",
+        env: "staging",
+        previewAlias: "warm-build",
+      }),
+    ).toEqual({
+      args: [
+        "versions",
+        "upload",
+        "--name",
+        "custom-worker",
+        "--env",
+        "staging",
+        "--preview-alias",
+        "warm-build",
+      ],
+      env: "staging",
+    });
+  });
+
   it("builds non-interactive version deploy args for the uploaded version", () => {
     expect(
       buildWranglerVersionDeployArgs(
@@ -67,6 +89,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("builds deployment status args for an explicit Worker name", () => {
+    expect(buildWranglerDeploymentsStatusArgs({ name: "custom-worker" })).toEqual({
+      args: ["deployments", "status", "--json", "--name", "custom-worker"],
+      env: undefined,
+    });
+  });
+
   it("builds trigger deployment args for environments", () => {
     expect(buildWranglerTriggersDeployArgs({ env: "preview" })).toEqual({
       args: ["triggers", "deploy", "--env", "preview"],
@@ -86,6 +115,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: "https://app-warm.example.workers.dev",
     });
+  });
+
+  it("parses workers.dev URLs without depending on a broad URL regex", () => {
+    expect(parseWorkersDevUrl("Preview: <https://app.example.workers.dev/path?x=1>.")).toBe(
+      "https://app.example.workers.dev/path?x=1",
+    );
+    expect(parseWorkersDevUrl(`https://${"a".repeat(2048)}.example.com`)).toBeNull();
   });
 
   it("parses version upload JSON output", () => {
