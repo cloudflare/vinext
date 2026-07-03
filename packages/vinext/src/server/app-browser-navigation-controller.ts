@@ -906,10 +906,29 @@ export function createAppBrowserNavigationController(
       }
 
       if (latestApproval.approvedCommit) {
-        dispatchSynchronousVisibleCommit(latestApproval.approvedCommit);
+        const approvedRevalidationCommit = latestApproval.approvedCommit;
+        // Commit the revalidation inside a transition, matching how ordinary
+        // client navigations commit (`dispatchApprovedVisibleCommit` in
+        // "transition" mode). This is defense-in-depth, not the fix for the
+        // loading.tsx remount bug — that fix is structural, in
+        // app-page-route-wiring.tsx (the loading Suspense boundary now stays in
+        // the tree for preserve-ui re-renders, so React reconciles in place).
+        // The transition matters because this code runs after the action's
+        // `await fetch`, outside React's event batch, so a plain setter would
+        // be an urgent update: if a future payload delivered through this path
+        // genuinely suspends inside the (now always-present) loading.tsx
+        // boundary, an urgent update would drop the subtree to its fallback,
+        // while a transition keeps the committed tree visible until the
+        // content resolves — Next.js's soft-refresh behavior. The HMR and
+        // history-traversal callers of dispatchSynchronousVisibleCommit are
+        // deliberately left non-transition (see the comment above
+        // dispatchApprovedVisibleCommit).
+        startTransition(() => {
+          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
+        });
         syncHistoryStatePreviousNextUrl(
-          latestApproval.approvedCommit.previousNextUrl,
-          latestApproval.approvedCommit.action.bfcacheIds,
+          approvedRevalidationCommit.previousNextUrl,
+          approvedRevalidationCommit.action.bfcacheIds,
         );
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);

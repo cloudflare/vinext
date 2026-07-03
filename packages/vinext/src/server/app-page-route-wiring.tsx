@@ -47,7 +47,6 @@ import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -903,7 +902,7 @@ export function buildAppPageElements<
     }
 
     const slotLoadingComponent = getDefaultExport(slot.loading);
-    if (slotLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+    if (slotLoadingComponent) {
       const SlotLoadingComponent = slotLoadingComponent;
       slotElement = (
         <Suspense key={slotResetKey} fallback={<SlotLoadingComponent />}>
@@ -968,12 +967,26 @@ export function buildAppPageElements<
     // transitions rather than unmounting it.
     routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
 
-    if (routeLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+    if (routeLoadingComponent) {
       const RouteLoadingComponent = routeLoadingComponent;
       // Route-level wrappers cover the full page branch in vinext's flat element
       // transport, so their reset key includes the visible segment-state path.
       // Dynamic param changes reset the pending boundary, while search-only changes
       // preserve it.
+      //
+      // The loading boundary must stay in the tree for *every* render mode,
+      // including the "preserve-ui" refresh/server-action re-renders. It used to
+      // be omitted for those modes (`!shouldSuppressLoadingBoundaries(...)`), but
+      // the already-committed navigation tree always contains this <Suspense>, so
+      // dropping it on a re-render changed the element type at this position and
+      // made React unmount the boundary's subtree and mount a fresh one —
+      // destroying client `useState` on any route that defines loading.tsx (see
+      // the server-action revalidate remount bug). Keeping the boundary makes the
+      // re-render structurally identical to what is mounted, so React reconciles
+      // in place. Suppressing the *visible fallback* on these re-renders is
+      // instead handled by committing them inside a transition (see
+      // commitSameUrlNavigatePayload / the refresh navigation path), matching
+      // Next.js, which keeps loading boundaries mounted across refreshes.
       routeChildren = (
         <Suspense key={routeResetKey} fallback={<RouteLoadingComponent />}>
           {routeChildren}

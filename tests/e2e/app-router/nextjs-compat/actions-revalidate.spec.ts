@@ -153,4 +153,56 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
       expect(time2).not.toBe(time1);
     }).toPass({ timeout: 10_000 });
   });
+
+  // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
+  //
+  // Regression: a server action that calls revalidatePath() must soft-refresh
+  // the current route (reconcile), not remount its client components. On a
+  // segment with loading.tsx, vinext used to omit the loading Suspense boundary
+  // from the "preserve-ui" re-render while the committed navigation tree still
+  // had it, so React unmounted and remounted the subtree — destroying client
+  // useState. This asserts the client counter survives the action.
+  test("revalidatePath from a server action preserves client state under loading.tsx", async ({
+    page,
+  }) => {
+    const loadingLogs: string[] = [];
+    page.on("console", (message) => {
+      if (message.text() === "Revalidate remount loading mounted") {
+        loadingLogs.push(message.text());
+      }
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-revalidate-remount`);
+    await waitForAppRouterHydration(page);
+    loadingLogs.length = 0;
+
+    // Build up client-only state that only survives if the component is not
+    // remounted.
+    await page.click("#increment");
+    await page.click("#increment");
+    await page.click("#increment");
+    await expect(page.locator("#count")).toHaveText("3");
+
+    const serverRenderCount1 = await page.locator("#server-render-count").textContent();
+    expect(serverRenderCount1).toBeTruthy();
+
+    // Run the server action (revalidatePath on the current route).
+    await page.click("#run-action");
+
+    // The server re-rendered (revalidation took effect)...
+    await expect(async () => {
+      const serverRenderCount2 = await page.locator("#server-render-count").textContent();
+      expect(serverRenderCount2).toBeTruthy();
+      expect(serverRenderCount2).not.toBe(serverRenderCount1);
+    }).toPass({ timeout: 10_000 });
+
+    // ...yet the client component was reconciled in place, not remounted, so its
+    // useState is intact.
+    await expect(page.locator("#count")).toHaveText("3");
+
+    // And the loading boundary never became visible during the soft refresh.
+    expect(await page.locator("#revalidate-remount-loading").count()).toBe(0);
+    expect(loadingLogs).toEqual([]);
+  });
 });
