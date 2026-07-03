@@ -2369,6 +2369,60 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("exposes middleware rewrites from Pages data requests to App routes", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+    // "rewrites should support rewrites on client-side navigation from pages to app with existing pages path"
+    const clearRequestContext = vi.fn();
+    const dispatchMatchedPage = vi.fn(async () => new Response("app"));
+    const renderPagesFallback = vi.fn(async () => new Response("pages"));
+    const handler = createHandler({
+      clearRequestContext,
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute: (pathname: string) =>
+        pathname === "/about"
+          ? {
+              params: {},
+              route: createPageRoute({ pattern: "/about", routeSegments: ["about"] }),
+            }
+          : null,
+      middlewareModule: {
+        default: (request: NextRequest) => {
+          if (request.nextUrl.pathname === "/exists-but-not-routed") {
+            return new Response(null, {
+              headers: {
+                "set-cookie": "probe=1; Path=/",
+                "x-test-header": "middleware",
+                "x-middleware-rewrite": new URL("/about", request.url).toString(),
+              },
+            });
+          }
+          return undefined;
+        },
+      },
+      renderPagesFallback,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/exists-but-not-routed.json", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.get("x-nextjs-rewrite")).toBe("/about");
+    expect(response.headers.get("x-test-header")).toBe("middleware");
+    expect(response.headers.get("set-cookie")).toBe("probe=1; Path=/");
+    expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(await response.text()).toBe("{}");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(renderPagesFallback).not.toHaveBeenCalled();
+    expect(clearRequestContext).toHaveBeenCalled();
+  });
+
   it.each([
     { convention: "middleware", isProxy: false },
     { convention: "proxy", isProxy: true },

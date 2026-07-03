@@ -55,10 +55,84 @@ describe("TPR KV key format", () => {
     expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
   });
 
-  it("uses 24-hour fallback TTL when revalidation is disabled", () => {
+  it("skips responses that disable revalidation", () => {
     const pairs = buildTprKVPairs(entry("/archive", { "x-vinext-revalidate": "0" }), buildId, 60);
-    // revalidateSeconds === 0 means no revalidation — use 24h fallback TTL
-    expect(pairs[0].expiration_ttl).toBe(24 * 3600);
+    expect(pairs).toEqual([]);
+  });
+
+  it("skips responses with invalid revalidate metadata", () => {
+    const pairs = buildTprKVPairs(
+      new Map([
+        [
+          "/negative",
+          {
+            html: "<html>negative</html>",
+            status: 200,
+            headers: { "x-vinext-revalidate": "-1" },
+          },
+        ],
+        [
+          "/infinite",
+          {
+            html: "<html>infinite</html>",
+            status: 200,
+            headers: { "x-vinext-revalidate": "Infinity" },
+          },
+        ],
+        [
+          "/malformed",
+          {
+            html: "<html>malformed</html>",
+            status: 200,
+            headers: { "x-vinext-revalidate": "soon" },
+          },
+        ],
+      ]),
+      buildId,
+      60,
+    );
+
+    expect(pairs).toEqual([]);
+  });
+
+  it("skips entries when the default revalidate window is not cacheable", () => {
+    expect(buildTprKVPairs(entry("/default-zero"), buildId, 0)).toEqual([]);
+    expect(buildTprKVPairs(entry("/default-infinite"), buildId, Infinity)).toEqual([]);
+  });
+
+  it("skips responses with non-cacheable Cache-Control directives", () => {
+    const pairs = buildTprKVPairs(
+      new Map<string, { html: string; status: number; headers: Record<string, string> }>([
+        [
+          "/private",
+          {
+            html: "<html>private</html>",
+            status: 200,
+            headers: { "cache-control": "Private, No-Store" },
+          },
+        ],
+        [
+          "/no-cache",
+          {
+            html: "<html>no-cache</html>",
+            status: 200,
+            headers: { "Cache-Control": "public, max-age=0, no-cache" },
+          },
+        ],
+        [
+          "/public",
+          {
+            html: "<html>public</html>",
+            status: 200,
+            headers: { "cache-control": "public, s-maxage=60" },
+          },
+        ],
+      ]),
+      buildId,
+      60,
+    );
+
+    expect(pairs.map((pair) => pair.key)).toEqual([`cache:app:${buildId}:/public:html`]);
   });
 
   it("buildTprKVPairs accepts undefined buildId (documents key format; runTPR now fails fast if BUILD_ID is missing)", () => {

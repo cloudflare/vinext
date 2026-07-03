@@ -1105,7 +1105,9 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).toContain(
+        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+      );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
@@ -1141,6 +1143,45 @@ describe("Pages Router entry template", () => {
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
       expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
       expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("precomputes Pages route dataKind in the server entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-kind-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "ssr.tsx"),
+        "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "plain.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toContain('pattern: "/",');
+      expect(code).toContain('dataKind: "static"');
+      expect(code).toContain('pattern: "/ssr",');
+      expect(code).toContain('dataKind: "server"');
+      expect(code).toContain('pattern: "/plain",');
+      expect(code).toContain('dataKind: "none"');
+      expect(code).not.toContain("typeof page_");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1347,7 +1388,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("if (nextData.isFallback) {");
+      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
+      expect(code).toContain("routeUrl || currentUrl,");
+      expect(code).toContain("routeUrl ? currentUrl : undefined,");
       expect(code).toContain("{ _h: 1, scroll: false },");
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");

@@ -523,6 +523,35 @@ const SERVER_STARTUP_TIMEOUT = 30_000;
 /** Max concurrent fetch requests during pre-rendering. */
 const FETCH_CONCURRENCY = 10;
 
+const NON_CACHEABLE_CACHE_CONTROL_RE = /\b(?:no-store|no-cache|private)\b/i;
+
+function getTprHeader(headers: Record<string, string>, name: string): string | undefined {
+  const normalizedName = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedName) return value;
+  }
+  return undefined;
+}
+
+function hasNonCacheableCacheControl(headers: Record<string, string>): boolean {
+  const cacheControl = getTprHeader(headers, "cache-control");
+  return cacheControl ? NON_CACHEABLE_CACHE_CONTROL_RE.test(cacheControl) : false;
+}
+
+function readTprRevalidateHeader(headers: Record<string, string>): number | undefined {
+  const revalidateHeader = getTprHeader(headers, VINEXT_REVALIDATE_HEADER);
+  if (revalidateHeader === undefined) return undefined;
+
+  return Number(revalidateHeader);
+}
+
+function isTprCacheable(headers: Record<string, string>): boolean {
+  if (hasNonCacheableCacheControl(headers)) return false;
+
+  const revalidate = readTprRevalidateHeader(headers);
+  return revalidate === undefined || (Number.isFinite(revalidate) && revalidate > 0);
+}
+
 /**
  * Start a local production server, fetch each route to produce HTML,
  * and return the results. Pages that fail to render are skipped.
@@ -562,9 +591,8 @@ async function prerenderRoutes(
             redirect: "manual", // Don't follow redirects — cache the redirect itself
           });
 
-          // Only cache successful responses (2xx and 3xx)
+          // Only cache successful, cacheable responses (2xx and 3xx)
           if (response.status < 400) {
-            const html = await response.text();
             const headers: Record<string, string> = {};
             response.headers.forEach((value, key) => {
               // Only keep relevant headers
@@ -577,6 +605,10 @@ async function prerenderRoutes(
                 headers[key] = value;
               }
             });
+
+            if (!isTprCacheable(headers)) return;
+
+            const html = await response.text();
             results.set(routePath, {
               html,
               status: response.status,
@@ -689,18 +721,15 @@ export function buildTprKVPairs(
   const pairs: Array<{ key: string; value: string; expiration_ttl: number }> = [];
 
   for (const [routePath, result] of entries) {
-    const revalidateHeader = result.headers[VINEXT_REVALIDATE_HEADER];
-    const revalidateSeconds =
-      revalidateHeader && !isNaN(Number(revalidateHeader))
-        ? Number(revalidateHeader)
-        : defaultRevalidateSeconds;
+    if (!isTprCacheable(result.headers)) continue;
 
-    const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
+    const revalidateSeconds = readTprRevalidateHeader(result.headers) ?? defaultRevalidateSeconds;
+    if (!Number.isFinite(revalidateSeconds) || revalidateSeconds <= 0) continue;
 
-    // For revalidating entries: 30-day TTL matches runtime KVCacheHandler.set().
-    // For non-revalidating entries: runtime uses no TTL (entries persist indefinitely),
-    // but TPR uses a 24h fallback so pre-warmed entries don't accumulate forever.
-    const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
+    const revalidateAt = now + revalidateSeconds * 1000;
+
+    // 30-day TTL matches runtime KVCacheHandler.set().
+    const kvTtl = MAX_KV_TTL_SECONDS;
 
     // Path-derived implicit tags so revalidatePath()/revalidateTag() can
     // invalidate TPR-seeded entries. Without this the seeded entry has no
