@@ -938,11 +938,13 @@ describe("init — dependency installation", () => {
 
     const { output } = await runInit(tmpDir);
 
+    expect(output).toContain("  Installing dependencies:\n    - vinext\n    - @vinext/cloudflare");
     expect(output).toContain(
-      "  Installing dependencies:\n    - vinext\n    - vite\n    - @vitejs/plugin-react",
+      "  Installing devDependencies:\n    - vite\n    - @vitejs/plugin-react",
     );
+    expect(output).toContain("    ✓ Added dependencies to dependencies:\n      - vinext");
     expect(output).toContain(
-      "    ✓ Added dependencies to devDependencies:\n      - vinext\n      - vite\n      - @vitejs/plugin-react",
+      "    ✓ Added dependencies to devDependencies:\n      - vite\n      - @vitejs/plugin-react",
     );
     expect(output).not.toContain("Installing vinext, vite");
   });
@@ -1093,7 +1095,7 @@ describe("init — dependency installation", () => {
     });
 
     expect(
-      commands.some((cmd) => cmd.includes("react-server-dom-webpack") && cmd.includes("-D")),
+      commands.some((cmd) => cmd.includes("react-server-dom-webpack") && !cmd.includes("-D")),
     ).toBe(true);
     expect(result.installedDeps).toContain("react-server-dom-webpack");
     expect(output).toContain("pnpm approve-builds");
@@ -1181,19 +1183,27 @@ describe("init — dependency installation", () => {
     // The React upgrade should NOT use -D flag (keeps them in dependencies)
     expect(reactUpgradeCall!.cmd).not.toContain("-D");
 
-    // The second exec call should be the dev deps install (with -D)
+    // The second exec call should install runtime framework deps (without -D).
+    const runtimeDepsCall = execCalls.find(
+      (c) => c.cmd.includes("react-server-dom-webpack") && !c.cmd.includes("-D"),
+    );
+    expect(runtimeDepsCall).toBeDefined();
+
+    // The dev deps install should still use -D.
     const devDepsCall = execCalls.find(
       (c) =>
         c.cmd.includes("@vitejs/plugin-react") &&
-        c.cmd.includes("react-server-dom-webpack") &&
+        c.cmd.includes("@vitejs/plugin-rsc") &&
         c.cmd.includes("-D"),
     );
     expect(devDepsCall).toBeDefined();
 
-    // React upgrade should come before dev deps install
+    // React upgrade should come before framework deps that peer on React.
     const upgradeIdx = execCalls.indexOf(reactUpgradeCall!);
+    const runtimeDepsIdx = execCalls.indexOf(runtimeDepsCall!);
     const devDepsIdx = execCalls.indexOf(devDepsCall!);
-    expect(upgradeIdx).toBeLessThan(devDepsIdx);
+    expect(upgradeIdx).toBeLessThan(runtimeDepsIdx);
+    expect(runtimeDepsIdx).toBeLessThan(devDepsIdx);
   });
 
   it("does not upgrade React when version is already compatible", async () => {
@@ -1242,18 +1252,21 @@ describe("init — dependency installation", () => {
 
     const { execCalls } = await runInit(tmpDir, { install: false });
     const pkg = readPkg(tmpDir) as {
+      dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
 
     expect(execCalls).toEqual([]);
-    expect(pkg.devDependencies).toMatchObject({
+    expect(pkg.dependencies).toMatchObject({
       vinext: "latest",
+      "react-server-dom-webpack": "latest",
+      "@vinext/cloudflare": "latest",
+    });
+    expect(pkg.devDependencies).toMatchObject({
       vite: "latest",
       "@vitejs/plugin-react": "latest",
       "@vitejs/plugin-rsc": "latest",
-      "react-server-dom-webpack": "latest",
       "@cloudflare/vite-plugin": "latest",
-      "@vinext/cloudflare": "latest",
       wrangler: "latest",
     });
   });

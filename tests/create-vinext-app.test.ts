@@ -86,17 +86,17 @@ describe("createVinextApp", () => {
       next: "latest",
       react: "latest",
       "react-dom": "latest",
+      vinext: "latest",
+      "react-server-dom-webpack": "latest",
+      "@vinext/cloudflare": "latest",
     });
     expect(pkg.devDependencies).toMatchObject({
       tailwindcss: "latest",
       typescript: "latest",
-      vinext: "latest",
       vite: "latest",
       "@vitejs/plugin-react": "latest",
       "@vitejs/plugin-rsc": "latest",
-      "react-server-dom-webpack": "latest",
       "@cloudflare/vite-plugin": "latest",
-      "@vinext/cloudflare": "latest",
       wrangler: "latest",
     });
   });
@@ -119,8 +119,9 @@ describe("createVinextApp", () => {
     );
 
     expect(readPkg(appPath).packageManager).toMatch(/^pnpm(?:@|$)/);
+    expect(calls).toContain("pnpm add vinext react-server-dom-webpack @vinext/cloudflare");
     expect(calls).toContain(
-      "pnpm add -D vinext vite @vitejs/plugin-react @vitejs/plugin-rsc react-server-dom-webpack @cloudflare/vite-plugin @vinext/cloudflare wrangler",
+      "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
   });
 

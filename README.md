@@ -25,13 +25,15 @@ The skill handles compatibility checking, dependency installation, config genera
 ### Or do it manually
 
 ```bash
-npm install -D vinext vite @vitejs/plugin-react
+npm install vinext
+npm install -D vite @vitejs/plugin-react
 ```
 
 If you're using the App Router, also install:
 
 ```bash
-npm install -D @vitejs/plugin-rsc react-server-dom-webpack
+npm install react-server-dom-webpack
+npm install -D @vitejs/plugin-rsc
 ```
 
 Replace `next` with `vinext` in your scripts:
@@ -114,7 +116,7 @@ npx vinext init
 This will:
 
 1. Run `vinext check` to scan for compatibility issues
-2. Install `vite`, `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
+2. Install vinext runtime packages as dependencies and Vite/plugin tooling as devDependencies
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`

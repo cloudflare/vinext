@@ -200,16 +200,31 @@ export function addScripts(root: string, port: number, platform: InitPlatform = 
 
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
-export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
-  const deps = ["vinext", "vite", "@vitejs/plugin-react"];
+export type InitDependencyGroups = {
+  dependencies: string[];
+  devDependencies: string[];
+};
+
+export function getInitDependencyGroups(
+  isAppRouter: boolean,
+  platform: InitPlatform,
+): InitDependencyGroups {
+  const dependencies = ["vinext"];
+  const devDependencies = ["vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
-    deps.push("@vitejs/plugin-rsc");
-    deps.push("react-server-dom-webpack");
+    dependencies.push("react-server-dom-webpack");
+    devDependencies.push("@vitejs/plugin-rsc");
   }
   if (platform === "cloudflare") {
-    deps.push("@cloudflare/vite-plugin", "@vinext/cloudflare", "wrangler");
+    dependencies.push("@vinext/cloudflare");
+    devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
-  return deps;
+  return { dependencies, devDependencies };
+}
+
+export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
+  const groups = getInitDependencyGroups(isAppRouter, platform);
+  return [...groups.dependencies, ...groups.devDependencies];
 }
 
 export function isDepInstalled(root: string, dep: string): boolean {
@@ -564,10 +579,12 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDeps(isApp, platform);
-  const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
+  const neededDeps = getInitDependencyGroups(isApp, platform);
+  const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
+  const missingDevDependencies = neededDeps.devDependencies.filter(
+    (dep) => !isDepInstalled(root, dep),
+  );
   let dependencyInstallNeedsApproval = false;
-  let dependenciesAdded = false;
   const dependencyEntriesAdded: string[] = [];
   const devDependencyEntriesAdded: string[] = [];
 
@@ -575,7 +592,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
   // React is too old (common with create-next-app), upgrade it first as a
   // regular dependency to avoid ERESOLVE peer-dep conflicts.
-  if (isApp && missingDeps.includes("react-server-dom-webpack")) {
+  if (isApp && missingDependencies.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
@@ -592,7 +609,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
         } else {
           const added = addDependencyEntries(root, reactUpgrade, { dev: false });
           dependencyEntriesAdded.push(...added);
-          dependenciesAdded = added.length > 0;
         }
       } catch (error) {
         if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
@@ -601,18 +617,36 @@ export async function init(options: InitOptions): Promise<InitResult> {
     }
   }
 
-  if (missingDeps.length > 0) {
+  if (missingDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
-    console.log(formatList(missingDeps, "    "));
+    console.log(formatList(missingDependencies, "    "));
     try {
       if (shouldInstall) {
-        const installOutput = await installDeps(root, missingDeps, exec);
-        dependenciesAdded = true;
+        const installOutput = await installDeps(root, missingDependencies, exec, { dev: false });
+        dependencyEntriesAdded.push(...missingDependencies);
         if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
       } else {
-        const added = addDependencyEntries(root, missingDeps, { dev: true });
+        const added = addDependencyEntries(root, missingDependencies, { dev: false });
+        dependencyEntriesAdded.push(...added);
+      }
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
+    }
+    console.log();
+  }
+
+  if (missingDevDependencies.length > 0) {
+    console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing devDependencies:"))}`);
+    console.log(formatList(missingDevDependencies, "    "));
+    try {
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, missingDevDependencies, exec);
+        devDependencyEntriesAdded.push(...missingDevDependencies);
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
         devDependencyEntriesAdded.push(...added);
-        dependenciesAdded = dependenciesAdded || added.length > 0;
       }
     } catch (error) {
       if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
@@ -643,15 +677,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (dependenciesAdded && shouldInstall) {
-    console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
-    console.log(formatList(missingDeps, "      "));
-  }
-  if (!shouldInstall && dependencyEntriesAdded.length > 0) {
+  if (dependencyEntriesAdded.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
     console.log(formatList(dependencyEntriesAdded, "      "));
   }
-  if (!shouldInstall && devDependencyEntriesAdded.length > 0) {
+  if (devDependencyEntriesAdded.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
     console.log(formatList(devDependencyEntriesAdded, "      "));
   }
@@ -710,8 +740,10 @@ ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n
 ${deployCommandStep}    ${pmName} run dev           Start Next.js (still works as before)
 `);
 
+  const installedDeps = [...new Set([...dependencyEntriesAdded, ...devDependencyEntriesAdded])];
+
   return {
-    installedDeps: dependenciesAdded ? missingDeps : [],
+    installedDeps,
     addedTypeModule,
     renamedConfigs,
     addedScripts,
