@@ -21,6 +21,7 @@ import Link, {
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
+import DocumentLink from "../packages/vinext/src/shims/link-document.js";
 import {
   navigatePagesRouterLink,
   navigatePagesRouterLinkWithFallback,
@@ -45,6 +46,46 @@ import {
   toSameOriginAppPath,
   toSameOriginPath,
 } from "../packages/vinext/src/shims/url-utils.js";
+
+describe("document-navigation Link rendering", () => {
+  it("renders string and object hrefs without router state", () => {
+    expect(
+      ReactDOMServer.renderToString(React.createElement(DocumentLink, { href: "/about" }, "About")),
+    ).toContain('href="/about"');
+    expect(
+      ReactDOMServer.renderToString(
+        React.createElement(
+          DocumentLink,
+          { href: { pathname: "/search", query: { q: "test" } } },
+          "Search",
+        ),
+      ),
+    ).toContain('href="/search?q=test"');
+  });
+
+  it("uses the as prop and preserves legacy anchor rendering", () => {
+    const child = React.createElement("a", { className: "legacy" }, "User");
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        DocumentLink,
+        { href: "/user/[id]", as: "/user/42", legacyBehavior: true },
+        child,
+      ),
+    );
+
+    expect(html).toContain('href="/user/42"');
+    expect(html).toContain('class="legacy"');
+    expect(html.match(/<a/g)).toHaveLength(1);
+  });
+
+  it("renders dangerous schemes without an href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(DocumentLink, { href: "javascript:alert(1)" }, "Blocked"),
+    );
+
+    expect(html).not.toContain("href=");
+  });
+});
 
 // ─── SSR rendering (mirrors Next.js test/unit/link-rendering.test.ts) ────
 

@@ -44,9 +44,10 @@ export async function waitForAppRouterHydration(page: Page): Promise<void> {
         runtime.functions !== null &&
         "navigate" in runtime.functions &&
         typeof runtime.functions.navigate === "function";
+      const hasDocumentOnlyRuntime = window.__VINEXT_DOCUMENT_ONLY_RSC_RUNTIME__ === true;
       const hydrated =
         Boolean(window.__VINEXT_RSC_ROOT__) &&
-        hasNavigate &&
+        (hasNavigate || hasDocumentOnlyRuntime) &&
         typeof window.__VINEXT_HYDRATED_AT === "number";
 
       if (!hydrated) {

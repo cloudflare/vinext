@@ -23,7 +23,13 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
+  hasClientRouterRuntime = true,
 ): string {
+  if (!hasClientRouterRuntime) {
+    const entryPath = resolveRuntimeEntryModule("app-browser-islands-entry");
+    return `import ${JSON.stringify(entryPath)};`;
+  }
+
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
   const prefetchRoutes: VinextLinkPrefetchRoute[] = routes.map((route) =>

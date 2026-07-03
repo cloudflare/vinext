@@ -182,6 +182,13 @@ declare global {
     __VINEXT_RSC_BOOTSTRAP_STATE__: "starting" | "hydrated" | undefined;
 
     /**
+     * App Router document-only browser runtime marker. Set by the lightweight
+     * hydration entry when no client reference needs App Router navigation
+     * state or soft navigation APIs.
+     */
+    __VINEXT_DOCUMENT_ONLY_RSC_RUNTIME__: boolean | undefined;
+
+    /**
      * A Promise that resolves when the current in-flight popstate RSC navigation
      * finishes rendering.
      * Set by the popstate handler in the browser RSC entry; read by

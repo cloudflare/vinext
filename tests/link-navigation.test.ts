@@ -411,6 +411,126 @@ afterEach(() => {
   vi.resetModules();
 });
 
+describe("document-navigation Link onNavigate prop", () => {
+  async function renderDocumentLinkAndClick(args: {
+    href: string;
+    props?: Record<string, unknown>;
+    clickEvent?: Partial<CapturedClickEvent>;
+    locationOverrides?: Record<string, unknown>;
+  }) {
+    vi.resetModules();
+
+    let capturedAnchorProps: CapturedAnchorProps | undefined;
+    mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({
+      captureAnchor(type, props) {
+        if (type === "a" && props !== null && typeof props === "object") {
+          capturedAnchorProps = props;
+        }
+      },
+    });
+
+    const locationReplace = vi.fn();
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://example.com/current",
+        origin: "https://example.com",
+        replace: locationReplace,
+        ...args.locationOverrides,
+      },
+    });
+
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link-document.js");
+    const React = await vi.importActual<typeof import("react")>("react");
+
+    ReactDOMServer.renderToString(
+      React.createElement(IsolatedLink, { href: args.href, ...args.props }, "target"),
+    );
+
+    const onClickHandler = capturedAnchorProps?.onClick;
+    if (typeof onClickHandler !== "function") {
+      throw new Error("Expected rendered document Link anchor to expose an onClick handler");
+    }
+
+    const clickEvent = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      ...args.clickEvent,
+    };
+
+    await onClickHandler(clickEvent);
+
+    return {
+      clickEvent,
+      locationReplace,
+    };
+  }
+
+  it("fires onNavigate for local document navigations", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderDocumentLinkAndClick({
+      href: "/subpage",
+      props: { onClick, onNavigate },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.locationReplace).not.toHaveBeenCalled();
+  });
+
+  it("cancels local document navigation when onNavigate prevents default", async () => {
+    const onNavigate = vi.fn((event: { preventDefault(): void }) => {
+      event.preventDefault();
+    });
+
+    const result = await renderDocumentLinkAndClick({
+      href: "/subpage",
+      props: { onNavigate },
+    });
+
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    expect(result.locationReplace).not.toHaveBeenCalled();
+  });
+
+  it("skips onNavigate for external document navigations", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderDocumentLinkAndClick({
+      href: "https://example.org/about",
+      props: { onClick, onNavigate },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.locationReplace).not.toHaveBeenCalled();
+  });
+
+  it("calls location.replace for external document navigations with replace", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderDocumentLinkAndClick({
+      href: "https://example.org/about",
+      props: { onClick, onNavigate, replace: true },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    expect(result.locationReplace).toHaveBeenCalledTimes(1);
+    expect(result.locationReplace).toHaveBeenCalledWith("https://example.org/about");
+  });
+});
+
 describe("Link App Router navigation scheduling", () => {
   it.each([
     { locationMethod: "assign" as const, replace: false },

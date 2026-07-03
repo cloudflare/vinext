@@ -38,6 +38,7 @@ export default {
         // Build-time entries referenced by path constant (Vite reads them
         // from disk via `fs`), so knip wouldn't otherwise trace them.
         "src/server/app-browser-entry.ts",
+        "src/server/app-browser-islands-entry.ts",
         "src/server/app-browser-server-action-client.ts",
         "src/server/app-ssr-entry.ts",
         // Forked as a child process by prerender-server-pool.ts via a path

@@ -174,6 +174,167 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("uses the document-only browser runtime when app client refs do not need router state", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-document-runtime-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "client.tsx"),
+        `"use client";
+
+export function ClientIsland() {
+  return <button type="button">island</button>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { ClientIsland } from "./client";
+
+export default function Page() {
+  return <ClientIsland />;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8"),
+      ) as Record<string, ClientManifestEntry>;
+      const manifestSources = Object.entries(manifest).map(([key, entry]) =>
+        (entry.src ?? key).replaceAll("\\", "/"),
+      );
+      expect(manifestSources.some((source) => /\/shims\/link\.(?:js|tsx)$/.test(source))).toBe(
+        false,
+      );
+
+      const clientJs = readAllJs(clientDir);
+      expect(clientJs).toContain("__VINEXT_RSC_BOOTSTRAP_STATE__");
+      expect(clientJs).not.toContain("registerNavigationRuntimeBootstrap");
+      expect(clientJs).not.toContain("registerNavigationRuntimeFunctions");
+      expect(clientJs).not.toContain("__VINEXT_LINK_PREFETCH_ROUTES__");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("keeps the full browser runtime when app routes render next/link", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-link-runtime-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import Link from "next/link";
+
+export default function Page() {
+  return <Link href="/about">about</Link>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientJs = readAllJs(path.join(tmpDir, "dist", "client"));
+      expect(clientJs).toContain("vinext.navigationRuntime");
+      expect(clientJs).toContain("__VINEXT_LINK_PREFETCH_ROUTES__");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("keeps the full browser runtime when app client refs use router state", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-router-runtime-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "client.tsx"),
+        `"use client";
+
+import { usePathname } from "next/navigation";
+
+export function ClientPathname() {
+  return <p>{usePathname()}</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { ClientPathname } from "./client";
+
+export default function Page() {
+  return <ClientPathname />;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientJs = readAllJs(path.join(tmpDir, "dist", "client"));
+      expect(clientJs).toContain("__VINEXT_LINK_PREFETCH_ROUTES__");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vinext build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App

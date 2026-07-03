@@ -135,6 +135,14 @@ describe("App Router generated manifest construction", () => {
     expect(code).toContain('"source":"/legacy","destination":"/about"');
   });
 
+  it("emits only the hydration entry when the client router runtime is unused", () => {
+    const code = generateBrowserEntry([], null, [], undefined, false);
+
+    expect(code).toContain("app-browser-islands-entry");
+    expect(code).not.toContain("registerNavigationRuntimeBootstrap");
+    expect(code).not.toContain("__VINEXT_LINK_PREFETCH_ROUTES__");
+  });
+
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
     const code = generateBrowserEntry([
       ...minimalAppRoutes,

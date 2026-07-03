@@ -1407,6 +1407,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
   }
 
+  let clientRouterRuntimeRequired: boolean | null = null;
+
+  async function resolveHasClientRouterRuntime(
+    config: Pick<ResolvedConfig, "command" | "plugins">,
+  ): Promise<boolean> {
+    if (
+      config.command !== "build" ||
+      hasPagesDir ||
+      nextConfig.i18n !== null ||
+      instrumentationClientPath !== null ||
+      clientRouterRuntimeRequired !== false
+    ) {
+      return true;
+    }
+    return await resolveHasServerActions(config);
+  }
+
   const reactOptions = options.react && options.react !== true ? options.react : undefined;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
@@ -3467,6 +3484,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+          const hasClientRouterRuntime = await resolveHasClientRouterRuntime(
+            this.environment.config,
+          );
           // In a hybrid build, the App browser entry also exposes the Pages
           // route manifest so a user who lands on an App page can still
           // see Pages ownership from a `<Link>` click.
@@ -3494,6 +3514,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             graph.routeManifest,
             pagesPrefetchRoutes,
             nextConfig.rewrites,
+            hasClientRouterRuntime,
           );
         }
         if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -6369,7 +6390,49 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
     plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(
+      createRscClientReferenceLoadersPlugin({
+        internalRoot: path.resolve(__dirname),
+        routerRuntimeModuleIds: [
+          resolveShimModulePath(_shimsDir, "link"),
+          resolveShimModulePath(_shimsDir, "navigation"),
+          resolveShimModulePath(_shimsDir, "router"),
+          resolveShimModulePath(_shimsDir, "form"),
+          resolveShimModulePath(_shimsDir, "navigation-state"),
+          resolveShimModulePath(_shimsDir, "router-state"),
+          resolveShimModulePath(_shimsDir, "internal/app-router-context"),
+        ],
+        routerRuntimeImportSpecifiers: [
+          "next/compat/router",
+          "next/form",
+          "next/link",
+          "next/navigation",
+          "next/navigation.js",
+          "next/router",
+          "next/dist/client/components/navigation",
+          "next/dist/shared/lib/app-router-context",
+          "next/dist/shared/lib/app-router-context.shared-runtime",
+          "vinext/navigation-state",
+          "vinext/router-state",
+        ],
+        onClientRouterRuntimeAnalysis(required) {
+          clientRouterRuntimeRequired = required;
+        },
+        rewriteClientReferenceImportId(importId, { hasServerActions }) {
+          if (
+            clientRouterRuntimeRequired === false &&
+            !hasPagesDir &&
+            nextConfig.i18n === null &&
+            instrumentationClientPath === null &&
+            !hasServerActions &&
+            importId === resolveShimModulePath(_shimsDir, "link")
+          ) {
+            return resolveShimModulePath(_shimsDir, "link-document");
+          }
+          return importId;
+        },
+      }),
+    );
   }
 
   return plugins;
