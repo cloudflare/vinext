@@ -1619,7 +1619,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           code: /\.(?:css|scss|sass)['"]/,
         },
         handler(code: string, id: string) {
-          const cleanId = normalizePathSeparators(stripViteModuleQuery(id));
+          const cleanId = toSlash(stripViteModuleQuery(id));
           if (
             !globalNotFoundCssIsolationPath ||
             canonicalize(cleanId) !== canonicalize(globalNotFoundCssIsolationPath)

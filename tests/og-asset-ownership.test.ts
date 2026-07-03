@@ -3,11 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 /** Expected canonical (forward-slash) path for boundary assertions. */
 function canonical(p: string): string {
-  return normalizePathSeparators(p);
+  return toSlash(p);
 }
 
 let tmpDir: string;

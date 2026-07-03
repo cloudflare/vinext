@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 import {
   buildAppRouteGraph,
   findOwnerRouteForDir,
@@ -47,7 +47,7 @@ async function writeAppFile(appDir: string, relativePath: string, contents: stri
 
 /** Expected canonical (forward-slash) path for graph-output assertions. */
 function canonical(base: string, relativePath = ""): string {
-  return normalizePathSeparators(relativePath ? path.join(base, relativePath) : base);
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 function findRoute(routes: readonly AppRouteGraphRoute[], pattern: string): AppRouteGraphRoute {

@@ -17,11 +17,11 @@ import {
   invalidateAppRouteCache,
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 /** Expected canonical (forward-slash) path for router-output assertions. */
 function canonical(base: string, relativePath = ""): string {
-  return normalizePathSeparators(relativePath ? path.join(base, relativePath) : base);
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");

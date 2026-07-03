@@ -17,7 +17,7 @@ import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
 } from "../packages/vinext/src/shims/constants.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
@@ -25,7 +25,7 @@ function makeTempDir(): string {
 
 /** Expected canonical (forward-slash) path for resolved-config assertions. */
 function canonical(base: string, relativePath = ""): string {
-  return normalizePathSeparators(relativePath ? path.join(base, relativePath) : base);
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 describe("invalid config files", () => {

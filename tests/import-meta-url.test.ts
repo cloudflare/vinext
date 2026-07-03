@@ -6,7 +6,7 @@ import {
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 describe("vinext:import-meta-url plugin", () => {
   let tmpDir: string;
@@ -25,7 +25,7 @@ describe("vinext:import-meta-url plugin", () => {
     await fsp.writeFile(pagePath, `export const url = import.meta.url;\n`);
     // The plugin emits canonical forward-slash paths, so expectations are
     // built from the slash form (path.dirname preserves separators on win32).
-    canonicalPagePath = normalizePathSeparators(await fsp.realpath(pagePath));
+    canonicalPagePath = toSlash(await fsp.realpath(pagePath));
     await fsp.symlink(realRoot, linkedRoot, "junction");
   });
 

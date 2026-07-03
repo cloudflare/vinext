@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { cleanBuildOutput } from "../packages/vinext/src/build/clean-output.js";
 
 let tmpDir: string;
@@ -32,7 +33,7 @@ describe("cleanBuildOutput", () => {
     const result = cleanBuildOutput({ root: tmpDir });
 
     expect(result.cleaned).toBe(true);
-    expect(result.outDir).toBe(path.join(tmpDir, "dist"));
+    expect(result.outDir).toBe(toSlash(path.join(tmpDir, "dist")));
     expect(fs.existsSync(staleModule)).toBe(false);
   });
 

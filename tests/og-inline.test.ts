@@ -5,7 +5,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -1077,11 +1077,9 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     // Exactly once: first call reads from disk, second call hits the build cache.
     // The plugin reads through canonical forward-slash paths, so compare in
     // that space while realpathSync stays native.
-    const expectedRead = normalizePathSeparators(
-      fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")),
-    );
+    const expectedRead = toSlash(fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")));
     const calls = readFileSpy.mock.calls.filter(
-      (call) => typeof call[0] === "string" && normalizePathSeparators(call[0]) === expectedRead,
+      (call) => typeof call[0] === "string" && toSlash(call[0]) === expectedRead,
     );
     expect(calls.length).toBe(1);
   });

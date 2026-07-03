@@ -26,14 +26,14 @@ import {
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
 import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
 
 /** Expected canonical (forward-slash) path for router-output assertions. */
 function canonical(base: string, relativePath = ""): string {
-  return normalizePathSeparators(relativePath ? path.join(base, relativePath) : base);
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 async function makeTempDir(prefix: string): Promise<string> {

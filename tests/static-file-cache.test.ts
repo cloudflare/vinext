@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import os from "node:os";
 import zlib from "node:zlib";
 import { StaticFileCache } from "../packages/vinext/src/server/static-file-cache.js";
@@ -75,7 +76,9 @@ describe("StaticFileCache", () => {
     expect(entry).toBeDefined();
     expect(entry!.original.headers["Content-Type"]).toBe("application/javascript");
     expect(entry!.original.headers["Content-Length"]).toBe("12"); // "const x = 1;"
-    expect(entry!.original.path).toBe(path.join(clientDir, "_next/static/index-abc123.js"));
+    expect(entry!.original.path).toBe(
+      toSlash(path.join(clientDir, "_next/static/index-abc123.js")),
+    );
   });
 
   it("returns undefined for non-existent files", async () => {
@@ -183,7 +186,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/app-abc123.js");
 
-    expect(entry!.br?.path).toBe(path.join(clientDir, "_next/static/app-abc123.js.br"));
+    expect(entry!.br?.path).toBe(toSlash(path.join(clientDir, "_next/static/app-abc123.js.br")));
     expect(entry!.br?.headers["Content-Length"]).toBe(String(brContent.length));
   });
 
@@ -196,7 +199,9 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/styles-def456.css");
 
-    expect(entry!.gz?.path).toBe(path.join(clientDir, "_next/static/styles-def456.css.gz"));
+    expect(entry!.gz?.path).toBe(
+      toSlash(path.join(clientDir, "_next/static/styles-def456.css.gz")),
+    );
     expect(entry!.gz?.headers["Content-Length"]).toBe(String(gzContent.length));
   });
 
@@ -209,7 +214,7 @@ describe("StaticFileCache", () => {
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/app-zstd.js");
 
-    expect(entry!.zst?.path).toBe(path.join(clientDir, "_next/static/app-zstd.js.zst"));
+    expect(entry!.zst?.path).toBe(toSlash(path.join(clientDir, "_next/static/app-zstd.js.zst")));
     expect(entry!.zst?.headers["Content-Length"]).toBe(String(zstdContent.length));
   });
 
@@ -273,7 +278,7 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/about");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(path.join(clientDir, "about.html"));
+    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "about.html")));
     expect(entry!.original.headers["Content-Type"]).toBe("text/html; charset=utf-8");
   });
 
@@ -284,7 +289,7 @@ describe("StaticFileCache", () => {
     const entry = cache.lookup("/blog");
 
     expect(entry).toBeDefined();
-    expect(entry!.original.path).toBe(path.join(clientDir, "blog/index.html"));
+    expect(entry!.original.path).toBe(toSlash(path.join(clientDir, "blog/index.html")));
   });
 
   // ── Directory traversal protection ─────────────────────────────
