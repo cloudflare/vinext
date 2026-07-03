@@ -35,6 +35,7 @@ import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { aliasEntriesToRecord } from "./helpers.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -203,9 +204,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
       expect(result.environments.ssr.resolve.external).toContain("typescript");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
-      expect(result.resolve.alias["vinext/server/pages-client-assets"]).toMatch(
-        /server\/pages-client-assets\.ts$/,
-      );
+      expect(
+        aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
+      ).toMatch(/server\/pages-client-assets\.ts$/);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

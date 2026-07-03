@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Plugin, PluginOption } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
+import { aliasEntriesToRecord } from "./helpers.js";
 
 const originalCwd = process.cwd();
 let createdRoot: string | undefined;
@@ -131,11 +132,64 @@ describe("Vite tsconfig paths support", () => {
       { command: "serve", mode: "development" },
     );
 
-    const alias = resolvedConfig?.resolve?.alias as Record<string, string>;
-    expect(alias).toBeDefined();
+    const alias = aliasEntriesToRecord(resolvedConfig?.resolve?.alias);
     expect(alias["@"]).toBeDefined();
     expect(path.isAbsolute(alias["@"])).toBe(true);
     expect(alias["@"].replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
+  });
+
+  it("orders overlapping tsconfig path aliases longest-prefix-first on Vite 8", async () => {
+    const root = setupProject({ name: "vite", version: "8.0.0" });
+    process.chdir(root);
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            paths: {
+              // Declaration order intentionally puts the general pattern
+              // first. TypeScript matches by longest prefix, so the
+              // materialized alias entries must order `@/public` before `@`.
+              "@/*": ["./src/*"],
+              "@/public/*": ["./public/*"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const plugins = vinext({ appDir: root });
+    const configPlugin = (await findNamedPlugin(plugins, "vinext:config")) as {
+      config?: (
+        config: { root: string },
+        env: { command: "serve"; mode: string },
+      ) => Promise<{
+        resolve?: Record<string, unknown>;
+      }>;
+    };
+    const resolvedConfig = await configPlugin.config?.(
+      { root },
+      { command: "serve", mode: "development" },
+    );
+
+    const alias = resolvedConfig?.resolve?.alias as Array<{
+      find: string;
+      replacement: string;
+      customResolver?: unknown;
+    }>;
+    expect(Array.isArray(alias)).toBe(true);
+    const finds = alias.map((entry) => entry.find);
+    expect(finds.indexOf("@/public")).toBeGreaterThanOrEqual(0);
+    expect(finds.indexOf("@/public")).toBeLessThan(finds.indexOf("@"));
+
+    // tsconfig-derived entries carry the stylesheet-scoping customResolver.
+    const publicEntry = alias.find((entry) => entry.find === "@/public");
+    expect(typeof publicEntry?.customResolver).toBe("function");
+    // Non-tsconfig entries (the next/* shims) do not.
+    const shimEntry = alias.find((entry) => entry.find === "next/link");
+    expect(shimEntry?.customResolver).toBeUndefined();
   });
 
   it("materializes path aliases inherited via tsconfig extends on Vite 8", async () => {
@@ -182,7 +236,7 @@ describe("Vite tsconfig paths support", () => {
       { command: "serve", mode: "development" },
     );
 
-    expect(resolvedConfig?.resolve?.alias).toEqual(
+    expect(aliasEntriesToRecord(resolvedConfig?.resolve?.alias)).toEqual(
       expect.objectContaining({
         "@": "/src",
       }),

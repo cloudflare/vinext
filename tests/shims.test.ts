@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { PAGES_FIXTURE_DIR } from "./helpers.js";
+import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
@@ -23376,11 +23376,11 @@ describe("shim alias map .js variants", () => {
       { mode: "development", command: "serve" },
     );
 
-    const aliases = result?.resolve?.alias as Record<string, string> | undefined;
-    expect(aliases).toBeDefined();
+    const aliases = aliasEntriesToRecord(result?.resolve?.alias);
+    expect(Object.keys(aliases).length).toBeGreaterThan(0);
 
     // Collect top-level next/<name> keys (exclude next/dist/*, next/font/*, next/compat/*, next/legacy/*)
-    const topLevel = Object.keys(aliases!).filter((key) => {
+    const topLevel = Object.keys(aliases).filter((key) => {
       if (!key.startsWith("next/")) return false;
       if (key.endsWith(".js")) return false;
       const segment = key.slice("next/".length);
@@ -23393,7 +23393,7 @@ describe("shim alias map .js variants", () => {
 
     expect(topLevel.length).toBeGreaterThan(0);
 
-    const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
+    const missing = topLevel.filter((key) => !(key + ".js" in aliases));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 

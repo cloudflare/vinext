@@ -1,14 +1,16 @@
 import type {
+  Alias,
   CSSModulesOptions,
   Logger,
   Plugin,
   PluginOption,
   ResolvedConfig,
+  ResolverFunction,
   SassPreprocessorOptions,
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { loadEnv, parseAst, transformWithOxc } from "vite";
+import { createLogger, loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -861,6 +863,96 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
   return aliases;
 }
 
+/**
+ * Stylesheet importer contexts as seen by Vite's internal CSS resolvers.
+ *
+ * Vite resolves CSS `@import`/`composes`/`url()` specifiers through a
+ * dedicated resolver container that only runs the alias plugin plus Vite's
+ * own resolver — user plugins never participate. The importer is either the
+ * stylesheet's own path (sass, CSS modules `composes`, url() rewriting) or a
+ * synthetic `<basedir>/*` (postcss-import, less).
+ */
+const STYLESHEET_IMPORTER_RE = /\.(?:css|scss|sass|less|styl|stylus|pcss|sss)$/i;
+
+function isStylesheetImporter(importer: string | undefined): boolean {
+  if (!importer) return false;
+  if (importer.endsWith("/*") || importer.endsWith("\\*")) return true;
+  return STYLESHEET_IMPORTER_RE.test(stripViteModuleQuery(importer));
+}
+
+/**
+ * Alias resolver for tsconfig-derived path aliases that keeps them out of
+ * stylesheet resolution.
+ *
+ * TypeScript `paths` never apply to CSS in Next.js — `@import` specifiers in
+ * stylesheets use standard bundler resolution, including package.json
+ * `exports` maps. A blind prefix-replacement alias breaks that: with
+ * `"@scope/ui/*": ["../../packages/ui/src/*"]` in tsconfig, an
+ * `@import "@scope/ui/globals.css"` whose real target is `exports`-mapped
+ * gets rewritten to a nonexistent source path and fails with ENOENT.
+ *
+ * Returning `null` for stylesheet importers makes the alias plugin fall
+ * through, so Vite's own resolver handles the original specifier. JS/TS
+ * importers keep the default alias behavior (Next.js applies `paths` there,
+ * including for `import "@/styles/globals.css"` from a layout), and Vite's
+ * glob/dynamic-import transforms — which require blind prefix replacement
+ * because their patterns never exist on disk — keep working.
+ */
+// `ResolverFunction` is typed with rolldown's synchronous resolveId signature,
+// but the alias plugin awaits resolver results, so an async resolver is fine —
+// hence the cast.
+const tsconfigAliasCustomResolver = async function (
+  this: { resolve: ResolveFromImporter },
+  updatedId: string,
+  importer: string | undefined,
+  options?: { skipSelf?: boolean },
+) {
+  if (isStylesheetImporter(importer)) return null;
+  // Mirror the alias plugin's default resolution for every other importer.
+  const resolved = await this.resolve(updatedId, importer, { ...options, skipSelf: true });
+  return resolved ?? { id: updatedId };
+} as unknown as ResolverFunction;
+
+/**
+ * Convert the merged alias map into Vite alias entries, attaching the
+ * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
+ * Array order preserves the map's first-match ordering.
+ */
+function buildResolveAliasEntries(
+  aliasMap: Record<string, string>,
+  tsconfigPathAliases: Record<string, string>,
+): Alias[] {
+  return Object.entries(aliasMap).map(([find, replacement]) =>
+    tsconfigPathAliases[find] === replacement
+      ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
+      : { find, replacement },
+  );
+}
+
+// Vite 8 logs a deprecation warning when `resolve.alias` contains a
+// `customResolver`. vinext uses one deliberately (see
+// `tsconfigAliasCustomResolver`): the aliases must stay in `resolve.alias`
+// for Vite's glob/dynamic-import transforms and internal resolvers, but must
+// not apply inside stylesheet resolution — and only a `customResolver` can
+// observe the importer there. Filter the warning so every project with
+// tsconfig `paths` doesn't boot with it.
+const ALIAS_CUSTOM_RESOLVER_DEPRECATION_RE =
+  /`resolve\.alias` contains an alias with `customResolver` option/;
+const VINEXT_FILTERED_ALIAS_DEPRECATION_WARN = Symbol.for("vinext.filteredAliasDeprecationWarn");
+
+function suppressAliasCustomResolverDeprecationWarning(logger: Logger): Logger {
+  const marker = logger as Logger & { [VINEXT_FILTERED_ALIAS_DEPRECATION_WARN]?: true };
+  if (marker[VINEXT_FILTERED_ALIAS_DEPRECATION_WARN]) return logger;
+
+  const warn = logger.warn.bind(logger);
+  logger.warn = (msg, warnOptions) => {
+    if (ALIAS_CUSTOM_RESOLVER_DEPRECATION_RE.test(stripAnsi(msg))) return;
+    warn(msg, warnOptions);
+  };
+  marker[VINEXT_FILTERED_ALIAS_DEPRECATION_WARN] = true;
+  return logger;
+}
+
 // Virtual module IDs for Pages Router production build
 const VIRTUAL_WORKER_ENTRY = "virtual:vinext-worker-entry";
 const RESOLVED_WORKER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_WORKER_ENTRY;
@@ -1677,6 +1769,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
         const tsconfigPathAliases = resolveTsconfigAliases(root);
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
+
+        // tsconfig-derived alias entries carry a customResolver, which Vite 8
+        // reports as deprecated during config resolution. Filter that warning
+        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
+        // config.customLogger (rather than returning it) keeps mergeConfig
+        // from deep-cloning the logger and flattening its hasWarned getter.
+        if (Object.keys(tsconfigPathAliases).length > 0) {
+          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
+            config.customLogger ??
+              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
+          );
+        }
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2499,13 +2603,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolve: {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
-            alias: {
-              ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
-              ...tsconfigPathAliases,
-              ...nextConfig.aliases,
-              ...nextShimMap,
-              "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-            },
+            // tsconfig-derived entries carry a customResolver that keeps them out
+            // of stylesheet resolution (see tsconfigAliasCustomResolver).
+            alias: buildResolveAliasEntries(
+              {
+                ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
+                ...tsconfigPathAliases,
+                ...nextConfig.aliases,
+                ...nextShimMap,
+                "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+              },
+              tsconfigPathAliases,
+            ),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,

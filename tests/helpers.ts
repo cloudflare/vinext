@@ -113,6 +113,25 @@ export async function startFixtureServer(
   return { server, baseUrl };
 }
 
+// ── Config helpers ────────────────────────────────────────────
+
+/**
+ * Normalize a config-hook `resolve.alias` value to a find→replacement record.
+ * vinext emits alias entry arrays (so tsconfig-derived entries can carry a
+ * customResolver); tests assert on the object view.
+ */
+export function aliasEntriesToRecord(alias: unknown): Record<string, string> {
+  if (Array.isArray(alias)) {
+    return Object.fromEntries(
+      alias.map((entry: { find: string | RegExp; replacement: string }) => [
+        String(entry.find),
+        entry.replacement,
+      ]),
+    );
+  }
+  return (alias ?? {}) as Record<string, string>;
+}
+
 // ── Fetch helpers ─────────────────────────────────────────────
 
 /**
