@@ -90,7 +90,7 @@ describe("createVinextApp", () => {
       start: "next start",
       "dev:vinext": "vinext dev --port 3001",
       "build:vinext": "vinext build",
-      "start:vinext": "vinext start",
+      "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     });
     expect(pkg.dependencies).toMatchObject({
       next: "latest",

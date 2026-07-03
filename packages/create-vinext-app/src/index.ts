@@ -235,7 +235,7 @@ This project was created with create-vinext-app.
 
 - \`pnpm run dev:vinext\` starts the vinext dev server.
 - \`pnpm run build:vinext\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
-- \`pnpm run start:vinext\` starts the production server locally.
+- \`pnpm run start:vinext\` ${isCloudflare ? "starts the built Worker locally with Wrangler" : "starts the production server locally"}.
 - \`pnpm run dev\` starts Next.js for compatibility checks.
 `,
     "tsconfig.json": `{

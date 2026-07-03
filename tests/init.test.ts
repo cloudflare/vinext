@@ -287,6 +287,7 @@ describe("addScripts", () => {
 
     expect(added).toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
   });
 
@@ -319,6 +320,7 @@ describe("addScripts", () => {
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
+    expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("custom-deploy");
   });
 
@@ -827,7 +829,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 3001");
     expect(pkg.scripts["build:vinext"]).toBe("vinext build");
-    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
+    expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
   });
 
@@ -838,6 +840,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
     expect(result.addedScripts).not.toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["start:vinext"]).toBe("vinext start");
     expect(pkg.scripts["deploy:vinext"]).toBeUndefined();
   });
 
@@ -975,7 +978,7 @@ describe("init — dependency installation", () => {
       expect(setup.scripts).toMatchObject({
         "dev:vinext": "vinext dev --port 3001",
         "build:vinext": "vinext build",
-        "start:vinext": "vinext start",
+        "start:vinext": "wrangler dev --config dist/server/wrangler.json",
         "deploy:vinext": "vinext-cloudflare deploy",
       });
       expect(setup.viteConfigExists).toBe(true);
@@ -1002,7 +1005,7 @@ describe("init — dependency installation", () => {
       scripts: {
         "dev:vinext": "vinext dev --port 3001",
         "build:vinext": "vinext build",
-        "start:vinext": "vinext start",
+        "start:vinext": "wrangler dev --config dist/server/wrangler.json",
         "deploy:vinext": "vinext-cloudflare deploy",
       },
     });

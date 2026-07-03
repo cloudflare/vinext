@@ -179,7 +179,10 @@ export function addScripts(root: string, port: number, platform: InitPlatform = 
     }
 
     if (!pkg.scripts["start:vinext"]) {
-      pkg.scripts["start:vinext"] = "vinext start";
+      pkg.scripts["start:vinext"] =
+        platform === "cloudflare"
+          ? "wrangler dev --config dist/server/wrangler.json"
+          : "vinext start";
       added.push("start:vinext");
     }
 
@@ -730,13 +733,17 @@ export async function init(options: InitOptions): Promise<InitResult> {
     platform === "cloudflare"
       ? `    ${pmName} run deploy:vinext Deploy to Cloudflare Workers\n`
       : "";
+  const startCommandDescription =
+    platform === "cloudflare"
+      ? "Start the built Worker locally with Wrangler"
+      : "Start vinext production server";
 
   console.log(`
   ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
 ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n" : ""}
     ${pmName} run dev:vinext    Start the vinext dev server
     ${pmName} run build:vinext  Build production output
-    ${pmName} run start:vinext  Start vinext production server
+    ${pmName} run start:vinext  ${startCommandDescription}
 ${deployCommandStep}    ${pmName} run dev           Start Next.js (still works as before)
 `);
 

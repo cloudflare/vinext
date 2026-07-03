@@ -25,7 +25,7 @@ export default function Home() { return <div>hi</div> }
   "scripts": {
     "dev:vinext": "vinext dev --port 3001",
     "build:vinext": "vinext build",
-    "start:vinext": "vinext start",
+    "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy"
   }
 }
@@ -141,7 +141,7 @@ export default function Home() { return <div>hi</div> }
   "scripts": {
     "dev:vinext": "vinext dev --port 3001",
     "build:vinext": "vinext build",
-    "start:vinext": "vinext start",
+    "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy"
   }
 }
