@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 import { decodeRouteSegment, sortRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
@@ -232,8 +232,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
 
   for (const file of files) {
     // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix.
-    // Use path.posix.join to keep the forward-slash form `fileToRoute` expects.
-    const route = fileToRoute(path.posix.join("api", file), pagesDir, matcher);
+    const route = fileToRoute(path.join("api", file), pagesDir, matcher);
     if (route) {
       routes.push(route);
     }

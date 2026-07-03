@@ -302,6 +302,9 @@ importers:
       next:
         specifier: 'catalog:'
         version: 16.2.7(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.100.0)
+      pathslash:
+        specifier: 'catalog:'
+        version: 0.1.0
       playwright:
         specifier: 'catalog:'
         version: 1.60.0
