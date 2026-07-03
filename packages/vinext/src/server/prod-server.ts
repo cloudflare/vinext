@@ -22,7 +22,7 @@ import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import path from "pathslash";
 import zlib from "node:zlib";
 import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {

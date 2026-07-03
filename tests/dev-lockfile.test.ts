@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 import {
   type DevServerInfo,
@@ -47,7 +48,7 @@ describe("getLockfilePath", () => {
   it("places the lock file under .vinext/dev/", () => {
     const root = "/projects/my-app";
     expect(getLockfilePath(root)).toBe(
-      path.join("/projects/my-app", ".vinext", "dev", "lock.json"),
+      normalizePathSeparators(path.join("/projects/my-app", ".vinext", "dev", "lock.json")),
     );
   });
 });
