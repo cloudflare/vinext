@@ -23,6 +23,21 @@ import { defineConfig } from "vite-plus";
  */
 const isFirstParty = (id: string) => id === "vinext" || id.startsWith("vinext/");
 
+/**
+ * Keep `alwaysBundle`d dependencies out of `dist/node_modules/...`.
+ *
+ * The unbundled output mirrors each inlined dependency's on-disk location, so
+ * it lands under `dist/node_modules/.pnpm/<pkg>/node_modules/<pkg>/...`. Any
+ * consumer that prunes nested `node_modules` then silently drops it — most
+ * importantly our own standalone output assembly (`build/standalone.ts`
+ * filters out every path containing a `node_modules` segment when copying the
+ * app's packages), which left `dist/server/prod-server.js`'s pathslash import
+ * dangling and crashed the standalone server on boot. Renaming the emitted
+ * files to a `deps` segment keeps the mirror layout but survives such pruning.
+ */
+const renameBundledDepsOutput = (chunk: { name: string }) =>
+  `${chunk.name.replaceAll("node_modules", "deps")}.js`;
+
 const externalizeBareThirdPartySpecifiers = (
   id: string,
   _importer: string | undefined,
@@ -63,6 +78,10 @@ export default defineConfig({
     },
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,
+    },
+    outputOptions: {
+      entryFileNames: renameBundledDepsOutput,
+      chunkFileNames: renameBundledDepsOutput,
     },
     dts: true,
     fixedExtension: false,
