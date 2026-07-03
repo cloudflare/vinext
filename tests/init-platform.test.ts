@@ -32,12 +32,12 @@ describe("Cloudflare init choices", () => {
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
-  it("defaults to KV data, data-cache CDN fallback, and Cloudflare Images", async () => {
+  it("defaults to KV data, Workers Cache CDN, and Cloudflare Images", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "data-cache",
+      cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
   });
@@ -45,29 +45,44 @@ describe("Cloudflare init choices", () => {
   it("tells agents to ask and rerun with public Cloudflare flags", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: { CODEX_THREAD_ID: "test" } }),
-    ).rejects.toThrow("--data-cache=... and --image-optimization=...");
+    ).rejects.toThrow("--cdn-cache=..., --data-cache=..., and --image-optimization=...");
   });
 
-  it("lets agents omit the default CDN cache flag", async () => {
+  it("uses explicit Cloudflare choices in agent environments", async () => {
     await expect(
-      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
-        env: { CODEX_THREAD_ID: "test" },
-      }),
+      resolveCloudflareInitOptions(
+        ["--cdn-cache=workers-cache", "--data-cache=kv", "--image-optimization=none"],
+        {
+          env: { CODEX_THREAD_ID: "test" },
+        },
+      ),
     ).resolves.toEqual({
       dataCache: "kv",
-      cdnCache: "data-cache",
+      cdnCache: "workers-cache",
       imageOptimization: "none",
     });
   });
 
-  it("rejects legacy CDN cache choices", () => {
-    expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow("Expected data-cache");
-    expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow("Expected data-cache");
+  it("requires agents to pass the CDN cache choice with other Cloudflare choices", async () => {
+    await expect(
+      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
+        env: { CODEX_THREAD_ID: "test" },
+      }),
+    ).rejects.toThrow("--cdn-cache=..., --data-cache=..., and --image-optimization=...");
   });
 
-  it("prompts only for public Cloudflare choices", async () => {
+  it("rejects legacy CDN cache choices", () => {
+    expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow(
+      "Expected workers-cache or data-cache",
+    );
+    expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow(
+      "Expected workers-cache or data-cache",
+    );
+  });
+
+  it("prompts for CDN cache before the other Cloudflare choices", async () => {
     const prompts: string[] = [];
-    const answers = ["2", "2"];
+    const answers = ["2", "2", "2"];
     const output = new PassThrough();
     await expect(
       resolveCloudflareInitOptions([], {
@@ -85,32 +100,55 @@ describe("Cloudflare init choices", () => {
       imageOptimization: "none",
     });
     expect(prompts).toEqual([
+      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
     ]);
-    expect(output.read()?.toString()).toBe("\n\n");
-    expect(prompts.join("\n")).not.toContain("Workers Cache");
-    expect(prompts.join("\n")).not.toContain("CDN");
+    expect(output.read()?.toString()).toBe("\n\n\n");
   });
 
-  it("preserves the hidden Workers Cache flag during interactive setup", async () => {
+  it("preserves an explicit CDN cache flag during interactive setup", async () => {
     const answers = ["2", "2"];
     await expect(
-      resolveCloudflareInitOptions(["--cdn-cache=workers-cache"], {
+      resolveCloudflareInitOptions(["--cdn-cache=data-cache"], {
         env: {},
         isInteractive: true,
         question: async () => answers.shift() ?? "",
       }),
     ).resolves.toEqual({
       dataCache: "none",
-      cdnCache: "workers-cache",
+      cdnCache: "data-cache",
       imageOptimization: "none",
     });
   });
 
+  it("prompts interactively for a missing CDN cache choice before honoring other flags", async () => {
+    const prompts: string[] = [];
+    const output = new PassThrough();
+    await expect(
+      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
+        env: {},
+        isInteractive: true,
+        output,
+        question: async (prompt) => {
+          prompts.push(prompt);
+          return "2";
+        },
+      }),
+    ).resolves.toEqual({
+      dataCache: "kv",
+      cdnCache: "data-cache",
+      imageOptimization: "none",
+    });
+    expect(prompts).toEqual([
+      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+    ]);
+    expect(output.read()?.toString()).toBe("\n");
+  });
+
   it("does not add a section break when repeating an invalid choice", async () => {
     const prompts: string[] = [];
-    const answers = ["invalid", "2", "2"];
+    const answers = ["invalid", "2", "2", "2"];
     const output = new PassThrough();
     await resolveCloudflareInitOptions([], {
       env: {},
@@ -122,10 +160,13 @@ describe("Cloudflare init choices", () => {
       },
     });
 
-    expect(prompts[0]).toMatch(/^  Choose a data cache:/);
-    expect(prompts[1]).toMatch(/^  Choose a data cache:/);
-    expect(prompts[2]).toMatch(/^  Choose image optimization:/);
-    expect(output.read()?.toString()).toBe("  Please choose Cloudflare KV (1) or None (2).\n\n\n");
+    expect(prompts[0]).toMatch(/^  Choose a CDN cache:/);
+    expect(prompts[1]).toMatch(/^  Choose a CDN cache:/);
+    expect(prompts[2]).toMatch(/^  Choose a data cache:/);
+    expect(prompts[3]).toMatch(/^  Choose image optimization:/);
+    expect(output.read()?.toString()).toBe(
+      "  Please choose Workers Cache (1) or Data cache (2).\n\n\n\n",
+    );
   });
 });
 

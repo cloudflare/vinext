@@ -82,7 +82,10 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
-import { attachPagesRequestCookies } from "./pages-node-compat.js";
+import {
+  attachPagesRequestCookies,
+  getPagesPreviewDataFromCookieHeader,
+} from "./pages-node-compat.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -795,6 +798,7 @@ export function createSSRHandler(
         // and `useRouter().isFallback === true`, matching Next.js render.tsx.
         let isFallbackRender = false;
         let shouldPersistFallbackData = false;
+        let staticPropsPreviewData: ReturnType<typeof getPagesPreviewDataFromCookieHeader> = false;
 
         // Handle getStaticPaths for dynamic routes: validate the path,
         // respect `fallback: false` (return 404 for unlisted paths), and
@@ -926,6 +930,15 @@ export function createSSRHandler(
           renderProps = { ...renderProps, __N_SSP: true };
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
+          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie);
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           const context = {
             params: userFacingParams,
@@ -936,6 +949,7 @@ export function createSSRHandler(
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
+            ...previewContext,
           };
           const result = await pageModule.getServerSideProps(context);
           // If gSSP called res.end() directly (short-circuit pattern),
@@ -1077,6 +1091,18 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
+          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
+            isOnDemandRevalidate,
+          });
+          staticPropsPreviewData = previewData;
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           if (
             !isOnDemandRevalidate &&
@@ -1085,7 +1111,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1115,7 +1142,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1371,9 +1399,11 @@ export function createSSRHandler(
             revalidateReason: (isOnDemandRevalidate ? "on-demand" : "stale") as
               | "on-demand"
               | "stale",
+            ...previewContext,
           };
           const generatedPageData =
             !isOnDemandRevalidate &&
+            previewData === false &&
             cached?.isStale === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest &&
@@ -1437,9 +1467,14 @@ export function createSSRHandler(
           }
 
           // Extract revalidate period for ISR caching after render
-          if (typeof result?.revalidate === "number" && result.revalidate > 0) {
+          if (
+            previewData === false &&
+            typeof result?.revalidate === "number" &&
+            result.revalidate > 0
+          ) {
             isrRevalidateSeconds = result.revalidate;
           } else if (
+            previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest
           ) {
@@ -1490,7 +1525,7 @@ export function createSSRHandler(
         // by getServerSideProps (cookies, status codes, etc.) are preserved
         // because we already let gSSP mutate `res` above.
         if (isDataReq) {
-          if (shouldPersistFallbackData) {
+          if (shouldPersistFallbackData && staticPropsPreviewData === false) {
             const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
             await isrSet(

@@ -42,6 +42,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../server/headers.js";
 import {
   encodePrerenderRouteParams,
@@ -1432,6 +1433,9 @@ export async function prerenderApp({
         if (prerenderRouteParamsHeader !== null) {
           htmlHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
         }
+        if (isSpeculative) {
+          htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+        }
         const htmlRequest = new Request(`http://localhost${urlPath}`, { headers: htmlHeaders });
         const htmlRender = await runWithHeadersContext(
           headersContextFromRequest(htmlRequest),
@@ -1440,7 +1444,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
-            if (!response.ok || (isSpeculative && cacheControl.includes("no-store"))) {
+            if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
                 cacheControl,
@@ -1479,14 +1483,14 @@ export async function prerenderApp({
           };
         }
 
-        // Detect dynamic usage for speculative routes via Cache-Control header.
-        // When headers(), cookies(), connection(), or noStore() are called during
-        // render, the server sets Cache-Control: no-store. We treat this as a
-        // signal that the route is dynamic and should be skipped.
-        if (isSpeculative) {
-          if (htmlCacheControl.includes("no-store")) {
-            return { route: routePattern, status: "skipped", reason: "dynamic" };
-          }
+        // Detect dynamic usage via Cache-Control header. When headers(),
+        // cookies(), connection(), noStore(), or a no-store fetch are called
+        // during render, the server sets Cache-Control: no-store. Treat that
+        // as a dynamic skip even for concrete generateStaticParams paths: a
+        // generated param decides which URLs are admissible, not that the
+        // render output is reusable.
+        if (htmlCacheControl.includes("no-store")) {
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
 
         if (htmlRender.html === null) {
@@ -1515,6 +1519,9 @@ export async function prerenderApp({
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+          }
+          if (isSpeculative) {
+            rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
           const rscRequest = new Request(`http://localhost${urlPath}`, {
             headers: rscHeaders,

@@ -98,7 +98,7 @@ export function parseDataCacheArg(args: string[]): InitDataCache | undefined {
 }
 
 export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
-  return parseChoiceArg(args, "--cdn-cache", ["data-cache", "workers-cache"], ["data-cache"]);
+  return parseChoiceArg(args, "--cdn-cache", ["workers-cache", "data-cache"]);
 }
 
 export function parseImageOptimizationArg(args: string[]): InitImageOptimization | undefined {
@@ -219,10 +219,10 @@ export async function resolveCloudflareInitOptions(
   const explicitDataCache = parseDataCacheArg(args);
   const explicitCdnCache = parseCdnCacheArg(args);
   const explicitImageOptimization = parseImageOptimizationArg(args);
-  if (explicitDataCache && explicitImageOptimization) {
+  if (explicitCdnCache && explicitDataCache && explicitImageOptimization) {
     return {
       dataCache: explicitDataCache,
-      cdnCache: explicitCdnCache ?? "data-cache",
+      cdnCache: explicitCdnCache,
       imageOptimization: explicitImageOptimization,
     };
   }
@@ -230,7 +230,7 @@ export async function resolveCloudflareInitOptions(
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user which data cache (kv or none) and image optimization (cloudflare-images or none) they want, then re-run with --data-cache=... and --image-optimization=....",
+      "vinext init needs Cloudflare cache and image choices. Ask the user which CDN cache (workers-cache or data-cache), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --data-cache=..., and --image-optimization=....",
     );
   }
 
@@ -241,7 +241,7 @@ export async function resolveCloudflareInitOptions(
   if (!isInteractive) {
     return {
       dataCache: explicitDataCache ?? "kv",
-      cdnCache: explicitCdnCache ?? "data-cache",
+      cdnCache: explicitCdnCache ?? "workers-cache",
       imageOptimization: explicitImageOptimization ?? "cloudflare-images",
     };
   }
@@ -272,6 +272,20 @@ export async function resolveCloudflareInitOptions(
       }
     };
 
+    const cdnCache = await promptChoice(
+      explicitCdnCache,
+      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+      {
+        "1": "workers-cache",
+        "workers-cache": "workers-cache",
+        workers: "workers-cache",
+        "2": "data-cache",
+        "data-cache": "data-cache",
+        data: "data-cache",
+      },
+      "workers-cache",
+      "Please choose Workers Cache (1) or Data cache (2).",
+    );
     const dataCache = await promptChoice(
       explicitDataCache,
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
@@ -279,7 +293,6 @@ export async function resolveCloudflareInitOptions(
       "kv",
       "Please choose Cloudflare KV (1) or None (2).",
     );
-    const cdnCache = explicitCdnCache ?? "data-cache";
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",

@@ -153,7 +153,7 @@ export default defineConfig({
  * Add vinext scripts to package.json without overwriting existing scripts.
  * Returns the list of script names that were added.
  */
-export function addScripts(root: string, port: number): string[] {
+export function addScripts(root: string, port: number, platform: InitPlatform = "node"): string[] {
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
 
@@ -180,6 +180,11 @@ export function addScripts(root: string, port: number): string[] {
     if (!pkg.scripts["start:vinext"]) {
       pkg.scripts["start:vinext"] = "vinext start";
       added.push("start:vinext");
+    }
+
+    if (platform === "cloudflare" && !pkg.scripts["deploy:vinext"]) {
+      pkg.scripts["deploy:vinext"] = "vinext-cloudflare deploy";
+      added.push("deploy:vinext");
     }
 
     if (added.length > 0) {
@@ -462,7 +467,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 3: Add scripts ────────────────────────────────────────────────
 
-  const addedScripts = addScripts(root, port);
+  const addedScripts = addScripts(root, port, platform);
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
 
@@ -595,6 +600,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
       "   pnpm install",
     );
   }
+  const deployCommandStep =
+    platform === "cloudflare"
+      ? `    ${pmName} run deploy:vinext Deploy to Cloudflare Workers\n`
+      : "";
 
   console.log(`
   ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
@@ -602,7 +611,7 @@ ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n
     ${pmName} run dev:vinext    Start the vinext dev server
     ${pmName} run build:vinext  Build production output
     ${pmName} run start:vinext  Start vinext production server
-    ${pmName} run dev           Start Next.js (still works as before)
+${deployCommandStep}    ${pmName} run dev           Start Next.js (still works as before)
 `);
 
   return {

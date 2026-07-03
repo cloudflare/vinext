@@ -749,6 +749,7 @@ export default createAppRscHandler({
     staticParamsValidationParams,
     rootParams,
     request,
+    renderedPathAndSearch,
     route,
     scriptNonce,
     searchParams,
@@ -915,6 +916,7 @@ export default createAppRscHandler({
       prerenderToReadableStream,
       request,
       revalidateSeconds: __segmentConfig.revalidateSeconds,
+      renderedPathAndSearch,
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
       },

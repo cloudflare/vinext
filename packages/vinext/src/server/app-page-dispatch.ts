@@ -32,6 +32,7 @@ import {
   setCurrentFetchCacheMode,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
@@ -73,6 +74,7 @@ import {
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
@@ -80,6 +82,7 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
@@ -339,6 +342,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   request: Request;
   revalidateSeconds: number | null;
+  renderedPathAndSearch?: string | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
@@ -457,6 +461,20 @@ export function shouldReadAppPageCache(options: {
   );
 }
 
+function resolveAppPageCacheReadRevalidateSeconds(options: {
+  isDynamicError: boolean;
+  isForceStatic: boolean;
+  revalidateSeconds: number | null;
+}): number {
+  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
+    return Infinity;
+  }
+
+  // cacheLife-only routes discover their actual revalidate during the fresh
+  // render; this seed only gets them into the cache read path.
+  return options.revalidateSeconds ?? 0;
+}
+
 export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
   return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
 }
@@ -498,6 +516,7 @@ async function runAppPageRevalidationContext<
 
   return runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
+    setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
       pathname: options.displayPathname ?? options.cleanPathname,
@@ -546,10 +565,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
-  const hasRequestSearchParams = !isForceStatic && hasSearchParams(options.searchParams);
-  const pageSearchParams = isForceStatic ? new URLSearchParams() : options.searchParams;
+  const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
+  const hasRequestSearchParams =
+    !shouldUseEmptySearchParams && hasSearchParams(options.searchParams);
+  const pageSearchParams = shouldUseEmptySearchParams
+    ? new URLSearchParams()
+    : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
     options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
@@ -632,9 +656,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
-      // cacheLife-only routes discover their actual revalidate during the
-      // fresh render; this seed only gets them into the cache read path.
-      revalidateSeconds: currentRevalidateSeconds ?? 0,
+      revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
+        isDynamicError,
+        isForceStatic,
+        revalidateSeconds: currentRevalidateSeconds,
+      }),
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,
@@ -963,6 +989,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
+  const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  const isSpeculativePrerender =
+    isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
@@ -995,7 +1024,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: hasActiveLoadingBoundary,
-    omitPendingDynamicCacheState: !options.isRscRequest && hasRequestSearchParams,
+    omitPendingDynamicCacheState: hasRequestSearchParams,
     formState: options.formState ?? null,
     isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
@@ -1003,7 +1032,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isForceDynamic,
     isForceStatic,
     isEdgeRuntime: options.isEdgeRuntime === true,
-    isPrerender: process.env.VINEXT_PRERENDER === "1",
+    isPrerender,
+    isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     isrDebug: options.isrDebug,
@@ -1019,6 +1049,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
+    renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);

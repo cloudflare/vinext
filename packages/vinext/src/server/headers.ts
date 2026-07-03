@@ -12,7 +12,9 @@
 import {
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../utils/protocol-headers.js";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +37,7 @@ export {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
@@ -57,6 +60,9 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
+
+/** URL-encoded rendered path and search after middleware/config rewrites. */
+export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-And-Search";
 
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
@@ -138,6 +144,7 @@ export const ACTION_REDIRECT_STATUS_HEADER = "x-action-redirect-status";
 export {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
+  MIDDLEWARE_SKIP_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Signal from `NextResponse.next()` — value "1" means "continue to next handler". */
@@ -148,9 +155,6 @@ export const MIDDLEWARE_REWRITE_HEADER = "x-middleware-rewrite";
 
 /** Redirect URL set by middleware. */
 const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
-
-/** Skip-middleware signal. */
-const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
 
 // ---------------------------------------------------------------------------
 // Next.js / RSC flight headers (forwarded through middleware)
@@ -210,5 +214,6 @@ export const INTERNAL_HEADERS = [
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 ];
