@@ -831,6 +831,19 @@ function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
 // transforms can see them via resolve.alias without re-reading config files per env.
 const _tsconfigAliasCache = new Map<string, Record<string, string>>();
 
+/**
+ * Order materialized tsconfig path aliases by descending prefix length.
+ *
+ * TypeScript (and Next.js) match `paths` patterns by longest matched prefix,
+ * regardless of declaration order, while Vite's alias plugin picks the first
+ * matching entry. Overlapping patterns like `@/*` + `@/public/*` must
+ * therefore be materialized longest-first or the general pattern shadows the
+ * specific one (`@/public/foo.svg` would resolve into `src/public/`).
+ */
+function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(aliases).sort((a, b) => b[0].length - a[0].length));
+}
+
 function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
   if (_tsconfigAliasCache.has(projectRoot)) {
     return _tsconfigAliasCache.get(projectRoot)!;
@@ -840,7 +853,7 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
   for (const name of TSCONFIG_FILES) {
     const candidate = path.join(projectRoot, name);
     if (!fs.existsSync(candidate)) continue;
-    aliases = loadTsconfigPathAliases(candidate, projectRoot);
+    aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
     break;
   }
 
