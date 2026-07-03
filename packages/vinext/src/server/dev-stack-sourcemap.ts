@@ -2,11 +2,19 @@ import type { ViteDevServer } from "vite";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { toSlash } from "pathslash";
-
 import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
 
 export { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
+
+/**
+ * Slash-normalize UNCONDITIONALLY — deliberately not pathslash's
+ * platform-gated `toSlash`. Stack frames and source-map `sources` entries
+ * arrive over the wire from the browser or from foreign tooling, so their
+ * separator shape depends on the producer, not on this server's platform.
+ */
+function slashifyFramePath(value: string): string {
+  return value.replaceAll("\\", "/");
+}
 
 const MAX_ORIGINAL_STACK_TRACE_BODY_BYTES = 1024 * 1024;
 
@@ -362,7 +370,7 @@ function extractV8ParenMethodName(prefix: string): string | undefined {
 
 function normalizeProjectRoot(root: string | undefined): string | undefined {
   if (!root) return undefined;
-  const normalized = toSlash(root).replace(/\/+$/, "");
+  const normalized = slashifyFramePath(root).replace(/\/+$/, "");
   return normalized || (root.startsWith("/") ? "/" : undefined);
 }
 
@@ -441,7 +449,7 @@ function isWindowsAbsolutePath(value: string): boolean {
 }
 
 function normalizeLocalPathForCompare(value: string): string {
-  const normalized = (stripTrailingSlash(toSlash(value)) ?? "").replace(/\/+/g, "/");
+  const normalized = (stripTrailingSlash(slashifyFramePath(value)) ?? "").replace(/\/+/g, "/");
   return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
@@ -470,7 +478,7 @@ function normalizeIgnoreListPath(value: string): string {
     // Keep malformed paths comparable instead of dropping the frame.
   }
 
-  return toSlash(path).toLowerCase();
+  return slashifyFramePath(path).toLowerCase();
 }
 
 function isExternalHttpFrame(file: string, requestHost: string | undefined): boolean {
