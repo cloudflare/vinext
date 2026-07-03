@@ -15,10 +15,7 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
@@ -109,16 +106,6 @@ describe("App Router RSC cache-busting", () => {
     );
 
     expect(feedHash).not.toBe(galleryHash);
-  });
-
-  it("varies preserve-current-UI refresh payloads from normal navigations", async () => {
-    const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
-    const refreshHash = await computeRscCacheBustingSearchParam(
-      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
-    );
-
-    expect(navigationHash).toBe("");
-    expect(refreshHash).not.toBe("");
   });
 
   it("varies loading-shell prefetch payloads from normal navigations", async () => {
@@ -267,42 +254,6 @@ describe("App Router RSC cache-busting", () => {
     await expect(
       resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
     ).resolves.toBeNull();
-  });
-
-  it("does not accept a bare previous hash for preserve-current-UI payloads", async () => {
-    const headers = createRscRequestHeaders({
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-    });
-    const request = new Request("https://example.com/photos/42.rsc?_rsc", { headers });
-    const hash = await computeRscCacheBustingSearchParam(headers);
-
-    const response = await resolveInvalidRscCacheBustingRequest({
-      isRscRequest: true,
-      request,
-    });
-
-    expect(response?.status).toBe(307);
-    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${hash}`);
-  });
-
-  it("does not accept previous mounted-slot hashes for preserve-current-UI payloads", async () => {
-    const headers = createRscRequestHeaders({
-      mountedSlotsHeader: "slot:modal:/",
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-    });
-    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/");
-    const currentHash = await computeRscCacheBustingSearchParam(headers);
-    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
-      headers,
-    });
-
-    const response = await resolveInvalidRscCacheBustingRequest({
-      isRscRequest: true,
-      request,
-    });
-
-    expect(response?.status).toBe(307);
-    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
   });
 
   it("ignores non-RSC and mutating requests", async () => {

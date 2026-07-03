@@ -103,22 +103,31 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     });
   });
 
-  // Next.js: 'should not remount the page + loading component when revalidating'
-  // Adapted: Verify that clicking revalidate button updates the timestamp
-  test("revalidating server actions update page and layout output", async ({ page }) => {
+  // Ported from Next.js: test/e2e/app-dir/actions-revalidate-remount/actions-revalidate-remount.test.ts
+  test("revalidating server actions preserve client state under loading.tsx", async ({ page }) => {
+    const loadingLogs: string[] = [];
+    page.on("console", (message) => {
+      if (message.text() === "Action revalidate loading mounted") {
+        loadingLogs.push(message.text());
+      }
+    });
+
     await page.goto(`${BASE}/nextjs-compat/action-revalidate`);
     await waitForAppRouterHydration(page);
+    loadingLogs.length = 0;
 
-    // Read initial timestamp
+    await page.click("#action-revalidate-increment");
+    await page.click("#action-revalidate-increment");
+    await page.click("#action-revalidate-increment");
+    await expect(page.locator("#action-revalidate-client-count")).toHaveText("3");
+
     const time1 = await page.locator("#time").textContent();
     const layoutVersion1 = await page.locator("#layout-version").textContent();
     expect(time1).toBeTruthy();
     expect(layoutVersion1).toBeTruthy();
 
-    // Click revalidate button (triggers server action with revalidatePath)
     await page.click("#revalidate");
 
-    // Wait for timestamp to change (page should re-render with fresh data)
     await expect(async () => {
       const time2 = await page.locator("#time").textContent();
       expect(time2).toBeTruthy();
@@ -129,6 +138,9 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
 
     const layoutVersion2 = await page.locator("#layout-version").textContent();
     expect(layoutVersion2).toBeTruthy();
+    await expect(page.locator("#action-revalidate-client-count")).toHaveText("3");
+    expect(await page.locator("#action-revalidate-loading").count()).toBe(0);
+    expect(loadingLogs).toEqual([]);
 
     await page.click("#revalidate-tag");
     await expect(page.locator("#layout-version")).not.toHaveText(layoutVersion2!);

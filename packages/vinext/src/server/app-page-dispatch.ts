@@ -76,7 +76,6 @@ import {
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
-  shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
@@ -575,11 +574,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     ? new URLSearchParams()
     : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
-  const hasActiveLoadingBoundary = shouldSuppressLoadingBoundaries(
-    options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-  )
-    ? false
-    : Boolean(route.loading?.default);
+  const hasActiveLoadingBoundary = Boolean(route.loading?.default);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -927,10 +922,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       async probePageSpecialError() {
-        if (
-          !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) &&
-          route.loading?.default
-        ) {
+        if (route.loading?.default) {
           return null;
         }
         const pageError = await probeAppPageThrownError({

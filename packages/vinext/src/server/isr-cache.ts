@@ -398,7 +398,7 @@ function normalizeInterceptionContextForCacheKey(interceptionContext: string): s
  *
  * Variants are sequenced in order: `source:<hash>` (intercepted source context,
  * only when an interception context is present), `slots:<hash>` (mounted parallel
- * route slots), and optionally `<render-mode-variant>` (e.g. `preserve-ui` or
+ * route slots), and optionally `<render-mode-variant>` (for example,
  * `prefetch-loading-shell`). Existing cached entries under the old format will
  * become unreachable after deployment. This is acceptable because ISR entries
  * have TTLs and will be regenerated on the next request.

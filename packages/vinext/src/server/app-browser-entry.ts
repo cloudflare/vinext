@@ -165,7 +165,6 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
-import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
@@ -1766,8 +1765,6 @@ function bootstrapHydration(
         const requestHeaders = createRscRequestHeaders({
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
-          renderMode:
-            navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const rewrittenNavigationHref =
