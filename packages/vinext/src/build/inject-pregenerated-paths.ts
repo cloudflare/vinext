@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { readPrerenderManifest } from "../server/prerender-manifest.js";
 import { escapeRegExp } from "../utils/regex.js";
 
