@@ -283,7 +283,13 @@ describe("resolveInitOptions", () => {
   it("shares the full vinext init option selection flow", async () => {
     await expect(
       resolveInitOptions(
-        ["--platform=cloudflare", "--data-cache=none", "--image-optimization=none", "--prerender"],
+        [
+          "--platform=cloudflare",
+          "--cdn-cache=data-cache",
+          "--data-cache=none",
+          "--image-optimization=none",
+          "--prerender",
+        ],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
     ).resolves.toEqual({
