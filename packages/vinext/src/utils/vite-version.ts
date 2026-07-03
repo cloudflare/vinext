@@ -4,7 +4,7 @@
  * vinext requires Vite 8 or newer so it can rely on Rolldown-based build
  * options, native `resolve.tsconfigPaths`, and OXC transforms.
  */
-import path from "node:path";
+import path from "pathslash";
 import { createRequire } from "node:module";
 
 export function serializeViteDefine(value: unknown): string {

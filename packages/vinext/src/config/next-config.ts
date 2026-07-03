@@ -4,7 +4,7 @@
  * Loads the Next.js config file (if present) and extracts supported options.
  * Unsupported options are logged as warnings.
  */
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -708,10 +708,12 @@ async function unwrapConfig(
 /**
  * Resolve a path through filesystem symlinks, falling back to the original
  * path when the file does not exist (e.g. virtual ids, query-suffixed ids).
+ * Output is forward-slashed so it compares consistently with pathslash
+ * results (fs.realpathSync returns backslashes on Windows).
  */
 function safeRealpath(p: string): string {
   try {
-    return fs.realpathSync(p);
+    return toSlash(fs.realpathSync(p));
   } catch {
     return p;
   }
@@ -1190,10 +1192,12 @@ export function createRscCompatibilityId(
  * @returns A filesystem path suitable for path operations
  */
 function resolveCacheHandlerPathToFilesystem(filePath: string): string {
+  // toSlash: fileURLToPath and user-supplied require.resolve() results are
+  // backslash-separated on Windows; normalize into slash space.
   if (filePath.startsWith("file://")) {
-    return fileURLToPath(filePath);
+    return toSlash(fileURLToPath(filePath));
   }
-  return filePath;
+  return toSlash(filePath);
 }
 
 function resolveHtmlLimitedBots(value: NextConfig["htmlLimitedBots"]): string | undefined {
@@ -1362,7 +1366,7 @@ function normalizePrefetchInliningConfig(value: unknown): PrefetchInliningConfig
  */
 export async function resolveNextConfig(
   config: NextConfig | null,
-  root: string = process.cwd(),
+  root: string = toSlash(process.cwd()),
   options: { dev?: boolean } = {},
 ): Promise<ResolvedNextConfig> {
   if (!config) {
@@ -2073,7 +2077,7 @@ function invokeLoaderSideEffects(rules: any[], root: string): void {
  */
 export async function extractMdxOptions(
   config: NextConfig,
-  root: string = process.cwd(),
+  root: string = toSlash(process.cwd()),
 ): Promise<MdxOptions | null> {
   return (await probeWebpackConfig(config, root, false)).mdx;
 }

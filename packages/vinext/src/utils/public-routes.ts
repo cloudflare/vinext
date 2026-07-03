@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 
 export function scanPublicFileRoutes(root: string): string[] {
   const publicDir = path.join(root, "public");
@@ -38,7 +38,7 @@ export function scanPublicFileRoutes(root: string): string[] {
       } else if (!entry.isFile()) {
         continue;
       }
-      const relativePath = path.relative(publicDir, fullPath).split(path.sep).join("/");
+      const relativePath = path.relative(publicDir, fullPath);
       routes.push("/" + relativePath);
     }
   }

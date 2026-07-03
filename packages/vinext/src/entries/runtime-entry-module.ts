@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 
 /**
  * Resolve a sibling module path relative to a caller's `import.meta.url`,
@@ -14,7 +14,7 @@ import { normalizePathSeparators } from "../utils/path.js";
  * @param base - The caller's `import.meta.url`
  */
 export function resolveEntryPath(rel: string, base: string): string {
-  return normalizePathSeparators(fileURLToPath(new URL(rel, base)));
+  return toSlash(fileURLToPath(new URL(rel, base)));
 }
 
 /**

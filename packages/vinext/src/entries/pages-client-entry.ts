@@ -23,7 +23,7 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 
 /**
@@ -95,7 +95,7 @@ export async function generateClientEntry(
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
   // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
   const loaderEntries = pageRoutes.map((r: Route) => {
-    const absPath = normalizePathSeparators(r.filePath);
+    const absPath = r.filePath;
     const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
     // JSON.stringify safely escapes quotes, backslashes, and special chars in
     // both the route pattern and the absolute file path.
@@ -103,7 +103,7 @@ export async function generateClientEntry(
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
 
-  const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
+  const appFileBase = appFilePath ?? undefined;
 
   // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
   // (when present at project root or in `src/`) BEFORE any other module so its
@@ -120,7 +120,7 @@ export async function generateClientEntry(
   // makes the contract explicit: bare side-effect imports are always
   // preserved by Vite/Rolldown's import-analysis pipeline.
   const userInstrumentationImport = instrumentationClientPath
-    ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
+    ? `import ${JSON.stringify(toSlash(instrumentationClientPath))};\n`
     : "";
   const reactPreambleImport =
     options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';

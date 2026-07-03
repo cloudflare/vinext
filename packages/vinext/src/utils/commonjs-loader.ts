@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createRequire, Module } from "node:module";
-import path from "node:path";
+import path from "pathslash";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 type CompilableCommonJsModule = Module & {
