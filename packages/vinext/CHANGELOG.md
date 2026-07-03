@@ -1,5 +1,70 @@
 # vinext
 
+## 0.2.1
+
+### Bug Fixes
+
+#### App Router
+
+- limit mounted slot cache variants (#2497)
+- omit pending RSC cache state for query renders (#2488)
+- isolate global not-found css (#2444)
+- expose app rewrites to pages data clients (#2468)
+- publish committed no-prefetch navigations (#2469)
+- cache segment prefetches by rendered search params (#2477)
+- skip readiness waits for speculative prerenders (#2457)
+- align app static ISR lifecycle (#2472)
+- reuse metadata rewrite prefetches (#2455)
+- avoid runtime route-tree prefetch sizing (#2467)
+- start optimistic prefetches immediately (#2440)
+- normalize rsc reference validation ids (#2480)
+- send deployment id on RSC responses (#2452)
+- separate header-only full-route rsc requests (#2445)
+- preserve app rewrite filtering (#2441)
+- revalidate dynamic intercepted actions (#2443)
+- evict segment prefetches under memory pressure (#2466)
+- honor basePath false rewrites (#2370)
+- preserve rewritten route identity (#2358)
+- support styled-jsx from next (#2341)
+
+#### Pages
+
+- align middleware data prefetch caching (#2451)
+- honor basePath false rewrites (#2442)
+- normalize data routes for trailing slash middleware (#2470)
+- align prerender functional parity (#2471)
+- enforce reactStrictMode by wrapping client root in <StrictMode> (#2433)
+- preload initial dev stylesheets (#2423)
+- route dotted dynamic paths in dev (#2424)
+
+#### Misc
+
+- fully elide inline type-only import specifiers (#2498)
+- **Config:** escape destination query params (#2494)
+- **Link:** avoid reusing dynamic app route prefetches (#2450)
+- **Build:** handle dynamic requests in JS files with JSX (#1736)
+- **Dev:** treat .js as JSX in the optimizeDeps scanner (#2434)
+- **Config:** resolve and bundle extensionless .cjs config imports (#2435)
+- **CSS:** preserve Sass partial asset URLs (#2338)
+- **Link:** reuse full prefetch loading shells (#2332)
+- **Dev:** seed Cloudflare Pages Router worker deps (#2430)
+- **Cloudflare:** support Sentry request errors on Workers (#2425)
+- use normalizePathSeparators in formatAppFilePath for Windows compatibility (#2426)
+- **Routing:** use normalizePathSeparators(path.relative) instead of path.posix.relative (#2308)
+
+### Performance
+
+- **Build:** parallelize prerender across a pool of render processes (#2437)
+
+### Contributors
+
+- @hyf0
+- @james-elicx
+- @kushdab
+- @NathanDrake2406
+- @shulaoda
+- @southpolesteve
+
 ## 0.2.0
 
 Today's release includes a revamped `vinext init` command, moving the deploy command to `npx @vinext/cloudflare deploy`, more support for configuring vinext in your Vite config file, and a bunch of bug fixes.
