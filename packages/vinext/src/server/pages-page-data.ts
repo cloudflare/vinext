@@ -561,7 +561,7 @@ function buildPagesCacheResponse(
     cacheControlMeta: cacheControl,
   });
   const headers = new Headers({
-    "Content-Type": "text/html",
+    "Content-Type": "text/html; charset=utf-8",
     ...buildCacheStateHeaders(cacheState),
   });
   applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });

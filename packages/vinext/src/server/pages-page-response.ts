@@ -472,7 +472,7 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
-  headers.set("Content-Type", "text/html");
+  headers.set("Content-Type", "text/html; charset=utf-8");
   return statusCode ?? gsspRes.statusCode;
 }
 
@@ -605,7 +605,7 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
-  const responseHeaders = new Headers({ "Content-Type": "text/html" });
+  const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
     options.gsspRes ?? options.documentReqRes?.res ?? null,

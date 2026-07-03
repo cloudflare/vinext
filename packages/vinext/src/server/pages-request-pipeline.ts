@@ -185,7 +185,7 @@ export function wrapMiddlewareWithBasePath(
 // The result discriminated union
 export type PagesPipelineResult =
   // `defaultContentType` is the Content-Type a buffering caller (Node) should apply
-  // when the response carries none: "text/html" for page renders,
+  // when the response carries none: "text/html; charset=utf-8" for page renders,
   // "application/octet-stream" for API routes (arbitrary data). It is left UNSET for
   // passthrough responses (middleware short-circuits, external proxies, redirects),
   // which Node sends verbatim without injecting a Content-Type — matching the
@@ -760,7 +760,7 @@ export async function runPagesRequest(
       ).__vinextStreamedHtmlResponse;
     }
     // Page renders default a missing content-type to text/html.
-    return { type: "response", response: merged, defaultContentType: "text/html" };
+    return { type: "response", response: merged, defaultContentType: "text/html; charset=utf-8" };
   }
   // dev: apply fallback rewrites eagerly (no renderPage to 404-gate on).
   // If matchPageRoute says there's no match, try fallback rewrites before

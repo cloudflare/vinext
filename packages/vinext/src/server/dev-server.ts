@@ -413,7 +413,7 @@ async function streamPageToResponse(
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
   const headers: Record<string, string> = {
-    "Content-Type": "text/html",
+    "Content-Type": "text/html; charset=utf-8",
     "Transfer-Encoding": "chunked",
   };
   if (extraHeaders) {
@@ -1125,7 +1125,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const hitHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
               "Cache-Control": hitCacheControl,
             };
@@ -1374,7 +1374,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const staleHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
               "Cache-Control": staleCacheControl,
             };
@@ -2153,7 +2153,7 @@ async function renderErrorPage(
 </body>
 </html>`;
         const transformedHtml = await server.transformIndexHtml(url, html);
-        res.writeHead(statusCode, { "Content-Type": "text/html" });
+        res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
         res.end(transformedHtml);
       }
       return;
