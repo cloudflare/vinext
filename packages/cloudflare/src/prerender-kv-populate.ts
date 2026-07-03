@@ -135,7 +135,8 @@ export function buildPrerenderKVPairs(
     }
     if (!fs.existsSync(htmlPath)) continue;
 
-    const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const revalidateSeconds =
+      typeof route.revalidate === "number" && route.revalidate > 0 ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
     const tags = buildAppPageCacheTags(cachePathname, []);
