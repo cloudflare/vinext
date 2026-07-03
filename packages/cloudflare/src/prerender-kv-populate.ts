@@ -16,6 +16,7 @@ import {
   getRenderedAppRoutes,
   readPrerenderManifest,
 } from "vinext/internal/server/prerender-manifest";
+import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
 import { getOutputPath, getRscOutputPath } from "vinext/internal/utils/prerender-output-paths";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 import { DEFAULT_KV_TTL_SECONDS, type KVBulkPair, uploadKVPairs } from "./kv-bulk.js";
@@ -45,15 +46,6 @@ type CacheControlMetadata = {
   revalidate: number;
   expire?: number;
 };
-
-function normalizePregeneratedPathname(pathname: string): string {
-  try {
-    const decoded = decodeURI(pathname);
-    return decoded === "/" ? "/" : decoded.replace(/\/$/, "");
-  } catch {
-    return pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  }
-}
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);

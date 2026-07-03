@@ -85,6 +85,10 @@
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
     },
+    "./internal/server/pregenerated-concrete-paths": {
+      "types": "./dist/server/pregenerated-concrete-paths.d.ts",
+      "import": "./dist/server/pregenerated-concrete-paths.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"

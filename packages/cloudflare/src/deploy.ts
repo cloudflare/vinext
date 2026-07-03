@@ -85,6 +85,11 @@ function parsePositiveIntegerArg(raw: string, flag: string): number {
   return parsed;
 }
 
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
 
 /** Deploy command flag definitions for util.parseArgs. */
@@ -485,7 +490,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   if (ranPrerender) {
-    await populateKVCacheFromPrerenderedArtifacts(root, buildEnv, deployEnv);
+    try {
+      await populateKVCacheFromPrerenderedArtifacts(root, buildEnv, deployEnv);
+    } catch (error) {
+      console.log(
+        `  KV cache: Skipping prerender upload (${formatUnknownError(error)}). Continuing with deploy.`,
+      );
+    }
   }
 
   // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)

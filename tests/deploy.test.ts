@@ -785,6 +785,19 @@ describe("viteConfigHasCacheAdapter", () => {
 });
 
 describe("resolveKvDataAdapterConfig", () => {
+  it("requires a Vite cache data descriptor even when a legacy worker handler exists", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setDataCacheHandler } from "vinext/shims/cache";
+       setDataCacheHandler(handler);`,
+    );
+
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+    expect(resolveKvDataAdapterConfig(undefined)).toBeNull();
+    expect(resolveKvDataAdapterConfig({})).toBeNull();
+  });
+
   it("returns null for non-KV data adapters", () => {
     expect(resolveKvDataAdapterConfig({ data: { adapter: "custom-adapter" } })).toBeNull();
     expect(resolveKvDataAdapterConfig({ cdn: { adapter: "cdn-adapter" } })).toBeNull();
@@ -1135,6 +1148,9 @@ describe("readPagesRouterEntrySource", () => {
     expect(hasPackageExport(exportsMap, "./internal/config/dotenv")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/next-config")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/server/pregenerated-concrete-paths")).toBe(
+      true,
+    );
     expect(hasPackageExport(exportsMap, "./internal/utils/project")).toBe(true);
   });
 

@@ -110,6 +110,37 @@ describe("buildPrerenderKVPairs", () => {
     expect(entry.cacheControl).toBeUndefined();
   });
 
+  it("uses the shared pregenerated pathname normalizer for KV keys and tags", () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-normalized",
+        routes: [
+          {
+            route: "/blog/[slug]",
+            path: "/blog//hello%20world",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+          },
+        ],
+      },
+      {
+        "blog/hello%20world.html": "<html>Ignored clean path</html>",
+        "blog//hello%20world.html": "<html>Normalized path</html>",
+      },
+    );
+
+    const { pairs } = buildPrerenderKVPairs(serverDir, { now: 3_000 });
+
+    expect(pairs.map((pair) => pair.key)).toEqual([
+      "cache:app:build-normalized:/blog/hello world:html",
+    ]);
+    const htmlEntry = JSON.parse(pairs[0].value);
+    expect(htmlEntry.tags).toContain("/blog/hello world");
+    expect(htmlEntry.tags).toContain("_N_T_/blog/hello world/page");
+    expect(htmlEntry.value.html).toBe("<html>Normalized path</html>");
+  });
+
   it("returns no pairs when the prerender manifest or artifacts are absent", () => {
     expect(buildPrerenderKVPairs(serverDir)).toEqual({ routeCount: 0, pairs: [] });
 
