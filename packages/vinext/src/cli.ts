@@ -984,6 +984,8 @@ function printHelp(cmd?: string) {
     --platform <target>  Deployment target: cloudflare or node
     --prerender          Configure vinext build to pre-render all static routes
                          (default: prompt, with No selected by default)
+    --cdn-cache <type>   Cloudflare CDN cache: workers-cache or data-cache
+                         (default: workers-cache)
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
@@ -992,6 +994,8 @@ function printHelp(cmd?: string) {
   Examples:
     vinext init                   Prompt for a deployment platform
     vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=cloudflare --cdn-cache=data-cache
+                                Fall through CDN caching to the data cache
     vinext init --platform=cloudflare --data-cache=kv
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
