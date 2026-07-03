@@ -219,10 +219,10 @@ export async function resolveCloudflareInitOptions(
   const explicitDataCache = parseDataCacheArg(args);
   const explicitCdnCache = parseCdnCacheArg(args);
   const explicitImageOptimization = parseImageOptimizationArg(args);
-  if (explicitDataCache && explicitImageOptimization) {
+  if (explicitCdnCache && explicitDataCache && explicitImageOptimization) {
     return {
       dataCache: explicitDataCache,
-      cdnCache: explicitCdnCache ?? "workers-cache",
+      cdnCache: explicitCdnCache,
       imageOptimization: explicitImageOptimization,
     };
   }

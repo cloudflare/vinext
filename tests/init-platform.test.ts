@@ -48,16 +48,27 @@ describe("Cloudflare init choices", () => {
     ).rejects.toThrow("--cdn-cache=..., --data-cache=..., and --image-optimization=...");
   });
 
-  it("lets agents omit the default CDN cache flag", async () => {
+  it("uses explicit Cloudflare choices in agent environments", async () => {
     await expect(
-      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
-        env: { CODEX_THREAD_ID: "test" },
-      }),
+      resolveCloudflareInitOptions(
+        ["--cdn-cache=workers-cache", "--data-cache=kv", "--image-optimization=none"],
+        {
+          env: { CODEX_THREAD_ID: "test" },
+        },
+      ),
     ).resolves.toEqual({
       dataCache: "kv",
       cdnCache: "workers-cache",
       imageOptimization: "none",
     });
+  });
+
+  it("requires agents to pass the CDN cache choice with other Cloudflare choices", async () => {
+    await expect(
+      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
+        env: { CODEX_THREAD_ID: "test" },
+      }),
+    ).rejects.toThrow("--cdn-cache=..., --data-cache=..., and --image-optimization=...");
   });
 
   it("rejects legacy CDN cache choices", () => {
@@ -109,6 +120,30 @@ describe("Cloudflare init choices", () => {
       cdnCache: "data-cache",
       imageOptimization: "none",
     });
+  });
+
+  it("prompts interactively for a missing CDN cache choice before honoring other flags", async () => {
+    const prompts: string[] = [];
+    const output = new PassThrough();
+    await expect(
+      resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
+        env: {},
+        isInteractive: true,
+        output,
+        question: async (prompt) => {
+          prompts.push(prompt);
+          return "2";
+        },
+      }),
+    ).resolves.toEqual({
+      dataCache: "kv",
+      cdnCache: "data-cache",
+      imageOptimization: "none",
+    });
+    expect(prompts).toEqual([
+      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+    ]);
+    expect(output.read()?.toString()).toBe("\n");
   });
 
   it("does not add a section break when repeating an invalid choice", async () => {

@@ -1319,7 +1319,7 @@ export function updateViteConfigForCloudflare(
   const program = parseViteConfig(filePath, code);
   const cacheOptions = options.cache ?? {
     dataCache: "none",
-    cdnCache: "data-cache",
+    cdnCache: "workers-cache",
     imageOptimization: "cloudflare-images",
   };
   const config = findConfigObject(program);
