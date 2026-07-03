@@ -27,12 +27,12 @@
     "dev": "vp pack --watch"
   },
   "dependencies": {
-    "am-i-vibing": "catalog:",
-    "magic-string": "catalog:"
+    "vinext": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "vinext": "workspace:*",
+    "am-i-vibing": "catalog:",
+    "magic-string": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {

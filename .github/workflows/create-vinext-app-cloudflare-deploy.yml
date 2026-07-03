@@ -2,7 +2,7 @@ name: create-vinext-app Cloudflare Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/create-vinext-app]
 
 permissions:
   contents: read

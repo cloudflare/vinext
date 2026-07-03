@@ -1,27 +1,35 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
-const vinextSrc = fileURLToPath(new URL("../vinext/src", import.meta.url));
+const bundledDeps = ["am-i-vibing", "magic-string"];
+
+const externalizeBareThirdPartySpecifiers = (
+  id: string,
+  _importer: string | undefined,
+  isResolved: boolean,
+) => {
+  if (isResolved) return false;
+  if (id.startsWith(".") || id.startsWith("/") || id.startsWith("\0") || id.includes(":")) {
+    return false;
+  }
+  if (id === "vinext" || id.startsWith("vinext/")) return false;
+  if (bundledDeps.includes(id)) return false;
+  return true;
+};
 
 export default defineConfig({
   pack: {
     entry: ["src/**/*.ts", "!src/**/*.d.ts"],
     clean: true,
     deps: {
-      skipNodeModulesBundle: true,
+      alwaysBundle: bundledDeps,
+      neverBundle: (id) =>
+        id.includes("node_modules") && !bundledDeps.some((dep) => id.includes(dep)),
     },
     dts: true,
     fixedExtension: false,
     format: "esm",
     inputOptions: {
-      resolve: {
-        alias: {
-          // A create-* package must run before vinext is installed in the new
-          // app, so bundle the shared init helpers instead of externalizing
-          // `vinext/internal/*` imports to the generated project's dependency.
-          "vinext/internal": vinextSrc,
-        },
-      },
+      external: externalizeBareThirdPartySpecifiers,
     },
     unbundle: true,
   },

@@ -5,12 +5,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
-import { init } from "vinext/internal/init";
-import {
-  resolveInitOptions,
-  type PlatformPromptOptions,
-  type ResolvedInitOptions,
-} from "vinext/internal/init-platform";
+// Runtime imports use source paths so the create package bundles the shared init implementation.
+import { init } from "../../vinext/src/init";
+import { resolveInitOptions } from "../../vinext/src/init-platform";
+import type { PlatformPromptOptions, ResolvedInitOptions } from "vinext/internal/init-platform";
 import type { PackageManagerName } from "vinext/internal/utils/project";
 
 type CreateVinextAppOptions = {

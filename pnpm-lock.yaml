@@ -987,19 +987,19 @@ importers:
 
   packages/create-vinext-app:
     dependencies:
+      vinext:
+        specifier: workspace:*
+        version: link:../vinext
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.2
       am-i-vibing:
         specifier: 'catalog:'
         version: 0.5.0
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 25.9.2
-      vinext:
-        specifier: workspace:*
-        version: link:../vinext
       vite-plus:
         specifier: 'catalog:'
         version: 0.2.1(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.9(vitest@4.1.9))(@voidzero-dev/vite-plus-core@0.2.1(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)

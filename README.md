@@ -97,7 +97,7 @@ Use `create-vinext-app` for new projects. It creates a TypeScript App Router pro
 with Tailwind CSS and then runs the same vinext init setup used for existing apps:
 
 ```bash
-npm create vinext-app@latest my-app
+pnpm create vinext-app@latest my-app
 ```
 
 The generated project is Cloudflare Workers-ready by default. Pass
