@@ -47,6 +47,7 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
+  VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
 import {
@@ -1555,6 +1556,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Expose normalized prerender config to build/deploy metadata loaders that
       // inspect the Vite plugin array after a fresh config load.
       ...({ [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]: prerenderConfig } as Record<
+        string,
+        unknown
+      >),
+      ...({ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: options.cache ?? null } as Record<
         string,
         unknown
       >),

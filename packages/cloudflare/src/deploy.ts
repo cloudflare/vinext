@@ -29,15 +29,19 @@ import {
   getMissingDeps,
   type ProjectInfo,
 } from "vinext/internal/utils/project";
-import { runTPR } from "./tpr.js";
+import { parseWranglerConfig, runTPR } from "./tpr.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
+import { loadVinextCacheConfigFromViteConfig } from "vinext/internal/config/prerender";
+import { populatePrerenderKVCache } from "./prerender-kv-populate.js";
+import { resolveAccountId } from "./kv-bulk.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -198,6 +202,60 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
     const builder = await createBuilder({ root: info.root });
     await builder.buildApp();
   });
+}
+
+async function populateKVCacheFromPrerenderedArtifacts(
+  root: string,
+  buildEnv: string | undefined,
+  deployEnv: string,
+): Promise<void> {
+  const vite = await loadProjectViteApi(root);
+  const cacheConfig = await withCloudflareEnv(buildEnv, () =>
+    loadVinextCacheConfigFromViteConfig(vite, root),
+  );
+  const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
+  if (!kvConfig) return;
+
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!apiToken) {
+    console.log("  KV cache: Skipping prerender upload (CLOUDFLARE_API_TOKEN is not set).");
+    return;
+  }
+
+  const wranglerConfig = parseWranglerConfig(root, {
+    env: deployEnv,
+    kvBinding: kvConfig.binding,
+  });
+  if (!wranglerConfig?.kvNamespaceId) {
+    console.log(
+      `  KV cache: Skipping prerender upload (KV binding ${kvConfig.binding} has no namespace id in Wrangler config).`,
+    );
+    return;
+  }
+
+  const accountId = wranglerConfig.accountId ?? (await resolveAccountId(apiToken));
+  if (!accountId) {
+    console.log("  KV cache: Skipping prerender upload (could not resolve Cloudflare account id).");
+    return;
+  }
+
+  const result = await populatePrerenderKVCache({
+    accountId,
+    apiToken,
+    appPrefix: kvConfig.appPrefix,
+    namespaceId: wranglerConfig.kvNamespaceId,
+    serverDir: path.join(root, "dist", "server"),
+    ttlSeconds: kvConfig.ttlSeconds,
+  });
+
+  if (result.skipped) {
+    console.log(`  KV cache: Skipping prerender upload (${result.skipped}).`);
+    return;
+  }
+
+  console.log(
+    `  KV cache: Uploaded ${result.pairCount} entr${result.pairCount === 1 ? "y" : "ies"} for ${result.routeCount} prerendered route${result.routeCount === 1 ? "" : "s"}.`,
+  );
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -397,6 +455,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // Triggered by --prerender-all, vinext({ prerender: true }), or automatically
   // when next.config.js sets `output: 'export'` (every route must be statically
   // exportable). The CLI flag wins when more than one trigger is present.
+  let ranPrerender = false;
   {
     const rawNextConfig = await loadNextConfig(info.root);
     const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
@@ -421,7 +480,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
         Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
       }
       await runPrerender({ root: info.root, concurrency: options.prerenderConcurrency });
+      ranPrerender = true;
     }
+  }
+
+  if (ranPrerender) {
+    await populateKVCacheFromPrerenderedArtifacts(root, buildEnv, deployEnv);
   }
 
   // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)

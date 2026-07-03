@@ -30,6 +30,7 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
@@ -780,6 +781,32 @@ describe("viteConfigHasCacheAdapter", () => {
 
   it("returns true (does not block) when there is no Vite config to inspect", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+});
+
+describe("resolveKvDataAdapterConfig", () => {
+  it("returns null for non-KV data adapters", () => {
+    expect(resolveKvDataAdapterConfig({ data: { adapter: "custom-adapter" } })).toBeNull();
+    expect(resolveKvDataAdapterConfig({ cdn: { adapter: "cdn-adapter" } })).toBeNull();
+  });
+
+  it("detects Cloudflare KV runtime descriptors and preserves options", () => {
+    expect(
+      resolveKvDataAdapterConfig({
+        data: {
+          adapter: "/project/node_modules/@vinext/cloudflare/dist/cache/kv-data-adapter.runtime.js",
+          options: { binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 },
+        },
+      }),
+    ).toEqual({ binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 });
+  });
+
+  it("uses the default KV binding when the adapter has no binding option", () => {
+    expect(
+      resolveKvDataAdapterConfig({
+        data: { adapter: "/x/cache/kv-data-adapter.runtime.js" },
+      }),
+    ).toEqual({ binding: "VINEXT_KV_CACHE" });
   });
 });
 
@@ -2814,5 +2841,40 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.kvNamespaceId).toBe("abc123");
+  });
+
+  it("extracts KV namespace ID for a custom data-cache binding", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        kv_namespaces: [
+          { binding: "VINEXT_KV_CACHE", id: "default-id" },
+          { binding: "MY_KV", id: "custom-id" },
+        ],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir, { kvBinding: "MY_KV" });
+    expect(config?.kvNamespaceId).toBe("custom-id");
+  });
+
+  it("uses env-specific Wrangler KV namespace config when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        account_id: "top-account",
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "production-id" }],
+        env: {
+          preview: {
+            account_id: "preview-account",
+            kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "preview-id" }],
+          },
+        },
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.accountId).toBe("preview-account");
+    expect(config?.kvNamespaceId).toBe("preview-id");
   });
 });

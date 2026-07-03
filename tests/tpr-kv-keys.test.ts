@@ -88,6 +88,7 @@ describe("TPR KV key format", () => {
       "_N_T_/test/layout",
       "_N_T_/test/page",
     ]);
+    expect(pairs[0].metadata).toEqual({ tags: parsed.tags });
     expect(parsed.lastModified).toBeTypeOf("number");
   });
 });

@@ -29,6 +29,12 @@ import { VINEXT_REVALIDATE_HEADER } from "vinext/internal/server/headers";
 import { isrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
+import {
+  DEFAULT_KV_TTL_SECONDS,
+  type KVBulkPair,
+  resolveAccountId,
+  uploadKVPairs,
+} from "./kv-bulk.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -80,13 +86,21 @@ type WranglerConfig = {
   customDomain?: string;
 };
 
+type ParseWranglerConfigOptions = {
+  env?: string;
+  kvBinding?: string;
+};
+
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
 
 /**
  * Parse wrangler config (JSONC or TOML) to extract the fields TPR needs:
  * account_id, VINEXT_KV_CACHE KV namespace ID, and custom domain.
  */
-export function parseWranglerConfig(root: string): WranglerConfig | null {
+export function parseWranglerConfig(
+  root: string,
+  options: ParseWranglerConfigOptions = {},
+): WranglerConfig | null {
   // Try JSONC / JSON first
   for (const filename of ["wrangler.jsonc", "wrangler.json"]) {
     const filepath = path.join(root, filename);
@@ -94,7 +108,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
       const content = fs.readFileSync(filepath, "utf-8");
       try {
         const json = JSON.parse(stripJsonComments(content));
-        return extractFromJSON(json);
+        return extractFromJSON(json, options);
       } catch {
         continue;
       }
@@ -105,7 +119,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
   const tomlPath = path.join(root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     const content = fs.readFileSync(tomlPath, "utf-8");
-    return extractFromTOML(content);
+    return extractFromTOML(content, options);
   }
 
   return null;
@@ -184,21 +198,53 @@ function stripJsonComments(str: string): string {
   return result;
 }
 
-function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function resolveEnvConfig(
+  config: Record<string, unknown>,
+  env: string | undefined,
+): Record<string, unknown> | null {
+  if (!env || env === "production") return null;
+  const envs = config.env;
+  if (!isRecord(envs)) return null;
+  const selected = envs[env];
+  return isRecord(selected) ? selected : null;
+}
+
+function readConfigField<T>(
+  config: Record<string, unknown>,
+  envConfig: Record<string, unknown> | null,
+  field: string,
+): T | undefined {
+  return (envConfig && field in envConfig ? envConfig[field] : config[field]) as T | undefined;
+}
+
+function extractFromJSON(
+  config: Record<string, unknown>,
+  options: ParseWranglerConfigOptions = {},
+): WranglerConfig {
   const result: WranglerConfig = {};
+  const envConfig = resolveEnvConfig(config, options.env);
+  const kvBinding = options.kvBinding ?? "VINEXT_KV_CACHE";
 
   // account_id
-  if (typeof config.account_id === "string") {
-    result.accountId = config.account_id;
+  const accountId = readConfigField<unknown>(config, envConfig, "account_id");
+  if (typeof accountId === "string") {
+    result.accountId = accountId;
   }
 
-  // KV namespace ID for VINEXT_KV_CACHE
-  if (Array.isArray(config.kv_namespaces)) {
-    const vinextKV = config.kv_namespaces.find(
+  // KV namespace ID for the configured vinext data-cache binding.
+  const kvNamespaces = readConfigField<unknown>(config, envConfig, "kv_namespaces");
+  if (Array.isArray(kvNamespaces)) {
+    const vinextKV = kvNamespaces.find(
       (ns: Record<string, unknown>) =>
         ns &&
         typeof ns === "object" &&
-        (ns.binding === "VINEXT_KV_CACHE" || ns.binding === "VINEXT_CACHE"),
+        (ns.binding === kvBinding ||
+          (options.kvBinding === undefined &&
+            (ns.binding === "VINEXT_KV_CACHE" || ns.binding === "VINEXT_CACHE"))),
     );
     if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
       result.kvNamespaceId = vinextKV.id;
@@ -206,7 +252,14 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const routes = readConfigField<unknown>(config, envConfig, "routes");
+  const customDomainConfig = envConfig ?? config;
+  const domain =
+    extractDomainFromRoutes(routes) ??
+    extractDomainFromCustomDomains(customDomainConfig) ??
+    (envConfig
+      ? (extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config))
+      : null);
   if (domain) result.customDomain = domain;
 
   return result;
@@ -262,8 +315,12 @@ function cleanDomain(raw: string): string | null {
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
  */
-function extractFromTOML(content: string): WranglerConfig {
+function extractFromTOML(
+  content: string,
+  options: ParseWranglerConfigOptions = {},
+): WranglerConfig {
   const result: WranglerConfig = {};
+  const kvBinding = options.kvBinding ?? "VINEXT_KV_CACHE";
 
   // account_id = "..."
   const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
@@ -277,7 +334,9 @@ function extractFromTOML(content: string): WranglerConfig {
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
     const idMatch = block.match(/\bid\s*=\s*"([^"]+)"/);
     if (
-      (bindingMatch?.[1] === "VINEXT_KV_CACHE" || bindingMatch?.[1] === "VINEXT_CACHE") &&
+      (bindingMatch?.[1] === kvBinding ||
+        (options.kvBinding === undefined &&
+          (bindingMatch?.[1] === "VINEXT_KV_CACHE" || bindingMatch?.[1] === "VINEXT_CACHE"))) &&
       idMatch?.[1] &&
       idMatch[1] !== "<your-kv-namespace-id>"
     ) {
@@ -363,26 +422,6 @@ async function resolveZoneId(domain: string, apiToken: string): Promise<string |
   }
 
   return null;
-}
-
-/** Resolve the account ID associated with the API token. */
-async function resolveAccountId(apiToken: string): Promise<string | null> {
-  const response = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=1", {
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      "Content-Type": "application/json",
-    },
-  });
-
-  if (!response.ok) return null;
-
-  const data = (await response.json()) as {
-    success: boolean;
-    result?: Array<{ id: string }>;
-  };
-  if (!data.success || !data.result?.length) return null;
-
-  return data.result[0].id;
 }
 
 // ─── Traffic Querying ────────────────────────────────────────────────────────
@@ -667,12 +706,6 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
 
 // ─── KV Upload ───────────────────────────────────────────────────────────────
 
-/** KV bulk API accepts up to 10,000 pairs per request */
-const KV_BATCH_SIZE = 10_000;
-
-/** Maximum KV expiration TTL: 30 days */
-const MAX_KV_TTL_SECONDS = 30 * 24 * 3600;
-
 /**
  * Build KV bulk API pairs from pre-rendered entries.
  *
@@ -684,9 +717,9 @@ export function buildTprKVPairs(
   entries: Map<string, PrerenderResult>,
   buildId: string | undefined,
   defaultRevalidateSeconds: number,
-): Array<{ key: string; value: string; expiration_ttl: number }> {
+): KVBulkPair[] {
   const now = Date.now();
-  const pairs: Array<{ key: string; value: string; expiration_ttl: number }> = [];
+  const pairs: KVBulkPair[] = [];
 
   for (const [routePath, result] of entries) {
     const revalidateHeader = result.headers[VINEXT_REVALIDATE_HEADER];
@@ -700,7 +733,7 @@ export function buildTprKVPairs(
     // For revalidating entries: 30-day TTL matches runtime KVCacheHandler.set().
     // For non-revalidating entries: runtime uses no TTL (entries persist indefinitely),
     // but TPR uses a 24h fallback so pre-warmed entries don't accumulate forever.
-    const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
+    const kvTtl = revalidateSeconds > 0 ? DEFAULT_KV_TTL_SECONDS : 24 * 3600;
 
     // Path-derived implicit tags so revalidatePath()/revalidateTag() can
     // invalidate TPR-seeded entries. Without this the seeded entry has no
@@ -720,11 +753,13 @@ export function buildTprKVPairs(
     };
 
     const cacheKey = ENTRY_PREFIX + isrCacheKey("app", routePath, buildId) + ":html";
+    const metadata = { tags };
 
     pairs.push({
       key: cacheKey,
       value: JSON.stringify(entry),
       expiration_ttl: kvTtl,
+      ...(JSON.stringify(metadata).length <= 1024 ? { metadata } : {}),
     });
   }
 
@@ -744,28 +779,12 @@ async function uploadToKV(
   defaultRevalidateSeconds: number,
   buildId?: string,
 ): Promise<void> {
-  const pairs = buildTprKVPairs(entries, buildId, defaultRevalidateSeconds);
-  for (let i = 0; i < pairs.length; i += KV_BATCH_SIZE) {
-    const batch = pairs.slice(i, i + KV_BATCH_SIZE);
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/bulk`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(batch),
-      },
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `KV bulk upload failed (batch ${Math.floor(i / KV_BATCH_SIZE) + 1}): ${response.status} — ${text}`,
-      );
-    }
-  }
+  await uploadKVPairs(
+    buildTprKVPairs(entries, buildId, defaultRevalidateSeconds),
+    namespaceId,
+    accountId,
+    apiToken,
+  );
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────

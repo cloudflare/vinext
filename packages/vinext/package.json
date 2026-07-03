@@ -81,9 +81,17 @@
       "types": "./dist/server/app-page-cache.d.ts",
       "import": "./dist/server/app-page-cache.js"
     },
+    "./internal/server/prerender-manifest": {
+      "types": "./dist/server/prerender-manifest.d.ts",
+      "import": "./dist/server/prerender-manifest.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
+    },
+    "./internal/cache-adapters": {
+      "types": "./dist/cache/cache-adapters-virtual.d.ts",
+      "import": "./dist/cache/cache-adapters-virtual.js"
     },
     "./internal/config/dotenv": {
       "types": "./dist/config/dotenv.d.ts",
@@ -128,6 +136,10 @@
     "./internal/utils/project": {
       "types": "./dist/utils/project.d.ts",
       "import": "./dist/utils/project.js"
+    },
+    "./internal/utils/prerender-output-paths": {
+      "types": "./dist/utils/prerender-output-paths.d.ts",
+      "import": "./dist/utils/prerender-output-paths.js"
     }
   },
   "scripts": {
