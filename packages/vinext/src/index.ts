@@ -225,14 +225,14 @@ import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
-import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
+import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import { escapeRegExp } from "./utils/regex.js";
 import {
   assertSupportedViteVersion,
@@ -276,7 +276,7 @@ installSocketErrorBackstop();
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
 function getCacheDirPrefix(cacheDir: string): string {
-  const normalizedCacheDir = normalizePathSeparators(cacheDir);
+  const normalizedCacheDir = toSlash(cacheDir);
   return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
 }
 
@@ -362,12 +362,12 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   // JavaScript. Check .ts first to avoid an extra stat in development.
   const candidates = [".ts", ".tsx", ".js"];
   for (const ext of candidates) {
-    const candidate = path.posix.join(shimsDir, `${moduleName}${ext}`);
+    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  return path.posix.join(shimsDir, `${moduleName}.js`);
+  return path.join(shimsDir, `${moduleName}.js`);
 }
 
 function isVercelOgImport(id: string): boolean {
@@ -379,7 +379,7 @@ function isVinextOgShimImporter(importer: string | undefined): boolean {
   const cleanImporter = (importer.startsWith(VIRTUAL_PREFIX) ? importer.slice(1) : importer).split(
     "?",
   )[0];
-  const normalizedImporter = cleanImporter.replace(/\\/g, "/");
+  const normalizedImporter = toSlash(cleanImporter);
   return (
     normalizedImporter.endsWith("/shims/og.tsx") ||
     normalizedImporter.endsWith("/shims/og.js") ||
@@ -388,7 +388,7 @@ function isVinextOgShimImporter(importer: string | undefined): boolean {
 }
 
 function toRelativeFileEntry(root: string, absPath: string): string {
-  return path.relative(root, absPath).split(path.sep).join("/");
+  return path.relative(root, absPath);
 }
 
 const DEV_PAGES_CLIENT_ENTRY = "/@id/__x00__virtual:vinext-client-entry";
@@ -499,7 +499,7 @@ function isScriptModuleId(id: string): boolean {
 }
 
 function skipCommonjsForLocalCjs(id: string): false | undefined {
-  const cleanId = normalizePathSeparators(stripViteModuleQuery(id));
+  const cleanId = toSlash(stripViteModuleQuery(id));
   return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
 }
 
@@ -521,10 +521,10 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
   const fileForRelative = tryRealpathSync(cleanId) ?? cleanId;
   const relativePath = path.relative(rootForRelative, fileForRelative);
   if (relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
-    return normalizePathSeparators(relativePath);
+    return relativePath;
   }
 
-  const normalized = normalizePathSeparators(cleanId);
+  const normalized = toSlash(cleanId);
   return `@fs/${normalized.replace(/^\/+/, "")}`;
 }
 
@@ -676,7 +676,7 @@ function materializeTsconfigPathAliases(
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
-  const normalizedPath = absolutePath.replace(/\\/g, "/");
+  const normalizedPath = toSlash(absolutePath);
   const rootCandidates = new Set<string>([projectRoot]);
   const realRoot = tryRealpathSync(projectRoot);
   if (realRoot) rootCandidates.add(realRoot);
@@ -715,7 +715,7 @@ function resolveSwcHelpersAlias(root: string): string | undefined {
   for (const resolver of resolvers) {
     try {
       const packageJsonPath = resolver.resolve("@swc/helpers/package.json");
-      return normalizePathSeparators(path.join(path.dirname(packageJsonPath), "_"));
+      return path.join(path.dirname(packageJsonPath), "_");
     } catch {
       // Try the next package-resolution context.
     }
@@ -984,14 +984,14 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
 }
 
 /**
- * Absolute path to vinext's shims directory, with a trailing slash. Normalized
- * to forward slashes because it is prefix-matched against Vite module ids (which
- * Vite always normalizes to forward slashes) in the font plugins and
- * clientManualChunks — a raw path.resolve value has backslashes on Windows and
- * the `id.startsWith(_shimsDir)` checks would never match.
+ * Absolute path to vinext's shims directory, with a trailing slash. Forward
+ * slashes are guaranteed by pathslash's `path.resolve`, matching the Vite
+ * module ids (always forward-slash) that the `id.startsWith(_shimsDir)`
+ * prefix checks in the font plugins and clientManualChunks compare against.
+ * The trailing "/" keeps those prefix checks directory-exact.
  */
-const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
-const _serverDir = normalizePathSeparators(path.resolve(__dirname, "server"));
+const _shimsDir = path.resolve(__dirname, "shims") + "/";
+const _serverDir = path.resolve(__dirname, "server");
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
@@ -1010,10 +1010,13 @@ function isValidExportIdentifier(name: string): boolean {
 
 function isVirtualEntryFacade(id: string | null | undefined, virtualId: string): boolean {
   if (!id) return false;
-  const cleanId = id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id;
-  return (
-    cleanId === virtualId || cleanId.endsWith("/" + virtualId) || cleanId.endsWith("\\" + virtualId)
-  );
+  // The id is Rolldown bundle metadata (chunk.facadeModuleId) — external
+  // origin, so a Windows facade produced by joining a virtual specifier onto
+  // an importer directory can carry native backslashes. Normalize up front so
+  // only the forward-slash suffix check is needed (same pattern as the
+  // resolveId handlers).
+  const cleanId = toSlash(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+  return cleanId === virtualId || cleanId.endsWith("/" + virtualId);
 }
 
 /**
@@ -1318,19 +1321,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
-  // Normalize to forward slashes so every downstream `path.posix.join` keeps
-  // the shim ids POSIX on Windows (matching `_shimsDir` and the canonicalized
-  // module-graph ids); raw `path.resolve` yields backslashes there.
-  const shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims"));
+  const shimsDir = path.resolve(__dirname, "shims");
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
   // slashes, so we must canonicalize anything we hand to the classifier and
   // anything we ask the module graph for — including the separator
-  // normalization, since realpathSync.native keeps backslashes on Windows. The
-  // shim files exist in the vinext package before plugin init, so realpath is
-  // safe to evaluate eagerly.
-  const canonicalize = (p: string): string => normalizePathSeparators(tryRealpathSync(p) ?? p);
+  // normalization (toSlash), since tryRealpathSync wraps realpathSync.native,
+  // which keeps backslashes on Windows. The shim files exist in the vinext
+  // package before plugin init, so realpath is safe to evaluate eagerly.
+  const canonicalize = (p: string): string => toSlash(tryRealpathSync(p) ?? p);
   const pageTransformCanonicalPaths = new Map<string, string>();
   const canonicalizePageTransformPath = (modulePath: string): string => {
     const cached = pageTransformCanonicalPaths.get(modulePath);
@@ -1749,7 +1749,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         isServeCommand = env.command === "serve";
-        root = normalizePathSeparators(config.root ?? process.cwd());
+        root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
         const tsconfigPathAliases = resolveTsconfigAliases(root);
@@ -1803,26 +1803,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
-          baseDir = normalizePathSeparators(dir);
+          baseDir = toSlash(dir);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
-          const hasRootApp = fs.existsSync(path.posix.join(root, "app"));
-          const hasRootPages = fs.existsSync(path.posix.join(root, "pages"));
-          const hasSrcApp = fs.existsSync(path.posix.join(root, "src", "app"));
-          const hasSrcPages = fs.existsSync(path.posix.join(root, "src", "pages"));
+          const hasRootApp = fs.existsSync(path.join(root, "app"));
+          const hasRootPages = fs.existsSync(path.join(root, "pages"));
+          const hasSrcApp = fs.existsSync(path.join(root, "src", "app"));
+          const hasSrcPages = fs.existsSync(path.join(root, "src", "pages"));
 
           if (hasRootApp || hasRootPages) {
             baseDir = root;
           } else if (hasSrcApp || hasSrcPages) {
-            baseDir = path.posix.join(root, "src");
+            baseDir = path.join(root, "src");
           } else {
             baseDir = root;
           }
         }
 
-        pagesDir = path.posix.join(baseDir, "pages");
+        pagesDir = path.join(baseDir, "pages");
         canonicalPagesDir = canonicalize(pagesDir);
-        appDir = path.posix.join(baseDir, "app");
+        appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
@@ -1904,8 +1904,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         const middlewareConventionDir =
-          canonicalize(baseDir) === canonicalize(path.posix.join(root, "src"))
-            ? path.posix.join(root, "src")
+          canonicalize(baseDir) === canonicalize(path.join(root, "src"))
+            ? path.join(root, "src")
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
         const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
@@ -2129,100 +2129,96 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.posix.join(shimsDir, "link"),
-            "next/head": path.posix.join(shimsDir, "head"),
-            "next/router": path.posix.join(shimsDir, "router"),
-            "next/compat/router": path.posix.join(shimsDir, "compat-router"),
-            "next/image": path.posix.join(shimsDir, "image"),
-            "next/legacy/image": path.posix.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.posix.join(shimsDir, "dynamic"),
-            "next/app": path.posix.join(shimsDir, "app"),
-            "next/document": path.posix.join(shimsDir, "document"),
-            "next/config": path.posix.join(shimsDir, "config"),
-            "next/script": path.posix.join(shimsDir, "script"),
-            "next/server": path.posix.join(shimsDir, "server"),
+            "next/link": path.join(shimsDir, "link"),
+            "next/head": path.join(shimsDir, "head"),
+            "next/router": path.join(shimsDir, "router"),
+            "next/compat/router": path.join(shimsDir, "compat-router"),
+            "next/image": path.join(shimsDir, "image"),
+            "next/legacy/image": path.join(shimsDir, "legacy-image"),
+            "next/dynamic": path.join(shimsDir, "dynamic"),
+            "next/app": path.join(shimsDir, "app"),
+            "next/document": path.join(shimsDir, "document"),
+            "next/config": path.join(shimsDir, "config"),
+            "next/script": path.join(shimsDir, "script"),
+            "next/server": path.join(shimsDir, "server"),
             // "next/navigation" is NOT here — it's in _reactServerShims and
             // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.posix.join(shimsDir, "headers"),
-            "next/font/google": path.posix.join(shimsDir, "font-google"),
-            "next/font/local": path.posix.join(shimsDir, "font-local"),
-            "next/cache": path.posix.join(shimsDir, "cache"),
-            "next/form": path.posix.join(shimsDir, "form"),
-            "next/og": path.posix.join(shimsDir, "og"),
-            "next/web-vitals": path.posix.join(shimsDir, "web-vitals"),
-            "next/amp": path.posix.join(shimsDir, "amp"),
-            "next/offline": path.posix.join(shimsDir, "offline"),
+            "next/headers": path.join(shimsDir, "headers"),
+            "next/font/google": path.join(shimsDir, "font-google"),
+            "next/font/local": path.join(shimsDir, "font-local"),
+            "next/cache": path.join(shimsDir, "cache"),
+            "next/form": path.join(shimsDir, "form"),
+            "next/og": path.join(shimsDir, "og"),
+            "next/web-vitals": path.join(shimsDir, "web-vitals"),
+            "next/amp": path.join(shimsDir, "amp"),
+            "next/offline": path.join(shimsDir, "offline"),
             // "next/error" is NOT here — it's in _reactServerShims so Server
             // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.posix.join(shimsDir, "constants"),
+            "next/constants": path.join(shimsDir, "constants"),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-            "next/dist/shared/lib/app-router-context.shared-runtime": path.posix.join(
+            "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/app-router-context": path.posix.join(
+            "next/dist/shared/lib/app-router-context": path.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/router-context.shared-runtime": path.posix.join(
+            "next/dist/shared/lib/router-context.shared-runtime": path.join(
               shimsDir,
               "internal",
               "router-context",
             ),
-            "next/dist/shared/lib/utils": path.posix.join(shimsDir, "internal", "utils"),
-            "next/dist/server/api-utils": path.posix.join(shimsDir, "internal", "api-utils"),
-            "next/dist/server/web/spec-extension/cookies": path.posix.join(
+            "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
+            "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
+            "next/dist/server/web/spec-extension/cookies": path.join(
               shimsDir,
               "internal",
               "cookies",
             ),
-            "next/dist/compiled/@edge-runtime/cookies": path.posix.join(
-              shimsDir,
-              "internal",
-              "cookies",
-            ),
-            "next/dist/server/app-render/work-unit-async-storage.external": path.posix.join(
+            "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
+            "next/dist/server/app-render/work-unit-async-storage.external": path.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/work-unit-async-storage.external": path.posix.join(
+            "next/dist/client/components/work-unit-async-storage.external": path.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage.external": path.posix.join(
+            "next/dist/client/components/request-async-storage.external": path.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage": path.posix.join(
+            "next/dist/client/components/request-async-storage": path.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/server/request/root-params": path.posix.join(shimsDir, "root-params"),
+            "next/dist/server/request/root-params": path.join(shimsDir, "root-params"),
             // Re-export public modules for internal path imports
             // "next/dist/client/components/navigation" in _reactServerShims (#834).
-            "next/dist/server/config-shared": path.posix.join(shimsDir, "internal", "utils"),
+            "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
             // server-only / client-only marker packages
-            "server-only": path.posix.join(shimsDir, "server-only"),
-            "client-only": path.posix.join(shimsDir, "client-only"),
-            "vinext/error-boundary": path.posix.join(shimsDir, "error-boundary"),
-            "vinext/layout-segment-context": path.posix.join(shimsDir, "layout-segment-context"),
-            "vinext/metadata": path.posix.join(shimsDir, "metadata"),
-            "vinext/fetch-cache": path.posix.join(shimsDir, "fetch-cache"),
-            "vinext/cache-runtime": path.posix.join(shimsDir, "cache-runtime"),
-            "vinext/navigation-state": path.posix.join(shimsDir, "navigation-state"),
-            "vinext/unified-request-context": path.posix.join(shimsDir, "unified-request-context"),
-            "vinext/pages-router-runtime": path.posix.join(shimsDir, "pages-router-runtime"),
-            "vinext/router-state": path.posix.join(shimsDir, "router-state"),
-            "vinext/head-state": path.posix.join(shimsDir, "head-state"),
-            "vinext/i18n-state": path.posix.join(shimsDir, "i18n-state"),
-            "vinext/i18n-context": path.posix.join(shimsDir, "i18n-context"),
+            "server-only": path.join(shimsDir, "server-only"),
+            "client-only": path.join(shimsDir, "client-only"),
+            "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
+            "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
+            "vinext/metadata": path.join(shimsDir, "metadata"),
+            "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
+            "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
+            "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
+            "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
+            "vinext/pages-router-runtime": path.join(shimsDir, "pages-router-runtime"),
+            "vinext/router-state": path.join(shimsDir, "router-state"),
+            "vinext/head-state": path.join(shimsDir, "head-state"),
+            "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
+            "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
@@ -3337,9 +3333,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // checks below only need the forward-slash form: on Windows a virtual
           // specifier resolved against an importer (e.g. Rolldown's fallback
           // joins the importer dir with a native `\`) arrives as
-          // `E:\proj\virtual:vinext-rsc-entry`. normalizePathSeparators is a
-          // no-op on POSIX.
-          const cleanId = normalizePathSeparators(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+          // `E:\proj\virtual:vinext-rsc-entry`. toSlash is a no-op on POSIX.
+          const cleanId = toSlash(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
 
           if (cleanId === "vinext/server/app-rsc-handler") {
             if (
@@ -3473,7 +3468,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 this.resolve.bind(this),
               );
               if (stylesheetAssets.length > 0) {
-                ssrManifest[normalizePathSeparators(moduleFilePath)] = stylesheetAssets;
+                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
               }
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
@@ -3711,7 +3706,7 @@ export const loadServerActionClient = ${
       resolveId: {
         filter: { id: /virtual:vinext-pages-client-assets$/ },
         handler(id) {
-          const cleanId = normalizePathSeparators(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+          const cleanId = toSlash(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
           if (
             cleanId !== VIRTUAL_PAGES_CLIENT_ASSETS &&
             !cleanId.endsWith("/" + VIRTUAL_PAGES_CLIENT_ASSETS)
@@ -3728,8 +3723,9 @@ export const loadServerActionClient = ${
             !hasAppDir && this.environment.name === "ssr"
               ? path.dirname(environmentOutDir)
               : environmentOutDir;
-          let externalId = normalizePathSeparators(
-            path.relative(environmentOutDir, path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE)),
+          let externalId = path.relative(
+            environmentOutDir,
+            path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE),
           );
           if (!externalId.startsWith(".")) externalId = `./${externalId}`;
           pagesClientAssetsOutputDirs.add(sidecarDir);
@@ -3990,7 +3986,7 @@ export const loadServerActionClient = ${
       hotUpdate(options: { file: string; server: ViteDevServer; modules: unknown[] }) {
         if (!hasPagesDir) return;
         const isPagesAppFile = (filePath: string): boolean => {
-          const relativePath = normalizePathSeparators(path.relative(pagesDir, filePath));
+          const relativePath = path.relative(pagesDir, filePath);
           return (
             !relativePath.includes("/") &&
             relativePath.startsWith("_app.") &&
@@ -4001,7 +3997,7 @@ export const loadServerActionClient = ${
           const cleanPath = stripViteModuleQuery(filePath);
           if (!path.isAbsolute(cleanPath)) return false;
           if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-          const relativeRootPath = normalizePathSeparators(path.relative(root, cleanPath));
+          const relativeRootPath = path.relative(root, cleanPath);
           if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath)) return false;
           if (
             relativeRootPath.includes("/node_modules/") ||
@@ -4009,7 +4005,7 @@ export const loadServerActionClient = ${
           ) {
             return false;
           }
-          const relativeAppPath = normalizePathSeparators(path.relative(appDir, cleanPath));
+          const relativeAppPath = path.relative(appDir, cleanPath);
           return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
         };
         const pagesAppChanged = isPagesAppFile(options.file);
@@ -4186,7 +4182,7 @@ export const loadServerActionClient = ${
         let appRouteTypeGenerationPending = false;
 
         function isPagesAppFile(filePath: string): boolean {
-          const relativePath = normalizePathSeparators(path.relative(pagesDir, filePath));
+          const relativePath = path.relative(pagesDir, filePath);
           return (
             !relativePath.includes("/") &&
             relativePath.startsWith("_app.") &&
@@ -4198,7 +4194,7 @@ export const loadServerActionClient = ${
           const cleanPath = stripViteModuleQuery(filePath);
           if (!path.isAbsolute(cleanPath)) return false;
           if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-          const relativeRootPath = normalizePathSeparators(path.relative(root, cleanPath));
+          const relativeRootPath = path.relative(root, cleanPath);
           if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath)) return false;
           if (
             relativeRootPath.includes("/node_modules/") ||
@@ -4206,7 +4202,7 @@ export const loadServerActionClient = ${
           ) {
             return false;
           }
-          const relativeAppPath = normalizePathSeparators(path.relative(appDir, cleanPath));
+          const relativeAppPath = path.relative(appDir, cleanPath);
           return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
         }
 
@@ -4268,7 +4264,12 @@ export const loadServerActionClient = ${
               pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
             );
           }
-          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          // chokidar reports native separators on Windows; pagesDir is canonical slash.
+          if (
+            hasPagesDir &&
+            toSlash(filePath).startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -4307,7 +4308,12 @@ export const loadServerActionClient = ${
               pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
             );
           }
-          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          // chokidar reports native separators on Windows; pagesDir is canonical slash.
+          if (
+            hasPagesDir &&
+            toSlash(filePath).startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -5371,7 +5377,7 @@ export const loadServerActionClient = ${
         },
         handler(code, id) {
           const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
-          if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
+          if (toSlash(id).startsWith(cacheDirPrefix)) {
             return null;
           }
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
@@ -5495,7 +5501,7 @@ export const loadServerActionClient = ${
         // Rolldown reports the changed file with native separators (backslashes
         // on Windows), but these caches are keyed by the forward-slash module id
         // from `load`. Normalize so the invalidation hits on Windows too.
-        const key = normalizePathSeparators(id);
+        const key = toSlash(id);
         imageImportDimCache.delete(key);
         staticImageAssets.delete(key);
         staticImageImportsByModule.delete(key);
@@ -5632,7 +5638,7 @@ export const loadServerActionClient = ${
               ? path.resolve(dir, importPath)
               : (await this.resolve(importPath, id, { skipSelf: true }))?.id;
             if (!resolvedImage) continue;
-            const absImagePath = normalizePathSeparators(resolvedImage.split("?", 1)[0]);
+            const absImagePath = toSlash(resolvedImage.split("?", 1)[0]);
 
             if (!fs.existsSync(absImagePath)) continue;
             imageImports.add(absImagePath);
