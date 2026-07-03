@@ -1,15 +1,5 @@
 import type { UserConfig } from "vite";
-
-/**
- * Slash-normalize a bundler-provided module id UNCONDITIONALLY — deliberately
- * not pathslash's platform-gated `toSlash`. Chunk classification treats both
- * separators as equivalent regardless of host platform (matching the `[\\/]`
- * character classes in `RSC_FRAMEWORK_CHUNK_TEST`), so Windows-shaped ids
- * classify identically everywhere, including in POSIX CI.
- */
-function slashifyModuleId(id: string): string {
-  return id.replaceAll("\\", "/");
-}
+import { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -81,7 +71,7 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const normalizedId = slashifyModuleId(id);
+  const normalizedId = toSlash(id);
   const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
   const rest = normalizedId.slice(nmIdx + "node_modules/".length);
@@ -139,7 +129,7 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
 
     // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
     // id can carry native backslashes on Windows, so slash it before matching.
-    const slashedId = slashifyModuleId(id);
+    const slashedId = toSlash(id);
     if (slashedId.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {
         const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
