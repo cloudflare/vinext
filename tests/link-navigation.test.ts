@@ -2360,10 +2360,16 @@ describe("Link prefetch scheduling", () => {
 
     try {
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await flushPrefetchTasks();
+      const rscCall = await waitForFetchCall(result.fetch, (call) => {
+        const input = call[0];
+        if (typeof input !== "string") return false;
+        return (
+          new URL(input, "https://example.com").pathname === "/same-origin-intent-prefetch-target"
+        );
+      });
 
       expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[0],
+        rscCall,
         "/same-origin-intent-prefetch-target",
         expect.objectContaining({
           credentials: "include",
