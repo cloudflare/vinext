@@ -26,9 +26,6 @@
     "prepack": "vp run build",
     "dev": "vp pack --watch"
   },
-  "dependencies": {
-    "vinext": "workspace:*"
-  },
   "devDependencies": {
     "@types/node": "catalog:",
     "am-i-vibing": "catalog:",

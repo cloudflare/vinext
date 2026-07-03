@@ -1,6 +1,11 @@
 import { defineConfig } from "vite-plus";
 
-const bundledDeps = ["am-i-vibing", "magic-string", "process-ancestry"];
+const bundledDeps = [
+  "@jridgewell/sourcemap-codec",
+  "am-i-vibing",
+  "magic-string",
+  "process-ancestry",
+];
 
 const externalizeBareThirdPartySpecifiers = (
   id: string,

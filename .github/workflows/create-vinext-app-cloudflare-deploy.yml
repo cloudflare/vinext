@@ -2,7 +2,7 @@ name: create-vinext-app Cloudflare Deploy
 
 on:
   push:
-    branches: [main, codex/create-vinext-app]
+    branches: [main]
 
 permissions:
   contents: read
@@ -47,7 +47,7 @@ jobs:
           mkdir -p "${{ runner.temp }}/cva-runner"
           cd "${{ runner.temp }}/cva-runner"
           node -e 'require("fs").writeFileSync("package.json", JSON.stringify({ private: true, type: "module" }, null, 2) + "\n")'
-          vp add "${{ runner.temp }}"/create-vinext-app-*.tgz "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          vp add "${{ runner.temp }}"/create-vinext-app-*.tgz
 
       - name: Scaffold a fresh create-vinext-app project
         working-directory: ${{ runner.temp }}/cva-runner

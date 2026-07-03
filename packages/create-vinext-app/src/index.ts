@@ -8,8 +8,32 @@ import type { Readable, Writable } from "node:stream";
 // Runtime imports use source paths so the create package bundles the shared init implementation.
 import { init } from "../../vinext/src/init";
 import { resolveInitOptions } from "../../vinext/src/init-platform";
-import type { PlatformPromptOptions, ResolvedInitOptions } from "vinext/internal/init-platform";
-import type { PackageManagerName } from "vinext/internal/utils/project";
+
+type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
+type InitPlatform = "cloudflare" | "node";
+type InitDataCache = "kv" | "none";
+type InitCdnCache = "data-cache" | "workers-cache";
+type InitImageOptimization = "cloudflare-images" | "none";
+
+type CloudflareInitOptions = {
+  dataCache: InitDataCache;
+  cdnCache: InitCdnCache;
+  imageOptimization: InitImageOptimization;
+};
+
+type PlatformPromptOptions = {
+  env?: Record<string, string | undefined>;
+  input?: Readable;
+  output?: Writable;
+  isInteractive?: boolean;
+  question?: (prompt: string) => Promise<string>;
+};
+
+type ResolvedInitOptions = {
+  platform: InitPlatform;
+  cloudflare?: CloudflareInitOptions;
+  prerender: boolean;
+};
 
 type CreateVinextAppOptions = {
   appPath: string;
