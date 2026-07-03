@@ -9,7 +9,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { Buffer } from "node:buffer";
 import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import {
@@ -46,14 +45,6 @@ type CacheControlMetadata = {
   revalidate: number;
   expire?: number;
 };
-
-function toArrayBuffer(buffer: Buffer): ArrayBuffer {
-  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  return Buffer.from(buffer).toString("base64");
-}
 
 function resolveContainedFile(rootDir: string, relativePath: string): string {
   const resolvedRoot = path.resolve(rootDir);
@@ -170,14 +161,14 @@ export function buildPrerenderKVPairs(
     });
 
     if (fs.existsSync(rscPath)) {
-      const rscData = toArrayBuffer(fs.readFileSync(rscPath));
+      const rscData = fs.readFileSync(rscPath).toString("base64");
       pairs.push({
         key: buildKVKey(options?.appPrefix, rscKey),
         value: buildCacheEntry(
           {
             kind: "APP_PAGE",
             html: "",
-            rscData: arrayBufferToBase64(rscData),
+            rscData,
           },
           tags,
           now,

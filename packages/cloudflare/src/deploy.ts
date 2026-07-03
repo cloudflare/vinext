@@ -19,6 +19,7 @@ import { loadDotenv } from "vinext/internal/config/dotenv";
 import { loadNextConfig, resolveNextConfig } from "vinext/internal/config/next-config";
 import {
   formatVinextPrerenderLabel,
+  loadVinextCacheConfigFromViteConfig,
   loadVinextPrerenderConfigFromViteConfig,
   resolveVinextPrerenderDecision,
 } from "vinext/internal/config/prerender";
@@ -39,7 +40,6 @@ import {
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
-import { loadVinextCacheConfigFromViteConfig } from "vinext/internal/config/prerender";
 import { populatePrerenderKVCache } from "./prerender-kv-populate.js";
 import { resolveAccountId } from "./kv-bulk.js";
 
