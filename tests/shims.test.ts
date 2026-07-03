@@ -20926,7 +20926,10 @@ describe("image optimization request parsing", () => {
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(isImageOptimizationPath("/_next/image")).toBe(true);
     expect(isImageOptimizationPath("/_vinext/image")).toBe(true);
-    expect(isImageOptimizationPath("/_next/image/")).toBe(false);
+    // The trailing-slash form is served: with `trailingSlash: true` Next.js
+    // 308s /_next/image → /_next/image/ and then serves it, stripping the
+    // slash at match time for internals.
+    expect(isImageOptimizationPath("/_next/image/")).toBe(true);
     expect(isImageOptimizationPath("/_next/image.png")).toBe(false);
     expect(isImageOptimizationPath("/_next/data")).toBe(false);
     expect(isImageOptimizationPath("/")).toBe(false);

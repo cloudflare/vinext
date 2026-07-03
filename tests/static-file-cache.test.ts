@@ -274,7 +274,7 @@ describe("StaticFileCache", () => {
 
     expect(entry).toBeDefined();
     expect(entry!.original.path).toBe(path.join(clientDir, "about.html"));
-    expect(entry!.original.headers["Content-Type"]).toBe("text/html");
+    expect(entry!.original.headers["Content-Type"]).toBe("text/html; charset=utf-8");
   });
 
   it("resolves /index.html fallback for directory paths", async () => {
