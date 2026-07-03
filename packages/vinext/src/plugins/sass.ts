@@ -24,7 +24,7 @@
 
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { preprocessCSS, type PreprocessCSSResult, type ResolvedConfig } from "vite";
 import { markCssUrlAssetReferences, rebaseCssUrlAssetReferences } from "../build/css-url-assets.js";
@@ -155,7 +155,7 @@ function sassStylesheetCandidates(importPath: string): string[] {
 }
 
 function deriveSassNamespace(importUrl: string): string {
-  const normalized = importUrl.replaceAll("\\", "/").replace(/\/$/, "");
+  const normalized = toSlash(importUrl).replace(/\/$/, "");
   const parts = normalized.split("/");
   let basename = parts.pop() ?? "stylesheet";
   basename = basename.replace(/^_/, "").replace(/\..*$/, "");
