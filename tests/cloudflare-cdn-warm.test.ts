@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildWarmupUrl,
+  warmCdnCache,
   getWarmPathsFromPrerenderManifest,
   readPrerenderWarmPaths,
   warmCdnCacheFromPrerender,
@@ -48,6 +49,20 @@ describe("Cloudflare CDN warmup", () => {
             router: "app",
             revalidate: 60,
             fallback: true,
+          },
+          {
+            route: "/500",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/_error",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
           },
         ],
       }),
@@ -109,13 +124,39 @@ describe("Cloudflare CDN warmup", () => {
     ).toEqual(["/blog/[slug]"]);
   });
 
-  it("builds preview URLs from root and nested paths", () => {
+  it("can select error documents when requested", () => {
+    expect(
+      getWarmPathsFromPrerenderManifest(
+        {
+          routes: [
+            {
+              route: "/500",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/_error",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+          ],
+        },
+        { includeErrorDocuments: true },
+      ),
+    ).toEqual(["/500", "/_error"]);
+  });
+
+  it("builds target URLs from root and nested paths", () => {
     expect(buildWarmupUrl("https://worker.example.workers.dev", "/docs/intro").toString()).toBe(
       "https://worker.example.workers.dev/docs/intro",
     );
   });
 
-  it("requests every warmable path through the preview URL", async () => {
+  it("requests every warmable path through the target URL", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -139,7 +180,7 @@ describe("Cloudflare CDN warmup", () => {
 
     const result = await warmCdnCacheFromPrerender({
       root: tmpDir,
-      previewUrl: "https://version.example.workers.dev",
+      targetUrl: "https://app.example.com",
       concurrency: 1,
       fetchImpl: fetchMock as typeof fetch,
     });
@@ -150,8 +191,25 @@ describe("Cloudflare CDN warmup", () => {
     const secondInput = fetchMock.mock.calls[1]![0];
     expect(firstInput).toBeInstanceOf(URL);
     expect(secondInput).toBeInstanceOf(URL);
-    expect((firstInput as URL).href).toBe("https://version.example.workers.dev/");
-    expect((secondInput as URL).href).toBe("https://version.example.workers.dev/about");
+    expect((firstInput as URL).href).toBe("https://app.example.com/");
+    expect((secondInput as URL).href).toBe("https://app.example.com/about");
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "follow" });
+  });
+
+  it("warms an already resolved path list without rereading the manifest", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok", { status: 200 }),
+    );
+
+    const result = await warmCdnCache({
+      targetUrl: "https://app.example.com",
+      paths: ["/", "/about"],
+      concurrency: 1,
+      fetchImpl: fetchMock as typeof fetch,
+    });
+
+    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("reports warmup failures and throws in strict mode", async () => {
@@ -179,7 +237,7 @@ describe("Cloudflare CDN warmup", () => {
     await expect(
       warmCdnCacheFromPrerender({
         root: tmpDir,
-        previewUrl: "https://version.example.workers.dev",
+        targetUrl: "https://app.example.com",
         strict: true,
         fetchImpl: fetchMock as typeof fetch,
       }),

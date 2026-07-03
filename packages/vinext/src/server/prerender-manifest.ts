@@ -52,7 +52,14 @@ function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, str
 }
 
 function isErrorDocumentRoute(pathname: string, route: PrerenderManifestRoute): boolean {
-  return pathname === "/404" || route.route === "/404";
+  return (
+    pathname === "/404" ||
+    pathname === "/500" ||
+    pathname === "/_error" ||
+    route.route === "/404" ||
+    route.route === "/500" ||
+    route.route === "/_error"
+  );
 }
 
 /**

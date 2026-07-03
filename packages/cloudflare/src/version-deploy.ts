@@ -17,6 +17,16 @@ export type WranglerVersionDeployResult = {
   output: string;
 };
 
+export type WranglerVersionTraffic = {
+  versionId: string;
+  percentage: number;
+};
+
+export type WranglerDeploymentStatus = {
+  versions: WranglerVersionTraffic[];
+  output: string;
+};
+
 type WranglerVersionArgs = {
   args: string[];
   env: string | undefined;
@@ -92,10 +102,26 @@ export function buildWranglerVersionUploadArgs(
 }
 
 export function buildWranglerVersionDeployArgs(
-  versionId: string,
+  versionTraffic: readonly WranglerVersionTraffic[],
   options: Pick<DeployOptions, "preview" | "env">,
 ): WranglerVersionArgs {
-  const args = ["versions", "deploy", `${versionId}@100%`, "--yes"];
+  const args = [
+    "versions",
+    "deploy",
+    ...versionTraffic.map(({ versionId, percentage }) => `${versionId}@${percentage}%`),
+    "--yes",
+  ];
+  const env = options.env || (options.preview ? "preview" : undefined);
+  if (env) {
+    args.push("--env", validateWranglerEnvName(env));
+  }
+  return { args, env };
+}
+
+export function buildWranglerDeploymentsStatusArgs(
+  options: Pick<DeployOptions, "preview" | "env">,
+): WranglerVersionArgs {
+  const args = ["deployments", "status", "--json"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
     args.push("--env", validateWranglerEnvName(env));
@@ -136,6 +162,30 @@ function runWranglerCommand(
   return output;
 }
 
+function parseDeploymentVersions(value: unknown): WranglerVersionTraffic[] {
+  const deployment = Array.isArray(value) ? value.at(-1) : value;
+  if (!isRecord(deployment) || !Array.isArray(deployment.versions)) return [];
+
+  const versions: WranglerVersionTraffic[] = [];
+  for (const version of deployment.versions) {
+    if (!isRecord(version)) continue;
+    const versionId = version.version_id;
+    const percentage = version.percentage;
+    if (typeof versionId !== "string" || typeof percentage !== "number") continue;
+    versions.push({ versionId, percentage });
+  }
+  return versions;
+}
+
+export function parseWranglerDeploymentStatusOutput(output: string): WranglerDeploymentStatus {
+  const parsed = parseJsonObject(output);
+  if (!parsed) {
+    throw new Error("Could not parse `wrangler deployments status --json` output.");
+  }
+
+  return { versions: parseDeploymentVersions(parsed), output };
+}
+
 export function runWranglerVersionUpload(
   root: string,
   options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
@@ -152,11 +202,11 @@ export function runWranglerVersionUpload(
 
 export function runWranglerVersionDeploy(
   root: string,
-  versionId: string,
+  versionTraffic: readonly WranglerVersionTraffic[],
   options: Pick<DeployOptions, "preview" | "env">,
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
-  const { args, env } = buildWranglerVersionDeployArgs(versionId, options);
+  const { args, env } = buildWranglerVersionDeployArgs(versionTraffic, options);
   if (env) {
     console.log(`\n  Deploying warmed Worker version to env: ${env}...`);
   } else {
@@ -164,6 +214,20 @@ export function runWranglerVersionDeploy(
   }
   const output = runWranglerCommand(root, args, execute);
   return { deployedUrl: parseWorkersDevUrl(output), output };
+}
+
+export function runWranglerDeploymentStatus(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+  execute: typeof execFileSync = execFileSync,
+): WranglerDeploymentStatus {
+  const { args, env } = buildWranglerDeploymentsStatusArgs(options);
+  if (env) {
+    console.log(`\n  Reading current Worker deployment for env: ${env}...`);
+  } else {
+    console.log("\n  Reading current Worker deployment...");
+  }
+  return parseWranglerDeploymentStatusOutput(runWranglerCommand(root, args, execute));
 }
 
 export function runWranglerTriggersDeploy(

@@ -2817,6 +2817,12 @@ describe("domainCandidates", () => {
 // ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
 
 describe("parseWranglerConfig — custom domain extraction", () => {
+  it("extracts Worker name", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.name).toBe("my-worker");
+  });
+
   it("extracts custom domain from routes array (string form)", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
     const config = parseWranglerConfig(tmpDir);

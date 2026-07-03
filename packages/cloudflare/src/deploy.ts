@@ -29,8 +29,8 @@ import {
   getMissingDeps,
   type ProjectInfo,
 } from "vinext/internal/utils/project";
-import { runTPR } from "./tpr.js";
-import { readPrerenderWarmPaths, warmCdnCacheFromPrerender } from "./cdn-warm.js";
+import { parseWranglerConfig, runTPR } from "./tpr.js";
+import { readPrerenderWarmPaths, warmCdnCache } from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -40,9 +40,12 @@ import {
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
 import {
+  runWranglerDeploymentStatus,
   runWranglerTriggersDeploy,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
+  type WranglerDeploymentStatus,
+  type WranglerVersionTraffic,
 } from "./version-deploy.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -64,7 +67,7 @@ export type DeployOptions = {
   prerenderAll?: boolean;
   /** Maximum number of routes to prerender in parallel */
   prerenderConcurrency?: number;
-  /** Warm Cloudflare's CDN cache by requesting prerendered paths on the uploaded version preview URL */
+  /** Warm Cloudflare's CDN cache by requesting prerendered paths for the uploaded version */
   warmCdnCache?: boolean;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
@@ -358,41 +361,126 @@ export function runWranglerDeploy(
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
 
-async function deployWithCdnWarmup(
+export async function deployWithCdnWarmup(
   root: string,
+  paths: readonly string[],
   options: Pick<
     DeployOptions,
-    | "preview"
-    | "env"
-    | "warmCdnConcurrency"
-    | "warmCdnTimeout"
-    | "warmCdnRetries"
-    | "warmCdnStrict"
-    | "warmCdnIncludeFallbacks"
+    "preview" | "env" | "warmCdnConcurrency" | "warmCdnTimeout" | "warmCdnRetries" | "warmCdnStrict"
   >,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
-  if (upload.previewUrl) {
-    await warmCdnCacheFromPrerender({
-      root,
-      previewUrl: upload.previewUrl,
-      concurrency: options.warmCdnConcurrency,
-      timeoutMs: options.warmCdnTimeout,
-      retries: options.warmCdnRetries,
-      strict: options.warmCdnStrict,
-      includeFallbackShells: options.warmCdnIncludeFallbacks,
-    });
-  } else if (options.warmCdnStrict) {
-    throw new Error(
-      "CDN warmup failed: Wrangler did not provide a Worker version preview URL. " +
-        "Enable Worker version preview URLs for this Worker, or rerun without --warm-cdn-strict.",
-    );
+  const wranglerConfig = parseWranglerConfig(root);
+  const deploymentStatus = readWranglerDeploymentStatus(root, options);
+  const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
+  let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
+  let warmedBeforePromotion = false;
+
+  if (stagingTraffic) {
+    staged = runWranglerVersionDeploy(root, stagingTraffic, options);
+    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl);
+    const headers = buildVersionOverrideHeaders(wranglerConfig?.name, upload.versionId);
+    if (targetUrl && headers) {
+      await warmCdnCache({
+        targetUrl,
+        paths,
+        headers,
+        concurrency: options.warmCdnConcurrency,
+        timeoutMs: options.warmCdnTimeout,
+        retries: options.warmCdnRetries,
+        strict: options.warmCdnStrict,
+      });
+      warmedBeforePromotion = true;
+    } else if (options.warmCdnStrict) {
+      throw new Error(
+        "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
+          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict.",
+      );
+    }
   } else {
-    console.warn("  CDN warmup skipped: Wrangler did not provide a Worker version preview URL.");
+    console.warn(
+      "  CDN warmup: pre-traffic version override skipped because the current deployment is not a single 100% version.",
+    );
   }
-  const deployed = runWranglerVersionDeploy(root, upload.versionId, options);
+
+  const deployed = runWranglerVersionDeploy(
+    root,
+    [{ versionId: upload.versionId, percentage: 100 }],
+    options,
+  );
+  if (!warmedBeforePromotion) {
+    const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl);
+    if (targetUrl) {
+      await warmCdnCache({
+        targetUrl,
+        paths,
+        concurrency: options.warmCdnConcurrency,
+        timeoutMs: options.warmCdnTimeout,
+        retries: options.warmCdnRetries,
+        strict: options.warmCdnStrict,
+      });
+    } else if (options.warmCdnStrict) {
+      throw new Error(
+        "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
+          "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
+      );
+    } else {
+      console.warn(
+        "  CDN warmup skipped: no production URL could be inferred from wrangler config or output.",
+      );
+    }
+  }
   runWranglerTriggersDeploy(root, options);
-  return deployed.deployedUrl ?? upload.previewUrl ?? "(URL not detected in wrangler output)";
+  return (
+    deployed.deployedUrl ??
+    staged?.deployedUrl ??
+    upload.previewUrl ??
+    "(URL not detected in wrangler output)"
+  );
+}
+
+export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | null): string | null {
+  const customDomain = parseWranglerConfig(root)?.customDomain;
+  if (customDomain) {
+    return `https://${customDomain}`;
+  }
+  return deployedUrl;
+}
+
+function readWranglerDeploymentStatus(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+): WranglerDeploymentStatus | null {
+  try {
+    return runWranglerDeploymentStatus(root, options);
+  } catch {
+    return null;
+  }
+}
+
+export function getZeroPercentStagingTraffic(
+  deployment: WranglerDeploymentStatus | null,
+  versionId: string,
+): WranglerVersionTraffic[] | null {
+  const current = deployment?.versions ?? [];
+  if (current.length !== 1 || current[0].percentage !== 100) {
+    return null;
+  }
+  return [current[0], { versionId, percentage: 0 }];
+}
+
+function quoteStructuredHeaderString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+export function buildVersionOverrideHeaders(
+  workerName: string | undefined,
+  versionId: string,
+): HeadersInit | undefined {
+  if (!workerName) return undefined;
+  return {
+    "Cloudflare-Workers-Version-Overrides": `${workerName}=${quoteStructuredHeaderString(versionId)}`,
+  };
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
@@ -541,13 +629,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
       strict: options.warmCdnStrict,
     });
     if (warmPaths.length > 0) {
-      url = await deployWithCdnWarmup(root, {
+      url = await deployWithCdnWarmup(root, warmPaths, {
         ...wranglerOptions,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnStrict: options.warmCdnStrict,
-        warmCdnIncludeFallbacks: options.warmCdnIncludeFallbacks,
       });
     } else {
       console.log("\n  CDN warmup skipped: no prerendered paths found.");

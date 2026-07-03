@@ -169,6 +169,20 @@ describe("pregenerated concrete paths", () => {
               fallback: false,
             },
             {
+              route: "/500",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/_error",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
               route: "/docs/:slug",
               path: "/docs/intro",
               status: "rendered",
@@ -194,11 +208,25 @@ describe("pregenerated concrete paths", () => {
                 revalidate: false,
                 fallback: false,
               },
+              {
+                route: "/500",
+                status: "rendered",
+                router: "pages",
+                revalidate: false,
+                fallback: false,
+              },
+              {
+                route: "/_error",
+                status: "rendered",
+                router: "pages",
+                revalidate: false,
+                fallback: false,
+              },
             ],
           },
           { includeErrorDocuments: true },
         ),
-      ).toEqual(["/404"]);
+      ).toEqual(["/404", "/500", "/_error"]);
     });
 
     it("can include fallback-shell placeholder paths for explicit warmup requests", () => {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  buildWranglerDeploymentsStatusArgs,
   buildWranglerTriggersDeployArgs,
   buildWranglerVersionDeployArgs,
   buildWranglerVersionUploadArgs,
   parseVersionId,
   parseWorkersDevUrl,
+  parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
 } from "../packages/cloudflare/src/version-deploy.js";
 
@@ -24,9 +26,44 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
   });
 
   it("builds non-interactive version deploy args for the uploaded version", () => {
-    expect(buildWranglerVersionDeployArgs("095f00a7-23a7-43b7-a227-e4c97cab5f22", {})).toEqual({
+    expect(
+      buildWranglerVersionDeployArgs(
+        [{ versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22", percentage: 100 }],
+        {},
+      ),
+    ).toEqual({
       args: ["versions", "deploy", "095f00a7-23a7-43b7-a227-e4c97cab5f22@100%", "--yes"],
       env: undefined,
+    });
+  });
+
+  it("builds non-interactive split deployment args for staging a version", () => {
+    expect(
+      buildWranglerVersionDeployArgs(
+        [
+          { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+          { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+        ],
+        { env: "staging" },
+      ),
+    ).toEqual({
+      args: [
+        "versions",
+        "deploy",
+        "11111111-1111-4111-8111-111111111111@100%",
+        "22222222-2222-4222-8222-222222222222@0%",
+        "--yes",
+        "--env",
+        "staging",
+      ],
+      env: "staging",
+    });
+  });
+
+  it("builds deployment status args for environments", () => {
+    expect(buildWranglerDeploymentsStatusArgs({ env: "preview" })).toEqual({
+      args: ["deployments", "status", "--json", "--env", "preview"],
+      env: "preview",
     });
   });
 
@@ -76,5 +113,15 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: null,
     });
+  });
+
+  it("parses current deployment version traffic", () => {
+    expect(
+      parseWranglerDeploymentStatusOutput(
+        JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        }),
+      ).versions,
+    ).toEqual([{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }]);
   });
 });

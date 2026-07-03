@@ -4,17 +4,23 @@ import {
   getPrerenderedConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
+  type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
 
 export type CdnWarmOptions = {
-  root: string;
-  previewUrl: string;
+  targetUrl: string;
+  paths: readonly string[];
+  headers?: HeadersInit;
   concurrency?: number;
   timeoutMs?: number;
   retries?: number;
   strict?: boolean;
-  includeFallbackShells?: boolean;
   fetchImpl?: typeof fetch;
+};
+
+export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
+  root: string;
+  includeFallbackShells?: boolean;
 };
 
 export type CdnWarmResult = {
@@ -63,7 +69,7 @@ export function readPrerenderWarmPaths(
 
 export function getWarmPathsFromPrerenderManifest(
   manifest: PrerenderManifest,
-  options?: { includeFallbackShells?: boolean },
+  options?: PrerenderedPathSelectionOptions,
 ): string[] {
   return getPrerenderedConcretePaths(manifest, options);
 }
@@ -72,10 +78,10 @@ function normalizeWarmPath(pathname: string): string {
   return pathname.startsWith("/") ? pathname : `/${pathname}`;
 }
 
-export function buildWarmupUrl(previewUrl: string, pathname: string): URL {
+export function buildWarmupUrl(targetUrl: string, pathname: string): URL {
   return new URL(
     normalizeWarmPath(pathname),
-    previewUrl.endsWith("/") ? previewUrl : `${previewUrl}/`,
+    targetUrl.endsWith("/") ? targetUrl : `${targetUrl}/`,
   );
 }
 
@@ -87,16 +93,17 @@ async function fetchWithTimeout(
   fetchImpl: typeof fetch,
   url: URL,
   timeoutMs: number,
+  headers: HeadersInit | undefined,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const requestHeaders = new Headers(headers);
+  requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
   try {
     return await fetchImpl(url, {
       method: "GET",
-      redirect: "manual",
-      headers: {
-        "User-Agent": "vinext-cloudflare-cdn-warm/0",
-      },
+      redirect: "follow",
+      headers: requestHeaders,
       signal: controller.signal,
     });
   } finally {
@@ -106,16 +113,22 @@ async function fetchWithTimeout(
 
 async function warmOnePath(
   pathname: string,
-  options: Required<Pick<CdnWarmOptions, "previewUrl" | "timeoutMs" | "retries">> & {
+  options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
+    headers?: HeadersInit;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
-  const url = buildWarmupUrl(options.previewUrl, pathname);
+  const url = buildWarmupUrl(options.targetUrl, pathname);
   let lastError = "unknown error";
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
     try {
-      const response = await fetchWithTimeout(options.fetchImpl, url, options.timeoutMs);
+      const response = await fetchWithTimeout(
+        options.fetchImpl,
+        url,
+        options.timeoutMs,
+        options.headers,
+      );
       await response.arrayBuffer();
 
       if (response.status < 400) {
@@ -125,7 +138,11 @@ async function warmOnePath(
       lastError = `HTTP ${response.status}`;
       if (!isRetryableStatus(response.status)) break;
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        lastError = `timed out after ${options.timeoutMs}ms`;
+      } else {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
@@ -153,11 +170,8 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-export async function warmCdnCacheFromPrerender(options: CdnWarmOptions): Promise<CdnWarmResult> {
-  const paths = readPrerenderWarmPaths(options.root, {
-    includeFallbackShells: options.includeFallbackShells,
-    strict: options.strict,
-  });
+export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
+  const paths = options.paths;
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 30_000);
   const retries = Math.max(0, options.retries ?? 1);
@@ -171,10 +185,11 @@ export async function warmCdnCacheFromPrerender(options: CdnWarmOptions): Promis
 
   const results = await runWithConcurrency(paths, concurrency, (pathname) =>
     warmOnePath(pathname, {
-      previewUrl: options.previewUrl,
+      targetUrl: options.targetUrl,
       timeoutMs,
       retries,
       fetchImpl,
+      headers: options.headers,
     }),
   );
 
@@ -208,4 +223,14 @@ export async function warmCdnCacheFromPrerender(options: CdnWarmOptions): Promis
   }
 
   return result;
+}
+
+export async function warmCdnCacheFromPrerender(
+  options: PrerenderCdnWarmOptions,
+): Promise<CdnWarmResult> {
+  const paths = readPrerenderWarmPaths(options.root, {
+    includeFallbackShells: options.includeFallbackShells,
+    strict: options.strict,
+  });
+  return warmCdnCache({ ...options, paths });
 }

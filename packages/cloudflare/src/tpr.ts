@@ -78,6 +78,7 @@ type WranglerConfig = {
   accountId?: string;
   kvNamespaceId?: string;
   customDomain?: string;
+  name?: string;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -187,6 +188,10 @@ function stripJsonComments(str: string): string {
 function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   const result: WranglerConfig = {};
 
+  if (typeof config.name === "string" && config.name.length > 0) {
+    result.name = config.name;
+  }
+
   // account_id
   if (typeof config.account_id === "string") {
     result.accountId = config.account_id;
@@ -264,6 +269,9 @@ function cleanDomain(raw: string): string | null {
  */
 function extractFromTOML(content: string): WranglerConfig {
   const result: WranglerConfig = {};
+
+  const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
+  if (nameMatch) result.name = nameMatch[1];
 
   // account_id = "..."
   const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
