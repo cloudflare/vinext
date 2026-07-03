@@ -204,8 +204,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "sourcemap-resolved stack traces during prerender",
   },
   cacheComponents: {
-    status: "unsupported",
-    detail: "Cache Components are not yet supported",
+    status: "partial",
+    detail: "experimental support; behavior is incomplete",
   },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
