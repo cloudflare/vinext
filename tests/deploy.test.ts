@@ -3044,4 +3044,21 @@ custom_domains = ["preview.example.com"]
     const config = parseWranglerConfig(tmpDir, { env: "preview" });
     expect(config?.customDomain).toBe("preview.example.com");
   });
+
+  it("allows indented TOML scalar fields", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+  account_id = "top-account"
+  custom_domains = ["production.example.com"]
+
+[env.preview]
+  route = "preview.example.com/*"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.accountId).toBe("top-account");
+    expect(config?.customDomain).toBe("preview.example.com");
+  });
 });

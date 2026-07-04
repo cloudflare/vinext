@@ -356,7 +356,7 @@ function extractTomlTableContent(content: string, tableName: string): string | n
 }
 
 function extractTomlRouteDomain(content: string): string | null {
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
+  const routeMatch = content.match(/^\s*route\s*=\s*"([^"]+)"/m);
   if (!routeMatch) return null;
 
   const domain = cleanDomain(routeMatch[1]);
@@ -375,7 +375,7 @@ function extractTomlRoutesTableDomain(content: string, tableName: string): strin
 }
 
 function extractTomlCustomDomainsDomain(content: string): string | null {
-  const customDomainsMatch = content.match(/^custom_domains\s*=\s*\[([^\]]*)\]/m);
+  const customDomainsMatch = content.match(/^\s*custom_domains\s*=\s*\[([^\]]*)\]/m);
   if (!customDomainsMatch) return null;
 
   const domainPattern = /"([^"]+)"/g;
@@ -404,8 +404,8 @@ function extractFromTOML(
 
   // account_id = "..."
   const accountMatch =
-    envTable?.match(/^account_id\s*=\s*"([^"]+)"/m) ??
-    rootTable.match(/^account_id\s*=\s*"([^"]+)"/m);
+    envTable?.match(/^\s*account_id\s*=\s*"([^"]+)"/m) ??
+    rootTable.match(/^\s*account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
