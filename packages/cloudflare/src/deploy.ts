@@ -819,7 +819,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
-  const shouldEmitPrerenderPathManifest = options.warmCdnCache || prerenderDecision;
+  const shouldEmitPrerenderPathManifest =
+    options.warmCdnCache || (!options.skipBuild && prerenderDecision);
 
   // Step 5: Build
   if (!options.skipBuild) {
@@ -829,13 +830,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   if (shouldEmitPrerenderPathManifest) {
-    const shouldLoadRouteRootConfig = options.warmCdnCache || shouldLoadVinextPrerenderConfig;
-    const routeRootConfig = shouldLoadRouteRootConfig
-      ? await withCloudflareEnv(buildEnv, async () => {
-          const vite = await loadProjectViteApi(info.root);
-          return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
-        })
-      : null;
+    const routeRootConfig = await withCloudflareEnv(buildEnv, async () => {
+      const vite = await loadProjectViteApi(info.root);
+      return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
+    });
     await emitPrerenderPathManifest({
       root: info.root,
       nextConfigOverride: nextConfig,
