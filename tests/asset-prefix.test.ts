@@ -749,7 +749,7 @@ export default function middleware(request: Request) {
       build: {
         outDir: path.join(outDir, "server"),
         ssr: "virtual:vinext-server-entry",
-        rollupOptions: { output: { entryFileNames: "entry.js" } },
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
       },
     });
     await build({
@@ -761,7 +761,7 @@ export default function middleware(request: Request) {
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: { input: "virtual:vinext-client-entry" },
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
       },
     });
 

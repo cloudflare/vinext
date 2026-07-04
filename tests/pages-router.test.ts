@@ -28,7 +28,7 @@ type ClientBuildManifestEntry = {
 };
 
 function getBuildBundlerOptions(result: any) {
-  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+  return result.build?.rolldownOptions;
 }
 
 /**
@@ -512,7 +512,7 @@ async function buildPagesFixtureToOutDir(rootDir: string, outDir: string): Promi
     build: {
       outDir: path.join(outDir, "server"),
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: { output: { entryFileNames: "entry.js" } },
+      rolldownOptions: { output: { entryFileNames: "entry.js" } },
     },
   });
 
@@ -525,7 +525,7 @@ async function buildPagesFixtureToOutDir(rootDir: string, outDir: string): Promi
       outDir: path.join(outDir, "client"),
       manifest: true,
       ssrManifest: true,
-      rollupOptions: { input: "virtual:vinext-client-entry" },
+      rolldownOptions: { input: "virtual:vinext-client-entry" },
     },
   });
 }
@@ -682,6 +682,22 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Hello, vinext!");
     expect(html).toContain("This is a Pages Router app running on Vite.");
     expect(html).toContain("Go to About");
+  });
+
+  // Next.js always sends `text/html; charset=utf-8` for SSR HTML. Without the
+  // explicit charset (and without an early <meta charset>), Chromium falls
+  // back to windows-1252 and renders non-ASCII content as mojibake, which then
+  // surfaces as a hydration mismatch.
+  it("serves HTML with an explicit utf-8 charset in the Content-Type", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("serves getServerSideProps HTML with an explicit utf-8 charset", async () => {
+    const res = await fetch(`${baseUrl}/gssp-dedup-test`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
   });
 
   it("sets optimizeDeps.entries for pages and instrumentation hooks so deps are discovered at startup", () => {
@@ -3695,7 +3711,7 @@ describe("Plugin config", () => {
     expect(result.resolve.dedupe).toContain("react/jsx-dev-runtime");
   });
 
-  it("suppresses MODULE_LEVEL_DIRECTIVE warnings from Rollup", async () => {
+  it("suppresses MODULE_LEVEL_DIRECTIVE warnings from the bundler", async () => {
     const plugins = vinext() as any[];
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
     expect(configPlugin).toBeDefined();
@@ -3819,7 +3835,7 @@ describe("Plugin config", () => {
     expect(defaultHandler).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves user-supplied build.rollupOptions.onwarn", async () => {
+  it("preserves user-supplied build.rolldownOptions.onwarn", async () => {
     const plugins = vinext() as any[];
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
     expect(configPlugin).toBeDefined();
@@ -3829,7 +3845,7 @@ describe("Plugin config", () => {
       {
         root: FIXTURE_DIR,
         plugins: [],
-        build: { rollupOptions: { onwarn: userOnwarn } },
+        build: { rolldownOptions: { onwarn: userOnwarn } },
       },
       { command: "build", mode: "production" },
     );
@@ -3990,7 +4006,7 @@ describe("Production build", () => {
       build: {
         outDir: path.join(outDir, "server"),
         ssr: "virtual:vinext-server-entry",
-        rollupOptions: {
+        rolldownOptions: {
           output: {
             entryFileNames: "entry.js",
           },
@@ -4111,7 +4127,7 @@ export const config = { matcher: ["/protected"] };
         build: {
           outDir: path.join(fixtureOutDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          rolldownOptions: {
             output: {
               entryFileNames: "entry.js",
             },
@@ -4181,7 +4197,7 @@ export const config = { matcher: ["/protected"] };
         build: {
           outDir: path.join(fixtureOutDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          rolldownOptions: {
             output: {
               entryFileNames: "entry.js",
             },
@@ -4224,7 +4240,7 @@ export const config = { matcher: ["/protected"] };
           build: {
             outDir: path.join(fixtureOutDir, "server"),
             ssr: "virtual:vinext-server-entry",
-            rollupOptions: {
+            rolldownOptions: {
               output: { entryFileNames: "entry.js" },
             },
           },
@@ -4248,7 +4264,7 @@ export const config = { matcher: ["/protected"] };
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: {
+        rolldownOptions: {
           input: "virtual:vinext-client-entry",
         },
       },
@@ -4348,7 +4364,7 @@ export default function CounterPage() {
         build: {
           outDir: path.join(fixtureOutDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
 
@@ -4361,7 +4377,7 @@ export default function CounterPage() {
           outDir: path.join(fixtureOutDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -4492,7 +4508,7 @@ export default function CounterPage() {
         build: {
           outDir: path.join(fixtureOutDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -4504,7 +4520,7 @@ export default function CounterPage() {
           outDir: path.join(fixtureOutDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -5088,7 +5104,7 @@ export default function CounterPage() {
         build: {
           outDir: path.join(fixtureOutDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
 
@@ -5101,7 +5117,7 @@ export default function CounterPage() {
           outDir: path.join(fixtureOutDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -5184,7 +5200,7 @@ export default function CounterPage() {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -5196,7 +5212,7 @@ export default function CounterPage() {
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
     }
@@ -5499,7 +5515,7 @@ export default function CounterPage() {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          rolldownOptions: {
             output: {
               entryFileNames: "entry.js",
             },
@@ -5596,7 +5612,7 @@ describe("Production server middleware (Pages Router)", () => {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -5608,7 +5624,7 @@ describe("Production server middleware (Pages Router)", () => {
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
     }
@@ -5635,6 +5651,21 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Next.js `next start` sends `text/html; charset=utf-8` for every HTML
+  // response (SSR and prerendered alike); browsers must not have to guess
+  // the encoding of non-ASCII page content.
+  it("serves HTML with an explicit utf-8 charset in the Content-Type", async () => {
+    const res = await fetch(`${prodUrl}/about`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("serves getServerSideProps HTML with an explicit utf-8 charset", async () => {
+    const res = await fetch(`${prodUrl}/gssp-dedup-test`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
   });
 
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
@@ -5691,7 +5722,7 @@ describe("Production server middleware (Pages Router)", () => {
         build: {
           outDir: path.join(tmpDir, "dist", "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -5703,7 +5734,7 @@ describe("Production server middleware (Pages Router)", () => {
           outDir: path.join(tmpDir, "dist", "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -5766,7 +5797,7 @@ describe("Production server middleware (Pages Router)", () => {
         build: {
           outDir: path.join(tmpDir, "dist", "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -5778,7 +5809,7 @@ describe("Production server middleware (Pages Router)", () => {
           outDir: path.join(tmpDir, "dist", "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -7105,7 +7136,7 @@ describe("Production server next.config.js features (Pages Router)", () => {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -7117,7 +7148,7 @@ describe("Production server next.config.js features (Pages Router)", () => {
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
     }
@@ -7490,7 +7521,7 @@ export function middleware(request) {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
@@ -7502,7 +7533,7 @@ export function middleware(request) {
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 

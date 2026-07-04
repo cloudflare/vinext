@@ -25,13 +25,15 @@ The skill handles compatibility checking, dependency installation, config genera
 ### Or do it manually
 
 ```bash
-npm install -D vinext vite @vitejs/plugin-react
+npm install vinext
+npm install -D vite @vitejs/plugin-react
 ```
 
 If you're using the App Router, also install:
 
 ```bash
-npm install -D @vitejs/plugin-rsc react-server-dom-webpack
+npm install react-server-dom-webpack
+npm install -D @vitejs/plugin-rsc
 ```
 
 Replace `next` with `vinext` in your scripts:
@@ -93,9 +95,15 @@ Environment variables: `PORT` (default `3000`), `HOST` (default `0.0.0.0`).
 
 ### Starting a new vinext project
 
-Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
+Use `create-vinext-app` for new projects. It creates a TypeScript App Router project
+with Tailwind CSS and then runs the same vinext init setup used for existing apps:
 
-In the future, we will have a proper `npm create vinext` new project workflow.
+```bash
+pnpm create vinext-app@latest my-app
+```
+
+The generated project is Cloudflare Workers-ready by default. Pass
+`--platform=node` if you want the Node target instead.
 
 ### Migrating an existing Next.js project
 
@@ -108,7 +116,7 @@ npx vinext init
 This will:
 
 1. Run `vinext check` to scan for compatibility issues
-2. Install `vite`, `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
+2. Install vinext runtime packages as dependencies and Vite/plugin tooling as devDependencies
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`
@@ -240,7 +248,7 @@ Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is short
 The init command also auto-detects and fixes common migration issues:
 
 - Adds `"type": "module"` to package.json if missing
-- Resolves tsconfig.json path aliases automatically (via `vite-tsconfig-paths`)
+- Resolves tsconfig.json path aliases automatically with Vite's native resolver
 - Detects MDX usage and configures `@mdx-js/rollup`
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
 - Detects native Node.js modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas) and auto-stubs them for Workers. If you encounter others that need stubbing, PRs are welcome.
@@ -607,7 +615,7 @@ These are intentional exclusions. For things that are missing today but on the r
 - **`next export` (legacy)** — Use `output: 'export'` in config instead.
 - **Turbopack/webpack configuration** — This runs on Vite. Use Vite plugins instead of webpack loaders/plugins.
 - **`next/jest`** — Use Vitest.
-- **`create-next-app` scaffolding** — Not a goal.
+- **`create-next-app` scaffolding** — Use `create-vinext-app` for new vinext projects.
 - **Bug-for-bug parity with undocumented behavior** — If it's not in the Next.js docs, we probably don't replicate it.
 
 ## Known limitations
@@ -619,7 +627,6 @@ These are gaps we'd like to close — distinct from the [intentional exclusions]
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
 - **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `@vinext/cloudflare deploy`.
-- **`next.config.ts` `baseUrl` bare imports require Vite 8.** A `next.config.ts` that imports a bare specifier resolved through `tsconfig.json`'s `compilerOptions.baseUrl` (e.g. `import { bar } from "bar"` resolving to a local `bar.ts`) relies on Vite 8's native `resolve.tsconfigPaths` (Rolldown/oxc-resolver). On Vite 7 there is no native equivalent, so these imports are not resolved. `compilerOptions.paths` aliases (e.g. `@/foo`) work on both Vite 7 and 8. Note that if a bare import matches both a `baseUrl`-local file and an installed package of the same name, the installed package wins (vinext keeps packages externalized so CJS config plugins like `@next/mdx` keep working).
 
 ## Benchmarks
 
@@ -642,7 +649,7 @@ Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. Se
 
 Analysis of the build output shows two main factors:
 
-1. **Tree-shaking**: Vite/Rollup produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rollup's more aggressive dead-code elimination accounts for roughly half the overall difference.
+1. **Tree-shaking**: Vite/Rolldown produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rolldown's more aggressive dead-code elimination accounts for roughly half the overall difference.
 2. **Framework overhead**: Next.js ships more client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling) than vinext's lighter client runtime.
 
 Both frameworks ship the same app code and the same RSC client runtime (`react-server-dom-webpack`). The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
@@ -769,7 +776,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^7.0.0 || ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 

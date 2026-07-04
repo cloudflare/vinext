@@ -168,6 +168,29 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     expect(aliases["@app"]).toBe(path.join(tmpDir, "src", "app.ts"));
   });
 
+  it("orders overlapping aliases longest-prefix-first regardless of declaration order", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            // General pattern declared first; TypeScript matches by longest
+            // prefix, so consumers applying first-match semantics (Vite's
+            // alias plugin) need `@/public` ordered before `@`.
+            "@/*": ["./src/*"],
+            "@/public/*": ["./public/*"],
+          },
+        },
+      }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
+    expect(Object.keys(aliases)).toEqual(["@/public", "@"]);
+    expect(aliases["@/public"]).toBe(path.join(tmpDir, "public"));
+    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+  });
+
   it("returns empty object when tsconfig.json is missing", () => {
     tmpDir = makeTempDir();
     expect(loadTsconfigPathAliasesForRoot(tmpDir)).toEqual({});

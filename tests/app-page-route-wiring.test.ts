@@ -21,10 +21,7 @@ import {
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
-import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
   createRequestContext,
@@ -829,7 +826,7 @@ describe("app page route wiring helpers", () => {
     expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
   });
 
-  it("suppresses route and slot loading boundaries for refresh payloads", () => {
+  it("keeps route loading boundaries in the rendered tree", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -847,16 +844,45 @@ describe("app page route wiring helpers", () => {
         notFound: null,
         notFounds: [null],
         routeSegments: ["dashboard"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(true);
+  });
+
+  it("keeps slot loading boundaries in the rendered tree", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard"],
         slots: {
           sidebar: {
             default: null,
             error: null,
             layout: null,
-            layoutIndex: 0,
+            layoutIndex: -1,
             loading: { default: SlotLoadingProbe },
             name: "sidebar",
             page: { default: SlotPage },
-            routeSegments: [],
+            routeSegments: ["members"],
           },
         },
         templateTreePositions: [],
@@ -864,11 +890,9 @@ describe("app page route wiring helpers", () => {
       },
       routePath: "/dashboard",
       rootNotFoundModule: null,
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
     });
 
-    expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(false);
-    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(false);
+    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(true);
   });
 
   it("serializes route loading UI instead of page content for loading-shell prefetches", async () => {

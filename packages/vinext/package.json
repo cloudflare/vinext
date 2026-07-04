@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -97,6 +97,14 @@
       "types": "./dist/cache/cache-adapters-virtual.d.ts",
       "import": "./dist/cache/cache-adapters-virtual.js"
     },
+    "./internal/init": {
+      "types": "./dist/init.d.ts",
+      "import": "./dist/init.js"
+    },
+    "./internal/init-platform": {
+      "types": "./dist/init-platform.d.ts",
+      "import": "./dist/init-platform.js"
+    },
     "./internal/config/dotenv": {
       "types": "./dist/config/dotenv.d.ts",
       "import": "./dist/config/dotenv.js"
@@ -170,8 +178,7 @@
     "am-i-vibing": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:",
-    "vite-tsconfig-paths": "catalog:"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
@@ -180,8 +187,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-server-dom-webpack": "^19.2.6",
-    "vite": "^7.0.0 || ^8.0.0",
-    "vite-tsconfig-paths": "^6.1.1"
+    "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "@mdx-js/rollup": {
@@ -191,9 +197,6 @@
       "optional": true
     },
     "react-server-dom-webpack": {
-      "optional": true
-    },
-    "vite-tsconfig-paths": {
       "optional": true
     }
   },

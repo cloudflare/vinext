@@ -8,6 +8,7 @@ import {
   VINEXT_INTERNAL_HEADERS,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
+import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
 import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 
@@ -552,7 +553,7 @@ export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       keysToDelete.push(key);
     }
   }

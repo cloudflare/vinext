@@ -47,7 +47,6 @@ import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
@@ -903,7 +902,7 @@ export function buildAppPageElements<
     }
 
     const slotLoadingComponent = getDefaultExport(slot.loading);
-    if (slotLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+    if (slotLoadingComponent) {
       const SlotLoadingComponent = slotLoadingComponent;
       slotElement = (
         <Suspense key={slotResetKey} fallback={<SlotLoadingComponent />}>
@@ -968,7 +967,7 @@ export function buildAppPageElements<
     // transitions rather than unmounting it.
     routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
 
-    if (routeLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+    if (routeLoadingComponent) {
       const RouteLoadingComponent = routeLoadingComponent;
       // Route-level wrappers cover the full page branch in vinext's flat element
       // transport, so their reset key includes the visible segment-state path.

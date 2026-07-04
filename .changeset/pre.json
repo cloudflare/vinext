@@ -1,0 +1,10 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "@vinext/cloudflare": "0.2.1",
+    "create-vinext-app": "0.2.0",
+    "vinext": "0.2.1"
+  },
+  "changesets": []
+}

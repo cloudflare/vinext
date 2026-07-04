@@ -76,4 +76,19 @@ test.describe("pages-to-app-routing: navigate from Pages Router to App Router vi
     await expect(page.locator("#app-page")).toHaveText("About");
     expect(page.url()).toContain("/exists-but-not-routed");
   });
+
+  test("clicking a static Pages link to an existing Pages path rewritten by middleware navigates to App Router", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+    // "rewrites should support rewrites on client-side navigation from pages to app with existing pages path"
+    await page.goto(`${BASE}/link-to-rewritten-path`);
+    await waitForHydration(page);
+
+    await page.click("#link-to-rewritten-path");
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#app-page")).toHaveText("About");
+    expect(page.url()).toContain("/exists-but-not-routed");
+  });
 });

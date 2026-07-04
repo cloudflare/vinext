@@ -1,0 +1,38 @@
+{
+  "name": "create-vinext-app",
+  "version": "0.2.0",
+  "description": "Create a vinext app for Cloudflare Workers.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/create-vinext-app"
+  },
+  "bin": {
+    "create-vinext-app": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "prepack": "vp run build",
+    "dev": "vp pack --watch"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "am-i-vibing": "catalog:",
+    "magic-string": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

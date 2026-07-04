@@ -85,15 +85,18 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
     });
 
     await page.hover('a[href="/ssr"]');
-    await expect.poll(() => dataRequests.length).toBe(1);
+    await expect.poll(() => dataRequests.length).toBeGreaterThanOrEqual(1);
     expect(dataRequests[0]).toContain(`/_next/data/${buildId}/ssr.json`);
+    const preClickDataRequestCount = dataRequests.length;
 
     await page.click('a[href="/ssr"]');
     await page.waitForURL("**/ssr");
     await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
 
-    // The JSON endpoint must have been hit once by prefetch and then reused for navigation.
-    expect(dataRequests).toHaveLength(1);
+    // SSR middleware prefetches are intentionally not persisted in the client
+    // cache; navigation should still use the JSON endpoint, not full HTML.
+    await expect.poll(() => dataRequests.length).toBeGreaterThan(preClickDataRequestCount);
+    expect(dataRequests.at(-1)).toContain(`/_next/data/${buildId}/ssr.json`);
     // No document reload — sentinel survived the navigation.
     const sentinel = await page.evaluate(() => (window as any).__navTestSentinel);
     expect(sentinel).toBe("alive");

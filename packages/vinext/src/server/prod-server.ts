@@ -45,6 +45,7 @@ import {
 } from "./pages-request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import {
+  normalizeNextDataPagePathname,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
@@ -65,6 +66,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import {
@@ -115,10 +117,9 @@ function resolveCanonicalServerEntry(entryPath: string): { href: string; mtime: 
  *
  * The first import of a given path uses the plain file:// URL with NO query
  * string. This is load-bearing: code-split builds emit lazy chunks that
- * import the entry back by bare specifier (default Vite builds on both
- * supported majors — Rollup on Vite 7 and Rolldown on Vite 8 — hoist modules
- * shared between the entry's static graph and lazy route chunks into the
- * entry chunk, which the chunks then import as e.g. "../../index.js").
+ * import the entry back by bare specifier (default Vite/Rolldown builds hoist
+ * modules shared between the entry's static graph and lazy route chunks into
+ * the entry chunk, which the chunks then import as e.g. "../../index.js").
  * Node keys its ESM cache on the full URL including the query string, so if
  * the server imported the entry as `index.js?t=<mtime>`, a chunk's bare
  * back-import would evaluate the entire server bundle a second time and
@@ -840,6 +841,11 @@ function nodeToWebRequest(
     rawHeaders,
     prerenderSecret,
   );
+  const isTrustedSpeculativePrerender =
+    process.env.VINEXT_PRERENDER === "1" &&
+    prerenderSecret !== undefined &&
+    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
+    rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
@@ -847,6 +853,9 @@ function nodeToWebRequest(
   );
   if (prerenderRouteParamsHeader !== null) {
     headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+  }
+  if (isTrustedSpeculativePrerender) {
+    headers.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
   }
 
   const method = req.method ?? "GET";
@@ -1788,8 +1797,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
         isDataReq = true;
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = dataMatch.pagePathname + qs;
-        pathname = dataMatch.pagePathname;
+        const pagePathname = normalizeNextDataPagePathname(
+          dataMatch.pagePathname,
+          hasMiddleware && trailingSlash,
+        );
+        url = pagePathname + qs;
+        pathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry

@@ -11,13 +11,15 @@ import { removeTrailingSlash, stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
-import { fetchCachedPagesData, fetchStaticPagesData } from "./pages-data-fetch-dedup.js";
+import { fetchStaticPagesData, fetchUncachedPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 import { isUnknownRecord } from "../../utils/record.js";
 
 export type PagesDataTarget = {
   /** Final fetch URL for the data endpoint, including basePath and search. */
   dataHref: string;
+  /** Locale-qualified data endpoint used by Pages Router prefetch. */
+  prefetchDataHref?: string;
   /** Matched route pattern (e.g. `/blog/[slug]`). */
   pattern: string;
   /** Dynamic params extracted from the URL by the pattern matcher. */
@@ -34,6 +36,8 @@ export type PagesDataTarget = {
   pagePath: string;
   /** URL search string including the leading `?`. */
   search: string;
+  /** Locale selected for middleware-prefetch data URLs when the visible URL is unprefixed. */
+  prefetchLocale?: string;
   /**
    * Locale prefix detected on the URL, or `undefined` when the URL is
    * unprefixed (default locale, or no i18n configured). Lets the caller refresh
@@ -41,6 +45,10 @@ export type PagesDataTarget = {
    * does not carry.
    */
   locale: string | undefined;
+};
+
+type PagesDataNavigationTargetOptions = {
+  locale?: string | false;
 };
 
 type ClientMiddlewareMatcherObject = {
@@ -172,6 +180,7 @@ export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string)
 export function resolvePagesDataNavigationTarget(
   browserUrl: string,
   basePath: string,
+  options: PagesDataNavigationTargetOptions = {},
 ): PagesDataTarget | null {
   if (typeof window === "undefined") return null;
 
@@ -213,9 +222,17 @@ export function resolvePagesDataNavigationTarget(
         ssgPatterns === undefined || sspPatterns === undefined
         ? "server"
         : "none";
+  const explicitLocale =
+    options.locale === false ? window.__VINEXT_DEFAULT_LOCALE__ : options.locale;
+  const currentLocale = locale ?? explicitLocale ?? window.__VINEXT_LOCALE__;
+  const prefetchPagePath =
+    locale || !currentLocale || !window.__VINEXT_LOCALES__?.includes(currentLocale)
+      ? pagePath
+      : `/${currentLocale}${pagePath === "/" ? "" : pagePath}`;
 
   return {
     dataHref: buildPagesDataHref(basePath, buildId, pagePath, parsed.search),
+    prefetchDataHref: buildPagesDataHref(basePath, buildId, prefetchPagePath, parsed.search),
     pattern: match.pattern,
     params: match.params,
     loader,
@@ -224,6 +241,7 @@ export function resolvePagesDataNavigationTarget(
     buildId,
     pagePath,
     search: parsed.search,
+    prefetchLocale: currentLocale,
     locale,
   };
 }
@@ -258,12 +276,17 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
   if (target.dataKind === "static") {
-    const dataHref = target.middlewareDataHref ?? target.dataHref;
-    void fetchStaticPagesData(dataHref, { headers }).catch(() => {});
+    const dataHref =
+      target.middlewareDataHref && target.middlewareDataHref !== target.dataHref
+        ? target.middlewareDataHref
+        : (target.prefetchDataHref ?? target.middlewareDataHref ?? target.dataHref);
+    void fetchStaticPagesData(dataHref, { headers })
+      .then((response) => response.arrayBuffer())
+      .catch(() => {});
     return;
   }
 
   if (target.middlewareDataHref) {
-    void fetchCachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
+    void fetchUncachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
   }
 }

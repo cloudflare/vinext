@@ -23,6 +23,8 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
@@ -179,6 +181,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   request: Request;
+  renderedPathAndSearch?: string | null;
   route: TRoute;
   scriptNonce?: string;
   searchParams: URLSearchParams;
@@ -815,6 +818,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
   }
 
+  if (pagesDataRequest && didMiddlewareRewritePathname && preActionMatch) {
+    const headers = new Headers();
+    mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+    headers.set("content-type", "application/json");
+    headers.set("x-nextjs-rewrite", resolvedUrl);
+    options.clearRequestContext();
+    return new Response("{}", { headers });
+  }
+
   if (!filesystemRouteEligible && isPostRequest && actionId) {
     options.clearRequestContext();
     return notFoundResponse();
@@ -1163,6 +1175,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
     rootParams,
     request,
+    renderedPathAndSearch: resolvedUrl,
     route,
     scriptNonce,
     searchParams: resolvedSearchParams,
@@ -1265,7 +1278,12 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       : null;
     const pagesDataNormalization =
       options.renderPagesFallback && pagesDataCandidate
-        ? normalizePagesDataRequest(pagesDataCandidate, options.buildId)
+        ? normalizePagesDataRequest(
+            pagesDataCandidate,
+            options.buildId,
+            "",
+            typeof options.runMiddleware === "function" && options.trailingSlash,
+          )
         : null;
     if (pagesDataNormalization?.notFoundResponse) {
       return pagesDataNormalization.notFoundResponse;
@@ -1280,6 +1298,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
     // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
+    const isTrustedSpeculativePrerender =
+      process.env.VINEXT_PRERENDER === "1" &&
+      rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null &&
+      rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
@@ -1289,6 +1311,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     );
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+    }
+    if (isTrustedSpeculativePrerender) {
+      filteredHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
     }
     let appRequest = rawRequest;
     if (pagesDataNormalization?.isDataReq) {

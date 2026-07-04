@@ -11,9 +11,9 @@
  * pre-bundling.
  *
  * Fix: vinext configures the dep optimizer to treat `.js`/`.mjs` as JSX via
- * an optimizer-wide extension mapping (`optimizeDeps.rolldownOptions.moduleTypes`
- * on Vite 8, `optimizeDeps.esbuildOptions.loader` on Vite 7). This is broader
- * than `vinext:jsx-in-js` because it can also apply to optimized dependencies.
+ * an optimizer-wide extension mapping (`optimizeDeps.rolldownOptions.moduleTypes`).
+ * This is broader than `vinext:jsx-in-js` because it can also apply to optimized
+ * dependencies.
  *
  * The motivating real-world symptom (issue #5) is that, once the scan aborts,
  * pre-bundling is skipped and UMD/CJS deps can fail to interop under SSR
@@ -28,7 +28,6 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
-import { getViteMajorVersion } from "../packages/vinext/src/utils/vite-version.js";
 
 type VinextPlugin = {
   name: string;
@@ -37,7 +36,6 @@ type VinextPlugin = {
 
 type OptimizerConfig = {
   rolldownOptions?: { moduleTypes?: Record<string, string> };
-  esbuildOptions?: { loader?: Record<string, string> };
 };
 
 type VinextConfigResult = {
@@ -154,19 +152,12 @@ async function expectDevScanAllowsJsxInJs(tmpDir: string, expectedTexts: string[
   }
 }
 
-function expectJsxDotJs(optimizeDeps: OptimizerConfig, viteMajor: number) {
-  if (viteMajor >= 8) {
-    expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".js"]).toBe("jsx");
-    expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".mjs"]).toBe("jsx");
-  } else {
-    expect(optimizeDeps.esbuildOptions?.loader?.[".js"]).toBe("jsx");
-    expect(optimizeDeps.esbuildOptions?.loader?.[".mjs"]).toBe("jsx");
-  }
+function expectJsxDotJs(optimizeDeps: OptimizerConfig) {
+  expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".js"]).toBe("jsx");
+  expect(optimizeDeps.rolldownOptions?.moduleTypes?.[".mjs"]).toBe("jsx");
 }
 
 describe("optimizeDeps: JSX in plain .js files", () => {
-  const viteMajor = getViteMajorVersion();
-
   it("configures the dep optimizer to treat .js as JSX in every environment", async () => {
     const tmpDir = await setupAppProject();
     try {
@@ -183,13 +174,13 @@ describe("optimizeDeps: JSX in plain .js files", () => {
 
       // Top-level optimizeDeps (Pages Router default + client inheritance).
       expect(result.optimizeDeps).toBeDefined();
-      expectJsxDotJs(result.optimizeDeps!, viteMajor);
+      expectJsxDotJs(result.optimizeDeps!);
 
       // App Router environments each run their own scanner over app/ sources.
       for (const envName of ["rsc", "ssr", "client"] as const) {
         const envOptimizeDeps = result.environments?.[envName]?.optimizeDeps;
         expect(envOptimizeDeps, `${envName} optimizeDeps`).toBeDefined();
-        expectJsxDotJs(envOptimizeDeps!, viteMajor);
+        expectJsxDotJs(envOptimizeDeps!);
       }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -219,7 +210,7 @@ describe("optimizeDeps: JSX in plain .js files", () => {
         const clientOptimizeDeps = config.environments?.client?.optimizeDeps;
         expect(clientOptimizeDeps, `${label} client optimizeDeps`).toBeDefined();
         expect(clientOptimizeDeps?.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
-        expectJsxDotJs(clientOptimizeDeps!, viteMajor);
+        expectJsxDotJs(clientOptimizeDeps!);
       }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

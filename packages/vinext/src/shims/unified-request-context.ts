@@ -106,6 +106,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchCacheMode: null,
     currentForceDynamicFetchDefault: false,
     dynamicFetchUrls: new Set<string>(),
+    refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present

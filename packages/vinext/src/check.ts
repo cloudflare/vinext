@@ -203,6 +203,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "sourcemap-resolved stack traces during prerender",
   },
+  cacheComponents: {
+    status: "partial",
+    detail: "experimental support; behavior is incomplete",
+  },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
   "experimental.serverActions": {
@@ -916,6 +920,7 @@ export function analyzeConfig(root: string): CheckItem[] {
     "output",
     "transpilePackages",
     "webpack",
+    "cacheComponents",
     "reactStrictMode",
     "poweredByHeader",
     "skipMiddlewareUrlNormalize",

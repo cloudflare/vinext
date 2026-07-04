@@ -127,6 +127,14 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function readPositiveNumberField(
+  ctx: Record<string, unknown> | undefined,
+  field: string,
+): number | undefined {
+  const value = ctx?.[field];
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
 function validUniqueTags(tags: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
@@ -249,8 +257,16 @@ export class KVCacheHandler implements CacheHandler {
       return null;
     }
 
-    // Check time-based revalidation — return stale with cacheState
-    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+    // Check time-based revalidation — return stale with cacheState.
+    const now = Date.now();
+    const requestedRevalidate = readPositiveNumberField(_ctx, "revalidate");
+    const requestedRevalidateAt =
+      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+    const isStale =
+      (entry.revalidateAt !== null && now > entry.revalidateAt) ||
+      (requestedRevalidateAt !== null && now > requestedRevalidateAt);
+
+    if (isStale) {
       return {
         lastModified: entry.lastModified,
         value: restoredValue,
