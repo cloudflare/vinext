@@ -270,12 +270,13 @@ export function runWranglerTriggersDeploy(
   root: string,
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   execute: typeof execFileSync = execFileSync,
-): void {
+): WranglerVersionDeployResult {
   const { args, env } = buildWranglerTriggersDeployArgs(options);
   if (env) {
     console.log(`\n  Applying Worker triggers for env: ${env}...`);
   } else {
     console.log("\n  Applying Worker triggers...");
   }
-  runWranglerCommand(root, args, execute);
+  const output = runWranglerCommand(root, args, execute);
+  return { deployedUrl: parseWorkersDevUrl(output), output };
 }

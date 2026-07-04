@@ -529,12 +529,13 @@ export async function deployWithCdnWarmup(
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
+  let triggersDeployedUrl: string | null = null;
   let warmedBeforePromotion = false;
   let triggersApplied = false;
 
   function applyTriggers(): void {
     if (triggersApplied) return;
-    runWranglerTriggersDeploy(root, options);
+    triggersDeployedUrl = runWranglerTriggersDeploy(root, options).deployedUrl;
     triggersApplied = true;
   }
 
@@ -545,7 +546,11 @@ export async function deployWithCdnWarmup(
     } catch (error) {
       throw withStagedVersionCleanupNote(error);
     }
-    const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl, options);
+    const targetUrl = resolveCdnWarmupTargetUrl(
+      root,
+      staged.deployedUrl ?? triggersDeployedUrl,
+      options,
+    );
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
@@ -587,7 +592,11 @@ export async function deployWithCdnWarmup(
     } catch (error) {
       throw withPromotedVersionTriggerNote(error);
     }
-    const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl, options);
+    const targetUrl = resolveCdnWarmupTargetUrl(
+      root,
+      deployed.deployedUrl ?? triggersDeployedUrl,
+      options,
+    );
     if (targetUrl) {
       await warmCdnCache({
         targetUrl,
@@ -610,6 +619,7 @@ export async function deployWithCdnWarmup(
   }
   return (
     deployed.deployedUrl ??
+    triggersDeployedUrl ??
     staged?.deployedUrl ??
     upload.previewUrl ??
     "(URL not detected in wrangler output)"

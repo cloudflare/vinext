@@ -255,6 +255,62 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
+  it("uses the triggers deploy URL for post-promotion fallback warmup", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "workers-cache",
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("ok", { status: 200 });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed workers-cache version 22222222-2222-4222-8222-222222222222 at 100%\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Deployed workers-cache triggers\n  https://workers-cache.vinext.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    const url = await deployWithCdnWarmup(tmpDir, ["/cached/intro"], {
+      warmCdnConcurrency: 1,
+    });
+
+    expect(url).toBe("https://workers-cache.vinext.workers.dev");
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://workers-cache.vinext.workers.dev/cached/intro"),
+      expect.any(Object),
+    );
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "promote",
+      "triggers",
+      "fetch:https://workers-cache.vinext.workers.dev/cached/intro",
+    ]);
+  });
+
   it("uses the explicit Worker name for version upload, override, promotion, and triggers", async () => {
     writeFile(
       "wrangler.jsonc",
