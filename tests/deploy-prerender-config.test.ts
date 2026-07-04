@@ -207,6 +207,7 @@ describe("deploy prerender config wiring", () => {
     await deploy({ root: tmpDir, skipBuild: true, prerenderAll: true });
 
     expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
   });
 
   it("does not load Vite config when static export already wins", async () => {
