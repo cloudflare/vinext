@@ -47,6 +47,53 @@ export type VinextCacheConfig = {
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";
 
+// Custom metadata key attached to vinext's config plugin so deploy commands can
+// inspect the normalized cache descriptors after loading the user's Vite config.
+export const VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY = "__vinextCacheConfig";
+
+type VinextCacheConfigPlugin = {
+  [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]?: VinextCacheConfig | null;
+};
+
+type ViteConfigLoader = {
+  loadConfigFromFile: typeof import("vite").loadConfigFromFile;
+};
+
+function flattenPluginOptions(value: unknown, target: unknown[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) flattenPluginOptions(item, target);
+    return;
+  }
+  if (value) target.push(value);
+}
+
+export function findVinextCacheConfigInPlugins(
+  plugins: import("vite").PluginOption[] | undefined,
+): VinextCacheConfig | null {
+  const flattened: unknown[] = [];
+  flattenPluginOptions(plugins, flattened);
+
+  for (const plugin of flattened) {
+    if (!plugin || typeof plugin !== "object") continue;
+    const cacheConfig = (plugin as VinextCacheConfigPlugin)[VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY];
+    if (cacheConfig) return cacheConfig;
+  }
+
+  return null;
+}
+
+export async function loadVinextCacheConfigFromViteConfig(
+  vite: ViteConfigLoader,
+  root: string,
+): Promise<VinextCacheConfig | null> {
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  return findVinextCacheConfigInPlugins(loaded?.config.plugins);
+}
+
 /**
  * Serialize descriptor options into a JS expression for inlining. Plain JSON is
  * a valid JS literal; `undefined` when there are no options. Throws a clear

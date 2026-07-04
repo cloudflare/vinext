@@ -1,5 +1,11 @@
 import type { PluginOption } from "vite";
 import { isUnknownRecord } from "../utils/record.js";
+export {
+  findVinextCacheConfigInPlugins,
+  loadVinextCacheConfigFromViteConfig,
+  VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
+  type VinextCacheConfig,
+} from "../cache/cache-adapters-virtual.js";
 
 export type VinextPrerenderConfig =
   | true

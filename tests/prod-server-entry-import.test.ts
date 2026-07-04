@@ -16,8 +16,8 @@ import {
  *
  * 1. The first import of a built entry must use the bare (query-less)
  *    canonical file:// URL, so emitted chunks that import the entry back by
- *    bare specifier (Rollup-based Vite 7 builds) or via realpath-derived
- *    URLs resolve to the SAME module instance. The previous unconditional
+ *    bare specifier or via realpath-derived URLs resolve to the SAME module
+ *    instance. The previous unconditional
  *    `?t=<mtime>` query created a second instance of the whole server bundle
  *    and module-level singletons diverged.
  *

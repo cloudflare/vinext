@@ -342,7 +342,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },
@@ -378,7 +378,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },
@@ -420,7 +420,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },

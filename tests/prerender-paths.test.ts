@@ -43,6 +43,7 @@ describe("prerender path manifest", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -92,6 +93,40 @@ describe("prerender path manifest", () => {
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
+  });
+
+  it("skips dynamic warmup paths when static params discovery aborts", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        throw error;
+      }),
+    );
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export const revalidate = 60;",
+        "export function generateStaticParams() { return [{ slug: 'intro' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.paths).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("failed to discover warmup path(s) for /cached/:slug"),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("timed out after 30000ms"));
   });
 
   it("passes a custom RSC bundle path to the path discovery server", async () => {

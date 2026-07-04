@@ -345,6 +345,102 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: test -f dist/server/wrangler.json
 
+  create-vinext-app-cloudflare:
+    name: create-vinext-app (Cloudflare build)
+    runs-on: ubuntu-latest
+    env:
+      CVA_CLOUDFLARE_WORKER: create-vinext-app-cloudflare
+      # Public test namespace already used by examples/workers-cache.
+      CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Build packages
+        run: vp run build
+
+      - name: Pack vinext packages for local install
+        working-directory: packages/vinext
+        run: |
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../cloudflare
+          vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../create-vinext-app
+          vp pm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Install packed create-vinext-app runner
+        run: |
+          mkdir -p "${{ runner.temp }}/cva-runner"
+          cd "${{ runner.temp }}/cva-runner"
+          node -e 'require("fs").writeFileSync("package.json", JSON.stringify({ private: true, type: "module" }, null, 2) + "\n")'
+          vp add "${{ runner.temp }}"/create-vinext-app-*.tgz
+
+      - name: Scaffold a fresh create-vinext-app project
+        working-directory: ${{ runner.temp }}/cva-runner
+        run: >-
+          vp exec create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          --yes
+          --skip-install
+          --disable-git
+          --platform=cloudflare
+          --cdn-cache=data-cache
+          --data-cache=kv
+          --image-optimization=cloudflare-images
+
+      - name: Pin pnpm in scaffolded project to vinext's version
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          PKG_MGR=$(cd "${{ github.workspace }}" && node -p "require('./package.json').packageManager")
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.packageManager = '$PKG_MGR';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Allow required native dependency builds
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          node -e '
+            const fs = require("fs");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.replace(/allowBuilds:[\s\S]*?(?=\n\S|\n*$)/, "");
+            y = y.trimEnd() + "\n\nallowBuilds:\n  esbuild: true\n  sharp: true\n  unrs-resolver: true\n  workerd: true\n";
+            fs.writeFileSync(f, y);
+          '
+
+      - name: Install local vinext packages
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+
+      - name: Configure generated Cloudflare deployment
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const configPath = "wrangler.jsonc";
+            const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            config.name = process.env.CVA_CLOUDFLARE_WORKER;
+            config.preview_urls = true;
+            for (const namespace of config.kv_namespaces ?? []) {
+              if (namespace.binding === "VINEXT_KV_CACHE") {
+                namespace.id = process.env.CVA_CLOUDFLARE_KV_NAMESPACE_ID;
+              }
+            }
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          '
+
+      - name: Build generated Cloudflare project
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: vp exec vinext build
+
+      - name: Verify generated Cloudflare build output
+        working-directory: ${{ runner.temp }}/cva-cloudflare
+        run: test -f dist/server/wrangler.json
+
   e2e:
     name: E2E (${{ matrix.label }})
     runs-on: ubuntu-latest
@@ -537,7 +633,15 @@ jobs:
     name: CI
     if: ${{ always() }}
     needs:
-      [check, test-unit, test-integration-merge, create-next-app, create-next-app-cloudflare, e2e]
+      [
+        check,
+        test-unit,
+        test-integration-merge,
+        create-next-app,
+        create-next-app-cloudflare,
+        create-vinext-app-cloudflare,
+        e2e,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

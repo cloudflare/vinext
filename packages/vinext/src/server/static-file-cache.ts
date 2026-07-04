@@ -21,7 +21,7 @@ export const CONTENT_TYPES: Record<string, string> = {
   ".js": "application/javascript",
   ".mjs": "application/javascript",
   ".css": "text/css",
-  ".html": "text/html",
+  ".html": "text/html; charset=utf-8",
   ".json": "application/json",
   ".txt": "text/plain; charset=utf-8",
   ".png": "image/png",

@@ -151,7 +151,7 @@ function walkUpUntil<T>(start: string, check: (dir: string) => T | null): T | nu
 
 // ─── Package Manager Detection ───────────────────────────────────────────────
 
-type PackageManagerName = "pnpm" | "yarn" | "bun" | "npm";
+export type PackageManagerName = "pnpm" | "yarn" | "bun" | "npm";
 
 function parsePackageManagerName(value: string | undefined): PackageManagerName | null {
   if (!value) return null;

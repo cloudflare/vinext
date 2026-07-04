@@ -20,6 +20,7 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
@@ -357,6 +358,66 @@ describe("prerenderApp — RSC extraction", () => {
       // Exactly one page request and one RSC fallback request per route.
       expect(pageRequestCount).toBe(1);
       expect(rscRequestCount).toBe(1);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the speculative prerender marker on fallback RSC requests", async () => {
+    const root = tmpDir("vinext-prerender-rsc-speculative-fallback-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    const pagePath = path.join(appDir, "page.tsx");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(pagePath, "export default function Page() { return null; }\n");
+
+    const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
+    const fallbackRscPayload = '0:["$","div",null,{"children":"from fallback"}]\n';
+    const seenSpeculativeHeaders: Array<string | string[] | undefined> = [];
+    const server = createServer((req, res) => {
+      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("<html><body>not found</body></html>");
+        return;
+      }
+
+      seenSpeculativeHeaders.push(req.headers[VINEXT_PRERENDER_SPECULATIVE_HEADER]);
+      if (isRsc) {
+        res.setHeader("content-type", "text/x-component");
+        res.end(fallbackRscPayload);
+        return;
+      }
+
+      res.setHeader("content-type", "text/html");
+      res.end(middlewareHtml);
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({});
+
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
+        route: "/",
+        status: "rendered",
+      });
+      expect(fs.readFileSync(path.join(outDir, "index.rsc"), "utf-8")).toBe(fallbackRscPayload);
+      expect(seenSpeculativeHeaders).toEqual(["1", "1"]);
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });

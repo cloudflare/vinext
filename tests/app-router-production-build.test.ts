@@ -133,13 +133,7 @@ describe("App Router Production build", () => {
     expect(buildId.length).toBeGreaterThan(0);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
-    expect(fs.existsSync(warmupManifestPath)).toBe(true);
-    const warmupManifest = JSON.parse(fs.readFileSync(warmupManifestPath, "utf-8")) as {
-      buildId?: string;
-      paths?: string[];
-    };
-    expect(warmupManifest.buildId).toBe(buildId);
-    expect(warmupManifest.paths).toContain("/");
+    expect(fs.existsSync(warmupManifestPath)).toBe(false);
     expect(fs.existsSync(path.join(outDir, "server", "prerendered-routes"))).toBe(false);
   }, 30000);
 

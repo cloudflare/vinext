@@ -164,7 +164,7 @@ describe("pages page response", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(response.headers.get("content-type")).toBe("text/html");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("x-test")).toBe("1");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
@@ -458,6 +458,29 @@ describe("pages page response", () => {
     });
 
     expect(response.headers.get("cache-control")).toBeNull();
+  });
+
+  it("sets browser revalidation Cache-Control for static Pages responses in Next deploy mode", async () => {
+    const oldValue = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+    process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
+    try {
+      const common = createCommonOptions();
+
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        gsspRes: null,
+        isStaticPropsRoute: true,
+        isrRevalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    } finally {
+      if (oldValue === undefined) {
+        delete process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+      } else {
+        process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = oldValue;
+      }
+    }
   });
 
   it("disables pages ISR caching when a script nonce is present", async () => {

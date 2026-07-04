@@ -1,3 +1,4 @@
 body {
+  --layout-green-css: layout-green;
   background-color: green;
 }

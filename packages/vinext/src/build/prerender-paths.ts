@@ -26,9 +26,10 @@ export type PrerenderPathManifest = {
   paths: string[];
 };
 
-export const DEFER_PRERENDER_PATH_MANIFEST_ENV = "__VINEXT_DEFER_PRERENDER_PATH_MANIFEST";
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
 export const PRERENDER_PATHS_MANIFEST = "vinext-prerender-paths.json";
+
+const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
@@ -61,6 +62,30 @@ function addPath(paths: string[], seen: Set<string>, pathname: string): void {
 function warnDiscoveryFailure(route: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.warn(`[vinext] Warning: failed to discover warmup path(s) for ${route}: ${message}`);
+}
+
+async function fetchDiscoveryEndpoint(
+  url: string,
+  headers: Record<string, string>,
+): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers,
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    if (!res.ok || text === "null") return null;
+    return text;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function fileHasNamedExport(filePath: string | null | undefined, name: string): boolean {
@@ -190,14 +215,11 @@ async function collectPagesPaths(options: {
 
     try {
       const search = new URLSearchParams({ pattern: route.pattern });
-      const res = await fetch(
+      const text = await fetchDiscoveryEndpoint(
         `${options.baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
-        {
-          headers: options.secretHeaders,
-        },
+        options.secretHeaders,
       );
-      const text = await res.text();
-      if (!res.ok || text === "null") continue;
+      if (text === null) continue;
 
       const pathsResult = JSON.parse(text) as {
         paths?: Array<StaticPathsEntry>;
@@ -240,11 +262,11 @@ async function collectAppPaths(options: {
           if (Object.keys(params).length > 0) {
             search.set("parentParams", JSON.stringify(params));
           }
-          const res = await fetch(`${options.baseUrl}/__vinext/prerender/static-params?${search}`, {
-            headers: options.secretHeaders,
-          });
-          const text = await res.text();
-          if (!res.ok || text === "null") return null;
+          const text = await fetchDiscoveryEndpoint(
+            `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
+            options.secretHeaders,
+          );
+          if (text === null) return null;
           return JSON.parse(text) as Record<string, string | string[]>[];
         })();
         void request.catch(() => staticParamsCache.delete(cacheKey));

@@ -24,6 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -130,6 +131,26 @@ describe("Cloudflare CDN warmup", () => {
       "/",
       "/blog/[slug]",
     ]);
+  });
+
+  it("warns when fallback shells are requested without a prerender manifest", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/", "/cached/intro"],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([
+      "/",
+      "/cached/intro",
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+    );
   });
 
   it("skips warm paths when the path manifest build ID does not match the built Worker", () => {

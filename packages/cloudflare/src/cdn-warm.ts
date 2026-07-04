@@ -96,7 +96,12 @@ export function readPrerenderWarmPaths(
   if (!manifest) {
     if (shouldPreferPrerenderManifest) {
       const pathManifestPaths = readPrerenderPathWarmPaths(root, options);
-      if (pathManifestPaths !== null) return pathManifestPaths;
+      if (pathManifestPaths !== null) {
+        console.warn(
+          "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+        );
+        return pathManifestPaths;
+      }
     }
     const message = "[vinext] CDN warmup skipped: prerender manifest not found.";
     if (options?.strict) throw new Error(message);
