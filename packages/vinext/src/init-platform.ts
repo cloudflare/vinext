@@ -289,7 +289,7 @@ export async function resolveInitWarmCdnCache(
   const output = options.output ?? process.stdout;
   const isInteractive =
     options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  if (isAgentEnvironment(env) || !isInteractive) return true;
+  if (isAgentEnvironment(env) || !isInteractive) return false;
 
   const readline = options.question ? undefined : createInterface({ input, output });
   const question = options.question ?? ((prompt: string) => readline!.question(prompt));
@@ -297,13 +297,13 @@ export async function resolveInitWarmCdnCache(
   try {
     while (true) {
       const answer = (
-        await question("  Enable Workers Cache experimental pre-warm during deploy? [Y/n]: ")
+        await question("  Enable Workers Cache experimental pre-warm during deploy? [y/N]: ")
       )
         .trim()
         .toLowerCase();
       if (answer === "") {
         output.write("\n");
-        return true;
+        return false;
       }
       if (answer === "y" || answer === "yes") {
         output.write("\n");

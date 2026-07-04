@@ -845,18 +845,18 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(pkg.scripts["build:vinext"]).toBe("vinext build");
     expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json",
     );
   });
 
-  it("adds a warm CDN cache deploy script by default for Workers Cache init", async () => {
+  it("does not add a warm CDN cache deploy script by default for Workers Cache init", async () => {
     setupProject(tmpDir, { router: "app" });
 
     await runInit(tmpDir);
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json",
     );
   });
 
@@ -1024,8 +1024,7 @@ describe("init — dependency installation", () => {
         "dev:vinext": "vinext dev --port 3001",
         "build:vinext": "vinext build",
         "start:vinext": "wrangler dev --config dist/server/wrangler.json",
-        "deploy:vinext":
-          "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
+        "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json",
       });
       expect(setup.viteConfigExists).toBe(true);
       expect(setup.wranglerConfigExists).toBe(true);
@@ -1052,8 +1051,7 @@ describe("init — dependency installation", () => {
         "dev:vinext": "vinext dev --port 3001",
         "build:vinext": "vinext build",
         "start:vinext": "wrangler dev --config dist/server/wrangler.json",
-        "deploy:vinext":
-          "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
+        "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json",
       },
     });
     expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(true);
