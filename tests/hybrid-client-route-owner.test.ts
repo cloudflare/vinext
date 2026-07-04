@@ -17,7 +17,7 @@
  * end with `+`, and optional catch-alls end with `*`. See
  * `routing/route-trie.ts`.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,

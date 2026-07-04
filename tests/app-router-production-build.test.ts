@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR } from "./helpers.js";
 
