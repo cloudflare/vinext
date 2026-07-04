@@ -2894,6 +2894,23 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.kvNamespaceId).toBe("preview-id");
   });
 
+  it("uses env-specific JSON custom domains before top-level routes when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        routes: ["production.example.com/*"],
+        env: {
+          preview: {
+            custom_domains: ["preview.example.com"],
+          },
+        },
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.customDomain).toBe("preview.example.com");
+  });
+
   it("does not use a top-level Wrangler KV namespace when a JSON env omits KV config", () => {
     writeFile(
       tmpDir,

@@ -1,7 +1,7 @@
 /** Cloudflare KV bulk upload helpers shared by deploy-time cache population. */
 
 /** KV bulk API accepts up to 10,000 pairs per request. */
-export const KV_BATCH_SIZE = 10_000;
+const KV_BATCH_SIZE = 10_000;
 
 /** Default KV expiration TTL used by KVCacheHandler for revalidating entries. */
 export const DEFAULT_KV_TTL_SECONDS = 30 * 24 * 3600;

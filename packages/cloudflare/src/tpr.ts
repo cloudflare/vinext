@@ -255,14 +255,12 @@ function extractFromJSON(
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const routes = readConfigField<unknown>(config, envConfig, "routes");
-  const customDomainConfig = envConfig ?? config;
-  const domain =
-    extractDomainFromRoutes(routes) ??
-    extractDomainFromCustomDomains(customDomainConfig) ??
-    (envConfig
-      ? (extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config))
-      : null);
+  const domain = envConfig
+    ? (extractDomainFromRoutes(envConfig.routes) ??
+      extractDomainFromCustomDomains(envConfig) ??
+      extractDomainFromRoutes(config.routes) ??
+      extractDomainFromCustomDomains(config))
+    : (extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config));
   if (domain) result.customDomain = domain;
 
   return result;
