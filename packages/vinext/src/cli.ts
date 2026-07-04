@@ -6,7 +6,6 @@
  *   vinext dev     Start development server (Vite)
  *   vinext build   Build for production
  *   vinext start   Start production server
- *   vinext deploy  Deprecated Cloudflare deploy shim
  *   vinext typegen Generate App Router route helper types
  *   vinext lint    Run linter (delegates to eslint/oxlint)
  *
@@ -28,8 +27,6 @@ import {
   hasAppDir,
   hasViteConfig,
 } from "./utils/project.js";
-import { deploy as runDeploy, parseDeployArgs } from "@vinext/cloudflare/internal/deploy";
-import { printDeployHelp } from "@vinext/cloudflare/internal/deploy-help";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { resolveInitOptions } from "./init-platform.js";
@@ -794,39 +791,12 @@ async function lint() {
   }
 }
 
-async function deployCommand() {
-  const parsed = parseDeployArgs(rawArgs);
-  if (parsed.help) {
-    printDeployDeprecationWarning();
-    printDeployHelp();
-    return;
-  }
-
-  printDeployDeprecationWarning();
-  await loadVite();
-  console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
-
-  await runDeploy({
-    root: process.cwd(),
-    preview: parsed.preview,
-    env: parsed.env,
-    skipBuild: parsed.skipBuild,
-    dryRun: parsed.dryRun,
-    name: parsed.name,
-    prerenderAll: parsed.prerenderAll,
-    prerenderConcurrency: parsed.prerenderConcurrency,
-    experimentalTPR: parsed.experimentalTPR,
-    tprCoverage: parsed.tprCoverage,
-    tprLimit: parsed.tprLimit,
-    tprWindow: parsed.tprWindow,
-  });
-}
-
-function printDeployDeprecationWarning(): void {
-  console.log(
-    "  ⚠️  Warning: `vinext deploy` has moved to the `@vinext/cloudflare` package.\n" +
-      "  Please switch to `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`; this compatibility command will be removed in a future release.\n",
+function failRemovedDeployCommand(): never {
+  console.error(
+    "\n  Error: `vinext deploy` has moved to the `@vinext/cloudflare` package.\n\n" +
+      "  Run `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy` instead.\n",
   );
+  process.exit(1);
 }
 
 async function check() {
@@ -940,9 +910,7 @@ function printHelp(cmd?: string) {
   }
 
   if (cmd === "deploy") {
-    printDeployDeprecationWarning();
-    printDeployHelp();
-    return;
+    failRemovedDeployCommand();
   }
 
   if (cmd === "check") {
@@ -1104,10 +1072,7 @@ switch (command) {
     break;
 
   case "deploy":
-    deployCommand().catch((e) => {
-      console.error(e);
-      process.exit(1);
-    });
+    failRemovedDeployCommand();
     break;
 
   case "init":

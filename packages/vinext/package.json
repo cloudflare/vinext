@@ -37,10 +37,6 @@
       "types": "./dist/server/pages-i18n.d.ts",
       "import": "./dist/server/pages-i18n.js"
     },
-    "./cloudflare": {
-      "types": "./dist/cloudflare/index.d.ts",
-      "import": "./dist/cloudflare/index.js"
-    },
     "./server/image-optimization": {
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"
@@ -156,7 +152,6 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
