@@ -44,6 +44,15 @@ describe("getDotenvFiles", () => {
     expect(files).toEqual([".env.test.local", ".env.test", ".env"]);
     expect(files).not.toContain(".env.local");
   });
+
+  it("returns mode-specific files for custom build modes", () => {
+    expect(getDotenvFiles("staging")).toEqual([
+      ".env.staging.local",
+      ".env.local",
+      ".env.staging",
+      ".env",
+    ]);
+  });
 });
 
 describe("loadDotenv", () => {
@@ -129,6 +138,31 @@ describe("loadDotenv", () => {
     expect(result.loadedFiles).not.toContain(".env.local");
     expect(result.loadedFiles).toContain(".env.test");
     expect(result.loadedEnv.TEST_VALUE).toBe("from-test");
+  });
+
+  it("loads custom build mode files with normal local precedence", () => {
+    writeFile(".env", "NEXT_PUBLIC_TARGET=env\nFALLBACK=env\n");
+    writeFile(".env.staging", "NEXT_PUBLIC_TARGET=mode\n");
+    writeFile(".env.local", "LOCAL_ONLY=local\n");
+    writeFile(".env.staging.local", "NEXT_PUBLIC_TARGET=mode-local\n");
+
+    const env: Record<string, string | undefined> = {};
+    const result = loadDotenv({
+      root: tmpDir,
+      mode: "staging",
+      processEnv: env,
+    });
+
+    expect(env.NEXT_PUBLIC_TARGET).toBe("mode-local");
+    expect(env.LOCAL_ONLY).toBe("local");
+    expect(env.FALLBACK).toBe("env");
+    expect(result.loadedFiles).toEqual([
+      ".env.staging.local",
+      ".env.local",
+      ".env.staging",
+      ".env",
+    ]);
+    expect(result.mode).toBe("staging");
   });
 
   it("expands variables using $VAR syntax", () => {

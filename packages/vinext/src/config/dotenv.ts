@@ -2,8 +2,6 @@ import fs from "node:fs";
 import path from "pathslash";
 import { parseEnv } from "node:util";
 
-type VinextEnvMode = "development" | "production" | "test";
-
 /**
  * Environment-variable bag accepted by {@link loadDotenv}.
  *
@@ -17,12 +15,12 @@ type EnvBag = Record<string, string | undefined>;
 
 type LoadDotenvOptions = {
   root: string;
-  mode: VinextEnvMode;
+  mode: string;
   processEnv?: EnvBag;
 };
 
 type LoadDotenvResult = {
-  mode: VinextEnvMode;
+  mode: string;
   loadedFiles: string[];
   loadedEnv: Record<string, string>;
 };
@@ -30,7 +28,7 @@ type LoadDotenvResult = {
 /**
  * Next.js-compatible dotenv lookup order (highest priority first).
  */
-export function getDotenvFiles(mode: VinextEnvMode): string[] {
+export function getDotenvFiles(mode: string): string[] {
   return [`.env.${mode}.local`, ...(mode === "test" ? [] : [".env.local"]), `.env.${mode}`, ".env"];
 }
 
