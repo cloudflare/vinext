@@ -25,7 +25,7 @@ import vinext from "../packages/vinext/src/index.js";
 
 type VinextPlugin = {
   name: string;
-  config?: (config: unknown, env: { command: string }) => unknown;
+  config?: (config: unknown, env: { command: string; mode?: string }) => unknown;
   configEnvironment?: (
     name: string,
     config: unknown,
@@ -104,6 +104,51 @@ describe("client `global` define (config)", () => {
       );
       expect(globalDefinePlugin!.configEnvironment!("client", {}, { command: "build" })).toBeNull();
     } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
+    const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+    const previousLocalOnly = process.env.NEXT_PUBLIC_LOCAL_ONLY;
+    delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+    delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
+
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      await fsp.writeFile(path.join(tmpDir, ".env.local"), "NEXT_PUBLIC_LOCAL_ONLY=from-local\n");
+      await fsp.writeFile(path.join(tmpDir, ".env.test"), "NEXT_PUBLIC_FROM_TEST_MODE=from-test\n");
+
+      const configResult = (await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build", mode: "test" },
+      )) as { define?: Record<string, string> };
+
+      expect(configResult.define?.["process.env.NEXT_PUBLIC_FROM_TEST_MODE"]).toBe(
+        JSON.stringify("from-test"),
+      );
+      expect(Object.hasOwn(configResult.define ?? {}, "process.env.NEXT_PUBLIC_LOCAL_ONLY")).toBe(
+        false,
+      );
+      expect(process.env.NEXT_PUBLIC_FROM_TEST_MODE).toBe("from-test");
+      expect(process.env.NEXT_PUBLIC_LOCAL_ONLY).toBeUndefined();
+    } finally {
+      if (previousFromTest === undefined) {
+        delete process.env.NEXT_PUBLIC_FROM_TEST_MODE;
+      } else {
+        process.env.NEXT_PUBLIC_FROM_TEST_MODE = previousFromTest;
+      }
+      if (previousLocalOnly === undefined) {
+        delete process.env.NEXT_PUBLIC_LOCAL_ONLY;
+      } else {
+        process.env.NEXT_PUBLIC_LOCAL_ONLY = previousLocalOnly;
+      }
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
