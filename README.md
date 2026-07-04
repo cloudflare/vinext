@@ -32,7 +32,23 @@ Run `vinext check` against an existing application before migrating. If a gap is
 
 ## Quick start
 
-vinext includes an [Agent Skill](https://agentskills.io/home) that handles migration for you. It works with Claude Code, OpenCode, Cursor, Codex, and dozens of other AI coding tools. Install it, open your Next.js project, and tell the AI to migrate:
+**Use the official setup commands below.** They are the recommended way to create or migrate a vinext project because they configure dependencies, scripts, Vite, and your deployment target for you.
+
+Start a new project with `create-vinext-app`:
+
+```bash
+pnpm create vinext-app@latest my-app
+```
+
+Migrate an existing Next.js project with `vinext init`:
+
+```bash
+npx vinext init
+```
+
+### Optional: migrate with an AI agent
+
+Prefer `vinext init` for a direct, repeatable migration. If you want an AI agent to investigate compatibility issues and guide the migration, vinext also includes an optional [Agent Skill](https://agentskills.io/home). It works with Claude Code, OpenCode, Cursor, Codex, and dozens of other AI coding tools:
 
 ```sh
 npx skills add cloudflare/vinext
