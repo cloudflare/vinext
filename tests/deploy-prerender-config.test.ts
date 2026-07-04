@@ -90,6 +90,41 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   );
 }
 
+function writeApiOnlyProject(): void {
+  writeFile("package.json", JSON.stringify({ name: "warm-skip-build-app", type: "module" }));
+  writeFile(
+    "app/api/health/route.ts",
+    "export function GET() { return Response.json({ ok: true }); }\n",
+  );
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/package.json",
+    JSON.stringify({ name: "@cloudflare/vite-plugin", type: "module", main: "index.js" }),
+  );
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/index.js",
+    "export function cloudflare() { return { name: 'test-cloudflare-plugin' }; }\n",
+  );
+  writeFile(
+    "wrangler.jsonc",
+    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+  );
+  writeFile(
+    "vite.config.ts",
+    [
+      'import { defineConfig } from "vite";',
+      'import { cloudflare } from "@cloudflare/vite-plugin";',
+      'import vinext from "../packages/vinext/src/index";',
+      "",
+      "export default defineConfig({",
+      "  plugins: [vinext(), cloudflare()],",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  writeFile("dist/server/BUILD_ID", "build-a\n");
+  writeFile("dist/server/index.js", "export default {};\n");
+}
+
 function writeProjectWithThrowingViteConfig(): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
@@ -244,6 +279,27 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true });
 
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
+  });
+
+  it("discovers warmup paths during skip-build warm CDN deploys", async () => {
+    writeApiOnlyProject();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
+      ),
+    ).toEqual({
+      buildId: "build-a",
+      trailingSlash: false,
+      paths: [],
+    });
     expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
       expect.stringContaining("wrangler"),
       "deploy",

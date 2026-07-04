@@ -819,23 +819,28 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
+  const shouldEmitPrerenderPathManifest = options.warmCdnCache || prerenderDecision;
 
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
-    if (options.warmCdnCache || prerenderDecision) {
-      const routeRootConfig = await withCloudflareEnv(buildEnv, async () => {
-        const vite = await loadProjectViteApi(info.root);
-        return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
-      });
-      await emitPrerenderPathManifest({
-        root: info.root,
-        nextConfigOverride: nextConfig,
-        routeRootConfig,
-      });
-    }
   } else {
     console.log("\n  Skipping build (--skip-build)");
+  }
+
+  if (shouldEmitPrerenderPathManifest) {
+    const shouldLoadRouteRootConfig = options.warmCdnCache || shouldLoadVinextPrerenderConfig;
+    const routeRootConfig = shouldLoadRouteRootConfig
+      ? await withCloudflareEnv(buildEnv, async () => {
+          const vite = await loadProjectViteApi(info.root);
+          return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
+        })
+      : null;
+    await emitPrerenderPathManifest({
+      root: info.root,
+      nextConfigOverride: nextConfig,
+      routeRootConfig,
+    });
   }
 
   // Step 6a: prerender — render every discovered route into dist.
