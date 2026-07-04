@@ -9,6 +9,7 @@ import {
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
   runWranglerVersionDeploy,
+  runWranglerVersionUpload,
 } from "../packages/cloudflare/src/version-deploy.js";
 
 describe("Cloudflare Wrangler version deployment helpers", () => {
@@ -128,6 +129,20 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     );
     expect(log).toHaveBeenCalledWith("\n  Promoting warmed Worker version to production...");
     expect(log).toHaveBeenCalledWith("\n  Promoting uploaded Worker version to env: staging...");
+  });
+
+  it("asks for an initial deploy without CDN pre-warm when the Worker does not exist yet", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const execute = vi.fn(() => {
+      throw Object.assign(new Error("Command failed"), {
+        stderr:
+          "✘ [ERROR] You cannot upload a new version of a Worker that does not yet exist. Please run the `deploy` command first.",
+      });
+    });
+
+    expect(() => runWranglerVersionUpload("/tmp/app", {}, execute as never)).toThrow(
+      "Run `vinext-cloudflare deploy` once without `--warm-cdn-cache` to create the Worker",
+    );
   });
 
   it("builds deployment status args for environments", () => {

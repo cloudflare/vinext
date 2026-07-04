@@ -198,6 +198,39 @@ function runWranglerCommand(
   return output;
 }
 
+function errorText(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error);
+  const parts = error instanceof Error ? [error.message] : [];
+  const record = error as Record<string, unknown>;
+  for (const field of ["stdout", "stderr", "output"] as const) {
+    const value = record[field];
+    if (Array.isArray(value)) {
+      parts.push(
+        ...value
+          .filter(
+            (entry): entry is string | Buffer =>
+              typeof entry === "string" || Buffer.isBuffer(entry),
+          )
+          .map((entry) => entry.toString()),
+      );
+    } else if (typeof value === "string" || Buffer.isBuffer(value)) {
+      parts.push(value.toString());
+    }
+  }
+  return parts.join("\n");
+}
+
+function isMissingWorkerVersionUploadError(error: unknown): boolean {
+  return /cannot upload a new version of a Worker that does not yet exist/i.test(errorText(error));
+}
+
+function withInitialDeployRequiredMessage(error: unknown): Error {
+  const message =
+    "CDN pre-warm needs an existing Cloudflare Worker before it can upload a new Worker version. " +
+    "Run `vinext-cloudflare deploy` once without `--warm-cdn-cache` to create the Worker, then rerun your pre-warm deploy.";
+  return error instanceof Error ? new Error(message, { cause: error }) : new Error(message);
+}
+
 function parseDeploymentVersions(value: unknown): WranglerVersionTraffic[] {
   const deployment = Array.isArray(value) ? value.at(-1) : value;
   if (!isRecord(deployment) || !Array.isArray(deployment.versions)) return [];
@@ -233,7 +266,14 @@ export function runWranglerVersionUpload(
   } else {
     console.log("\n  Uploading Worker version for production...");
   }
-  return parseWranglerVersionUploadOutput(runWranglerCommand(root, args, execute));
+  try {
+    return parseWranglerVersionUploadOutput(runWranglerCommand(root, args, execute));
+  } catch (error) {
+    if (isMissingWorkerVersionUploadError(error)) {
+      throw withInitialDeployRequiredMessage(error);
+    }
+    throw error;
+  }
 }
 
 export function runWranglerVersionDeploy(
