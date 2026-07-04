@@ -87,7 +87,7 @@ const PLATFORM_FEATURES: readonly PlatformFeature[] = [
     icon: DatabaseIcon,
     title: "ISR out of the box",
     description:
-      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. A KV-backed handler ships by default; R2 or your own backend can drop in.",
+      "Stale-while-revalidate with background regeneration, matching the Next.js 16 CacheHandler interface. Cloudflare Workers Cache serves route-level ISR at the edge, while Workers KV backs the data cache.",
   },
   {
     icon: SparkleIcon,
@@ -133,8 +133,9 @@ export default defineConfig({
   {
     title: "Deploy to Cloudflare Workers",
     description:
-      "Add the Cloudflare Vite plugin, Workers KV caching, and Cloudflare Images optimization.",
+      "Add the Cloudflare Vite plugin, Workers Cache for route-level ISR, Workers KV for data caching, and Cloudflare Images optimization.",
     code: `import { cloudflare } from "@cloudflare/vite-plugin";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { defineConfig } from "vite";
@@ -144,6 +145,7 @@ export default defineConfig({
   plugins: [
     vinext({
       cache: {
+        cdn: cdnAdapter(),
         data: kvDataAdapter(),
       },
       images: {
