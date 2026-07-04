@@ -261,7 +261,7 @@ describe("warm CDN cache init choice", () => {
       }),
     ).resolves.toBe(true);
     expect(prompts).toEqual([
-      "  Enable experimental Workers Cache pre-warm during deploy? [Y/n]: ",
+      "  Enable Workers Cache experimental pre-warm during deploy? [Y/n]: ",
     ]);
     expect(output.read()?.toString()).toBe("\n");
   });
@@ -392,7 +392,7 @@ describe("resolveInitOptions", () => {
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? [y/N]: ",
-      "  Enable experimental Workers Cache pre-warm during deploy? [Y/n]: ",
+      "  Enable Workers Cache experimental pre-warm during deploy? [Y/n]: ",
     ]);
   });
 

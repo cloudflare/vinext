@@ -297,7 +297,7 @@ export async function resolveInitWarmCdnCache(
   try {
     while (true) {
       const answer = (
-        await question("  Enable experimental Workers Cache pre-warm during deploy? [Y/n]: ")
+        await question("  Enable Workers Cache experimental pre-warm during deploy? [Y/n]: ")
       )
         .trim()
         .toLowerCase();
