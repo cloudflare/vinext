@@ -2956,4 +2956,50 @@ account_id = "preview-account"
     expect(config?.accountId).toBe("preview-account");
     expect(config?.kvNamespaceId).toBeUndefined();
   });
+
+  it("inherits top-level TOML account ID when an env omits account ID", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+account_id = "top-account"
+
+[env.preview]
+route = "preview.example.com/*"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.accountId).toBe("top-account");
+  });
+
+  it("uses env-specific TOML route config when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+route = "production.example.com/*"
+
+[env.preview]
+route = "preview.example.com/*"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.customDomain).toBe("preview.example.com");
+  });
+
+  it("uses env-specific TOML routes table config when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+[[routes]]
+pattern = "production.example.com/*"
+
+[[env.preview.routes]]
+pattern = "preview.example.com/*"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.customDomain).toBe("preview.example.com");
+  });
 });

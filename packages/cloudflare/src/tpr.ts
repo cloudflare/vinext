@@ -338,6 +338,11 @@ function extractTomlArrayTableBlocks(content: string, tableName: string): string
   return blocks;
 }
 
+function extractTomlRootContent(content: string): string {
+  const nextSection = content.search(/^\s*\[/m);
+  return nextSection === -1 ? content : content.slice(0, nextSection);
+}
+
 function extractTomlTableContent(content: string, tableName: string): string | null {
   const escapedName = escapeRegExp(tableName);
   const marker = new RegExp(`^\\s*\\[${escapedName}\\]\\s*$`, "m");
@@ -350,6 +355,25 @@ function extractTomlTableContent(content: string, tableName: string): string | n
   return nextSection === -1 ? afterMarker : afterMarker.slice(0, nextSection);
 }
 
+function extractTomlRouteDomain(content: string): string | null {
+  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
+  if (!routeMatch) return null;
+
+  const domain = cleanDomain(routeMatch[1]);
+  return domain && !domain.includes("workers.dev") ? domain : null;
+}
+
+function extractTomlRoutesTableDomain(content: string, tableName: string): string | null {
+  for (const block of extractTomlArrayTableBlocks(content, tableName)) {
+    const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
+    if (patternMatch) {
+      const domain = cleanDomain(patternMatch[1]);
+      if (domain && !domain.includes("workers.dev")) return domain;
+    }
+  }
+  return null;
+}
+
 /**
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
@@ -360,20 +384,18 @@ function extractFromTOML(
 ): WranglerConfig {
   const result: WranglerConfig = {};
   const kvBinding = options.kvBinding ?? "VINEXT_KV_CACHE";
-  const envTable =
-    options.env && options.env !== "production"
-      ? extractTomlTableContent(content, `env.${options.env}`)
-      : null;
+  const rootTable = extractTomlRootContent(content);
+  const envName = options.env && options.env !== "production" ? options.env : null;
+  const envTable = envName !== null ? extractTomlTableContent(content, `env.${envName}`) : null;
 
   // account_id = "..."
-  const accountMatch = (envTable ?? content).match(/^account_id\s*=\s*"([^"]+)"/m);
+  const accountMatch =
+    envTable?.match(/^account_id\s*=\s*"([^"]+)"/m) ??
+    rootTable.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
-  const kvTable =
-    options.env && options.env !== "production"
-      ? `env.${options.env}.kv_namespaces`
-      : "kv_namespaces";
+  const kvTable = envName !== null ? `env.${envName}.kv_namespaces` : "kv_namespaces";
   const kvBlocks = extractTomlArrayTableBlocks(content, kvTable);
   for (const block of kvBlocks) {
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
@@ -390,30 +412,12 @@ function extractFromTOML(
   }
 
   // routes — both string and table forms
-  // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
-  if (routeMatch) {
-    const domain = cleanDomain(routeMatch[1]);
-    if (domain && !domain.includes("workers.dev")) {
-      result.customDomain = domain;
-    }
-  }
-
-  // [[routes]] blocks
-  if (!result.customDomain) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
-    for (let i = 1; i < routeBlocks.length; i++) {
-      const block = routeBlocks[i].split(/\[\[/)[0];
-      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
-      if (patternMatch) {
-        const domain = cleanDomain(patternMatch[1]);
-        if (domain && !domain.includes("workers.dev")) {
-          result.customDomain = domain;
-          break;
-        }
-      }
-    }
-  }
+  const domain =
+    (envTable ? extractTomlRouteDomain(envTable) : null) ??
+    (envName !== null ? extractTomlRoutesTableDomain(content, `env.${envName}.routes`) : null) ??
+    extractTomlRouteDomain(rootTable) ??
+    extractTomlRoutesTableDomain(content, "routes");
+  if (domain) result.customDomain = domain;
 
   return result;
 }
