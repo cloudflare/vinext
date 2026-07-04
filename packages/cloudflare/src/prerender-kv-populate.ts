@@ -3,8 +3,8 @@
  *
  * Reads `dist/server/vinext-prerender.json` and `dist/server/prerendered-routes/*`,
  * converts rendered App Router HTML/RSC artifacts into the same serialized
- * KVCacheEntry shape written by KVCacheHandler.set(), then uploads them through
- * Cloudflare KV's bulk endpoint.
+ * KVCacheEntry shape written by KVCacheHandler.set(), and returns Wrangler KV
+ * bulk import records for deploy-time upload.
  */
 
 import fs from "node:fs";
@@ -18,28 +18,7 @@ import {
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
 import { getOutputPath, getRscOutputPath } from "vinext/internal/utils/prerender-output-paths";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
-import { DEFAULT_KV_TTL_SECONDS, type KVBulkPair, uploadKVPairs } from "./kv-bulk.js";
-
-export type PrerenderKVPopulationOptions = {
-  accountId: string;
-  apiToken: string;
-  appPrefix?: string;
-  namespaceId: string;
-  serverDir: string;
-  ttlSeconds?: number;
-};
-
-export type PrerenderKVPopulationResult =
-  | {
-      skipped?: undefined;
-      routeCount: number;
-      pairCount: number;
-    }
-  | {
-      skipped: string;
-      routeCount: 0;
-      pairCount: 0;
-    };
+import { DEFAULT_KV_TTL_SECONDS, type KVBulkPair } from "./kv-bulk.js";
 
 type CacheControlMetadata = {
   revalidate: number;
@@ -185,24 +164,4 @@ export function buildPrerenderKVPairs(
   }
 
   return { routeCount, pairs };
-}
-
-export async function populatePrerenderKVCache(
-  options: PrerenderKVPopulationOptions,
-): Promise<PrerenderKVPopulationResult> {
-  const { routeCount, pairs } = buildPrerenderKVPairs(options.serverDir, {
-    appPrefix: options.appPrefix,
-    ttlSeconds: options.ttlSeconds,
-  });
-
-  if (pairs.length === 0) {
-    return {
-      skipped: "no App Router prerendered cache entries found",
-      routeCount: 0,
-      pairCount: 0,
-    };
-  }
-
-  await uploadKVPairs(pairs, options.namespaceId, options.accountId, options.apiToken);
-  return { routeCount, pairCount: pairs.length };
 }

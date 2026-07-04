@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
@@ -30,7 +31,7 @@ import {
   getMissingDeps,
   type ProjectInfo,
 } from "vinext/internal/utils/project";
-import { parseWranglerConfig, runTPR } from "./tpr.js";
+import { runTPR } from "./tpr.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -40,8 +41,8 @@ import {
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
-import { populatePrerenderKVCache } from "./prerender-kv-populate.js";
-import { resolveAccountId } from "./kv-bulk.js";
+import { buildPrerenderKVPairs } from "./prerender-kv-populate.js";
+import type { KVBulkPair } from "./kv-bulk.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -212,7 +213,7 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
 async function populateKVCacheFromPrerenderedArtifacts(
   root: string,
   buildEnv: string | undefined,
-  deployEnv: string,
+  wranglerEnv: string | undefined,
 ): Promise<void> {
   const vite = await loadProjectViteApi(root);
   const cacheConfig = await withCloudflareEnv(buildEnv, () =>
@@ -221,45 +222,26 @@ async function populateKVCacheFromPrerenderedArtifacts(
   const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
   if (!kvConfig) return;
 
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-  if (!apiToken) {
-    console.log("  KV cache: Skipping prerender upload (CLOUDFLARE_API_TOKEN is not set).");
-    return;
-  }
-
-  const wranglerConfig = parseWranglerConfig(root, {
-    env: deployEnv,
-    kvBinding: kvConfig.binding,
+  const { routeCount, pairs } = buildPrerenderKVPairs(path.join(root, "dist", "server"), {
+    appPrefix: kvConfig.appPrefix,
+    ttlSeconds: kvConfig.ttlSeconds,
   });
-  if (!wranglerConfig?.kvNamespaceId) {
+
+  if (pairs.length === 0) {
     console.log(
-      `  KV cache: Skipping prerender upload (KV binding ${kvConfig.binding} has no namespace id in Wrangler config).`,
+      "  KV cache: Skipping prerender upload (no App Router prerendered cache entries found).",
     );
     return;
   }
 
-  const accountId = wranglerConfig.accountId ?? (await resolveAccountId(apiToken));
-  if (!accountId) {
-    console.log("  KV cache: Skipping prerender upload (could not resolve Cloudflare account id).");
-    return;
-  }
-
-  const result = await populatePrerenderKVCache({
-    accountId,
-    apiToken,
-    appPrefix: kvConfig.appPrefix,
-    namespaceId: wranglerConfig.kvNamespaceId,
-    serverDir: path.join(root, "dist", "server"),
-    ttlSeconds: kvConfig.ttlSeconds,
+  runWranglerKVBulkPut(root, {
+    binding: kvConfig.binding,
+    env: wranglerEnv,
+    pairs,
   });
 
-  if (result.skipped) {
-    console.log(`  KV cache: Skipping prerender upload (${result.skipped}).`);
-    return;
-  }
-
   console.log(
-    `  KV cache: Uploaded ${result.pairCount} entr${result.pairCount === 1 ? "y" : "ies"} for ${result.routeCount} prerendered route${result.routeCount === 1 ? "" : "s"}.`,
+    `  KV cache: Uploaded ${pairs.length} entr${pairs.length === 1 ? "y" : "ies"} for ${routeCount} prerendered route${routeCount === 1 ? "" : "s"}.`,
   );
 }
 
@@ -269,6 +251,13 @@ type WranglerDeployArgs = {
   args: string[];
   env: string | undefined;
 };
+
+type WranglerKVBulkPutArgs = {
+  args: string[];
+  env: string | undefined;
+};
+
+const KV_BULK_PUT_CHUNK_SIZE = 25;
 
 export function validateWranglerEnvName(env: string): string {
   if (env.includes("\0")) {
@@ -282,6 +271,19 @@ export function buildWranglerDeployArgs(
 ): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (env) {
+    args.push("--env", validateWranglerEnvName(env));
+  }
+  return { args, env };
+}
+
+export function buildWranglerKVBulkPutArgs(options: {
+  binding: string;
+  env?: string;
+  filePath: string;
+}): WranglerKVBulkPutArgs {
+  const env = options.env || undefined;
+  const args = ["kv", "bulk", "put", options.filePath, "--binding", options.binding, "--remote"];
   if (env) {
     args.push("--env", validateWranglerEnvName(env));
   }
@@ -332,6 +334,46 @@ export function buildWranglerInvocation(
   const wranglerBin = resolveWranglerBin(root);
   const { args, env } = buildWranglerDeployArgs(options);
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
+}
+
+export function runWranglerKVBulkPut(
+  root: string,
+  options: {
+    binding: string;
+    env?: string;
+    pairs: KVBulkPair[];
+    tempDir?: string;
+  },
+  execute: typeof execFileSync = execFileSync,
+  nodeExecutable: string = process.execPath,
+): void {
+  const tempDir = fs.mkdtempSync(path.join(options.tempDir ?? os.tmpdir(), "vinext-kv-bulk-"));
+
+  try {
+    const wranglerBin = resolveWranglerBin(root);
+    const totalChunks = Math.ceil(options.pairs.length / KV_BULK_PUT_CHUNK_SIZE);
+    for (let i = 0; i < totalChunks; i++) {
+      const filePath = path.join(tempDir, `prerender-kv-${i}.json`);
+      const chunk = options.pairs.slice(
+        i * KV_BULK_PUT_CHUNK_SIZE,
+        (i + 1) * KV_BULK_PUT_CHUNK_SIZE,
+      );
+      fs.writeFileSync(filePath, JSON.stringify(chunk), "utf-8");
+      const { args } = buildWranglerKVBulkPutArgs({
+        binding: options.binding,
+        env: options.env,
+        filePath,
+      });
+      const invocation = buildNodeCliInvocation(wranglerBin, args, nodeExecutable);
+      execute(invocation.file, invocation.args, {
+        cwd: root,
+        stdio: "inherit",
+        shell: false,
+      });
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 export function runWranglerDeploy(
@@ -491,7 +533,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   if (ranPrerender) {
     try {
-      await populateKVCacheFromPrerenderedArtifacts(root, buildEnv, deployEnv);
+      await populateKVCacheFromPrerenderedArtifacts(
+        root,
+        buildEnv,
+        deployEnv === "production" && !options.env ? undefined : deployEnv,
+      );
     } catch (error) {
       console.log(
         `  KV cache: Skipping prerender upload (${formatUnknownError(error)}). Continuing with deploy.`,
