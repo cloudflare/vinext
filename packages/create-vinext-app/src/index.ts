@@ -91,7 +91,7 @@ function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<
     : "This App Router project is wired for vinext and Tailwind CSS.";
   const buildOutput = isCloudflare ? "Worker-ready production output" : "production output";
   const deployCommand = warmCdnCache
-    ? "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache"
+    ? "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
     : "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json";
   const actionCard = isCloudflare
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
@@ -288,8 +288,10 @@ function printHelp(): void {
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
-    --warm-cdn-cache             Add CDN pre-warming to the Cloudflare deploy script
-    --no-warm-cdn-cache          Do not add CDN pre-warming to the deploy script
+    --experimental-warm-cdn-cache
+                                 Add experimental CDN pre-warming to the Cloudflare deploy script
+    --no-experimental-warm-cdn-cache
+                                 Do not add experimental CDN pre-warming to the deploy script
     --use-npm                    Use npm
     --use-pnpm                   Use pnpm
     --use-yarn                   Use Yarn

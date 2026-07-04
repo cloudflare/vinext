@@ -227,7 +227,7 @@ function isMissingWorkerVersionUploadError(error: unknown): boolean {
 function withInitialDeployRequiredMessage(): Error {
   const message =
     "CDN pre-warm needs an existing Cloudflare Worker before it can upload a new Worker version. " +
-    "Run `vinext-cloudflare deploy` once without `--warm-cdn-cache` to create the Worker, then rerun your pre-warm deploy.";
+    "Run `vinext-cloudflare deploy` once without `--experimental-warm-cdn-cache` to create the Worker, then rerun your pre-warm deploy.";
   return new Error(message);
 }
 

@@ -301,7 +301,7 @@ describe("addScripts", () => {
     expect(added).toContain("deploy:vinext");
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
     );
   });
 
@@ -845,7 +845,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(pkg.scripts["build:vinext"]).toBe("vinext build");
     expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
     );
   });
 
@@ -856,7 +856,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
     );
   });
 
@@ -1025,7 +1025,7 @@ describe("init — dependency installation", () => {
         "build:vinext": "vinext build",
         "start:vinext": "wrangler dev --config dist/server/wrangler.json",
         "deploy:vinext":
-          "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+          "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
       });
       expect(setup.viteConfigExists).toBe(true);
       expect(setup.wranglerConfigExists).toBe(true);
@@ -1053,7 +1053,7 @@ describe("init — dependency installation", () => {
         "build:vinext": "vinext build",
         "start:vinext": "wrangler dev --config dist/server/wrangler.json",
         "deploy:vinext":
-          "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+          "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
       },
     });
     expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(true);

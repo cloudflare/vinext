@@ -141,7 +141,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
 
     expect(() => runWranglerVersionUpload("/tmp/app", {}, execute as never)).toThrow(
-      "Run `vinext-cloudflare deploy` once without `--warm-cdn-cache` to create the Worker",
+      "Run `vinext-cloudflare deploy` once without `--experimental-warm-cdn-cache` to create the Worker",
     );
   });
 

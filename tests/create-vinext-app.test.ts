@@ -137,11 +137,11 @@ describe("createVinextApp", () => {
     );
 
     expect(readFile(appPath, "app/page.tsx")).toContain(
-      "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+      "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
     );
     const pkg = readPkg(appPath);
     expect(pkg.scripts?.["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache",
+      "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache",
     );
   });
 

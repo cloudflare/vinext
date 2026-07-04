@@ -21,8 +21,9 @@ export function formatDeployHelp(): string {
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
                              Maximum number of routes to pre-render in parallel
-    --warm-cdn-cache         Upload a Worker version, warm build-discovered paths
-                             through the production URL, then promote it
+    --experimental-warm-cdn-cache
+                             Upload a Worker version, warm build-discovered paths
+                             through the production URL, then promote it (experimental)
     --warm-cdn-concurrency <count>
                              Maximum number of CDN warmup requests in parallel
     --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 5000)
@@ -56,7 +57,7 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
-    vinext-cloudflare deploy --warm-cdn-cache                           Warm build-discovered paths during version deploy
+    vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
     vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
     vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
     vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages

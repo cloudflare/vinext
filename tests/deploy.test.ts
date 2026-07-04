@@ -697,7 +697,7 @@ describe("parseDeployArgs", () => {
 
   it("parses CDN warmup flags", () => {
     const parsed = parseDeployArgs([
-      "--warm-cdn-cache",
+      "--experimental-warm-cdn-cache",
       "--warm-cdn-concurrency",
       "6",
       "--warm-cdn-timeout=1500",

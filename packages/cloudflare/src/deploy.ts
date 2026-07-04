@@ -141,7 +141,7 @@ const deployArgOptions = {
   "dry-run": { type: "boolean", default: false },
   "prerender-all": { type: "boolean", default: false },
   "prerender-concurrency": { type: "string" },
-  "warm-cdn-cache": { type: "boolean", default: false },
+  "experimental-warm-cdn-cache": { type: "boolean", default: false },
   "warm-cdn-concurrency": { type: "string" },
   "warm-cdn-timeout": { type: "string" },
   "warm-cdn-retries": { type: "string" },
@@ -179,7 +179,7 @@ export function parseDeployArgs(args: string[]) {
       values["prerender-concurrency"] === undefined
         ? undefined
         : parsePositiveIntegerArg(values["prerender-concurrency"], "--prerender-concurrency"),
-    warmCdnCache: values["warm-cdn-cache"],
+    warmCdnCache: values["experimental-warm-cdn-cache"],
     warmCdnConcurrency:
       values["warm-cdn-concurrency"] === undefined
         ? undefined
