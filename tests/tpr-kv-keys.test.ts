@@ -2,7 +2,7 @@
  * Tests that TPR's KV upload uses the correct cache key format.
  *
  * The runtime KVCacheHandler reads keys as:
- *   ENTRY_PREFIX + appIsrCacheKey(pathname, suffix, buildId)
+ *   ENTRY_PREFIX + isrCacheKey(router, pathname, buildId) + ":" + suffix
  *   → "cache:app:<buildId>:<pathname>:html"
  *
  * TPR must write keys in this exact format, otherwise seeded entries
@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import { buildTprKVPairs, resolveVinextProdServerPath } from "../packages/cloudflare/src/tpr.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { isrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
 
 function entry(
   path: string,
@@ -29,16 +29,8 @@ describe("TPR KV key format", () => {
     const pairs = buildTprKVPairs(entry("/blog/hello"), buildId, 60);
 
     expect(pairs.length).toBe(1);
-    expect(pairs[0].key).toBe(`cache:${appIsrCacheKey("/blog/hello", "html", buildId)}`);
+    expect(pairs[0].key).toBe(`cache:${isrCacheKey("app", "/blog/hello", buildId)}:html`);
     expect(pairs[0].key).toBe("cache:app:abc123:/blog/hello:html");
-  });
-
-  it("includes the html suffix in the long-key hash threshold", () => {
-    const pathname = "/" + "a".repeat(188);
-    const pairs = buildTprKVPairs(entry(pathname), buildId, 60);
-
-    expect(pairs[0].key).toBe(`cache:${appIsrCacheKey(pathname, "html", buildId)}`);
-    expect(pairs[0].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:html$/);
   });
 
   it("uses revalidate from x-vinext-revalidate header when present", () => {
@@ -146,10 +138,10 @@ describe("TPR KV key format", () => {
   it("buildTprKVPairs accepts undefined buildId (documents key format; runTPR now fails fast if BUILD_ID is missing)", () => {
     // Note: runTPR() skips the KV upload entirely when BUILD_ID is missing, so
     // this no-buildId path is not reachable in production. The test preserves
-    // coverage of appIsrCacheKey's no-buildId format in case the helper is used
+    // coverage of isrCacheKey's no-buildId format in case the helper is used
     // independently.
     const pairs = buildTprKVPairs(entry("/page"), undefined, 60);
-    expect(pairs[0].key).toBe(`cache:${appIsrCacheKey("/page", "html", undefined)}`);
+    expect(pairs[0].key).toBe(`cache:${isrCacheKey("app", "/page")}:html`);
     expect(pairs[0].key).toBe("cache:app:/page:html");
   });
 
@@ -170,7 +162,6 @@ describe("TPR KV key format", () => {
       "_N_T_/test/layout",
       "_N_T_/test/page",
     ]);
-    expect(pairs[0].metadata).toEqual({ tags: parsed.tags });
     expect(parsed.lastModified).toBeTypeOf("number");
   });
 });

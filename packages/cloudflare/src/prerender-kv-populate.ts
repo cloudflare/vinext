@@ -18,7 +18,16 @@ import {
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
 import { getOutputPath, getRscOutputPath } from "vinext/internal/utils/prerender-output-paths";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
-import { DEFAULT_KV_TTL_SECONDS, type KVBulkPair } from "./kv-bulk.js";
+
+/** Default KV expiration TTL used by KVCacheHandler for revalidating entries. */
+const DEFAULT_KV_TTL_SECONDS = 30 * 24 * 3600;
+
+export type KVBulkPair = {
+  key: string;
+  value: string;
+  expiration_ttl?: number;
+  metadata?: Record<string, unknown>;
+};
 
 type CacheControlMetadata = {
   revalidate: number;

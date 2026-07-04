@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
@@ -32,7 +33,7 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
-function writeProject(prerenderConfig: string): void {
+function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
   writeFile(
@@ -53,9 +54,12 @@ function writeProject(prerenderConfig: string): void {
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
       'import vinext from "../packages/vinext/src/index";',
+      ...(cacheConfig
+        ? ['import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter";']
+        : []),
       "",
       "export default defineConfig({",
-      `  plugins: [vinext({ prerender: ${prerenderConfig} }), cloudflare()],`,
+      `  plugins: [vinext({ prerender: ${prerenderConfig}${cacheConfig ? `, cache: ${cacheConfig}` : ""} }), cloudflare()],`,
       "});",
       "",
     ].join("\n"),
@@ -97,6 +101,7 @@ describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
     runPrerenderMock.mockClear();
+    vi.mocked(execFileSync).mockClear();
   });
 
   afterEach(() => {
@@ -110,6 +115,12 @@ describe("deploy prerender config wiring", () => {
     await deploy({ root: tmpDir, skipBuild: true });
 
     expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
+      }),
+    ).toBe(false);
   });
 
   it("runs prerender during deploy when vinext config uses routes star", async () => {
@@ -147,5 +158,71 @@ describe("deploy prerender config wiring", () => {
     await deploy({ root: tmpDir, skipBuild: true });
 
     expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+  });
+
+  it("uploads prerendered App Router artifacts to KV only when configured in Vite", async () => {
+    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    runPrerenderMock.mockImplementationOnce(async () => {
+      writeFile(
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-1",
+          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+        }),
+      );
+      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
+      writeFile("dist/server/prerendered-routes/about.rsc", "flight");
+      return { routes: [] };
+    });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    const calls = vi.mocked(execFileSync).mock.calls;
+    const kvBulkCall = calls.find(([, args]) => {
+      const wranglerArgs = args as string[];
+      return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
+    });
+    expect(kvBulkCall?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "kv",
+      "bulk",
+      "put",
+      expect.stringContaining("prerender-kv-0.json"),
+      "--binding",
+      "MY_KV",
+      "--remote",
+    ]);
+    expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("wrangler"), "deploy"]);
+  });
+
+  it("continues deploy when configured KV prerender upload fails", async () => {
+    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    runPrerenderMock.mockImplementationOnce(async () => {
+      writeFile(
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-1",
+          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+        }),
+      );
+      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
+      return { routes: [] };
+    });
+    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+      const wranglerArgs = args as string[];
+      if (wranglerArgs.includes("kv") && wranglerArgs.includes("bulk")) {
+        throw new Error("kv upload failed");
+      }
+      return "Published app\n  https://app.example.workers.dev\n";
+    }) as typeof execFileSync);
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(vi.mocked(execFileSync).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
   });
 });

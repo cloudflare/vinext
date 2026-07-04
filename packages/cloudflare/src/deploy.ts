@@ -41,8 +41,7 @@ import {
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
-import { buildPrerenderKVPairs } from "./prerender-kv-populate.js";
-import type { KVBulkPair } from "./kv-bulk.js";
+import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -215,6 +214,8 @@ async function populateKVCacheFromPrerenderedArtifacts(
   buildEnv: string | undefined,
   wranglerEnv: string | undefined,
 ): Promise<void> {
+  if (!viteConfigHasCacheAdapter(root)) return;
+
   const vite = await loadProjectViteApi(root);
   const cacheConfig = await withCloudflareEnv(buildEnv, () =>
     loadVinextCacheConfigFromViteConfig(vite, root),
