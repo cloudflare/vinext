@@ -30,18 +30,18 @@ export const revalidate = 300;
 
 const STATS = [
   {
-    value: "Up to 4×",
+    value: "Up to 2×",
     label: "faster production builds",
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
-    value: "~50%",
+    value: "~32%",
     label: "smaller client bundles",
     detail:
-      "168.9 KB → 72.9 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+      "185 KB → 126 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
-    value: "94%",
+    value: "92%",
     label: "of the Next.js 16 API surface",
     detail:
       "App Router, Pages Router, RSC, server actions, ISR, middleware, route handlers. Coverage and gaps tracked openly.",
