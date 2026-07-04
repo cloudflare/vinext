@@ -224,11 +224,11 @@ function isMissingWorkerVersionUploadError(error: unknown): boolean {
   return /cannot upload a new version of a Worker that does not yet exist/i.test(errorText(error));
 }
 
-function withInitialDeployRequiredMessage(error: unknown): Error {
+function withInitialDeployRequiredMessage(): Error {
   const message =
     "CDN pre-warm needs an existing Cloudflare Worker before it can upload a new Worker version. " +
     "Run `vinext-cloudflare deploy` once without `--warm-cdn-cache` to create the Worker, then rerun your pre-warm deploy.";
-  return error instanceof Error ? new Error(message, { cause: error }) : new Error(message);
+  return new Error(message);
 }
 
 function parseDeploymentVersions(value: unknown): WranglerVersionTraffic[] {
@@ -270,7 +270,7 @@ export function runWranglerVersionUpload(
     return parseWranglerVersionUploadOutput(runWranglerCommand(root, args, execute));
   } catch (error) {
     if (isMissingWorkerVersionUploadError(error)) {
-      throw withInitialDeployRequiredMessage(error);
+      throw withInitialDeployRequiredMessage();
     }
     throw error;
   }

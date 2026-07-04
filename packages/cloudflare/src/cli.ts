@@ -75,7 +75,7 @@ if (command === "--help" || command === "-h" || !command) {
 switch (command) {
   case "deploy":
     deployCommand().catch((error) => {
-      console.error(error);
+      console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     });
     break;
