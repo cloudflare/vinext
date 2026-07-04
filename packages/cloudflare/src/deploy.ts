@@ -14,12 +14,17 @@ import { createRequire } from "node:module";
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import {
+  DEFER_PRERENDER_PATH_MANIFEST_ENV,
+  emitPrerenderPathManifest,
+} from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import { loadNextConfig, resolveNextConfig } from "vinext/internal/config/next-config";
 import {
   formatVinextPrerenderLabel,
   loadVinextPrerenderConfigFromViteConfig,
+  loadVinextRouteRootConfigFromViteConfig,
   resolveVinextPrerenderDecision,
 } from "vinext/internal/config/prerender";
 import {
@@ -48,6 +53,7 @@ import {
   type WranglerVersionTraffic,
 } from "./version-deploy.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -60,6 +66,8 @@ export type DeployOptions = {
   env?: string;
   /** Custom project name for the Worker */
   name?: string;
+  /** Wrangler config path, relative to root unless absolute */
+  config?: string;
   /** Skip the build step (assume already built) */
   skipBuild?: boolean;
   /** Dry run — validate setup but don't build or deploy */
@@ -68,7 +76,7 @@ export type DeployOptions = {
   prerenderAll?: boolean;
   /** Maximum number of routes to prerender in parallel */
   prerenderConcurrency?: number;
-  /** Warm Cloudflare's CDN cache by requesting prerendered paths for the uploaded version */
+  /** Warm Cloudflare's CDN cache by requesting build-discovered paths for the uploaded version */
   warmCdnCache?: boolean;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
@@ -122,6 +130,7 @@ const deployArgOptions = {
   preview: { type: "boolean", default: false },
   env: { type: "string" },
   name: { type: "string" },
+  config: { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
   "prerender-all": { type: "boolean", default: false },
@@ -156,6 +165,7 @@ export function parseDeployArgs(args: string[]) {
     preview: values.preview,
     env: values.env?.trim() || undefined,
     name: values.name?.trim() || undefined,
+    config: values.config?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
     prerenderAll: values["prerender-all"],
@@ -249,8 +259,18 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   await withCloudflareEnv(env, async () => {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
+    const previousDeferPathManifest = process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV];
+    process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV] = "1";
+    try {
+      const builder = await createBuilder({ root: info.root });
+      await builder.buildApp();
+    } finally {
+      if (previousDeferPathManifest === undefined) {
+        delete process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV];
+      } else {
+        process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV] = previousDeferPathManifest;
+      }
+    }
   });
 }
 
@@ -269,10 +289,13 @@ export function validateWranglerEnvName(env: string): string {
 }
 
 export function buildWranglerDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
 ): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.config) {
+    args.push("--config", options.config);
+  }
   if (options.name) {
     args.push("--name", options.name);
   }
@@ -320,7 +343,7 @@ export function buildNodeCliInvocation(
 
 export function buildWranglerInvocation(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   nodeExecutable: string = process.execPath,
 ): { file: string; args: string[]; env: string | undefined } {
   const wranglerBin = resolveWranglerBin(root);
@@ -330,7 +353,7 @@ export function buildWranglerInvocation(
 
 export function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   execute: typeof execFileSync = execFileSync,
 ): string {
   const execOpts: ExecFileSyncOptions = {
@@ -372,6 +395,7 @@ export async function deployWithCdnWarmup(
     | "preview"
     | "env"
     | "name"
+    | "config"
     | "warmCdnConcurrency"
     | "warmCdnTimeout"
     | "warmCdnRetries"
@@ -379,7 +403,7 @@ export async function deployWithCdnWarmup(
   >,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
-  const wranglerConfig = parseWranglerConfig(root);
+  const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
@@ -474,14 +498,14 @@ export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | nu
 export function resolveCdnWarmupTargetUrl(
   root: string,
   deployedUrl: string | null,
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null;
 export function resolveCdnWarmupTargetUrl(
   root: string,
   deployedUrl: string | null,
-  options?: Pick<DeployOptions, "preview" | "env">,
+  options?: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null {
-  const config = parseWranglerConfig(root);
+  const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
   const customDomain = (env ? config?.env?.[env]?.customDomain : undefined) ?? config?.customDomain;
   if (customDomain) {
@@ -492,7 +516,7 @@ export function resolveCdnWarmupTargetUrl(
 
 function readWranglerDeploymentStatus(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
 ): WranglerDeploymentStatus | null {
   try {
     return runWranglerDeploymentStatus(root, options);
@@ -657,24 +681,31 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
+  const rawNextConfig = await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
+  const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
+
   // Step 5: Build
   const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
+    const routeRootConfig = await withCloudflareEnv(buildEnv, async () => {
+      const vite = await loadProjectViteApi(info.root);
+      return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
+    });
+    await emitPrerenderPathManifest({
+      root: info.root,
+      nextConfigOverride: nextConfig,
+      routeRootConfig,
+    });
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
-
-  let didRunPrerender = false;
 
   // Step 6a: prerender — render every discovered route into dist.
   // Triggered by --prerender-all, vinext({ prerender: true }), or automatically
   // when next.config.js sets `output: 'export'` (every route must be statically
   // exportable). The CLI flag wins when more than one trigger is present.
   {
-    const rawNextConfig = await loadNextConfig(info.root);
-    const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
-
     const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
     const vinextPrerenderConfig = shouldLoadVinextPrerenderConfig
       ? await withCloudflareEnv(buildEnv, async () => {
@@ -695,7 +726,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
         Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
       }
       await runPrerender({ root: info.root, concurrency: options.prerenderConcurrency });
-      didRunPrerender = true;
     }
   }
 
@@ -704,6 +734,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log();
     const tprResult = await runTPR({
       root,
+      config: options.config,
       coverage: Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
       limit: Math.max(1, options.tprLimit ?? 1000),
       window: Math.max(1, options.tprWindow ?? 24),
@@ -718,10 +749,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const wranglerOptions = {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
     name: options.name,
+    config: options.config,
   };
   let url: string;
 
-  if (options.warmCdnCache && (didRunPrerender || options.skipBuild)) {
+  if (options.warmCdnCache) {
     const warmPaths = readPrerenderWarmPaths(root, {
       includeFallbackShells: options.warmCdnIncludeFallbacks,
       strict: options.warmCdnStrict,
@@ -735,13 +767,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnStrict: options.warmCdnStrict,
       });
     } else {
-      console.log("\n  CDN warmup skipped: no prerendered paths found.");
+      console.log("\n  CDN warmup skipped: no build-discovered paths found.");
       url = runWranglerDeploy(root, wranglerOptions);
     }
   } else {
-    if (options.warmCdnCache) {
-      console.log("\n  CDN warmup skipped: prerender was not run during this deploy.");
-    }
     url = runWranglerDeploy(root, wranglerOptions);
   }
 

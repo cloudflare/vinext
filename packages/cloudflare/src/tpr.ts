@@ -35,6 +35,8 @@ import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 export type TPROptions = {
   /** Project root directory. */
   root: string;
+  /** Wrangler config path, relative to root unless absolute. */
+  config?: string;
   /** Traffic coverage percentage (0–100). Default: 90. */
   coverage: number;
   /** Hard cap on number of pages to pre-render. Default: 1000. */
@@ -94,7 +96,22 @@ export type WranglerEnvironmentConfig = {
  * Parse wrangler config (JSONC or TOML) to extract the fields TPR needs:
  * account_id, VINEXT_KV_CACHE KV namespace ID, and custom domain.
  */
-export function parseWranglerConfig(root: string): WranglerConfig | null {
+export function parseWranglerConfig(root: string, configPath?: string): WranglerConfig | null {
+  if (configPath) {
+    const filepath = path.resolve(root, configPath);
+    if (!fs.existsSync(filepath)) return null;
+    const content = fs.readFileSync(filepath, "utf-8");
+    if (filepath.endsWith(".toml")) {
+      return extractFromTOML(content);
+    }
+    try {
+      const json = JSON.parse(stripJsonCommentsAndTrailingCommas(content));
+      return extractFromJSON(json);
+    } catch {
+      return null;
+    }
+  }
+
   // Try JSONC / JSON first
   for (const filename of ["wrangler.jsonc", "wrangler.json"]) {
     const filepath = path.join(root, filename);
@@ -962,7 +979,7 @@ const DEFAULT_REVALIDATE_SECONDS = 3600;
  */
 export async function runTPR(options: TPROptions): Promise<TPRResult> {
   const startTime = Date.now();
-  const { root, coverage, limit, window: windowHours } = options;
+  const { root, config, coverage, limit, window: windowHours } = options;
 
   const skip = (reason: string): TPRResult => ({
     totalPaths: 0,
@@ -979,7 +996,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 2. Parse wrangler config ──────────────────────────────────
-  const wranglerConfig = parseWranglerConfig(root);
+  const wranglerConfig = parseWranglerConfig(root, config);
   if (!wranglerConfig) {
     return skip("could not parse wrangler config");
   }

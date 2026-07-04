@@ -110,6 +110,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "let __vinextCacheAdaptersRegistered = false;",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
+    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     "  if (__vinextCacheAdaptersRegistered) return;",
     "  __vinextCacheAdaptersRegistered = true;",
   );

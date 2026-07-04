@@ -16,6 +16,10 @@
 
 import vinext from "./index.js";
 import { runPrerender } from "./build/run-prerender.js";
+import {
+  DEFER_PRERENDER_PATH_MANIFEST_ENV,
+  emitPrerenderPathManifest,
+} from "./build/prerender-paths.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -54,10 +58,12 @@ import { generateRouteTypes } from "./typegen.js";
 import { normalizePathSeparators } from "./utils/path.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 import {
+  findVinextRouteRootConfigInPlugins,
   findVinextPrerenderConfigInPlugins,
   formatVinextPrerenderLabel,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
+  type VinextRouteRootConfig,
 } from "./config/prerender.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
@@ -229,13 +235,14 @@ function hasPagesDir(): boolean {
 type BuildViteConfigMetadata = {
   emptyOutDir?: boolean;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
+  routeRootConfig: VinextRouteRootConfig | null;
 };
 
 async function loadBuildViteConfigMetadata(
   vite: ViteModule,
   root: string,
 ): Promise<BuildViteConfigMetadata> {
-  if (!hasViteConfig(root)) return { prerenderConfig: null };
+  if (!hasViteConfig(root)) return { prerenderConfig: null, routeRootConfig: null };
 
   // Read the raw user config before the multi-environment build so
   // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
@@ -248,6 +255,7 @@ async function loadBuildViteConfigMetadata(
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+    routeRootConfig: findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
   };
 }
 
@@ -575,6 +583,8 @@ async function buildApp() {
   // build both work correctly.
   const isHybrid = isApp && hasPagesDir();
   const pagesClientAssetsBuildSession = isHybrid ? randomBytes(16).toString("hex") : null;
+  const previousDeferPathManifest = process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV];
+  process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV] = "1";
   if (pagesClientAssetsBuildSession) {
     process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
   }
@@ -651,6 +661,11 @@ async function buildApp() {
       });
     }
   } finally {
+    if (previousDeferPathManifest === undefined) {
+      delete process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV];
+    } else {
+      process.env[DEFER_PRERENDER_PATH_MANIFEST_ENV] = previousDeferPathManifest;
+    }
     if (pagesClientAssetsBuildSession) {
       clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
       if (
@@ -660,6 +675,12 @@ async function buildApp() {
       }
     }
   }
+
+  await emitPrerenderPathManifest({
+    root: normalizePathSeparators(process.cwd()),
+    nextConfigOverride: resolvedNextConfig,
+    routeRootConfig: buildConfigMetadata.routeRootConfig,
+  });
 
   if (outputMode === "standalone") {
     const standalone = emitStandaloneOutput({

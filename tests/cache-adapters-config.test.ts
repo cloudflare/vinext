@@ -85,6 +85,9 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("setDataCacheHandler(__vinextDataAdapterFactory(");
     expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
+    expect(code).toContain(
+      "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+    );
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
   });

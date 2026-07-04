@@ -47,6 +47,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("builds version upload args for an explicit Wrangler config", () => {
+    expect(buildWranglerVersionUploadArgs({ config: "dist/server/wrangler.json" })).toEqual({
+      args: ["versions", "upload", "--config", "dist/server/wrangler.json"],
+      env: undefined,
+    });
+  });
+
   it("builds non-interactive version deploy args for the uploaded version", () => {
     expect(
       buildWranglerVersionDeployArgs(
@@ -92,6 +99,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
   it("builds deployment status args for an explicit Worker name", () => {
     expect(buildWranglerDeploymentsStatusArgs({ name: "custom-worker" })).toEqual({
       args: ["deployments", "status", "--json", "--name", "custom-worker"],
+      env: undefined,
+    });
+  });
+
+  it("builds deployment status args for an explicit Wrangler config", () => {
+    expect(buildWranglerDeploymentsStatusArgs({ config: "dist/server/wrangler.json" })).toEqual({
+      args: ["deployments", "status", "--json", "--config", "dist/server/wrangler.json"],
       env: undefined,
     });
   });

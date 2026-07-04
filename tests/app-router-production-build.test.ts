@@ -129,7 +129,18 @@ describe("App Router Production build", () => {
     // silently never written for pure App Router apps.
     const buildIdPath = path.join(outDir, "server", "BUILD_ID");
     expect(fs.existsSync(buildIdPath)).toBe(true);
-    expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
+    const buildId = fs.readFileSync(buildIdPath, "utf-8").trim();
+    expect(buildId.length).toBeGreaterThan(0);
+
+    const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
+    expect(fs.existsSync(warmupManifestPath)).toBe(true);
+    const warmupManifest = JSON.parse(fs.readFileSync(warmupManifestPath, "utf-8")) as {
+      buildId?: string;
+      paths?: string[];
+    };
+    expect(warmupManifest.buildId).toBe(buildId);
+    expect(warmupManifest.paths).toContain("/");
+    expect(fs.existsSync(path.join(outDir, "server", "prerendered-routes"))).toBe(false);
   }, 30000);
 
   it("omits the browser server-action client when the app has no server actions", async () => {

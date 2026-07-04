@@ -1,6 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
 import {
+  PRERENDER_PATHS_MANIFEST,
+  type PrerenderPathManifest,
+} from "vinext/internal/build/prerender-paths";
+import {
   getPrerenderedConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
@@ -17,6 +21,8 @@ export type CdnWarmOptions = {
   strict?: boolean;
   fetchImpl?: typeof fetch;
 };
+
+export const DEFAULT_CDN_WARM_TIMEOUT_MS = 5_000;
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
@@ -42,14 +48,56 @@ function readBuiltBuildId(root: string): string | null {
   }
 }
 
+function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest | null {
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const manifest = parsed as PrerenderPathManifest;
+    if (!Array.isArray(manifest.paths)) return null;
+    return manifest;
+  } catch (error) {
+    console.warn(`[vinext] Failed to read prerender path manifest at ${manifestPath}:`, error);
+    return null;
+  }
+}
+
+function readPrerenderPathWarmPaths(root: string, options?: { strict?: boolean }): string[] | null {
+  const manifest = readPrerenderPathManifest(
+    path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
+  );
+  if (!manifest) return null;
+
+  const builtBuildId = readBuiltBuildId(root);
+  if (!manifest.buildId || !builtBuildId || manifest.buildId !== builtBuildId) {
+    const message =
+      "[vinext] CDN warmup skipped: prerender path manifest buildId does not match dist/server/BUILD_ID.";
+    if (options?.strict) throw new Error(message);
+    console.warn(message);
+    return [];
+  }
+
+  return manifest.paths.filter((pathname) => pathname.startsWith("/"));
+}
+
 export function readPrerenderWarmPaths(
   root: string,
   options?: { includeFallbackShells?: boolean; strict?: boolean },
 ): string[] {
+  const shouldPreferPrerenderManifest = options?.includeFallbackShells === true;
+  if (!shouldPreferPrerenderManifest) {
+    const pathManifestPaths = readPrerenderPathWarmPaths(root, options);
+    if (pathManifestPaths !== null) return pathManifestPaths;
+  }
+
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
   if (!manifest) {
+    if (shouldPreferPrerenderManifest) {
+      const pathManifestPaths = readPrerenderPathWarmPaths(root, options);
+      if (pathManifestPaths !== null) return pathManifestPaths;
+    }
     const message = "[vinext] CDN warmup skipped: prerender manifest not found.";
     if (options?.strict) throw new Error(message);
     return [];
@@ -173,7 +221,7 @@ async function runWithConcurrency<T, R>(
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
   const paths = options.paths;
   const concurrency = Math.max(1, options.concurrency ?? 10);
-  const timeoutMs = Math.max(1, options.timeoutMs ?? 30_000);
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const retries = Math.max(0, options.retries ?? 1);
   const fetchImpl = options.fetchImpl ?? fetch;
 
@@ -181,7 +229,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     return { total: 0, warmed: 0, failed: 0, failures: [] };
   }
 
-  console.log(`\n  Warming CDN cache for ${paths.length} prerendered path(s)...`);
+  console.log(`\n  Warming CDN cache for ${paths.length} build-discovered path(s)...`);
 
   const results = await runWithConcurrency(paths, concurrency, (pathname) =>
     warmOnePath(pathname, {

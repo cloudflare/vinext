@@ -26,9 +26,18 @@ export type VinextPrerenderDecision = ResolvedVinextPrerenderConfig & {
 // Custom metadata key attached to vinext's config plugin so fresh Vite config
 // loads can recover the normalized prerender option without re-parsing user code.
 export const VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY = "__vinextPrerenderConfig";
+export const VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY = "__vinextRouteRootConfig";
+
+export type VinextRouteRootConfig = {
+  appDir?: string;
+  disableAppRouter?: boolean;
+  rscOutDir?: string;
+  ssrOutDir?: string;
+};
 
 type VinextPrerenderConfigPlugin = {
   [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]?: ResolvedVinextPrerenderConfig | null;
+  [VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY]?: VinextRouteRootConfig | null;
 };
 
 type ViteConfigLoader = {
@@ -77,6 +86,23 @@ export function findVinextPrerenderConfigInPlugins(
   return null;
 }
 
+export function findVinextRouteRootConfigInPlugins(
+  plugins: PluginOption[] | undefined,
+): VinextRouteRootConfig | null {
+  const flattened: unknown[] = [];
+  flattenPluginOptions(plugins, flattened);
+
+  for (const plugin of flattened) {
+    if (!isUnknownRecord(plugin)) continue;
+    const routeRootConfig = (plugin as VinextPrerenderConfigPlugin)[
+      VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY
+    ];
+    if (routeRootConfig) return routeRootConfig;
+  }
+
+  return null;
+}
+
 export async function loadVinextPrerenderConfigFromViteConfig(
   vite: ViteConfigLoader,
   root: string,
@@ -87,6 +113,18 @@ export async function loadVinextPrerenderConfigFromViteConfig(
     root,
   );
   return findVinextPrerenderConfigInPlugins(loaded?.config.plugins);
+}
+
+export async function loadVinextRouteRootConfigFromViteConfig(
+  vite: ViteConfigLoader,
+  root: string,
+): Promise<VinextRouteRootConfig | null> {
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  return findVinextRouteRootConfigInPlugins(loaded?.config.plugins);
 }
 
 export function resolveVinextPrerenderDecision(options: {

@@ -236,6 +236,7 @@ import {
 import {
   normalizeVinextPrerenderConfig,
   VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY,
+  VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY,
   type VinextPrerenderConfig,
 } from "./config/prerender.js";
 
@@ -1141,6 +1142,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
   const draftModeSecret = randomUUID();
+  let prerenderPathManifestPromise: Promise<void> | null = null;
 
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -1249,6 +1251,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       appDir,
       pageExtensions: nextConfig.pageExtensions,
     });
+  }
+
+  async function emitBuildPathManifestOnce(): Promise<void> {
+    if (process.env.__VINEXT_DEFER_PRERENDER_PATH_MANIFEST === "1") return;
+    if (prerenderPathManifestPromise) return prerenderPathManifestPromise;
+
+    prerenderPathManifestPromise = (async () => {
+      const { emitPrerenderPathManifest } = await import("./build/prerender-paths.js");
+      await emitPrerenderPathManifest({
+        root,
+        nextConfigOverride: nextConfig,
+        appDir: hasAppDir ? appDir : null,
+        pagesDir: hasPagesDir ? pagesDir : null,
+        rscBundlePath: path.join(
+          path.resolve(root, options.rscOutDir ?? path.join("dist", "server")),
+          "index.js",
+        ),
+        pagesBundlePath: path.join(path.resolve(root, "dist", "server"), "entry.js"),
+      });
+    })().catch((error) => {
+      prerenderPathManifestPromise = null;
+      throw error;
+    });
+
+    return prerenderPathManifestPromise;
   }
 
   // Auto-register @vitejs/plugin-rsc when App Router is detected.
@@ -1558,6 +1585,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         string,
         unknown
       >),
+      ...({
+        [VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY]: {
+          appDir: options.appDir,
+          disableAppRouter: options.disableAppRouter,
+          rscOutDir: options.rscOutDir,
+          ssrOutDir: options.ssrOutDir,
+        },
+      } as Record<string, unknown>),
 
       async config(config, env) {
         isServeCommand = env.command === "serve";
@@ -6012,6 +6047,17 @@ export const loadServerActionClient = ${
           );
         }
         return Promise.resolve();
+      },
+    },
+    {
+      name: "vinext:prerender-path-manifest",
+      apply: "build",
+      enforce: "post",
+      buildApp: {
+        order: "post",
+        async handler() {
+          await emitBuildPathManifestOnce();
+        },
       },
     },
     {

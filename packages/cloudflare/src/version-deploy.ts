@@ -100,10 +100,13 @@ export function parseWranglerVersionUploadOutput(output: string): WranglerVersio
 }
 
 export function buildWranglerVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name"> & { previewAlias?: string },
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config"> & { previewAlias?: string },
 ): WranglerVersionArgs {
   const args = ["versions", "upload"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.config) {
+    args.push("--config", options.config);
+  }
   if (options.name) {
     args.push("--name", options.name);
   }
@@ -118,7 +121,7 @@ export function buildWranglerVersionUploadArgs(
 
 export function buildWranglerVersionDeployArgs(
   versionTraffic: readonly WranglerVersionTraffic[],
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
 ): WranglerVersionArgs {
   const args = [
     "versions",
@@ -127,6 +130,9 @@ export function buildWranglerVersionDeployArgs(
     "--yes",
   ];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.config) {
+    args.push("--config", options.config);
+  }
   if (options.name) {
     args.push("--name", options.name);
   }
@@ -137,10 +143,13 @@ export function buildWranglerVersionDeployArgs(
 }
 
 export function buildWranglerDeploymentsStatusArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
 ): WranglerVersionArgs {
   const args = ["deployments", "status", "--json"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.config) {
+    args.push("--config", options.config);
+  }
   if (options.name) {
     args.push("--name", options.name);
   }
@@ -151,10 +160,13 @@ export function buildWranglerDeploymentsStatusArgs(
 }
 
 export function buildWranglerTriggersDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
 ): WranglerVersionArgs {
   const args = ["triggers", "deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
+  if (options.config) {
+    args.push("--config", options.config);
+  }
   if (options.name) {
     args.push("--name", options.name);
   }
@@ -212,7 +224,7 @@ export function parseWranglerDeploymentStatusOutput(output: string): WranglerDep
 
 export function runWranglerVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name"> & { previewAlias?: string },
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config"> & { previewAlias?: string },
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionUploadResult {
   const { args, env } = buildWranglerVersionUploadArgs(options);
@@ -227,7 +239,7 @@ export function runWranglerVersionUpload(
 export function runWranglerVersionDeploy(
   root: string,
   versionTraffic: readonly WranglerVersionTraffic[],
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
   const { args, env } = buildWranglerVersionDeployArgs(versionTraffic, options);
@@ -242,7 +254,7 @@ export function runWranglerVersionDeploy(
 
 export function runWranglerDeploymentStatus(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   execute: typeof execFileSync = execFileSync,
 ): WranglerDeploymentStatus {
   const { args, env } = buildWranglerDeploymentsStatusArgs(options);
@@ -256,7 +268,7 @@ export function runWranglerDeploymentStatus(
 
 export function runWranglerTriggersDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
   execute: typeof execFileSync = execFileSync,
 ): void {
   const { args, env } = buildWranglerTriggersDeployArgs(options);

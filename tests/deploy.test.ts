@@ -56,7 +56,7 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
-import { domainCandidates, parseWranglerConfig } from "../packages/cloudflare/src/tpr.js";
+import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -132,6 +132,13 @@ describe("buildWranglerDeployArgs", () => {
     expect(buildWranglerDeployArgs({ name: "custom-worker", env: "staging" })).toEqual({
       args: ["deploy", "--name", "custom-worker", "--env", "staging"],
       env: "staging",
+    });
+  });
+
+  it("passes through explicit Wrangler config paths", () => {
+    expect(buildWranglerDeployArgs({ config: "dist/server/wrangler.json" })).toEqual({
+      args: ["deploy", "--config", "dist/server/wrangler.json"],
+      env: undefined,
     });
   });
 
@@ -427,6 +434,12 @@ describe("parseDeployArgs", () => {
 
   it("parses --name=value form", () => {
     expect(parseDeployArgs(["--name=my-app"]).name).toBe("my-app");
+  });
+
+  it("parses --config with space-separated value", () => {
+    expect(parseDeployArgs(["--config", "dist/server/wrangler.json"]).config).toBe(
+      "dist/server/wrangler.json",
+    );
   });
 
   it("parses boolean flags", () => {
@@ -1145,6 +1158,7 @@ describe("readPagesRouterEntrySource", () => {
   it("exports internal deploy dependencies consumed by @vinext/cloudflare", () => {
     const exportsMap = readVinextPackageExports();
     expect(hasPackageExport(exportsMap, "./internal/build/run-prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/build/prerender-paths")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/dotenv")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/next-config")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/prerender")).toBe(true);
@@ -2830,6 +2844,41 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.name).toBe("my-worker");
+  });
+
+  it("reads an explicit Wrangler config path", () => {
+    writeFile(tmpDir, "dist/server/wrangler.json", JSON.stringify({ name: "generated-worker" }));
+    const config = parseWranglerConfig(tmpDir, "dist/server/wrangler.json");
+    expect(config?.name).toBe("generated-worker");
+  });
+
+  it("uses an explicit Wrangler config path during TPR", async () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "source-worker" }));
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "generated-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+
+    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = "token";
+    try {
+      const result = await runTPR({
+        root: tmpDir,
+        config: "dist/server/wrangler.json",
+        coverage: 90,
+        limit: 100,
+        window: 24,
+      });
+
+      expect(result.skipped).toBe("no VINEXT_KV_CACHE KV namespace configured");
+    } finally {
+      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
+    }
   });
 
   it("parses JSONC comments and trailing commas", () => {

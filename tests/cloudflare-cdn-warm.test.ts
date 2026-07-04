@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildWarmupUrl,
+  DEFAULT_CDN_WARM_TIMEOUT_MS,
   warmCdnCache,
   getWarmPathsFromPrerenderManifest,
   readPrerenderWarmPaths,
@@ -27,6 +28,10 @@ afterEach(() => {
 });
 
 describe("Cloudflare CDN warmup", () => {
+  it("uses a 5 second default request timeout", () => {
+    expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(5_000);
+  });
+
   it("reads warmable paths from the prerender manifest", () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -70,6 +75,74 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/docs/intro"]);
+  });
+
+  it("prefers the build-discovered prerender path manifest", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/", "/cached/intro", "not-a-path"],
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/old", status: "rendered", router: "app", revalidate: false, fallback: false },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro"]);
+  });
+
+  it("uses the full prerender manifest when fallback shell paths are requested", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/", "/cached/intro"],
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
+          {
+            route: "/blog/:slug",
+            path: "/blog/[slug]",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: true,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([
+      "/",
+      "/blog/[slug]",
+    ]);
+  });
+
+  it("skips warm paths when the path manifest build ID does not match the built Worker", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "old-build",
+        paths: ["/"],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "new-build\n");
+
+    expect(readPrerenderWarmPaths(tmpDir)).toEqual([]);
   });
 
   it("skips warm paths when the manifest build ID does not match the built Worker", () => {

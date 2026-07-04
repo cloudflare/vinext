@@ -89,6 +89,10 @@
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
     },
+    "./internal/build/prerender-paths": {
+      "types": "./dist/build/prerender-paths.d.ts",
+      "import": "./dist/build/prerender-paths.js"
+    },
     "./internal/config/dotenv": {
       "types": "./dist/config/dotenv.d.ts",
       "import": "./dist/config/dotenv.js"
