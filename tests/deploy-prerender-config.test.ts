@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { spawn, type ChildProcess } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
@@ -21,7 +23,17 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: vi.fn(() => "Published app\n  https://app.example.workers.dev\n"),
+    spawn: vi.fn(() => {
+      const child = new EventEmitter() as ChildProcess;
+      const childStdout = new PassThrough();
+      child.stdout = childStdout;
+      child.stderr = new PassThrough();
+      queueMicrotask(() => {
+        childStdout.write("Published app\n  https://app.example.workers.dev\n");
+        child.emit("close", 0, null);
+      });
+      return child;
+    }),
   };
 });
 
@@ -31,6 +43,18 @@ function writeFile(relativePath: string, content: string): void {
   const fullPath = path.join(tmpDir, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, "utf-8");
+}
+
+function createMockChildProcess(output: string, code: number): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const childStdout = new PassThrough();
+  child.stdout = childStdout;
+  child.stderr = new PassThrough();
+  queueMicrotask(() => {
+    if (output) childStdout.write(output);
+    child.emit("close", code, null);
+  });
+  return child;
 }
 
 function writeProject(prerenderConfig: string, cacheConfig?: string): void {
@@ -101,7 +125,7 @@ describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
     runPrerenderMock.mockClear();
-    vi.mocked(execFileSync).mockClear();
+    vi.mocked(spawn).mockClear();
   });
 
   afterEach(() => {
@@ -116,7 +140,7 @@ describe("deploy prerender config wiring", () => {
 
     expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
     expect(
-      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+      vi.mocked(spawn).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
         return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
       }),
@@ -178,7 +202,7 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true });
 
-    const calls = vi.mocked(execFileSync).mock.calls;
+    const calls = vi.mocked(spawn).mock.calls;
     const kvBulkCall = calls.find(([, args]) => {
       const wranglerArgs = args as string[];
       return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
@@ -209,18 +233,18 @@ describe("deploy prerender config wiring", () => {
       writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
       return { routes: [] };
     });
-    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+    vi.mocked(spawn).mockImplementation(((_file, args) => {
       const wranglerArgs = args as string[];
       if (wranglerArgs.includes("kv") && wranglerArgs.includes("bulk")) {
-        throw new Error("kv upload failed");
+        return createMockChildProcess("", 1);
       }
-      return "Published app\n  https://app.example.workers.dev\n";
-    }) as typeof execFileSync);
+      return createMockChildProcess("Published app\n  https://app.example.workers.dev\n", 0);
+    }) as typeof spawn);
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(vi.mocked(execFileSync).mock.calls.at(-1)?.[1]).toEqual([
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
       expect.stringContaining("wrangler"),
       "deploy",
     ]);

@@ -274,9 +274,12 @@ describe("App Router RSC cache-busting", () => {
   });
 
   it("exports the full Vary value for RSC-bearing App Router responses", () => {
+    // Mirrors Next.js App Router's base Vary header:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
     );
+    expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
   });
 
   it("applies the current compatibility ID to RSC response headers when available", () => {

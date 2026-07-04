@@ -1,21 +1,4 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
-
-/**
- * Absolute paths to the `@vinext/cloudflare` source surfaces bundled into
- * vinext.
- *
- * vinext consumes a few runtime helpers from `@vinext/cloudflare`
- * (`KVCacheHandler`, `CloudflareCdnCacheAdapter`, `ENTRY_PREFIX`). Keeping it as
- * an external runtime `dependency` created a cycle
- * (`vinext` -> `@vinext/cloudflare` -> `vinext`, the latter via its `peerDep`),
- * which forced changesets to force-major `@vinext/cloudflare` on every vinext
- * release. Bundling that surface lets `@vinext/cloudflare` stay a dev-only
- * dependency, so the install graph only points one way
- * (`@vinext/cloudflare` -> `vinext`).
- */
-const cloudflareSrc = fileURLToPath(new URL("../cloudflare/src", import.meta.url));
-const cloudflareCacheSrc = fileURLToPath(new URL("../cloudflare/src/cache", import.meta.url));
 
 /**
  * Keep third-party bare specifiers external — even when imported dynamically.
@@ -38,8 +21,7 @@ const cloudflareCacheSrc = fileURLToPath(new URL("../cloudflare/src/cache", impo
  * imports stay bare like static ones. `isResolved` short-circuits to keep the
  * resolved-path branch owned by `neverBundle`.
  */
-const isFirstParty = (id: string) =>
-  id === "vinext" || id.startsWith("vinext/") || id.startsWith("@vinext/");
+const isFirstParty = (id: string) => id === "vinext" || id.startsWith("vinext/");
 
 const externalizeBareThirdPartySpecifiers = (
   id: string,
@@ -52,10 +34,10 @@ const externalizeBareThirdPartySpecifiers = (
   if (id.startsWith(".") || id.startsWith("/") || id.startsWith("\0") || id.includes(":")) {
     return false;
   }
-  // First-party `vinext`/`@vinext/*` self-imports must keep resolving so the
+  // First-party `vinext` self-imports must keep resolving so the
   // shim modules are emitted relative and shared as a single instance across
   // Vite's separate RSC/SSR/client graphs (e.g. `instanceof
-  // ReadonlyURLSearchParams`). `@vinext/cloudflare/cache` is aliased to source.
+  // ReadonlyURLSearchParams`).
   if (isFirstParty(id)) return false;
   // Packages inlined into `dist` via `alwaysBundle` must keep resolving so they
   // get bundled rather than externalized.
@@ -76,16 +58,7 @@ export default defineConfig({
         !id.includes("am-i-vibing") &&
         !id.includes("process-ancestry"),
     },
-    // Bundle `@vinext/cloudflare` in by aliasing its internal/cache subpaths to source.
-    // The alias rewrites imports to local source so the small runtime helper
-    // surface remains bundled without creating a package dependency cycle.
     inputOptions: {
-      resolve: {
-        alias: {
-          "@vinext/cloudflare/internal": cloudflareSrc,
-          "@vinext/cloudflare/cache": cloudflareCacheSrc,
-        },
-      },
       external: externalizeBareThirdPartySpecifiers,
     },
     dts: true,

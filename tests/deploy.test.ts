@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   deploy,
   buildNodeCliInvocation,
@@ -88,6 +90,18 @@ function writeWranglerPackageForTest(
 
 function expectedWranglerBinForTest(dir: string): string {
   return fs.realpathSync(path.join(dir, "node_modules", "wrangler", "bin", "wrangler.js"));
+}
+
+function createMockChildProcess(output = "", code = 0): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const childStdout = new PassThrough();
+  child.stdout = childStdout;
+  child.stderr = new PassThrough();
+  queueMicrotask(() => {
+    if (output) childStdout.write(output);
+    child.emit("close", code, null);
+  });
+  return child;
 }
 
 function readVinextPackageExports(): Record<string, unknown> {
@@ -420,20 +434,50 @@ describe("resolveWranglerBin", () => {
     );
   });
 
-  it("executes Wrangler with shell disabled and literal metacharacters", () => {
+  it("executes Wrangler with shell disabled and literal metacharacters", async () => {
     writeWranglerPackage();
     const payload = "preview & whoami > vinext-pwned.txt & rem";
-    let observed: Parameters<typeof execFileSync> | undefined;
-    const execute = ((...args: Parameters<typeof execFileSync>) => {
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
       observed = args;
-      return "";
-    }) as typeof execFileSync;
+      const child = new EventEmitter() as ChildProcess;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    }) as typeof spawn;
 
-    runWranglerDeploy(tmpDir, { env: payload }, execute);
+    await runWranglerDeploy(tmpDir, { env: payload }, execute);
 
     expect(observed?.[0]).toBe(process.execPath);
     expect(observed?.[1]).toEqual([expectedWranglerBin(), "deploy", "--env", payload]);
     expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("streams Wrangler output before the process exits", async () => {
+    writeWranglerPackage();
+    const child = new EventEmitter() as ChildProcess;
+    const childStdout = new PassThrough();
+    const childStderr = new PassThrough();
+    child.stdout = childStdout;
+    child.stderr = childStderr;
+    const execute = vi.fn(() => child) as unknown as typeof spawn;
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const deployment = runWranglerDeploy(tmpDir, {}, execute);
+    childStdout.write("Uploading assets...\n");
+    childStderr.write("Uploaded 10/20 files\n");
+
+    expect(stdoutWrite).toHaveBeenCalledWith("Uploading assets...\n");
+    expect(stderrWrite).toHaveBeenCalledWith("Uploaded 10/20 files\n");
+
+    childStdout.write("https://app.example.workers.dev\n");
+    child.emit("close", 0, null);
+
+    await expect(deployment).resolves.toBe("https://app.example.workers.dev");
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
   });
 
   it("does not execute metacharacters in a real subprocess", () => {
@@ -456,20 +500,20 @@ describe("resolveWranglerBin", () => {
 });
 
 describe("runWranglerKVBulkPut", () => {
-  it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", () => {
+  it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
     writeWranglerPackageForTest(tmpDir);
-    let observed: Parameters<typeof execFileSync> | undefined;
+    let observed: Parameters<typeof spawn> | undefined;
     let bulkFilePath = "";
     let bulkFileContent: unknown;
-    const execute = ((...args: Parameters<typeof execFileSync>) => {
+    const execute = ((...args: Parameters<typeof spawn>) => {
       observed = args;
       const wranglerArgs = args[1] as string[];
       bulkFilePath = wranglerArgs[4] ?? "";
       bulkFileContent = JSON.parse(fs.readFileSync(bulkFilePath, "utf-8"));
-      return "";
-    }) as typeof execFileSync;
+      return createMockChildProcess();
+    }) as typeof spawn;
 
-    runWranglerKVBulkPut(
+    await runWranglerKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
@@ -513,16 +557,16 @@ describe("runWranglerKVBulkPut", () => {
     expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
   });
 
-  it("uploads prerender pairs in OpenNext-style chunks", () => {
+  it("uploads prerender pairs in OpenNext-style chunks", async () => {
     writeWranglerPackageForTest(tmpDir);
     const bulkFileContents: unknown[] = [];
-    const execute = ((...args: Parameters<typeof execFileSync>) => {
+    const execute = ((...args: Parameters<typeof spawn>) => {
       const wranglerArgs = args[1] as string[];
       bulkFileContents.push(JSON.parse(fs.readFileSync(wranglerArgs[4] ?? "", "utf-8")));
-      return "";
-    }) as typeof execFileSync;
+      return createMockChildProcess();
+    }) as typeof spawn;
 
-    runWranglerKVBulkPut(
+    await runWranglerKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
