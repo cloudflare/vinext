@@ -91,8 +91,8 @@ function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<
     : "This App Router project is wired for vinext and Tailwind CSS.";
   const buildOutput = isCloudflare ? "Worker-ready production output" : "production output";
   const deployCommand = warmCdnCache
-    ? "pnpm exec vinext-cloudflare deploy --warm-cdn-cache"
-    : "pnpm exec vinext-cloudflare deploy";
+    ? "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache"
+    : "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json";
   const actionCard = isCloudflare
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Deploy</h2>

@@ -193,8 +193,8 @@ export function addScripts(
 
     if (platform === "cloudflare" && !pkg.scripts["deploy:vinext"]) {
       pkg.scripts["deploy:vinext"] = options.warmCdnCache
-        ? "vinext-cloudflare deploy --warm-cdn-cache"
-        : "vinext-cloudflare deploy";
+        ? "vinext-cloudflare deploy --config dist/server/wrangler.json --warm-cdn-cache"
+        : "vinext-cloudflare deploy --config dist/server/wrangler.json";
       added.push("deploy:vinext");
     }
 
