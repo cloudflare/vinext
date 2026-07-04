@@ -240,13 +240,17 @@ export function runWranglerVersionDeploy(
   root: string,
   versionTraffic: readonly WranglerVersionTraffic[],
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
   const { args, env } = buildWranglerVersionDeployArgs(versionTraffic, options);
-  if (env) {
-    console.log(`\n  Deploying warmed Worker version to env: ${env}...`);
+  const target = env ? `env: ${env}` : "production";
+  if (phase === "stage") {
+    console.log(`\n  Staging uploaded Worker version at 0% for CDN warmup in ${target}...`);
+  } else if (phase === "promote-warmed") {
+    console.log(`\n  Promoting warmed Worker version to ${target}...`);
   } else {
-    console.log("\n  Deploying warmed Worker version to production...");
+    console.log(`\n  Promoting uploaded Worker version to ${target}...`);
   }
   const output = runWranglerCommand(root, args, execute);
   return { deployedUrl: parseWorkersDevUrl(output), output };

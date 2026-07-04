@@ -540,7 +540,7 @@ export async function deployWithCdnWarmup(
   }
 
   if (stagingTraffic) {
-    staged = runWranglerVersionDeploy(root, stagingTraffic, options);
+    staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
     try {
       applyTriggers();
     } catch (error) {
@@ -585,6 +585,7 @@ export async function deployWithCdnWarmup(
     root,
     [{ versionId: upload.versionId, percentage: 100 }],
     options,
+    warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
   );
   if (!warmedBeforePromotion) {
     try {

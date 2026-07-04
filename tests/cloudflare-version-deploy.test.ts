@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   buildWranglerDeploymentsStatusArgs,
   buildWranglerTriggersDeployArgs,
@@ -8,9 +8,14 @@ import {
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
+  runWranglerVersionDeploy,
 } from "../packages/cloudflare/src/version-deploy.js";
 
 describe("Cloudflare Wrangler version deployment helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("builds version upload args for production", () => {
     expect(buildWranglerVersionUploadArgs({})).toEqual({
       args: ["versions", "upload"],
@@ -87,6 +92,42 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       ],
       env: "staging",
     });
+  });
+
+  it("logs distinct labels for staged and promoted version deploys", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const execute = vi.fn(() => "Deployed version\nhttps://app.example.workers.dev\n");
+
+    runWranglerVersionDeploy(
+      "/tmp/app",
+      [
+        { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+        { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+      ],
+      {},
+      "stage",
+      execute as never,
+    );
+    runWranglerVersionDeploy(
+      "/tmp/app",
+      [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
+      {},
+      "promote-warmed",
+      execute as never,
+    );
+    runWranglerVersionDeploy(
+      "/tmp/app",
+      [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
+      { env: "staging" },
+      "promote-uploaded",
+      execute as never,
+    );
+
+    expect(log).toHaveBeenCalledWith(
+      "\n  Staging uploaded Worker version at 0% for CDN warmup in production...",
+    );
+    expect(log).toHaveBeenCalledWith("\n  Promoting warmed Worker version to production...");
+    expect(log).toHaveBeenCalledWith("\n  Promoting uploaded Worker version to env: staging...");
   });
 
   it("builds deployment status args for environments", () => {
