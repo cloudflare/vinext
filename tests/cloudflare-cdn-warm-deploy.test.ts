@@ -21,6 +21,12 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
+function formatFetchUrl(url: Parameters<typeof fetch>[0]): string {
+  if (url instanceof URL) return url.href;
+  if (typeof url === "string") return url;
+  return url.url;
+}
+
 describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
@@ -37,6 +43,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   });
 
   it("warms the production custom domain through a 0% staged version override", async () => {
+    const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
@@ -44,11 +51,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         custom_domains: ["app.example.com"],
       }),
     );
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("ok", { status: 200 });
+    });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
+        events.push("upload");
         return "Uploaded version 22222222-2222-4222-8222-222222222222\nhttps://preview.example.workers.dev\n";
       }
       if (args.includes("status")) {
+        events.push("status");
         return JSON.stringify({
           versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
         });
@@ -58,12 +71,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         args.includes("11111111-1111-4111-8111-111111111111@100%") &&
         args.includes("22222222-2222-4222-8222-222222222222@0%")
       ) {
+        events.push("stage");
         return "Staged version\nhttps://stable.example.workers.dev\n";
       }
       if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
         return "Deployed version\nhttps://stable.example.workers.dev\n";
       }
       if (args.includes("triggers")) {
+        events.push("triggers");
         return "Triggers deployed\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
@@ -116,15 +132,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       4,
       process.execPath,
-      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
+      expect.arrayContaining(["triggers", "deploy"]),
       expect.any(Object),
     );
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       5,
       process.execPath,
-      expect.arrayContaining(["triggers", "deploy"]),
+      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
       expect.any(Object),
     );
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "triggers",
+      "fetch:https://app.example.com/",
+      "fetch:https://app.example.com/about",
+      "promote",
+    ]);
   });
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {
@@ -176,6 +201,58 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
     }
+  });
+
+  it("applies triggers before post-promotion fallback warmup", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return new Response("ok", { status: 200 });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/"], {
+      warmCdnConcurrency: 1,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "promote",
+      "triggers",
+      "fetch:https://app.example.com/",
+    ]);
   });
 
   it("uses the explicit Worker name for version upload, override, promotion, and triggers", async () => {
@@ -243,6 +320,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
         return "Staged version\nhttps://stable.example.workers.dev\n";
       }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n";
+      }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -254,5 +334,40 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmCdnStrict: true,
       }),
     ).rejects.toThrow("may remain staged at 0%");
+  });
+
+  it("explains staged version cleanup when trigger deployment fails after staging", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        throw new Error("trigger deploy failed");
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+      }),
+    ).rejects.toThrow("may remain staged at 0%");
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -2832,6 +2832,36 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.name).toBe("my-worker");
   });
 
+  it("parses JSONC comments and trailing commas", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+        // Wrangler accepts JSONC comments and trailing commas.
+        "name": "my-worker",
+        "custom_domains": ["app.example.com",],
+        "kv_namespaces": [
+          { "binding": "VINEXT_KV_CACHE", "id": "abc123", },
+        ],
+        "env": {
+          "staging": {
+            "name": "my-worker-staging",
+            "custom_domains": ["staging.example.com",],
+          },
+        },
+      }`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.name).toBe("my-worker");
+    expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.kvNamespaceId).toBe("abc123");
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging",
+      customDomain: "staging.example.com",
+    });
+  });
+
   it("extracts custom domain from routes array (string form)", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
     const config = parseWranglerConfig(tmpDir);

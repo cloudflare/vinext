@@ -101,7 +101,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
     if (fs.existsSync(filepath)) {
       const content = fs.readFileSync(filepath, "utf-8");
       try {
-        const json = JSON.parse(stripJsonComments(content));
+        const json = JSON.parse(stripJsonTrailingCommas(stripJsonComments(content)));
         return extractFromJSON(json);
       } catch {
         continue;
@@ -184,6 +184,53 @@ function stripJsonComments(str: string): string {
       inMultiLine = true;
       i++;
       continue;
+    }
+
+    result += ch;
+  }
+
+  return result;
+}
+
+/**
+ * Strip JSONC trailing commas outside strings so valid Wrangler JSONC can be
+ * parsed with JSON.parse after comments are removed.
+ */
+function stripJsonTrailingCommas(str: string): string {
+  let result = "";
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+
+    if (escapeNext) {
+      result += ch;
+      escapeNext = false;
+      continue;
+    }
+
+    if (ch === "\\" && inString) {
+      result += ch;
+      escapeNext = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+
+    if (ch === "," && !inString) {
+      let nextIndex = i + 1;
+      while (nextIndex < str.length && /\s/.test(str[nextIndex]!)) {
+        nextIndex++;
+      }
+      const next = str[nextIndex];
+      if (next === "}" || next === "]") {
+        continue;
+      }
     }
 
     result += ch;

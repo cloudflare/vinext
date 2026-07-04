@@ -384,9 +384,21 @@ export async function deployWithCdnWarmup(
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let warmedBeforePromotion = false;
+  let triggersApplied = false;
+
+  function applyTriggers(): void {
+    if (triggersApplied) return;
+    runWranglerTriggersDeploy(root, options);
+    triggersApplied = true;
+  }
 
   if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options);
+    try {
+      applyTriggers();
+    } catch (error) {
+      throw withStagedVersionCleanupNote(error);
+    }
     const targetUrl = resolveCdnWarmupTargetUrl(root, staged.deployedUrl, options);
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
@@ -424,6 +436,7 @@ export async function deployWithCdnWarmup(
     options,
   );
   if (!warmedBeforePromotion) {
+    applyTriggers();
     const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl, options);
     if (targetUrl) {
       await warmCdnCache({
@@ -445,7 +458,6 @@ export async function deployWithCdnWarmup(
       );
     }
   }
-  runWranglerTriggersDeploy(root, options);
   return (
     deployed.deployedUrl ??
     staged?.deployedUrl ??
