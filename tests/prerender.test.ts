@@ -1604,11 +1604,14 @@ describe("assertNoFatalPrerenderRoutes (#1982)", () => {
 // a shared local prod server started by runPrerender().
 
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
+  let root: string;
   let outDir: string;
   let allResults: PrerenderRouteResult[];
 
   beforeAll(async () => {
-    const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
+    const built = await buildCloudflareAppFixture(CF_FIXTURE);
+    root = built.root;
+    const { rscBundlePath } = built;
     outDir = path.join(root, "dist", "server", "prerendered-routes");
 
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
@@ -1666,6 +1669,17 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
       expect(fs.existsSync(path.join(outDir, "about.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "blog/hello-world.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "blog/hello-world.rsc"))).toBe(true);
+    });
+
+    it("injects pregenerated concrete paths into the Worker entry", () => {
+      const code = fs.readFileSync(path.join(root, "dist", "server", "index.js"), "utf-8");
+      const match = code.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
+
+      expect(match).not.toBeNull();
+      expect(JSON.parse(match![1])).toContainEqual([
+        "/blog/:slug",
+        ["/blog/hello-world", "/blog/getting-started"],
+      ]);
     });
   });
 

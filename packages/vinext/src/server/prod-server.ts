@@ -156,6 +156,38 @@ export function resolveServerEntryImportUrl(entryPath: string): string {
   return `${href}?t=${mtime}`;
 }
 
+/**
+ * Acknowledge a server-entry rewrite that does not require evaluating a new
+ * module instance in this process.
+ *
+ * `runPrerender()` imports the built App Router entry to produce artifacts and
+ * then may rewrite that same file to inject Worker-only prerender metadata.
+ * In Node production startup, `seedMemoryCacheFromPrerender()` reads the same
+ * manifest and populates the runtime registry directly, so reusing the already
+ * imported module avoids a second RSC renderer without losing Node semantics.
+ *
+ * `expectedPreviousMtime` must be the file's mtime immediately before the
+ * rewrite. The bare URL is only updated when it still represents that exact
+ * build. If a real rebuild has happened in the meantime (the same path was
+ * already imported through a `?t=<mtime>` cache-bust URL), the bare URL still
+ * points at the older build in Node's ESM cache, so we leave its recorded mtime
+ * untouched and future imports continue to cache-bust.
+ */
+export function acknowledgeServerEntryMetadataRewrite(
+  entryPath: string,
+  expectedPreviousMtime: number,
+): void {
+  let canonicalEntryPath: string;
+  try {
+    canonicalEntryPath = fs.realpathSync.native(entryPath);
+  } catch {
+    canonicalEntryPath = entryPath;
+  }
+  const href = pathToFileURL(canonicalEntryPath).href;
+  if (bareServerEntryMtimes.get(href) !== expectedPreviousMtime) return;
+  bareServerEntryMtimes.set(href, fs.statSync(canonicalEntryPath).mtimeMs);
+}
+
 export function rememberCurrentServerEntryImportMtime(entryPath: string): void {
   const { href, mtime } = resolveCanonicalServerEntry(entryPath);
   bareServerEntryMtimes.set(href, mtime);

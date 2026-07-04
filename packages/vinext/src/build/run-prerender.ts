@@ -34,7 +34,7 @@ import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
-import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -361,6 +361,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       buildId: config.buildId,
       trailingSlash: config.trailingSlash,
     });
+    injectPregeneratedConcretePaths(root);
   } finally {
     progress.finish(rendered, skipped, errors);
   }
@@ -383,11 +384,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `Remove server-side data fetching (getServerSideProps, force-dynamic, revalidate) from these routes, ` +
         `or remove \`output: "export"\` from next.config.js.`,
     );
-  }
-
-  injectPregeneratedConcretePaths(root);
-  if (fs.existsSync(rscBundlePath)) {
-    rememberCurrentServerEntryImportMtime(rscBundlePath);
   }
 
   return {

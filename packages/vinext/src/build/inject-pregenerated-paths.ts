@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { readPrerenderManifest } from "../server/prerender-manifest.js";
+import {
+  buildPregeneratedConcretePathTable,
+  readPrerenderManifest,
+} from "../server/prerender-manifest.js";
+import { acknowledgeServerEntryMetadataRewrite } from "../server/prod-server.js";
 import { escapeRegExp } from "../utils/regex.js";
 
 declare global {
@@ -18,22 +22,28 @@ export function injectPregeneratedConcretePaths(root: string): void {
   const workerEntry = path.resolve(root, "dist", "server", "index.js");
   if (!fs.existsSync(workerEntry)) return;
 
-  let code = fs.readFileSync(workerEntry, "utf-8").replace(VINEXT_PREGEN_RE, "");
-  const manifest = readPrerenderManifest(
-    path.join(root, "dist", "server", "vinext-prerender.json"),
-  );
-  const table = manifest?.pregeneratedConcretePaths ?? [];
+  const originalCode = fs.readFileSync(workerEntry, "utf-8");
+  let code = originalCode.replace(VINEXT_PREGEN_RE, "");
+
+  const manifestPath = path.join(root, "dist", "server", "vinext-prerender.json");
+  const manifest = readPrerenderManifest(manifestPath);
+  const table =
+    manifest?.pregeneratedConcretePaths ?? buildPregeneratedConcretePathTable(manifest ?? {});
 
   if (table.length > 0) {
-    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
-    code =
+    const injection =
       `${VINEXT_PREGEN_START}\n` +
       `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n` +
-      `${VINEXT_PREGEN_END}\n` +
-      code;
+      `${VINEXT_PREGEN_END}\n`;
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
+    code = injection + code;
   } else {
     delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
   }
 
+  if (code === originalCode) return;
+
+  const beforeRewriteMtime = fs.statSync(workerEntry).mtimeMs;
   fs.writeFileSync(workerEntry, code);
+  acknowledgeServerEntryMetadataRewrite(workerEntry, beforeRewriteMtime);
 }

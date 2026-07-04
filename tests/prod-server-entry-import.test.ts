@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  acknowledgeServerEntryMetadataRewrite,
   importServerEntryModule,
   rememberCurrentServerEntryImportMtime,
   resolveServerEntryImportUrl,
@@ -110,6 +111,65 @@ describe("server entry import URL resolution", () => {
     // replaced by the original bare-URL cache entry.
     const thirdImportUrl = resolveServerEntryImportUrl(entryPath);
     expect(thirdImportUrl).toBe(secondBuildUrl);
+  });
+
+  it("keeps the bare URL after an acknowledged metadata-only rewrite", () => {
+    const dir = makeTmpDir();
+    const entryPath = path.join(dir, "entry.mjs");
+
+    fs.writeFileSync(entryPath, `export const state = { marker: "build-1" };\n`);
+    const firstBuildUrl = resolveServerEntryImportUrl(entryPath);
+    expect(firstBuildUrl).not.toContain("?");
+
+    const beforeRewriteMtime = fs.statSync(entryPath).mtimeMs;
+    fs.writeFileSync(
+      entryPath,
+      `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [];\nexport const state = { marker: "build-1" };\n`,
+    );
+    const bumped = new Date(Date.now() + 10_000);
+    fs.utimesSync(entryPath, bumped, bumped);
+
+    acknowledgeServerEntryMetadataRewrite(entryPath, beforeRewriteMtime);
+
+    expect(resolveServerEntryImportUrl(entryPath)).toBe(firstBuildUrl);
+  });
+
+  it("does not let an acknowledged metadata rewrite poison the cache-bust URL after a rebuild", async () => {
+    const dir = makeTmpDir();
+    const entryPath = path.join(dir, "entry.mjs");
+
+    fs.writeFileSync(entryPath, `export const marker = "build-1";\n`);
+    const firstBuildUrl = resolveServerEntryImportUrl(entryPath);
+    expect(firstBuildUrl).not.toContain("?");
+
+    // Rebuild to the same path with a guaranteed-different mtime.
+    fs.writeFileSync(entryPath, `export const marker = "build-2";\n`);
+    const bumped = new Date(Date.now() + 10_000);
+    fs.utimesSync(entryPath, bumped, bumped);
+    const rebuiltMtime = fs.statSync(entryPath).mtimeMs;
+
+    const secondBuildUrl = resolveServerEntryImportUrl(entryPath);
+    expect(secondBuildUrl).toBe(`${firstBuildUrl}?t=${rebuiltMtime}`);
+
+    // Simulate a metadata-only rewrite on top of the rebuilt file. Because the
+    // bare URL already points at build-1, acknowledgement must not make it look
+    // fresh.
+    const beforeRewriteMtime = fs.statSync(entryPath).mtimeMs;
+    fs.writeFileSync(
+      entryPath,
+      `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [];\nexport const marker = "build-2";\n`,
+    );
+    const rewriteBumped = new Date(Date.now() + 20_000);
+    fs.utimesSync(entryPath, rewriteBumped, rewriteBumped);
+
+    acknowledgeServerEntryMetadataRewrite(entryPath, beforeRewriteMtime);
+
+    const urlAfterRewrite = resolveServerEntryImportUrl(entryPath);
+    expect(urlAfterRewrite).not.toBe(firstBuildUrl);
+    expect(urlAfterRewrite).toContain("?");
+
+    const mod = await importServerEntryModule(entryPath);
+    expect(mod.marker).toBe("build-2");
   });
 
   it("can keep the bare URL after a same-process global-only entry injection", () => {

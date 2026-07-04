@@ -113,6 +113,70 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toBeUndefined();
   });
 
+  it("derives concrete paths from route entries when the manifest has no pregenerated table", () => {
+    writeFile(
+      "dist/server/index.js",
+      'export default { fetch() { return new Response("ok"); } };\n',
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "test",
+        routes: [
+          {
+            route: "/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/blog/post-a",
+            revalidate: 60,
+            fallback: false,
+          },
+          {
+            route: "/blog/:slug",
+            status: "rendered",
+            router: "app",
+            path: "/blog/[slug]",
+            revalidate: 60,
+            fallback: true,
+          },
+        ],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir);
+
+    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    const match = output.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
+    expect(match).not.toBeNull();
+    expect(JSON.parse(match![1])).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
+  });
+
+  it("does not rewrite the server bundle when there is no injection to add or strip", () => {
+    const sourceCode = 'export default { fetch() { return new Response("ok"); } };\n';
+    writeFile("dist/server/index.js", sourceCode);
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "test",
+        routes: [
+          {
+            route: "/about",
+            status: "skipped",
+            router: "app",
+            reason: "dynamic",
+          },
+        ],
+      }),
+    );
+
+    const entryPath = path.join(tmpDir, "dist/server/index.js");
+    const beforeMtime = fs.statSync(entryPath).mtimeMs;
+    injectPregeneratedConcretePaths(tmpDir);
+
+    expect(fs.readFileSync(entryPath, "utf-8")).toBe(sourceCode);
+    expect(fs.statSync(entryPath).mtimeMs).toBe(beforeMtime);
+  });
+
   it("hydrates the concrete-path registry from the generated Worker entry", async () => {
     const registryModuleUrl = pathToFileURL(
       path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
