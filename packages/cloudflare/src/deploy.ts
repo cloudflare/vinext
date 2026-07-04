@@ -436,7 +436,11 @@ export async function deployWithCdnWarmup(
     options,
   );
   if (!warmedBeforePromotion) {
-    applyTriggers();
+    try {
+      applyTriggers();
+    } catch (error) {
+      throw withPromotedVersionTriggerNote(error);
+    }
     const targetUrl = resolveCdnWarmupTargetUrl(root, deployed.deployedUrl, options);
     if (targetUrl) {
       await warmCdnCache({
@@ -562,6 +566,17 @@ function getStagedVersionCleanupNote(): string {
   return (
     "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
     "rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
+  );
+}
+
+function withPromotedVersionTriggerNote(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `${message} The uploaded version may already be promoted to 100%, but Worker triggers/routes may not be updated; ` +
+      "rerun deploy or `wrangler triggers deploy` after fixing the trigger error.",
+    {
+      cause: error,
+    },
   );
 }
 

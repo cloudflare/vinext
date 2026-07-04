@@ -101,7 +101,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
     if (fs.existsSync(filepath)) {
       const content = fs.readFileSync(filepath, "utf-8");
       try {
-        const json = JSON.parse(stripJsonTrailingCommas(stripJsonComments(content)));
+        const json = JSON.parse(stripJsonCommentsAndTrailingCommas(content));
         return extractFromJSON(json);
       } catch {
         continue;
@@ -120,10 +120,10 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
 }
 
 /**
- * Strip single-line (//) and multi-line comments from JSONC while
- * preserving strings that contain slashes.
+ * Strip single-line (//), multi-line comments, and trailing commas from JSONC
+ * while preserving strings that contain comment-like text or commas.
  */
-function stripJsonComments(str: string): string {
+function stripJsonCommentsAndTrailingCommas(str: string): string {
   let result = "";
   let inString = false;
   let inSingleLine = false;
@@ -186,57 +186,46 @@ function stripJsonComments(str: string): string {
       continue;
     }
 
+    if (!inString && ch === "," && isJsonTrailingComma(str, i + 1)) {
+      continue;
+    }
+
     result += ch;
   }
 
   return result;
 }
 
-/**
- * Strip JSONC trailing commas outside strings so valid Wrangler JSONC can be
- * parsed with JSON.parse after comments are removed.
- */
-function stripJsonTrailingCommas(str: string): string {
-  let result = "";
-  let inString = false;
-  let escapeNext = false;
-
-  for (let i = 0; i < str.length; i++) {
+function isJsonTrailingComma(str: string, start: number): boolean {
+  for (let i = start; i < str.length; i++) {
     const ch = str[i];
-
-    if (escapeNext) {
-      result += ch;
-      escapeNext = false;
+    const next = str[i + 1];
+    if (ch === undefined) return false;
+    if (/\s/.test(ch)) {
       continue;
     }
-
-    if (ch === "\\" && inString) {
-      result += ch;
-      escapeNext = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = !inString;
-      result += ch;
-      continue;
-    }
-
-    if (ch === "," && !inString) {
-      let nextIndex = i + 1;
-      while (nextIndex < str.length && /\s/.test(str[nextIndex]!)) {
-        nextIndex++;
+    if (ch === "/" && next === "/") {
+      i += 2;
+      while (i < str.length && str[i] !== "\n") {
+        i++;
       }
-      const next = str[nextIndex];
-      if (next === "}" || next === "]") {
-        continue;
-      }
+      continue;
     }
-
-    result += ch;
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < str.length) {
+        if (str[i] === "*" && str[i + 1] === "/") {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    return ch === "}" || ch === "]";
   }
 
-  return result;
+  return false;
 }
 
 function extractFromJSON(config: Record<string, unknown>): WranglerConfig {

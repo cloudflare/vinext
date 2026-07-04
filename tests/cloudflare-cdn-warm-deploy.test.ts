@@ -370,4 +370,42 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow("may remain staged at 0%");
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("explains promoted version state when fallback trigger deployment fails", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        throw new Error("trigger deploy failed");
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+      }),
+    ).rejects.toThrow("may already be promoted to 100%");
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
