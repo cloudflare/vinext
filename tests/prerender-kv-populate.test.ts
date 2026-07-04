@@ -93,7 +93,7 @@ describe("buildPrerenderKVPairs", () => {
     });
   });
 
-  it("omits KV expiration for static prerendered routes", () => {
+  it("omits KV expiration for static prerendered routes and skips zero revalidate", () => {
     writePrerenderFixture(
       {
         buildId: "build-static",
@@ -108,16 +108,16 @@ describe("buildPrerenderKVPairs", () => {
       },
     );
 
-    const { pairs } = buildPrerenderKVPairs(serverDir, { now: 2_000 });
-    expect(pairs).toHaveLength(2);
-    expect(pairs.map((pair) => pair.expiration_ttl)).toEqual([undefined, undefined]);
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, { now: 2_000 });
+    expect(routeCount).toBe(1);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).not.toHaveProperty("expiration_ttl");
+    expect(pairs[0].key).toBe("cache:app:build-static:/static:html");
 
-    for (const pair of pairs) {
-      const entry = JSON.parse(pair.value);
-      expect(entry.revalidateAt).toBeNull();
-      expect(entry.expireAt).toBeNull();
-      expect(entry.cacheControl).toBeUndefined();
-    }
+    const entry = JSON.parse(pairs[0].value);
+    expect(entry.revalidateAt).toBeNull();
+    expect(entry.expireAt).toBeNull();
+    expect(entry.cacheControl).toBeUndefined();
   });
 
   it("uses the shared pregenerated pathname normalizer for KV keys and tags", () => {

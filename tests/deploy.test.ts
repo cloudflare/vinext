@@ -2893,4 +2893,67 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.accountId).toBe("preview-account");
     expect(config?.kvNamespaceId).toBe("preview-id");
   });
+
+  it("does not use a top-level Wrangler KV namespace when a JSON env omits KV config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        account_id: "top-account",
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "production-id" }],
+        env: {
+          preview: {
+            account_id: "preview-account",
+          },
+        },
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.accountId).toBe("preview-account");
+    expect(config?.kvNamespaceId).toBeUndefined();
+  });
+
+  it("uses env-specific Wrangler TOML KV namespace config when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+account_id = "top-account"
+
+[[kv_namespaces]]
+binding = "MY_KV"
+id = "production-id"
+
+[env.preview]
+account_id = "preview-account"
+
+[[env.preview.kv_namespaces]]
+binding = "MY_KV"
+id = "preview-id"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview", kvBinding: "MY_KV" });
+    expect(config?.accountId).toBe("preview-account");
+    expect(config?.kvNamespaceId).toBe("preview-id");
+  });
+
+  it("does not use a top-level Wrangler KV namespace when a TOML env omits KV config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+account_id = "top-account"
+
+[[kv_namespaces]]
+binding = "VINEXT_KV_CACHE"
+id = "production-id"
+
+[env.preview]
+account_id = "preview-account"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.accountId).toBe("preview-account");
+    expect(config?.kvNamespaceId).toBeUndefined();
+  });
 });

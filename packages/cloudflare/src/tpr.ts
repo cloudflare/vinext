@@ -236,7 +236,10 @@ function extractFromJSON(
   }
 
   // KV namespace ID for the configured vinext data-cache binding.
-  const kvNamespaces = readConfigField<unknown>(config, envConfig, "kv_namespaces");
+  const kvNamespaces =
+    options.env && options.env !== "production"
+      ? envConfig?.kv_namespaces
+      : readConfigField<unknown>(config, envConfig, "kv_namespaces");
   if (Array.isArray(kvNamespaces)) {
     const vinextKV = kvNamespaces.find(
       (ns: Record<string, unknown>) =>
@@ -311,6 +314,42 @@ function cleanDomain(raw: string): string | null {
   return cleaned || null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function extractTomlArrayTableBlocks(content: string, tableName: string): string[] {
+  const escapedName = escapeRegExp(tableName);
+  const marker = new RegExp(`^\\s*\\[\\[${escapedName}\\]\\]\\s*$`, "m");
+  const blocks: string[] = [];
+  let rest = content;
+
+  while (true) {
+    const match = marker.exec(rest);
+    if (!match) break;
+
+    const blockStart = match.index + match[0].length;
+    const afterMarker = rest.slice(blockStart);
+    const nextSection = afterMarker.search(/^\s*\[/m);
+    blocks.push(nextSection === -1 ? afterMarker : afterMarker.slice(0, nextSection));
+    rest = nextSection === -1 ? "" : afterMarker.slice(nextSection);
+  }
+
+  return blocks;
+}
+
+function extractTomlTableContent(content: string, tableName: string): string | null {
+  const escapedName = escapeRegExp(tableName);
+  const marker = new RegExp(`^\\s*\\[${escapedName}\\]\\s*$`, "m");
+  const match = marker.exec(content);
+  if (!match) return null;
+
+  const tableStart = match.index + match[0].length;
+  const afterMarker = content.slice(tableStart);
+  const nextSection = afterMarker.search(/^\s*\[/m);
+  return nextSection === -1 ? afterMarker : afterMarker.slice(0, nextSection);
+}
+
 /**
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
@@ -321,16 +360,22 @@ function extractFromTOML(
 ): WranglerConfig {
   const result: WranglerConfig = {};
   const kvBinding = options.kvBinding ?? "VINEXT_KV_CACHE";
+  const envTable =
+    options.env && options.env !== "production"
+      ? extractTomlTableContent(content, `env.${options.env}`)
+      : null;
 
   // account_id = "..."
-  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
+  const accountMatch = (envTable ?? content).match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
-  // Look for [[kv_namespaces]] blocks
-  const kvBlocks = content.split(/\[\[kv_namespaces\]\]/);
-  for (let i = 1; i < kvBlocks.length; i++) {
-    const block = kvBlocks[i].split(/\[\[/)[0]; // Take until next section
+  const kvTable =
+    options.env && options.env !== "production"
+      ? `env.${options.env}.kv_namespaces`
+      : "kv_namespaces";
+  const kvBlocks = extractTomlArrayTableBlocks(content, kvTable);
+  for (const block of kvBlocks) {
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
     const idMatch = block.match(/\bid\s*=\s*"([^"]+)"/);
     if (
