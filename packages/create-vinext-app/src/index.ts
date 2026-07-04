@@ -19,6 +19,7 @@ type CloudflareInitOptions = {
   dataCache: InitDataCache;
   cdnCache: InitCdnCache;
   imageOptimization: InitImageOptimization;
+  warmCdnCache?: boolean;
 };
 
 type PlatformPromptOptions = {
@@ -68,7 +69,7 @@ const packageManagerFlags: Record<string, PackageManagerName> = {
   "--use-bun": "bun",
 };
 
-function getTemplateFiles(platform: InitPlatform): Record<string, string> {
+function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<string, string> {
   const isCloudflare = platform === "cloudflare";
   const apiMessage = isCloudflare ? "Hello from vinext on Cloudflare Workers" : "Hello from vinext";
   const title = isCloudflare ? "vinext on Cloudflare Workers" : "vinext app";
@@ -89,11 +90,14 @@ function getTemplateFiles(platform: InitPlatform): Record<string, string> {
     ? "This App Router project is wired for vinext, Tailwind CSS, and Cloudflare Workers."
     : "This App Router project is wired for vinext and Tailwind CSS.";
   const buildOutput = isCloudflare ? "Worker-ready production output" : "production output";
+  const deployCommand = warmCdnCache
+    ? "pnpm exec vinext-cloudflare deploy --warm-cdn-cache"
+    : "pnpm exec vinext-cloudflare deploy";
   const actionCard = isCloudflare
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Deploy</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with Wrangler.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm exec vinext-cloudflare deploy</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">${deployCommand}</code>
           </div>`
     : `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Start</h2>
@@ -282,6 +286,8 @@ function printHelp(): void {
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
+    --warm-cdn-cache             Add CDN pre-warming to the Cloudflare deploy script
+    --no-warm-cdn-cache          Do not add CDN pre-warming to the deploy script
     --use-npm                    Use npm
     --use-pnpm                   Use pnpm
     --use-yarn                   Use Yarn
@@ -432,11 +438,15 @@ function writeTemplate(
   root: string,
   appName: string,
   packageManager: PackageManagerName,
-  platform: InitPlatform,
+  initOptions: ResolvedInitOptions,
 ): void {
   fs.mkdirSync(root, { recursive: true });
   writePackageJson(root, appName, packageManager);
-  for (const [relativePath, content] of Object.entries(getTemplateFiles(platform))) {
+  const warmCdnCache =
+    initOptions.platform === "cloudflare" && Boolean(initOptions.cloudflare?.warmCdnCache);
+  for (const [relativePath, content] of Object.entries(
+    getTemplateFiles(initOptions.platform, warmCdnCache),
+  )) {
     writeFile(root, relativePath, content);
   }
 }
@@ -462,7 +472,7 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
   }
 
   console.log(`Creating a new vinext app in ${root}.\n`);
-  writeTemplate(root, appName, options.packageManager, options.initOptions.platform);
+  writeTemplate(root, appName, options.packageManager, options.initOptions);
 
   await init({
     root,

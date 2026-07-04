@@ -291,6 +291,16 @@ describe("addScripts", () => {
     expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
   });
 
+  it("adds the warm CDN cache flag to deploy:vinext when requested", () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const added = addScripts(tmpDir, 3001, "cloudflare", { warmCdnCache: true });
+
+    expect(added).toContain("deploy:vinext");
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy --warm-cdn-cache");
+  });
+
   it("uses custom port", () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -831,6 +841,22 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(pkg.scripts["build:vinext"]).toBe("vinext build");
     expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
+  });
+
+  it("adds a warm CDN cache deploy script when Cloudflare init opts in", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
+      },
+    });
+
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy --warm-cdn-cache");
   });
 
   it("does not add deploy:vinext for Node init", async () => {

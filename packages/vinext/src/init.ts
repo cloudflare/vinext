@@ -154,7 +154,12 @@ export default defineConfig({
  * Add vinext scripts to package.json without overwriting existing scripts.
  * Returns the list of script names that were added.
  */
-export function addScripts(root: string, port: number, platform: InitPlatform = "node"): string[] {
+export function addScripts(
+  root: string,
+  port: number,
+  platform: InitPlatform = "node",
+  options: { warmCdnCache?: boolean } = {},
+): string[] {
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
 
@@ -187,7 +192,9 @@ export function addScripts(root: string, port: number, platform: InitPlatform = 
     }
 
     if (platform === "cloudflare" && !pkg.scripts["deploy:vinext"]) {
-      pkg.scripts["deploy:vinext"] = "vinext-cloudflare deploy";
+      pkg.scripts["deploy:vinext"] = options.warmCdnCache
+        ? "vinext-cloudflare deploy --warm-cdn-cache"
+        : "vinext-cloudflare deploy";
       added.push("deploy:vinext");
     }
 
@@ -557,7 +564,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 3: Add scripts ────────────────────────────────────────────────
 
-  const addedScripts = addScripts(root, port, platform);
+  const addedScripts = addScripts(root, port, platform, {
+    warmCdnCache: options.cloudflare?.warmCdnCache,
+  });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
 

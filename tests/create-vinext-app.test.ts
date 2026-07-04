@@ -34,6 +34,17 @@ const cloudflareInitOptions: ResolvedInitOptions = {
   },
 };
 
+const warmCloudflareInitOptions: ResolvedInitOptions = {
+  platform: "cloudflare",
+  prerender: false,
+  cloudflare: {
+    dataCache: "kv",
+    cdnCache: "workers-cache",
+    imageOptimization: "cloudflare-images",
+    warmCdnCache: true,
+  },
+};
+
 const nodeInitOptions: ResolvedInitOptions = {
   platform: "node",
   prerender: false,
@@ -109,6 +120,26 @@ describe("createVinextApp", () => {
       "@cloudflare/vite-plugin": "latest",
       wrangler: "latest",
     });
+  });
+
+  it("shows the warm CDN cache deploy command when Cloudflare init opts in", async () => {
+    const appPath = path.join(tmpDir, "warm-app");
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "npm",
+        install: false,
+        git: false,
+        initOptions: warmCloudflareInitOptions,
+      }),
+    );
+
+    expect(readFile(appPath, "app/page.tsx")).toContain(
+      "pnpm exec vinext-cloudflare deploy --warm-cdn-cache",
+    );
+    const pkg = readPkg(appPath);
+    expect(pkg.scripts?.["deploy:vinext"]).toBe("vinext-cloudflare deploy --warm-cdn-cache");
   });
 
   it("uses the selected package manager through the shared init install path", async () => {

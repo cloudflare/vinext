@@ -956,6 +956,8 @@ function printHelp(cmd?: string) {
     --platform <target>  Deployment target: cloudflare or node
     --prerender          Configure vinext build to pre-render all static routes
                          (default: prompt, with No selected by default)
+    --warm-cdn-cache     Add --warm-cdn-cache to the Cloudflare deploy script
+                         (Workers Cache CDN only, default: prompt with No)
     --cdn-cache <type>   Cloudflare CDN cache: workers-cache or data-cache
                          (default: workers-cache)
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
@@ -973,6 +975,8 @@ function printHelp(cmd?: string) {
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images
     vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
+    vinext init --warm-cdn-cache
+                                Add CDN pre-warming to deploy:vinext
     vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
