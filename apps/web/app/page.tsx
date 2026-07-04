@@ -35,10 +35,10 @@ const STATS = [
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
   },
   {
-    value: "~32%",
+    value: "~33%",
     label: "smaller client bundles",
     detail:
-      "185 KB → 126 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+      "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
     value: "92%",
