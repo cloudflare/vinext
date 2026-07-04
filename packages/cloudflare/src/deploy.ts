@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { runPrerender } from "vinext/internal/build/run-prerender";
@@ -271,15 +271,14 @@ export function buildWranglerInvocation(
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
 }
 
-export function runWranglerDeploy(
+export async function runWranglerDeploy(
   root: string,
   options: Pick<DeployOptions, "preview" | "env">,
-  execute: typeof execFileSync = execFileSync,
-): string {
-  const execOpts: ExecFileSyncOptions = {
+  execute: typeof spawn = spawn,
+): Promise<string> {
+  const spawnOptions: SpawnOptions = {
     cwd: root,
-    stdio: "pipe",
-    encoding: "utf-8",
+    stdio: ["inherit", "pipe", "pipe"],
     shell: false,
   };
 
@@ -291,19 +290,37 @@ export function runWranglerDeploy(
     console.log("\n  Deploying to production...");
   }
 
-  const output = execute(file, args, execOpts) as string;
+  const child = execute(file, args, spawnOptions);
+  let output = "";
+
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stdout.write(text);
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stderr.write(text);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      const exitReason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+      reject(new Error(`Wrangler deploy failed with ${exitReason}.`));
+    });
+  });
 
   // Parse the deployed URL from wrangler output
   // Wrangler prints: "Published <name> (version_id)\n  https://<name>.<subdomain>.workers.dev"
   const urlMatch = output.match(/https:\/\/[^\s]+\.workers\.dev[^\s]*/);
   const deployedUrl = urlMatch ? urlMatch[0] : null;
-
-  // Also print raw output for transparency
-  if (output.trim()) {
-    for (const line of output.trim().split("\n")) {
-      console.log(`  ${line}`);
-    }
-  }
 
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
@@ -440,7 +457,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
-  const url = runWranglerDeploy(root, {
+  const url = await runWranglerDeploy(root, {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
   });
 

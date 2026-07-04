@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcess } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
@@ -20,7 +23,17 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: vi.fn(() => "Published app\n  https://app.example.workers.dev\n"),
+    spawn: vi.fn(() => {
+      const child = new EventEmitter() as ChildProcess;
+      const childStdout = new PassThrough();
+      child.stdout = childStdout;
+      child.stderr = new PassThrough();
+      queueMicrotask(() => {
+        childStdout.write("Published app\n  https://app.example.workers.dev\n");
+        child.emit("close", 0, null);
+      });
+      return child;
+    }),
   };
 });
 
