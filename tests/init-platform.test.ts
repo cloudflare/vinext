@@ -237,16 +237,16 @@ describe("warm CDN cache init choice", () => {
     );
   });
 
-  it("defaults non-interactive and agent environments to disabled", async () => {
+  it("defaults non-interactive and agent environments to enabled", async () => {
     await expect(resolveInitWarmCdnCache([], { env: {}, isInteractive: false })).resolves.toBe(
-      false,
+      true,
     );
     await expect(
       resolveInitWarmCdnCache([], { env: { CODEX_THREAD_ID: "test" }, isInteractive: true }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
   });
 
-  it("defaults the interactive prompt to No", async () => {
+  it("defaults the interactive prompt to Yes", async () => {
     const prompts: string[] = [];
     const output = new PassThrough();
     await expect(
@@ -259,8 +259,8 @@ describe("warm CDN cache init choice", () => {
           return "";
         },
       }),
-    ).resolves.toBe(false);
-    expect(prompts).toEqual(["  Pre-warm Workers Cache during deploy? [y/N]: "]);
+    ).resolves.toBe(true);
+    expect(prompts).toEqual(["  Pre-warm Workers Cache during deploy? [Y/n]: "]);
     expect(output.read()?.toString()).toBe("\n");
   });
 });
@@ -324,6 +324,19 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
+  it("defaults Cloudflare Workers Cache init to CDN pre-warming", async () => {
+    await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
+      platform: "cloudflare",
+      prerender: false,
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
+      },
+    });
+  });
+
   it("shares the full vinext init option selection flow", async () => {
     await expect(
       resolveInitOptions(
@@ -350,7 +363,7 @@ describe("resolveInitOptions", () => {
 
   it("asks whether to pre-warm Workers Cache after the prerender prompt", async () => {
     const prompts: string[] = [];
-    const answers = ["", "", "", "n", "y"];
+    const answers = ["", "", "", "n", ""];
 
     await expect(
       resolveInitOptions(["--platform=cloudflare"], {
@@ -377,7 +390,7 @@ describe("resolveInitOptions", () => {
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? [y/N]: ",
-      "  Pre-warm Workers Cache during deploy? [y/N]: ",
+      "  Pre-warm Workers Cache during deploy? [Y/n]: ",
     ]);
   });
 

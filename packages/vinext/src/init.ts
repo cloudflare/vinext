@@ -565,7 +565,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // ── Step 3: Add scripts ────────────────────────────────────────────────
 
   const addedScripts = addScripts(root, port, platform, {
-    warmCdnCache: options.cloudflare?.warmCdnCache,
+    warmCdnCache:
+      options.cloudflare?.warmCdnCache ?? options.cloudflare?.cdnCache === "workers-cache",
   });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────

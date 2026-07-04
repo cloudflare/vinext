@@ -443,7 +443,8 @@ function writeTemplate(
   fs.mkdirSync(root, { recursive: true });
   writePackageJson(root, appName, packageManager);
   const warmCdnCache =
-    initOptions.platform === "cloudflare" && Boolean(initOptions.cloudflare?.warmCdnCache);
+    initOptions.platform === "cloudflare" &&
+    (initOptions.cloudflare?.warmCdnCache ?? initOptions.cloudflare?.cdnCache === "workers-cache");
   for (const [relativePath, content] of Object.entries(
     getTemplateFiles(initOptions.platform, warmCdnCache),
   )) {

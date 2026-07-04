@@ -41,7 +41,6 @@ const warmCloudflareInitOptions: ResolvedInitOptions = {
     dataCache: "kv",
     cdnCache: "workers-cache",
     imageOptimization: "cloudflare-images",
-    warmCdnCache: true,
   },
 };
 
@@ -122,7 +121,7 @@ describe("createVinextApp", () => {
     });
   });
 
-  it("shows the warm CDN cache deploy command when Cloudflare init opts in", async () => {
+  it("shows the warm CDN cache deploy command by default for Workers Cache init", async () => {
     const appPath = path.join(tmpDir, "warm-app");
 
     await withQuietConsole(() =>

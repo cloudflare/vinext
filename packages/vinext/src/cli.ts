@@ -957,7 +957,7 @@ function printHelp(cmd?: string) {
     --prerender          Configure vinext build to pre-render all static routes
                          (default: prompt, with No selected by default)
     --warm-cdn-cache     Add --warm-cdn-cache to the Cloudflare deploy script
-                         (Workers Cache CDN only, default: prompt with No)
+                         (Workers Cache CDN only, default: prompt with Yes)
     --cdn-cache <type>   Cloudflare CDN cache: workers-cache or data-cache
                          (default: workers-cache)
     --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
