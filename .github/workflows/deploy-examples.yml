@@ -108,7 +108,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec vinext-cloudflare deploy --skip-build --config ${{ matrix.example.wrangler_config }} --warm-cdn-cache
+        run: vp exec vinext-cloudflare deploy --skip-build --config ${{ matrix.example.wrangler_config }} --experimental-warm-cdn-cache
 
       - name: Deploy Preview Version
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
