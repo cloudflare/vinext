@@ -1,5 +1,35 @@
 # vinext
 
+## 1.0.0-beta.0
+
+### Features
+
+- **Init:** mark CDN warmup flag experimental (#2533)
+- **Cloudflare:** warm prerendered paths before deploy (#2481)
+- **Cloudflare:** populate kv cache from prerendered routes (#2509)
+- **Create:** add create-vinext-app (#2483)
+- **Build:** require Vite 8 (#2486)
+- **Init:** default to Workers Cache on Cloudflare (#2482)
+
+### Bug Fixes
+
+- **Init:** use built Wrangler config for deploy script (#2532)
+- **App Router:** stop varying RSC responses by Accept (#2526)
+- **App Router:** preserve client state during action revalidation (#2517)
+- dev-server polish batch — HTML charset, client global polyfill, trailingSlash image endpoint (#2512)
+- **Check:** mark cache components partially supported (#2507)
+- **Config:** tsconfig paths — longest-prefix matching and stylesheet-scoped aliases (#2504)
+
+### Performance
+
+- **Build:** filter virtual module hooks (#2519)
+
+### Contributors
+
+- @camc314
+- @james-elicx
+- @southpolesteve
+
 ## 0.2.1
 
 ### Bug Fixes
