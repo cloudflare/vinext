@@ -374,6 +374,20 @@ function extractTomlRoutesTableDomain(content: string, tableName: string): strin
   return null;
 }
 
+function extractTomlCustomDomainsDomain(content: string): string | null {
+  const customDomainsMatch = content.match(/^custom_domains\s*=\s*\[([^\]]*)\]/m);
+  if (!customDomainsMatch) return null;
+
+  const domainPattern = /"([^"]+)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = domainPattern.exec(customDomainsMatch[1]))) {
+    if (!match[1].includes("workers.dev")) {
+      return cleanDomain(match[1]);
+    }
+  }
+  return null;
+}
+
 /**
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
@@ -415,8 +429,10 @@ function extractFromTOML(
   const domain =
     (envTable ? extractTomlRouteDomain(envTable) : null) ??
     (envName !== null ? extractTomlRoutesTableDomain(content, `env.${envName}.routes`) : null) ??
+    (envTable ? extractTomlCustomDomainsDomain(envTable) : null) ??
     extractTomlRouteDomain(rootTable) ??
-    extractTomlRoutesTableDomain(content, "routes");
+    extractTomlRoutesTableDomain(content, "routes") ??
+    extractTomlCustomDomainsDomain(rootTable);
   if (domain) result.customDomain = domain;
 
   return result;

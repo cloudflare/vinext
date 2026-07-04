@@ -3002,4 +3002,46 @@ pattern = "preview.example.com/*"
     const config = parseWranglerConfig(tmpDir, { env: "preview" });
     expect(config?.customDomain).toBe("preview.example.com");
   });
+
+  it("uses top-level TOML route config when an env omits route config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+route = "production.example.com/*"
+
+[env.preview]
+account_id = "preview-account"
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.customDomain).toBe("production.example.com");
+  });
+
+  it("extracts custom domain from TOML custom_domains array", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+custom_domains = ["shop.example.com"]
+`,
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("shop.example.com");
+  });
+
+  it("uses env-specific TOML custom_domains when deploying an env", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+custom_domains = ["production.example.com"]
+
+[env.preview]
+custom_domains = ["preview.example.com"]
+`,
+    );
+    const config = parseWranglerConfig(tmpDir, { env: "preview" });
+    expect(config?.customDomain).toBe("preview.example.com");
+  });
 });
