@@ -466,13 +466,14 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx) {
+export async function handleApiRoute(request, url, ctx, revalidateOrigin) {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,
     match,
     nextConfig: vinextConfig,
+    revalidateOrigin,
     request,
     url,
     reportRequestError(error, routePattern) {

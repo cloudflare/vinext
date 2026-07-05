@@ -12,6 +12,11 @@ interface Env {
   BENCHMARK_UPLOAD_TOKEN: string;
 }
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
 /** Map runner keys from the benchmark JSON to DB enum values. */
 const RUNNER_MAP: Record<string, string> = {
   nextjs: "nextjs",
@@ -19,7 +24,11 @@ const RUNNER_MAP: Record<string, string> = {
 };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
 
     // ─── API: Upload benchmark results ─────────────────────────────────
@@ -39,7 +48,7 @@ export default {
     }
 
     // ─── All other routes: delegate to vinext RSC handler ────────────────
-    return handler.fetch(request);
+    return handler.fetch(request, env, ctx);
   },
 };
 

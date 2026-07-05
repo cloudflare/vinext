@@ -16,7 +16,6 @@
  * never drift between dev and prod.
  */
 import type { IncomingMessage } from "node:http";
-import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import {
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -34,20 +33,58 @@ export type RevalidateOptions = {
   unstable_onlyGenerated?: boolean;
 };
 
+type NodeRevalidateRequest = {
+  socket: Pick<IncomingMessage["socket"], "localAddress" | "localPort"> & {
+    encrypted?: boolean;
+  };
+};
+
+function invalidUrlPathError(urlPath: unknown): Error {
+  return new Error(
+    `Invalid urlPath provided to revalidate(), must be a path e.g. /blog/post-1, received ${String(urlPath)}`,
+  );
+}
+
+function isAuthorityLikePath(urlPath: string): boolean {
+  const withoutUrlWhitespace = urlPath.replace(/[\t\n\r]/g, "");
+  return /^[/\\]{2}/.test(withoutUrlWhitespace);
+}
+
+const MAX_REVALIDATE_REDIRECTS = 5;
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+export function resolveNodeRevalidateOrigin(source: NodeRevalidateRequest): string {
+  const { localAddress, localPort } = source.socket;
+  if (!localAddress || !localPort) {
+    throw new Error("Invariant: missing local server address for res.revalidate()");
+  }
+
+  const hostname = localAddress.includes(":") ? `[${localAddress}]` : localAddress;
+  const protocol = source.socket.encrypted ? "https" : "http";
+  return `${protocol}://${hostname}:${localPort}`;
+}
+
 export async function performOnDemandRevalidate(
-  source: IncomingMessage | Headers,
+  trustedOrigin: string,
   urlPath: string,
   opts: RevalidateOptions = {},
 ): Promise<void> {
-  if (typeof urlPath !== "string" || !urlPath.startsWith("/")) {
-    throw new Error(
-      `Invalid urlPath provided to revalidate(), must be a path e.g. /blog/post-1, received ${urlPath}`,
-    );
+  if (typeof urlPath !== "string" || !urlPath.startsWith("/") || isAuthorityLikePath(urlPath)) {
+    throw invalidUrlPathError(urlPath);
   }
 
-  const proto = resolveRequestProtocol(source);
-  const host = resolveRequestHost(source, "localhost");
-  const target = new URL(urlPath, `${proto}://${host}`);
+  // `trustedOrigin` must come from server-owned state: the local listening
+  // socket on Node, or the platform-created Request URL on Workers. Never
+  // derive it from the raw Host header because this request carries the
+  // deployment-wide ISR revalidation secret.
+  const origin = new URL(trustedOrigin).origin;
+  let target = new URL(urlPath, origin);
+  if (target.origin !== origin) {
+    throw invalidUrlPathError(urlPath);
+  }
 
   const headers: Record<string, string> = {
     [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret(),
@@ -56,7 +93,23 @@ export async function performOnDemandRevalidate(
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
 
-  const res = await fetch(target, { method: "HEAD", headers });
+  let res: Response;
+  for (let redirectCount = 0; ; redirectCount++) {
+    res = await fetch(target, { method: "HEAD", headers, redirect: "manual" });
+    if (!isRedirectStatus(res.status)) break;
+
+    const location = res.headers.get("location");
+    if (location === null || redirectCount === MAX_REVALIDATE_REDIRECTS) break;
+
+    let redirectTarget: URL;
+    try {
+      redirectTarget = new URL(location, target);
+    } catch {
+      break;
+    }
+    if (redirectTarget.origin !== origin) break;
+    target = redirectTarget;
+  }
 
   // Success detection mirrors Next.js's api-resolver: a successful revalidate
   // can return a non-200 status (e.g. `notFound: true` yields 404). Accept when

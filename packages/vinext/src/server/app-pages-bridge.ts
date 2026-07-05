@@ -3,7 +3,12 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 
 export type PagesEntry = {
-  handleApiRoute?: (request: Request, url: string) => Promise<Response> | Response;
+  handleApiRoute?: (
+    request: Request,
+    url: string,
+    ctx?: unknown,
+    revalidateOrigin?: string,
+  ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   renderPage?: (
@@ -69,6 +74,7 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  revalidateOrigin?: string;
   url: URL;
 };
 
@@ -89,6 +95,7 @@ export async function renderPagesFallback(
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
+    revalidateOrigin,
     url,
   } = options;
   const {
@@ -133,7 +140,9 @@ export async function renderPagesFallback(
         return null;
       }
     }
-    const pagesApiResponse = await pagesEntry.handleApiRoute(pagesRequest, pagesUrl);
+    const pagesApiResponse = revalidateOrigin
+      ? await pagesEntry.handleApiRoute(pagesRequest, pagesUrl, undefined, revalidateOrigin)
+      : await pagesEntry.handleApiRoute(pagesRequest, pagesUrl);
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
       applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),

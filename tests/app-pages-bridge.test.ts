@@ -31,6 +31,32 @@ describe("renderPagesFallback", () => {
     getDraftModeCookieHeader: (): string | null | undefined => null,
   };
 
+  it("forwards a trusted revalidation origin to hybrid Pages API routes", async () => {
+    const handleApiRoute = vi.fn(() => new Response("ok"));
+
+    await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        pathname: "/api/revalidate",
+        request: new Request("http://attacker.example/api/revalidate"),
+        revalidateOrigin: "http://127.0.0.1:3000",
+        url: new URL("http://attacker.example/api/revalidate"),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({ handleApiRoute }),
+      },
+    );
+
+    expect(handleApiRoute).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/revalidate",
+      undefined,
+      "http://127.0.0.1:3000",
+    );
+  });
+
   it("returns null for RSC requests and does not call the Pages loader", async () => {
     const loadPagesEntry = vi.fn(() => ({}) as PagesEntry);
     const res = await renderPagesFallback(

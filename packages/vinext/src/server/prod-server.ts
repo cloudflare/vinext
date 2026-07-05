@@ -60,7 +60,7 @@ import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.j
 import { setPagesClientAssets } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
-import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
@@ -81,6 +81,7 @@ import {
   resolveRequestProtocol,
   resolveRequestHost as resolveHost,
 } from "./proxy-trust.js";
+import { resolveNodeRevalidateOrigin } from "./pages-revalidate.js";
 import {
   negotiateEncoding,
   parseAcceptedEncodings,
@@ -1037,8 +1038,9 @@ type WorkerAppRouterEntry = {
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
-function createNodeExecutionContext(): ExecutionContextLike {
+function createNodeExecutionContext(revalidateOrigin?: string): ExecutionContextLike {
   return {
+    revalidateOrigin,
     waitUntil(promise: Promise<unknown>) {
       // Node doesn't provide a Workers lifecycle, but we still attach a
       // rejection handler so background waitUntil work doesn't surface as an
@@ -1049,16 +1051,17 @@ function createNodeExecutionContext(): ExecutionContextLike {
   };
 }
 
-function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<Response> {
+function resolveAppRouterHandler(
+  entry: unknown,
+): (request: Request, ctx: ExecutionContextLike) => Promise<Response> {
   if (typeof entry === "function") {
-    return (request) => Promise.resolve(entry(request));
+    return (request, ctx) => Promise.resolve(entry(request, ctx));
   }
 
   if (entry && typeof entry === "object" && "fetch" in entry) {
     const workerEntry = entry as WorkerAppRouterEntry;
     if (typeof workerEntry.fetch === "function") {
-      return (request) =>
-        Promise.resolve(workerEntry.fetch(request, undefined, createNodeExecutionContext()));
+      return (request, ctx) => Promise.resolve(workerEntry.fetch(request, undefined, ctx));
     }
   }
 
@@ -1443,7 +1446,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
-      const response = await rscHandler(request);
+      const nodeContext = createNodeExecutionContext(resolveNodeRevalidateOrigin(req));
+      const response = await runWithExecutionContext(nodeContext, () =>
+        rscHandler(request, nodeContext),
+      );
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
       if (staticFileSignal) {
@@ -1875,7 +1881,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         handleApi:
           typeof handleApi === "function"
             ? (request: Request, apiUrl: string) =>
-                handleApi(request, apiUrl, createNodeExecutionContext())
+                handleApi(
+                  request,
+                  apiUrl,
+                  createNodeExecutionContext(),
+                  resolveNodeRevalidateOrigin(req),
+                )
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served

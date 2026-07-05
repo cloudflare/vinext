@@ -160,6 +160,18 @@ describe("runWithExecutionContext", () => {
     });
   });
 
+  it("preserves a trusted outer origin against a conflicting nested context", () => {
+    const outerCtx = { ...makeCtx(), revalidateOrigin: "http://127.0.0.1:3000" };
+    const innerCtx = { ...makeCtx(), revalidateOrigin: "https://attacker.example" };
+
+    void runWithExecutionContext(outerCtx, () => {
+      void runWithExecutionContext(innerCtx, () => {
+        const current = getRequestExecutionContext();
+        expect(current?.revalidateOrigin).toBe("http://127.0.0.1:3000");
+      });
+    });
+  });
+
   it("restores the outer ctx when nested inside a unified request scope", () => {
     const outerCtx = makeCtx();
     const innerCtx = makeCtx();
@@ -173,6 +185,19 @@ describe("runWithExecutionContext", () => {
         });
 
         expect(getRequestExecutionContext()).toBe(outerCtx);
+      });
+    });
+  });
+
+  it("preserves a trusted outer origin inside a unified request scope", () => {
+    const outerCtx = { ...makeCtx(), revalidateOrigin: "http://127.0.0.1:3000" };
+    const innerCtx = { ...makeCtx(), revalidateOrigin: "https://attacker.example" };
+
+    void runWithExecutionContext(outerCtx, () => {
+      void runWithRequestContext(createRequestContext(), () => {
+        void runWithExecutionContext(innerCtx, () => {
+          expect(getRequestExecutionContext()?.revalidateOrigin).toBe("http://127.0.0.1:3000");
+        });
       });
     });
   });

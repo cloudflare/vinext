@@ -94,6 +94,7 @@ type HandlePagesApiRouteOptions = {
   ctx?: ExecutionContextLike;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
+  revalidateOrigin?: string;
   request: Request;
   url: string;
   nextConfig?: {
@@ -191,6 +192,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     const { req, res, responsePromise } = createPagesReqRes({
       body,
       query,
+      revalidateOrigin: options.revalidateOrigin,
       request: options.request,
       url: options.url,
     });

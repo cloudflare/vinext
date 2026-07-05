@@ -267,6 +267,7 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  revalidateOrigin?: string;
   url: URL;
 };
 
@@ -493,6 +494,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
+  revalidateOrigin?: string,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -912,6 +914,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             pathname: resolvedUrl,
             pagesDataRequest,
             request,
+            revalidateOrigin,
             url,
           })) ?? null)
         : null;
@@ -1326,9 +1329,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
       : null;
 
-    const executionContext = isExecutionContextLike(ctx)
-      ? ctx
-      : (getRequestExecutionContext() ?? null);
+    const scopedExecutionContext = getRequestExecutionContext();
+    const executionContext = isExecutionContextLike(ctx) ? ctx : (scopedExecutionContext ?? null);
+    const revalidateOrigin =
+      executionContext?.revalidateOrigin ?? scopedExecutionContext?.revalidateOrigin;
     const headersContext = headersContextFromRequest(request, {
       draftModeSecret: options.draftModeSecret,
     });
@@ -1353,6 +1357,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
+              revalidateOrigin,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {

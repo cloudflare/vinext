@@ -39,6 +39,8 @@ import {
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /** Trusted application origin supplied by the Node production server. */
+  revalidateOrigin?: string;
   /**
    * Optional host-provided cache handle that some runtimes expose on the
    * execution context. Typed as `unknown` to keep this module runtime-agnostic;
@@ -79,6 +81,20 @@ function installOpenNextCloudflareContextBridge(): void {
 
 installOpenNextCloudflareContextBridge();
 
+function inheritTrustedContext(
+  ctx: ExecutionContextLike,
+  current: ExecutionContextLike | null | undefined,
+): ExecutionContextLike {
+  if (!current?.revalidateOrigin || ctx.revalidateOrigin === current.revalidateOrigin) return ctx;
+
+  return {
+    waitUntil: ctx.waitUntil.bind(ctx),
+    passThroughOnException: ctx.passThroughOnException?.bind(ctx),
+    cache: ctx.cache,
+    revalidateOrigin: current.revalidateOrigin,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -105,11 +121,12 @@ export function runWithExecutionContext<T>(
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   if (isInsideUnifiedScope()) {
+    const inheritedContext = inheritTrustedContext(ctx, getRequestContext().executionContext);
     return runWithUnifiedStateMutation((uCtx) => {
-      uCtx.executionContext = ctx;
+      uCtx.executionContext = inheritedContext;
     }, fn);
   }
-  return _als.run(ctx, fn);
+  return _als.run(inheritTrustedContext(ctx, _als.getStore()), fn);
 }
 
 /**
