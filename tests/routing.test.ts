@@ -63,6 +63,18 @@ function makeTestAppRoute(
   };
 }
 
+function makeTestPageRoute(pattern: string, patternParts: string[]): Route {
+  return {
+    pattern,
+    patternParts,
+    filePath: `/tmp/pages${pattern}.tsx`,
+    isDynamic: pattern.includes(":"),
+    params: patternParts
+      .filter((part) => part.startsWith(":"))
+      .map((part) => part.slice(1).replace(/[+*]$/, "")),
+  };
+}
+
 describe("pagesRouter - route discovery", () => {
   it("discovers pages from the fixture directory", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
@@ -180,6 +192,19 @@ describe("matchRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/posts/:id");
     expect(result!.params).toEqual({ id: "42" });
+  });
+
+  it("decodes percent-literal dynamic params exactly once", () => {
+    const routes = [
+      makeTestPageRoute("/blog/:id", ["blog", ":id"]),
+      makeTestPageRoute("/docs/:slug+", ["docs", ":slug+"]),
+    ];
+
+    expect(matchRoute("/blog/a%2520b", routes)?.params).toEqual({ id: "a%20b" });
+    expect(matchRoute("/blog/%2541", routes)?.params).toEqual({ id: "%41" });
+    expect(matchRoute("/docs/a%2520b/%2541", routes)?.params).toEqual({
+      slug: ["a%20b", "%41"],
+    });
   });
 
   it("preserves encoded slashes within a single static segment", () => {
@@ -1054,6 +1079,19 @@ describe("matchAppRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/blog/:slug");
     expect(result!.params).toEqual({ slug: "hello-world" });
+  });
+
+  it("decodes percent-literal dynamic params exactly once", () => {
+    const routes = [
+      makeTestAppRoute("/blog/:id", ["blog", ":id"]),
+      makeTestAppRoute("/docs/:slug+", ["docs", ":slug+"]),
+    ];
+
+    expect(matchAppRoute("/blog/a%2520b", routes)?.params).toEqual({ id: "a%20b" });
+    expect(matchAppRoute("/blog/%2541", routes)?.params).toEqual({ id: "%41" });
+    expect(matchAppRoute("/docs/a%2520b/%2541", routes)?.params).toEqual({
+      slug: ["a%20b", "%41"],
+    });
   });
 
   it("returns null for unmatched routes", async () => {

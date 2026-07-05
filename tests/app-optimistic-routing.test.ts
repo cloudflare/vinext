@@ -190,6 +190,47 @@ describe("App Router optimistic routing", () => {
     ).toBe("route:/blog/featured");
   });
 
+  it("decodes percent-literal dynamic route params exactly once", () => {
+    const routes = manifest([
+      route({
+        id: "route:/blog/:id",
+        isDynamic: true,
+        paramNames: ["id"],
+        pattern: "/blog/:id",
+        patternParts: ["blog", ":id"],
+      }),
+      route({
+        id: "route:/docs/:slug+",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/docs/:slug+",
+        patternParts: ["docs", ":slug+"],
+      }),
+    ]);
+
+    expect(
+      matchOptimisticRouteManifestRoute({
+        basePath: "",
+        href: "/blog/a%2520b",
+        routeManifest: routes,
+      })?.params,
+    ).toEqual({ id: "a%20b" });
+    expect(
+      matchOptimisticRouteManifestRoute({
+        basePath: "",
+        href: "/blog/%2541",
+        routeManifest: routes,
+      })?.params,
+    ).toEqual({ id: "%41" });
+    expect(
+      matchOptimisticRouteManifestRoute({
+        basePath: "",
+        href: "/docs/a%2520b/%2541",
+        routeManifest: routes,
+      })?.params,
+    ).toEqual({ slug: ["a%20b", "%41"] });
+  });
+
   it("preserves dynamic route param key order", () => {
     const twoSegment = manifest([
       route({

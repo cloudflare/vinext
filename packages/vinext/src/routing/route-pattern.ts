@@ -1,6 +1,10 @@
-import { decodeMatchedParams } from "./utils";
+import { decodeMatchedParams, decodeMatchedPathDelimiterParams } from "./utils";
 
 export type RoutePatternParams = Record<string, string | string[]>;
+
+export type RoutePatternMatchOptions = {
+  decodeParams?: boolean | "path-delimiters";
+};
 
 function routePatternPart(segment: string): string {
   if (segment.startsWith("[[...") && segment.endsWith("]]")) {
@@ -91,6 +95,7 @@ export function fillRoutePatternSegments(
 export function matchRoutePattern(
   urlParts: readonly string[],
   patternParts: readonly string[],
+  options: RoutePatternMatchOptions = {},
 ): RoutePatternParams | null {
   const params: RoutePatternParams = Object.create(null);
 
@@ -138,7 +143,11 @@ export function matchRoutePattern(
   }
 
   if (!matchFrom(0, 0)) return null;
-  decodeMatchedParams(params);
+  if (options.decodeParams === "path-delimiters") {
+    decodeMatchedPathDelimiterParams(params);
+  } else if (options.decodeParams !== false) {
+    decodeMatchedParams(params);
+  }
   return params;
 }
 

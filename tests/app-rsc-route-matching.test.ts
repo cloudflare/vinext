@@ -80,6 +80,23 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("decodes non-delimiter percent-literal params exactly once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/blog/:id", ["blog", ":id"]),
+      route("/docs/:slug+", ["docs", ":slug+"]),
+    ]);
+
+    expect(matcher.matchRoute("/blog/a%2520b")).toMatchObject({
+      params: { id: "a%20b" },
+    });
+    expect(matcher.matchRoute("/blog/%2541")).toMatchObject({
+      params: { id: "%41" },
+    });
+    expect(matcher.matchRoute("/docs/a%2520b/%2541")).toMatchObject({
+      params: { slug: ["a%20b", "%41"] },
+    });
+  });
+
   it("matches standalone route patterns for dynamic metadata routes", () => {
     expect(
       matchAppRscRoutePattern(["blog", "hello", "sitemap.xml"], ["blog", ":slug", "sitemap.xml"]),

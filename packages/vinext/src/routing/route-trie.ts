@@ -1,4 +1,4 @@
-import { buildParams, decodeMatchedParams } from "./utils";
+import { buildParams, decodeMatchedParams, decodeMatchedPathDelimiterParams } from "./utils";
 
 /**
  * Trie (prefix tree) for O(depth) route matching.
@@ -20,6 +20,10 @@ export type TrieNode<R> = {
   catchAllChild: { paramName: string; route: R } | null;
   optionalCatchAllChild: { paramName: string; route: R } | null;
   route: R | null;
+};
+
+export type TrieMatchOptions = {
+  decodeParams?: boolean | "path-delimiters";
 };
 
 function createNode<R>(): TrieNode<R> {
@@ -139,9 +143,12 @@ export function buildRouteTrie<R extends { patternParts: string[] }>(routes: R[]
 export function trieMatch<R>(
   root: TrieNode<R>,
   urlParts: string[],
+  options: TrieMatchOptions = {},
 ): { route: R; params: Record<string, string | string[]> } | null {
   const result = match(root, urlParts, 0, []);
-  if (result) {
+  if (result && options.decodeParams === "path-delimiters") {
+    decodeMatchedPathDelimiterParams(result.params);
+  } else if (result && options.decodeParams !== false) {
     decodeMatchedParams(result.params);
   }
   return result;

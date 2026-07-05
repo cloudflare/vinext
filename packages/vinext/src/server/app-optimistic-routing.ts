@@ -1,7 +1,7 @@
 import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { buildParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
@@ -174,7 +174,7 @@ function matchNode(
     return { route: node.catchAllChild.route, params };
   }
 
-  // At this point index < urlParts.length, so remaining always has ≥1 segment.
+  // At this point index < urlParts.length, so remaining always has at least one segment.
   if (node.optionalCatchAllChild !== null) {
     const params = buildParams(entries);
     params[node.optionalCatchAllChild.paramName] = urlParts.slice(index);
@@ -209,7 +209,6 @@ export function matchOptimisticRouteManifestRoute(options: {
   const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0, []);
   if (match === null) return null;
 
-  decodeMatchedParams(match.params);
   return match;
 }
 
@@ -242,13 +241,10 @@ function resolveOptimisticNavigationParams(options: {
       continue;
     }
 
-    // Slot params are decoded once (from urlParts via splitPathnameForRouteMatch),
-    // matching the server-side resolveSlotParamOverrides decode pass. Route params
-    // are decoded a second time via decodeMatchedParams(match.params) above — a
-    // pre-existing asymmetry that has no practical effect for normal segments but
-    // means an encoded catch-all (%25/%2F) could differ between route and slot
-    // params in the same payload. TODO: converge the decode passes.
-    const matched = matchRoutePattern(options.urlParts, patternParts);
+    // urlParts are already decoded once by splitPathnameForRouteMatch.
+    const matched = matchRoutePattern(options.urlParts, patternParts, {
+      decodeParams: "path-delimiters",
+    });
     if (matched) {
       mergeParams(navigationParams, matched);
     }

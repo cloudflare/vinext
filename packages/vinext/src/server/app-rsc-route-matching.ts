@@ -128,7 +128,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
   return {
     matchRoute(url) {
-      return trieMatch(routeTrie, appRscPathnameParts(url));
+      return trieMatch(routeTrie, appRscPathnameParts(url), {
+        decodeParams: "path-delimiters",
+      });
     },
     findIntercept(pathname, sourcePathname = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
@@ -140,7 +142,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
       const urlParts = appRscPathnameParts(pathname);
       const sourceParts = appRscPathnameParts(sourcePathname);
-      const matchedSourceRoute = trieMatch(routeTrie, sourceParts);
+      const matchedSourceRoute = trieMatch(routeTrie, sourceParts, {
+        decodeParams: "path-delimiters",
+      });
 
       for (const entry of interceptLookup) {
         // Primary gate: when the intercept declares a `sourceMatchPattern`
@@ -335,7 +339,7 @@ export function matchAppRscRoutePattern(
   urlParts: string[],
   patternParts: string[],
 ): AppRscRouteParams | null {
-  return matchRoutePattern(urlParts, patternParts);
+  return matchRoutePattern(urlParts, patternParts, { decodeParams: "path-delimiters" });
 }
 
 function mergeMatchedParams(

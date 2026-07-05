@@ -54,5 +54,5 @@ export function matchRouteWithTrie<R extends { patternParts: string[] }>(
   // Split URL once, look up via trie
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = getOrBuildTrie(cache, routes);
-  return trieMatch(trie, urlParts);
+  return trieMatch(trie, urlParts, { decodeParams: "path-delimiters" });
 }

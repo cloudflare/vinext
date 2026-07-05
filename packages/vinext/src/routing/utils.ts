@@ -225,6 +225,37 @@ function decodeMatchedParam(value: string): string {
   }
 }
 
+const MATCHED_PATH_DELIMITER_REGEX = /%25(2f|23|3f|5c)|%(2f|23|3f|5c)/gi;
+
+function decodeMatchedPathDelimitersParam(value: string): string {
+  return value.replace(
+    MATCHED_PATH_DELIMITER_REGEX,
+    (_match, escapedDelimiter: string | undefined, directDelimiter: string | undefined) => {
+      const matchedDelimiter = escapedDelimiter ?? directDelimiter;
+      if (!matchedDelimiter) {
+        return _match;
+      }
+
+      const delimiter = matchedDelimiter.toLowerCase();
+      if (escapedDelimiter) {
+        return `%${delimiter.toUpperCase()}`;
+      }
+      switch (delimiter) {
+        case "2f":
+          return "/";
+        case "23":
+          return "#";
+        case "3f":
+          return "?";
+        case "5c":
+          return "\\";
+        default:
+          return _match;
+      }
+    },
+  );
+}
+
 /**
  * Build a params object from ordered entries, preserving insertion order.
  *
@@ -257,6 +288,22 @@ export function decodeMatchedParams(params: Record<string, string | string[]>): 
       params[key] = value.map(decodeMatchedParam);
     } else {
       params[key] = decodeMatchedParam(value);
+    }
+  }
+}
+
+/**
+ * Decode only the path-delimiter escapes left behind by
+ * normalizePathnameForRouteMatch. The URL segment has already had one normal
+ * decode pass, so this must not decode ordinary percent literals such as %20.
+ */
+export function decodeMatchedPathDelimiterParams(params: Record<string, string | string[]>): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    if (Array.isArray(value)) {
+      params[key] = value.map(decodeMatchedPathDelimitersParam);
+    } else {
+      params[key] = decodeMatchedPathDelimitersParam(value);
     }
   }
 }
