@@ -84,7 +84,7 @@ describe("emitStandaloneOutput", () => {
     writeFile(
       appRoot,
       "dist/server/vinext-externals.json",
-      JSON.stringify(["react", "react-server-dom-webpack"]),
+      JSON.stringify(["react", "react-server-dom-webpack", "require-only-external"]),
     );
     writeFile(appRoot, "public/robots.txt", "User-agent: *\n");
 
@@ -92,6 +92,7 @@ describe("emitStandaloneOutput", () => {
     writePackage(appRoot, "dep-b");
     writePackage(appRoot, "react");
     writePackage(appRoot, "react-server-dom-webpack");
+    writePackage(appRoot, "require-only-external");
 
     const fakeVinextRoot = path.join(tmpDir, "fake-vinext");
     writeFile(
@@ -122,6 +123,7 @@ describe("emitStandaloneOutput", () => {
     // Packages from the externals manifest are copied.
     expect(result.copiedPackages).toContain("react");
     expect(result.copiedPackages).toContain("react-server-dom-webpack");
+    expect(result.copiedPackages).toContain("require-only-external");
     expect(result.copiedPackages).toContain("vinext");
 
     // dep-a is in package.json#dependencies but NOT in the manifest — must NOT be copied.
@@ -154,6 +156,11 @@ describe("emitStandaloneOutput", () => {
     expect(
       fs.existsSync(
         path.join(appRoot, "dist/standalone/node_modules/react-server-dom-webpack/package.json"),
+      ),
+    ).toBe(true);
+    expect(
+      fs.existsSync(
+        path.join(appRoot, "dist/standalone/node_modules/require-only-external/package.json"),
       ),
     ).toBe(true);
     expect(

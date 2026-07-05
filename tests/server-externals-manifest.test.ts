@@ -11,7 +11,9 @@ describe("createServerExternalsManifestPlugin", () => {
     fs.mkdirSync(outDir, { recursive: true });
 
     try {
-      const plugin = createServerExternalsManifestPlugin();
+      const plugin = createServerExternalsManifestPlugin({
+        extraExternalSpecifiers: new Set(["external-condition", "@scope/require-only/subpath"]),
+      });
       const writeBundle = (plugin.writeBundle as { handler: Function }).handler;
 
       writeBundle.call(
@@ -32,11 +34,13 @@ describe("createServerExternalsManifestPlugin", () => {
               "node:path",
             ],
             dynamicImports: ["react-dom/server.edge"],
+            code: "",
           },
           "assets/chunk-abc.js": {
             type: "chunk",
             imports: [],
             dynamicImports: [],
+            code: "",
           },
         },
       );
@@ -45,7 +49,16 @@ describe("createServerExternalsManifestPlugin", () => {
         fs.readFileSync(path.join(outDir, "vinext-externals.json"), "utf-8"),
       ) as string[];
 
-      expect(manifest.sort()).toEqual(["@scope/pkg", "ipaddr.js", "react", "react-dom"].sort());
+      expect(manifest.sort()).toEqual(
+        [
+          "@scope/pkg",
+          "@scope/require-only",
+          "external-condition",
+          "ipaddr.js",
+          "react",
+          "react-dom",
+        ].sort(),
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -62,7 +62,9 @@ function packageNameFromSpecifier(specifier: string): string | null {
  * deployment needs in `node_modules/`.
  *
  * Using the bundler's own import graph (`chunk.imports` + `chunk.dynamicImports`)
- * is authoritative: no text parsing, no regex, no guessing.
+ * is authoritative for normal imports. Require-condition proxy modules can load
+ * externals through `createRequire(...)`, so that plugin passes those specifiers
+ * explicitly rather than relying on emitted-code text scanning.
  *
  * The written JSON is an array of package-name strings, e.g.:
  *   ["react", "react-dom", "react-dom/server"]
@@ -70,7 +72,13 @@ function packageNameFromSpecifier(specifier: string): string | null {
  * `emitStandaloneOutput` reads this file and uses it as the seed list for the
  * BFS `node_modules/` copy, replacing the old regex-scan approach.
  */
-export function createServerExternalsManifestPlugin(): Plugin {
+type ServerExternalsManifestPluginOptions = {
+  extraExternalSpecifiers?: Iterable<string>;
+};
+
+export function createServerExternalsManifestPlugin(
+  pluginOptions: ServerExternalsManifestPluginOptions = {},
+): Plugin {
   // Accumulate external specifiers across all server environments (rsc + ssr).
   // Both environments run writeBundle; we merge their results so Pages Router
   // builds (ssr only) and App Router builds (rsc + ssr) both produce a
@@ -129,6 +137,10 @@ export function createServerExternalsManifestPlugin(): Plugin {
             const pkg = packageNameFromSpecifier(specifier);
             if (pkg) externals.add(pkg);
           }
+        }
+        for (const specifier of pluginOptions.extraExternalSpecifiers ?? []) {
+          const pkg = packageNameFromSpecifier(specifier);
+          if (pkg) externals.add(pkg);
         }
 
         // After the last expected writeBundle call, flush to disk.

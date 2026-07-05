@@ -218,6 +218,7 @@ import {
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import { createRequireExportConditionPlugin } from "./plugins/require-export-condition.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
@@ -1582,6 +1583,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return mdxDelegatePromise;
   }
 
+  const requireExternalSpecifiers = new Set<string>();
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
@@ -1592,6 +1594,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
+    createRequireExportConditionPlugin({ externalRequireSpecifiers: requireExternalSpecifiers }),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
@@ -5950,9 +5953,9 @@ export const loadServerActionClient = ${
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
     // Used by emitStandaloneOutput to determine which packages to copy into
-    // standalone/node_modules/ — uses the bundler's own import graph instead of
-    // fragile regex scanning of emitted files.
-    createServerExternalsManifestPlugin(),
+    // standalone/node_modules/ — uses the bundler's own import graph plus the
+    // require-condition plugin's explicit external-proxy records.
+    createServerExternalsManifestPlugin({ extraExternalSpecifiers: requireExternalSpecifiers }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
