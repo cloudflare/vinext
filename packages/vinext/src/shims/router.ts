@@ -1181,7 +1181,19 @@ function resolvePagesRoutePatternForPath(
 type RouteQueryNextData = {
   page?: string;
   query?: Record<string, string | string[] | undefined>;
+  autoExport?: boolean;
+  isFallback?: boolean;
 };
+
+function shouldDeferPagesRouterQuery(
+  routePattern: string,
+  isReady: boolean,
+  nextData: RouteQueryNextData | undefined,
+): boolean {
+  const isAutoExportDynamic =
+    nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
+  return !isReady && (nextData?.isFallback === true || isAutoExportDynamic);
+}
 
 function extractRouteParamsFromPath(
   pattern: string,
@@ -1256,11 +1268,11 @@ function getPathnameAndQuery(): {
     const _ssrCtx = _getSSRContext();
     if (_ssrCtx) {
       const query: Record<string, string | string[]> = {};
-      const isAutoExportDynamic =
-        _ssrCtx.nextData?.autoExport === true &&
-        extractRouteParamNames(_ssrCtx.pathname).length > 0;
-      const shouldDeferQuery =
-        _ssrCtx.navigationIsReady === false && (_ssrCtx.isFallback === true || isAutoExportDynamic);
+      const shouldDeferQuery = shouldDeferPagesRouterQuery(
+        _ssrCtx.pathname,
+        _ssrCtx.navigationIsReady ?? true,
+        { ..._ssrCtx.nextData, isFallback: _ssrCtx.isFallback },
+      );
 
       if (!shouldDeferQuery) {
         for (const [key, value] of Object.entries(_ssrCtx.query)) {
@@ -1277,14 +1289,17 @@ function getPathnameAndQuery(): {
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
   const nextData = window.__NEXT_DATA__;
-  const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
-  // URL search params always reflect the current URL
-  const searchQuery: Record<string, string | string[]> = {};
-  const params = new URLSearchParams(window.location.search);
-  for (const [key, value] of params) {
-    addQueryParam(searchQuery, key, value);
+  let query: Record<string, string | string[]> = {};
+  if (!shouldDeferPagesRouterQuery(pathname, isPagesRouterReady(), nextData)) {
+    const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
+    // URL search params always reflect the current URL
+    const searchQuery: Record<string, string | string[]> = {};
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of params) {
+      addQueryParam(searchQuery, key, value);
+    }
+    query = { ...searchQuery, ...routeQuery };
   }
-  const query = { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;

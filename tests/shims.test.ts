@@ -14269,6 +14269,65 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  it("useRouter().query stays empty for pre-ready auto-export dynamic client hydration", async () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/posts/42",
+        search: "?view=full",
+        hash: "",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+      __NEXT_DATA__: {
+        props: {},
+        page: "/posts/[id]",
+        query: { id: "42", view: "full" },
+        autoExport: true,
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const { useRouter, wrapWithRouterContext, _markPagesRouterReady } = routerModule;
+
+      let captured: unknown = "NOT_SET";
+      function Probe() {
+        const router = useRouter();
+        captured = router.query;
+        return React.createElement("span", null, JSON.stringify(router.query));
+      }
+
+      const preReadyHtml = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(preReadyHtml).toBe("<span>{}</span>");
+      expect(captured).toEqual({});
+
+      expect(_markPagesRouterReady()).toBe(true);
+
+      const readyHtml = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(readyHtml).toBe(
+        "<span>{&quot;view&quot;:&quot;full&quot;,&quot;id&quot;:&quot;42&quot;}</span>",
+      );
+      expect(captured).toEqual({ id: "42", view: "full" });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("useRouter().query stays empty for pre-ready fallback SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
