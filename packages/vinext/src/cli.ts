@@ -694,7 +694,7 @@ async function buildApp() {
       concurrency: parsed.prerenderConcurrency,
     });
     await emitPrerenderPathManifest({
-      root: normalizePathSeparators(process.cwd()),
+      root,
       nextConfigOverride: resolvedNextConfig,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
