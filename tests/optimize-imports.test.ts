@@ -633,6 +633,563 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./input"`);
   });
 
+  it("rewrites strict export-map subpath barrels through their ESM import entry", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "@heroicons", "react");
+    const esmDir = path.posix.join(pkgDir, "24", "solid", "esm");
+    const cjsDir = path.posix.join(pkgDir, "24", "solid");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@heroicons/react",
+        type: "module",
+        exports: {
+          "./24/solid": {
+            types: "./24/solid/index.d.ts",
+            import: "./24/solid/esm/index.js",
+            require: "./24/solid/index.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.posix.join(esmDir, "index.js"),
+      [
+        `export { default as Bars3Icon } from "./Bars3Icon.js";`,
+        `export { default as XMarkIcon } from "./XMarkIcon.js";`,
+        `export { default as ChevronLeftIcon } from "./ChevronLeftIcon.js";`,
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.posix.join(cjsDir, "index.js"),
+      `module.exports.Bars3Icon = require("./Bars3Icon.js");`,
+    );
+    for (const icon of ["Bars3Icon", "XMarkIcon", "ChevronLeftIcon"]) {
+      fs.writeFileSync(
+        path.posix.join(esmDir, `${icon}.js`),
+        `export default function ${icon}() { return null; }`,
+      );
+    }
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Bars3Icon, XMarkIcon } from "@heroicons/react/24/solid";`,
+      "/app/global-nav.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(
+      `import Bars3Icon from ${JSON.stringify(path.posix.join(esmDir, "Bars3Icon.js"))}`,
+    );
+    expect(result!.code).toContain(
+      `import XMarkIcon from ${JSON.stringify(path.posix.join(esmDir, "XMarkIcon.js"))}`,
+    );
+    expect(result!.code).not.toContain(`from "@heroicons/react/24/solid"`);
+    expect(result!.code).not.toContain("ChevronLeftIcon");
+    expect(result!.code).not.toContain(path.posix.join(cjsDir, "index.js"));
+  });
+
+  it("resolves the most specific matching pattern export", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "@pattern", "icons");
+    const genericDir = path.posix.join(pkgDir, "dist", "generic");
+    const solidDir = path.posix.join(pkgDir, "dist", "solid");
+    fs.mkdirSync(genericDir, { recursive: true });
+    fs.mkdirSync(solidDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@pattern/icons",
+        type: "module",
+        exports: {
+          "./icons/*": "./dist/generic/*.js",
+          "./icons/solid/*": "./dist/solid/*.js",
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(genericDir, "X.js"), `export { XIcon } from "./XImpl.js";`);
+    fs.writeFileSync(
+      path.posix.join(solidDir, "X.js"),
+      `export { default as XIcon } from "./XImpl.js";`,
+    );
+    fs.writeFileSync(
+      path.posix.join(solidDir, "XImpl.js"),
+      `export default function XIcon() { return null; }`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["@pattern/icons/icons/solid/X"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { XIcon } from "@pattern/icons/icons/solid/X";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    // Most specific pattern wins: ./icons/solid/*, not ./icons/*
+    expect(result!.code).toContain(
+      `import XIcon from ${JSON.stringify(path.posix.join(solidDir, "XImpl.js"))}`,
+    );
+    expect(result!.code).not.toContain(path.posix.join(genericDir, "XImpl.js"));
+    expect(result!.code).not.toContain(`from "@pattern/icons/icons/solid/X"`);
+  });
+
+  it("replaces only the first star in a pattern export target", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "single-star-target");
+    const targetDir = path.posix.join(pkgDir, "dist", "Home");
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "single-star-target",
+        type: "module",
+        exports: {
+          "./icons/*": "./dist/*/barrel-*.js",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.posix.join(targetDir, "barrel-*.js"),
+      `export { Icon } from "./Icon.js";`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["single-star-target/icons/Home"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "single-star-target/icons/Home";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(targetDir, "Icon.js"));
+  });
+
+  it("skips optimization when a pattern export is explicitly excluded with null", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "@null-exclude", "pkg");
+    const genericDir = path.posix.join(pkgDir, "dist", "generic");
+    fs.mkdirSync(genericDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@null-exclude/pkg",
+        type: "module",
+        exports: {
+          "./icons/*": "./dist/generic/*.js",
+          "./icons/private/*": null,
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.posix.join(genericDir, "Secret.js"),
+      `export { Secret } from "./SecretImpl.js";`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["@null-exclude/pkg/icons/private/Secret"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Secret } from "@null-exclude/pkg/icons/private/Secret";`,
+      "/app/page.tsx",
+    );
+
+    // null target means the subpath is explicitly excluded from the export map,
+    // so the optimizer safely leaves the original import unchanged.
+    expect(result).toBeNull();
+  });
+
+  it("does not match export patterns whose prefix and suffix overlap", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "overlap-pattern");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "overlap-pattern",
+        type: "module",
+        exports: {
+          "./a*a": "./barrel.js",
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(pkgDir, "barrel.js"), `export { Icon } from "./Icon.js";`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["overlap-pattern/a"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "overlap-pattern/a";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("optimizes strict ESM-only subpath barrels with only an import condition", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "@import-only", "icons");
+    const esmDir = path.posix.join(pkgDir, "esm");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@import-only/icons",
+        type: "module",
+        exports: {
+          "./icons": {
+            import: "./esm/icons.js",
+          },
+        },
+        // Root main gives require.resolve a fallback path to discover the package directory
+        main: "./index.js",
+      }),
+    );
+    fs.writeFileSync(path.posix.join(pkgDir, "index.js"), `export {};`);
+    fs.writeFileSync(path.posix.join(esmDir, "icons.js"), `export { IconA } from "./IconA.js";`);
+    fs.writeFileSync(
+      path.posix.join(esmDir, "IconA.js"),
+      `export function IconA() { return null; }`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["@import-only/icons/icons"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { IconA } from "@import-only/icons/icons";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(
+      `import { IconA } from ${JSON.stringify(path.posix.join(esmDir, "IconA.js"))}`,
+    );
+    expect(result!.code).not.toContain(`from "@import-only/icons/icons"`);
+  });
+
+  it("discovers strict ESM-only packages through the manual node_modules fallback", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "manual-fallback");
+    const esmDir = path.posix.join(pkgDir, "esm");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "manual-fallback",
+        type: "module",
+        exports: {
+          "./icons": {
+            import: "./esm/icons.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(esmDir, "icons.js"), `export { Icon } from "./Icon.js";`);
+    fs.writeFileSync(path.posix.join(esmDir, "Icon.js"), `export function Icon() {}`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["manual-fallback/icons"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "manual-fallback/icons";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(esmDir, "Icon.js"));
+  });
+
+  it("falls back to node_modules when resolved-entry package discovery is exhausted", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "deep-entry");
+    const deepDir = path.posix.join(
+      pkgDir,
+      ...Array.from({ length: 11 }, (_, index) => `d${index}`),
+    );
+    const esmDir = path.posix.join(pkgDir, "esm");
+    fs.mkdirSync(deepDir, { recursive: true });
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "deep-entry",
+        type: "module",
+        exports: {
+          ".": {
+            require: `./${path.posix.relative(pkgDir, deepDir)}/index.cjs`,
+          },
+          "./icons": {
+            import: "./esm/icons.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(deepDir, "index.cjs"), `module.exports = {};`);
+    fs.writeFileSync(path.posix.join(esmDir, "icons.js"), `export { Icon } from "./Icon.js";`);
+    fs.writeFileSync(path.posix.join(esmDir, "Icon.js"), `export function Icon() {}`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["deep-entry/icons"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "deep-entry/icons";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(esmDir, "Icon.js"));
+  });
+
+  it("discovers strict ESM-only packages hoisted above the project root", async () => {
+    const workspaceDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-workspace-"))),
+    );
+    tmpDir = path.posix.join(workspaceDir, "apps", "web");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(workspaceDir, "node_modules", "hoisted-icons");
+    const esmDir = path.posix.join(pkgDir, "esm");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "hoisted-icons",
+        type: "module",
+        exports: {
+          "./icons": {
+            import: "./esm/icons.js",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(esmDir, "icons.js"), `export { Icon } from "./Icon.js";`);
+    fs.writeFileSync(path.posix.join(esmDir, "Icon.js"), `export function Icon() {}`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["hoisted-icons/icons"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "hoisted-icons/icons";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(esmDir, "Icon.js"));
+  });
+
+  it("matches conditional exports in package declaration order", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "@condition-order", "pkg");
+    const esmDir = path.posix.join(pkgDir, "esm");
+    const nodeDir = path.posix.join(pkgDir, "node");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.mkdirSync(nodeDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@condition-order/pkg",
+        type: "module",
+        exports: {
+          ".": {
+            import: "./esm/index.js",
+            node: "./node/index.js",
+            default: "./default/index.js",
+          },
+        },
+        main: "./default/index.js",
+      }),
+    );
+    fs.writeFileSync(path.posix.join(esmDir, "index.js"), `export { Icon } from "./Icon.js";`);
+    fs.writeFileSync(path.posix.join(nodeDir, "index.js"), `export { Icon } from "./Icon.js";`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["@condition-order/pkg"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "@condition-order/pkg";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(esmDir, "Icon.js"));
+    expect(result!.code).not.toContain(path.posix.join(nodeDir, "Icon.js"));
+    expect(result!.code).not.toContain(`from "@condition-order/pkg"`);
+  });
+
+  it("resolves the first usable array-form export target", async () => {
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "array-target");
+    const esmDir = path.posix.join(pkgDir, "esm");
+    fs.mkdirSync(esmDir, { recursive: true });
+    fs.writeFileSync(
+      path.posix.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "array-target",
+        type: "module",
+        exports: {
+          "./icons": [null, { import: "./esm/icons.js" }, "./fallback.js"],
+        },
+      }),
+    );
+    fs.writeFileSync(path.posix.join(esmDir, "icons.js"), `export { Icon } from "./Icon.js";`);
+    fs.writeFileSync(path.posix.join(esmDir, "Icon.js"), `export function Icon() {}`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => ({ optimizePackageImports: ["array-target/icons"] }) as any,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const result = await (transform as any).call(
+      { ...plugin, environment: { name: "ssr" } },
+      `import { Icon } from "array-target/icons";`,
+      "/app/page.tsx",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(path.posix.join(esmDir, "Icon.js"));
+  });
+
   it("appends trailing semicolons to all replacement statements", async () => {
     // lodash-es is in DEFAULT_OPTIMIZE_PACKAGES
     const call = await setupTransform(
