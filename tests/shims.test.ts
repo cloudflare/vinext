@@ -14213,6 +14213,97 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  it("useRouter().query stays empty for pre-ready auto-export dynamic SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    let captured: unknown = "NOT_SET";
+    function Probe() {
+      const router = useRouter();
+      captured = router.query;
+      return React.createElement("span", null, JSON.stringify(router.query));
+    }
+
+    setSSRContext({
+      pathname: "/posts/[id]",
+      query: { id: "42", view: "full" },
+      asPath: "/posts/42?view=full",
+      navigationIsReady: false,
+      nextData: {
+        props: {},
+        page: "/posts/[id]",
+        query: { id: "42", view: "full" },
+        autoExport: true,
+      },
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>{}</span>");
+      expect(captured).toEqual({});
+    } finally {
+      setSSRContext(null);
+    }
+
+    setSSRContext({
+      pathname: "/posts/[id]",
+      query: { id: "42", view: "full" },
+      asPath: "/posts/42?view=full",
+      navigationIsReady: true,
+      nextData: {
+        props: {},
+        page: "/posts/[id]",
+        query: { id: "42", view: "full" },
+        autoExport: true,
+      },
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe(
+        "<span>{&quot;id&quot;:&quot;42&quot;,&quot;view&quot;:&quot;full&quot;}</span>",
+      );
+      expect(captured).toEqual({ id: "42", view: "full" });
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
+  it("useRouter().query stays empty for pre-ready fallback SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    let captured: unknown = "NOT_SET";
+    function Probe() {
+      const router = useRouter();
+      captured = router.query;
+      return React.createElement("span", null, JSON.stringify(router.query));
+    }
+
+    setSSRContext({
+      pathname: "/docs/[slug]",
+      query: { slug: "draft", from: "fallback" },
+      asPath: "/docs/draft?from=fallback",
+      navigationIsReady: false,
+      isFallback: true,
+      nextData: {
+        props: {},
+        page: "/docs/[slug]",
+        query: { slug: "draft", from: "fallback" },
+        isFallback: true,
+      },
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>{}</span>");
+      expect(captured).toEqual({});
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
   it("does not defer Pages Router readiness for dynamic getStaticProps routes without search", async () => {
     const { getPagesNavigationIsReadyFromSerializedState } =
       await import("../packages/vinext/src/shims/router.js");

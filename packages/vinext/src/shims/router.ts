@@ -1256,8 +1256,16 @@ function getPathnameAndQuery(): {
     const _ssrCtx = _getSSRContext();
     if (_ssrCtx) {
       const query: Record<string, string | string[]> = {};
-      for (const [key, value] of Object.entries(_ssrCtx.query)) {
-        query[key] = Array.isArray(value) ? [...value] : value;
+      const isAutoExportDynamic =
+        _ssrCtx.nextData?.autoExport === true &&
+        extractRouteParamNames(_ssrCtx.pathname).length > 0;
+      const shouldDeferQuery =
+        _ssrCtx.navigationIsReady === false && (_ssrCtx.isFallback === true || isAutoExportDynamic);
+
+      if (!shouldDeferQuery) {
+        for (const [key, value] of Object.entries(_ssrCtx.query)) {
+          query[key] = Array.isArray(value) ? [...value] : value;
+        }
       }
       return { pathname: _ssrCtx.pathname, query, asPath: _ssrCtx.asPath };
     }
