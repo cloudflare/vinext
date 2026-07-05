@@ -206,7 +206,7 @@ describe("Pages Router CSS url() asset emission", () => {
       build: {
         outDir: path.join(outDir, "server"),
         ssr: "virtual:vinext-server-entry",
-        rollupOptions: { output: { entryFileNames: "entry.js" } },
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
       },
     });
     await build({
@@ -218,7 +218,7 @@ describe("Pages Router CSS url() asset emission", () => {
         outDir: path.join(outDir, "client"),
         manifest: true,
         ssrManifest: true,
-        rollupOptions: { input: "virtual:vinext-client-entry" },
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
       },
     });
 
@@ -290,6 +290,19 @@ describe("Pages Router CSS url() asset emission", () => {
     );
 
     for (const assetUrl of [...aSvgs, ...bSvgs]) await expectServedSvg(assetUrl);
+  });
+
+  it("preserves asset basenames from imported Sass partials", async () => {
+    const css = await fetchPageStylesheets("/partial-url");
+    const assetUrls = svgUrls(css).filter((url) => url.includes("partial-dark"));
+
+    expect(assetUrls).toEqual([
+      expect.stringMatching(MEDIA_SVG_RE("partial-dark")),
+      expect.stringMatching(MEDIA_SVG_RE("partial-dark2")),
+    ]);
+    expect(new Set(assetUrls).size).toBe(2);
+
+    for (const assetUrl of assetUrls) await expectServedSvg(assetUrl);
   });
 });
 

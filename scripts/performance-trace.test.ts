@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   profileToFlameGraph,
   readGzipProfile,
+  readProfileFile,
 } from "../apps/web/app/benchmarks/components/profile";
 import { filteredTraceGraph, type TraceNode } from "../apps/web/app/benchmarks/components/trace";
 
@@ -174,7 +175,14 @@ describe("performance traces", () => {
           name: "outer vinext",
           value: 10,
           category: "vinext",
-          children: [{ name: "inner vinext", value: 5, category: "vinext" }],
+          children: [
+            {
+              name: "node bridge",
+              value: 5,
+              category: "node",
+              children: [{ name: "inner vinext", value: 5, category: "vinext" }],
+            },
+          ],
         },
       ],
     });
@@ -186,11 +194,87 @@ describe("performance traces", () => {
     });
   });
 
-  test("filters expose vinext, Vite, and Rolldown sampled frames", () => {
+  test("filters omit native address-only context frames unless selected", () => {
+    const graph: TraceNode = {
+      name: "all samples",
+      value: 4,
+      category: "process",
+      children: [
+        {
+          name: "node 0x102030405",
+          value: 4,
+          category: "native",
+          children: [{ name: "visitModule", value: 4, category: "vinext" }],
+        },
+      ],
+    };
+
+    expect(filteredTraceGraph(graph, new Set(["vinext"]))).toEqual({
+      name: "filtered samples",
+      value: 4,
+      category: "process",
+      children: [{ name: "visitModule", value: 4, category: "vinext" }],
+    });
+    expect(filteredTraceGraph(graph, new Set(["vinext", "other"]))).toEqual({
+      name: "filtered samples",
+      value: 4,
+      category: "process",
+      children: graph.children,
+    });
+  });
+
+  test("reads local profile files as plain JSON or gzip", async () => {
+    const profile = { meta: { interval: 1 }, threads: [] };
+    const jsonFile = new File([JSON.stringify(profile)], "samply-profile.json", {
+      type: "application/json",
+    });
+    const gzipFile = new File(
+      [await gzipAsync(JSON.stringify(profile))],
+      "samply-profile.json.gz",
+      {
+        type: "application/gzip",
+      },
+    );
+
+    await expect(readProfileFile(jsonFile)).resolves.toEqual(profile);
+    await expect(readProfileFile(gzipFile)).resolves.toEqual(profile);
+  });
+
+  test.each([
+    [
+      "CI",
+      {
+        vinext: "file:///work/vinext/vinext/packages/vinext/dist/index.js:1:1",
+        vite: "file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
+        rolldown:
+          "file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+      },
+    ],
+    [
+      "local macOS",
+      {
+        vinext:
+          "file:///Users/example/.codex/worktrees/2579/vinext/packages/vinext/dist/index.js:1:1",
+        vite: "file:///Users/example/.codex/worktrees/2579/vinext/node_modules/.pnpm/@voidzero-dev+vite-plus-core@0.2.1/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
+        rolldown:
+          "file:///Users/example/.codex/worktrees/2579/vinext/node_modules/.pnpm/@voidzero-dev+vite-plus-core@0.2.1/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+      },
+    ],
+    [
+      "external app install",
+      {
+        vinext:
+          "file:///private/tmp/example-app/node_modules/.pnpm/vinext@0.1.0/node_modules/vinext/dist/index.js:1:1",
+        vite: "file:///private/tmp/example-app/node_modules/.pnpm/@voidzero-dev+vite-plus-core@0.2.1/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
+        rolldown:
+          "file:///private/tmp/example-app/node_modules/.pnpm/@voidzero-dev+vite-plus-core@0.2.1/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+      },
+    ],
+  ])("filters expose vinext, Vite, and Rolldown sampled frames from %s paths", (_, sources) => {
     const names = [
-      "JS:vinext file:///work/vinext/vinext/packages/vinext/dist/index.js:1:1",
-      "JS:vite file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
-      "JS:rolldown file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+      `JS:vinext ${sources.vinext}`,
+      `JS:vite ${sources.vite}`,
+      `JS:rolldown ${sources.rolldown}`,
     ];
     const profile = {
       meta: { interval: 1 },
@@ -208,10 +292,33 @@ describe("performance traces", () => {
     const graph = profileToFlameGraph(profile) as TraceNode;
 
     for (const category of ["vinext", "vite", "rolldown"] as const) {
-      expect(filteredTraceGraph(graph, new Set([category]))?.children?.[0]?.category).toBe(
-        category,
+      expect(flatten(filteredTraceGraph(graph, new Set([category])) as TraceNode)).toContainEqual(
+        expect.objectContaining({ category }),
       );
     }
+  });
+
+  test("keeps arbitrary application source paths intact", () => {
+    const appSource = "file:///private/tmp/example-app/apps/web/app/page.tsx:1:1";
+    const profile = {
+      meta: { interval: 1 },
+      threads: [
+        {
+          processName: "vinext",
+          samples: { stack: [0], weight: [1], weightType: "samples", length: 1 },
+          stackTable: { frame: [0], prefix: [null] },
+          frameTable: { func: [0] },
+          funcTable: { name: [0] },
+          stringArray: [`JS:page ${appSource}`],
+        },
+      ],
+    };
+    const graph = profileToFlameGraph(profile) as TraceNode;
+
+    expect(flatten(graph).find((node) => node.name === "page")).toMatchObject({
+      category: "application",
+      source: "/private/tmp/example-app/apps/web/app/page.tsx:1:1",
+    });
   });
 
   test("upload streams raw profiles before posting compact metadata", async () => {

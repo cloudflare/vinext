@@ -696,6 +696,39 @@ describe("appRouter - route discovery", () => {
     });
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  it("discovers a nested-only slot route for a layout-only parent", async () => {
+    await withTempDir("vinext-app-slot-nested-layout-only-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "inbox", "layout.tsx"),
+        "export default function Layout({ children, modal }) { return children ?? modal }",
+      );
+      await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const match = matchAppRoute("/inbox/profile", routes);
+
+      expect(match).toMatchObject({
+        route: {
+          pagePath: path.join(appDir, "inbox", "default.tsx"),
+          parallelSlots: [
+            expect.objectContaining({
+              name: "modal",
+              pagePath: path.join(appDir, "inbox", "@modal", "profile", "page.tsx"),
+            }),
+          ],
+        },
+        params: {},
+      });
+    });
+  });
+
   it("rejects non-terminal catch-all intercept targets", async () => {
     await withTempDir("vinext-app-intercept-nonterminal-catchall-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

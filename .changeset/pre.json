@@ -1,0 +1,17 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "@vinext/cloudflare": "0.2.1",
+    "create-vinext-app": "0.2.0",
+    "vinext": "0.2.1",
+    "@apps/web": "0.1.0",
+    "fumadocs-docs-template": "0.0.0"
+  },
+  "changesets": [
+    "454dfbdf6b8429624f583f494f742a10452a782a",
+    "9eed2527018ba4a9459b28edff0450bb8b689aa7",
+    "auto-_vinext_cloudflare_0.2.1-ed0e343",
+    "enter-v1-beta"
+  ]
+}

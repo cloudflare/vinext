@@ -6,7 +6,10 @@
  * i18n redirect, 405 method check, and internal-error guard.
  */
 import { describe, it, expect, vi } from "vite-plus/test";
-import { createPagesPageHandler } from "../packages/vinext/src/server/pages-page-handler.js";
+import {
+  createPagesPageHandler,
+  shouldEmitPagesClientTraceMetadata,
+} from "../packages/vinext/src/server/pages-page-handler.js";
 import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/server/pages-page-handler.js";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +99,29 @@ function makeOpts(
   };
 }
 
+describe("shouldEmitPagesClientTraceMetadata", () => {
+  it("emits only for request-time production renders", () => {
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule(), null)).toBe(false);
+    expect(
+      shouldEmitPagesClientTraceMetadata(
+        makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+        null,
+      ),
+    ).toBe(false);
+    expect(
+      shouldEmitPagesClientTraceMetadata(
+        makePageModule({ getServerSideProps: async () => ({ props: {} }) }),
+        null,
+      ),
+    ).toBe(true);
+
+    const page = Object.assign(() => null, { getInitialProps: async () => ({}) });
+    const app = Object.assign(() => null, { getInitialProps: async () => ({}) });
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule({ default: page }), null)).toBe(true);
+    expect(shouldEmitPagesClientTraceMetadata(makePageModule(), app)).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -181,6 +207,45 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+
+  it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
+    // Next.js derives Pages data resolvedUrl/asPath from the parsed data
+    // pathname. The trailingSlash data-path adjustment is middleware-only.
+    const setSSRContext = vi.fn();
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getServerSideProps: async ({ resolvedUrl }: { resolvedUrl: string }) => ({
+            props: { resolvedUrl },
+          }),
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        setSSRContext,
+        vinextConfig: {
+          basePath: "",
+          assetPrefix: "",
+          trailingSlash: true,
+          disableOptimizedLoading: true,
+        },
+      }),
+    );
+
+    const dataUrl = "/_next/data/test-build-id/about.json?x=1";
+    const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps: { resolvedUrl: string } };
+    expect(body.pageProps.resolvedUrl).toBe("/about?x=1");
+
+    const context = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+      | { asPath?: string }
+      | undefined;
+    expect(context?.asPath).toBe("/about?x=1");
   });
 });
 

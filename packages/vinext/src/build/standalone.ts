@@ -276,6 +276,10 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     dereference: true,
     filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
+  const clientAssetsSidecar = path.join(outDir, "vinext-client-assets.js");
+  if (fs.existsSync(clientAssetsSidecar)) {
+    fs.copyFileSync(clientAssetsSidecar, path.join(standaloneDistDir, "vinext-client-assets.js"));
+  }
 
   const publicDir = path.join(root, "public");
   if (fs.existsSync(publicDir)) {

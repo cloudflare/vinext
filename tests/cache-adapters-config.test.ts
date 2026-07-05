@@ -13,12 +13,14 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
+  findVinextCacheConfigInPlugins,
   generateCacheAdaptersModule,
+  VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
-import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
@@ -85,8 +87,28 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("setDataCacheHandler(__vinextDataAdapterFactory(");
     expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
+    expect(code).toContain(
+      "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+    );
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
+  });
+
+  it("logs registration failures without printing raw Error stack traces", () => {
+    const code = generateCacheAdaptersModule({
+      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
+    });
+    expect(code).toContain("function __vinextFormatAdapterError(error)");
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).toContain(
+      'console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+    );
+    expect(code).not.toContain('", error);');
   });
 
   it("escapes adapter specifiers so absolute paths are safe", () => {
@@ -95,6 +117,17 @@ describe("generateCacheAdaptersModule", () => {
     const weird = `/tmp/some path/with"quote/adapter.js`;
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
+  });
+});
+
+describe("findVinextCacheConfigInPlugins", () => {
+  it("reads cache metadata from nested plugin arrays", () => {
+    const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
+    const plugins = [[{ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache }]] as unknown as Parameters<
+      typeof findVinextCacheConfigInPlugins
+    >[0];
+
+    expect(findVinextCacheConfigInPlugins(plugins)).toBe(cache);
   });
 });
 
@@ -208,7 +241,7 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("Pages Router worker entry registers with env", () => {
-    const code = generatePagesRouterWorkerEntry();
+    const code = readPagesRouterEntrySource();
     expect(code).toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain("registerConfiguredCacheAdapters(env)");
   });

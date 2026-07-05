@@ -15,7 +15,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
-import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
+import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 import {

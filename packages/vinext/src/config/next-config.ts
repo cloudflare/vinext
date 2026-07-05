@@ -16,7 +16,6 @@ import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
-import { getViteMajorVersion } from "../utils/vite-version.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 
 /**
@@ -150,6 +149,13 @@ export type MdxOptions = {
   recmaPlugins?: unknown[];
 };
 
+export type PrefetchInliningConfig =
+  | false
+  | {
+      maxBundleSize: number;
+      maxSize: number;
+    };
+
 export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
@@ -189,13 +195,16 @@ export type NextConfig = {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
-    remotePatterns?: Array<{
-      protocol?: string;
-      hostname: string;
-      port?: string;
-      pathname?: string;
-      search?: string;
-    }>;
+    remotePatterns?: Array<
+      | URL
+      | {
+          protocol?: string;
+          hostname: string;
+          port?: string;
+          pathname?: string;
+          search?: string;
+        }
+    >;
     domains?: string[];
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
@@ -213,6 +222,14 @@ export type NextConfig = {
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
   };
+  /**
+   * Enable React Strict Mode. When `true`, the client root is wrapped in
+   * `<React.StrictMode>` so React runs its dev-only strict checks (double-
+   * invoked effects/render, deprecation warnings). `null`/unset resolves per
+   * router: OFF for the Pages Router, ON for the App Router — matching Next.js.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactStrictMode
+   */
+  reactStrictMode?: boolean | null;
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
@@ -291,6 +308,12 @@ export type NextConfig = {
      * `useRouter().experimental_gesturePush()`.
      */
     gestureTransition?: boolean;
+    /**
+     * Enables App Router Segment Cache prefetch inlining. When provided as an
+     * object, thresholds are resolved with Next.js defaults and non-finite
+     * values are clamped to Number.MAX_SAFE_INTEGER.
+     */
+    prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
     [key: string]: unknown;
   };
   /**
@@ -357,11 +380,10 @@ export type ResolvedNextConfig = {
    */
   gestureTransition: boolean;
   /**
-   * Whether `experimental.prefetchInlining` is configured. Next.js uses this
-   * with the Segment Cache to fetch the route tree before the bundled inlined
-   * segment payload.
+   * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
+   * and partial object config into concrete thresholds.
    */
-  prefetchInlining: boolean;
+  prefetchInlining: PrefetchInliningConfig;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -383,8 +405,12 @@ export type ResolvedNextConfig = {
   optimizePackageImports: string[];
   /** Packages explicitly requested for server/client transpilation. */
   transpilePackages: string[];
+  /** Packages treated as application code by Turbopack's foreign-code condition. */
+  turbopackTranspilePackages: string[];
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss: boolean;
+  /** Enable standalone route-miss 404 handling (from experimental.globalNotFound). */
+  globalNotFound: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
   /** Verbatim body size limit config value (e.g. "2mb") for the "Body exceeded {limit} limit" error. Defaults to "1 MB". */
@@ -464,6 +490,16 @@ export type ResolvedNextConfig = {
    */
   disableOptimizedLoading: boolean;
   /**
+   * Resolved `reactStrictMode` from next.config, preserved as `boolean | null`
+   * so each router can apply its own default (Next.js resolves `null` to OFF
+   * for the Pages Router and ON for the App Router). When the effective value
+   * is `true`, the client root is wrapped in `<React.StrictMode>`.
+   *
+   * See `.nextjs-ref/packages/next/src/build/define-env.ts`
+   * (`__NEXT_STRICT_MODE` / `__NEXT_STRICT_MODE_APP`).
+   */
+  reactStrictMode: boolean | null;
+  /**
    * Mirrors Next.js `experimental.scrollRestoration`. When true, the Pages
    * Router client takes ownership of browser history scroll restoration by
    * setting `window.history.scrollRestoration = "manual"` and snapshotting
@@ -542,6 +578,7 @@ const CONFIG_FILES = [
   "next.config.cjs",
 ];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+const DEFAULT_TRANSPILED_PACKAGES = ["geist"];
 
 /**
  * Default cap for the App Router preload `Link` header length, matching the
@@ -927,16 +964,14 @@ export async function loadNextConfig(
   const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
 
   // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
-  // `resolve.tsconfigPaths` (oxc-resolver). Vite 7 has no equivalent option,
-  // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
-  // capability gap (see docs). `paths` aliases still work on both via
-  // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  // `resolve.tsconfigPaths` (oxc-resolver). `paths` aliases are materialized
+  // into `resolve.alias` so import.meta.glob and dynamic imports can see them.
   //
   // Note: installed packages stay externalized (so CJS config plugins like
   // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
   // baseUrl resolves bare imports that have no installed package of the same
   // name; it does not shadow an installed package with a baseUrl-local file.
-  const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
+  const useNativeTsconfigPaths = !!tsconfigBaseUrl;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -957,9 +992,7 @@ export async function loadNextConfig(
         // handling: it follows `extends` and resolves baseUrl-local bare imports
         // via per-importer tsconfig discovery. Installed packages stay
         // externalized, so a baseUrl-local file does not shadow a package of the
-        // same name. Vite 7 has no native equivalent, so baseUrl bare imports in
-        // next.config.ts are unsupported there (documented gap); `resolve.alias`
-        // still covers `paths` aliases on both.
+        // same name.
         ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,
@@ -1308,6 +1341,21 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
   };
 }
 
+function normalizePrefetchInliningConfig(value: unknown): PrefetchInliningConfig {
+  if (!value) return false;
+  const raw = isUnknownRecord(value) ? value : null;
+  const maxSize = raw ? (raw.maxSize ?? 2048) : 2048;
+  const maxBundleSize = raw ? (raw.maxBundleSize ?? 10240) : 10240;
+  const normalizedMaxSize = Number(maxSize);
+  const normalizedMaxBundleSize = Number(maxBundleSize);
+  return {
+    maxBundleSize: Number.isFinite(normalizedMaxBundleSize)
+      ? normalizedMaxBundleSize
+      : Number.MAX_SAFE_INTEGER,
+    maxSize: Number.isFinite(normalizedMaxSize) ? normalizedMaxSize : Number.MAX_SAFE_INTEGER,
+  };
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
@@ -1344,7 +1392,9 @@ export async function resolveNextConfig(
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       transpilePackages: [],
+      turbopackTranspilePackages: [...DEFAULT_TRANSPILED_PACKAGES],
       inlineCss: false,
+      globalNotFound: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       serverActionsBodySizeLimitLabel: "1 MB",
       expireTime: DEFAULT_EXPIRE_TIME,
@@ -1361,6 +1411,7 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
@@ -1473,8 +1524,8 @@ export async function resolveNextConfig(
     ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
   const inlineCss = experimental?.inlineCss === true;
-  const prefetchInlining =
-    experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
+  const globalNotFound = experimental?.globalNotFound === true;
+  const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -1487,7 +1538,7 @@ export async function resolveNextConfig(
     if (!config.cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
-    if (experimental?.prefetchInlining !== true) {
+    if (!prefetchInlining) {
       missingCoFlags.push("experimental.prefetchInlining");
     }
     if (experimental?.varyParams !== true) {
@@ -1520,6 +1571,7 @@ export async function resolveNextConfig(
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
   const transpilePackages = readStringArray(config.transpilePackages);
+  const turbopackTranspilePackages = [...transpilePackages, ...DEFAULT_TRANSPILED_PACKAGES];
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1637,6 +1689,23 @@ export async function resolveNextConfig(
     };
   }
 
+  const images = config.images
+    ? {
+        ...config.images,
+        remotePatterns: config.images.remotePatterns?.map((pattern) =>
+          pattern instanceof URL
+            ? {
+                protocol: pattern.protocol.slice(0, -1),
+                hostname: pattern.hostname,
+                port: pattern.port,
+                pathname: pattern.pathname,
+                search: pattern.search,
+              }
+            : { ...pattern },
+        ),
+      }
+    : undefined;
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -1658,7 +1727,7 @@ export async function resolveNextConfig(
     redirects,
     rewrites,
     headers,
-    images: config.images,
+    images,
     i18n,
     mdx,
     aliases,
@@ -1666,7 +1735,9 @@ export async function resolveNextConfig(
     serverActionsAllowedOrigins,
     optimizePackageImports,
     transpilePackages,
+    turbopackTranspilePackages,
     inlineCss,
+    globalNotFound,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
@@ -1693,6 +1764,9 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    // Preserve `null` (unset) so each router applies its own default — Next.js
+    // resolves `null` to OFF for Pages Router, ON for App Router.
+    reactStrictMode: typeof config.reactStrictMode === "boolean" ? config.reactStrictMode : null,
     scrollRestoration: experimental?.scrollRestoration === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),

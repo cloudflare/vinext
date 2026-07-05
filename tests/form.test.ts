@@ -81,7 +81,10 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
   };
 }
 
-function renderClientForm(props: Record<string, unknown>) {
+function renderClientForm(
+  props: Record<string, unknown>,
+  { effects = [] }: { effects?: Array<() => void | (() => void)> } = {},
+) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
   //
@@ -103,7 +106,9 @@ function renderClientForm(props: Record<string, unknown>) {
     useCallback(fn: unknown) {
       return fn;
     },
-    useEffect() {},
+    useEffect(effect: () => void | (() => void)) {
+      effects.push(effect);
+    },
     // Minimal pass-through for anything else that might be called
     readContext: () => null,
     useContext: () => null,
@@ -128,6 +133,7 @@ function renderClientForm(props: Record<string, unknown>) {
     expect(rendered.type).toBe("form");
     return rendered.props as {
       onSubmit: (event: any) => Promise<void>;
+      ref: (node: HTMLFormElement | null) => void;
     };
   } finally {
     ReactSharedInternals.H = previousDispatcher;
@@ -209,6 +215,8 @@ function installClientGlobals({ supportsSubmitter }: { supportsSubmitter: boolea
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.doUnmock("../packages/vinext/src/shims/router.js");
+  vi.unstubAllEnvs();
 });
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
@@ -297,6 +305,56 @@ describe("Form useActionState", () => {
 });
 
 describe("Form client GET interception", () => {
+  for (const scheme of ["javascript", "data", "vbscript"] as const) {
+    it(`blocks dangerous ${scheme}: form actions without invoking navigation`, async () => {
+      const { navigate } = installClientGlobals({ supportsSubmitter: true });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const action = `${scheme}:globalThis.__VINEXT_FORM_DANGEROUS_ACTION__=true`;
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [] });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(navigate).not.toHaveBeenCalled();
+      expect(
+        (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_ACTION__,
+      ).toBeUndefined();
+    });
+  }
+
+  for (const scheme of ["data", "vbscript"] as const) {
+    it(`blocks dangerous ${scheme}: submitter formAction overrides`, async () => {
+      const { navigate } = installClientGlobals({ supportsSubmitter: true });
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const submitter = new FakeButtonElement({
+        attributes: {
+          formaction: `${scheme}:globalThis.__VINEXT_FORM_DANGEROUS_SUBMITTER__=true`,
+        },
+      });
+      const { onSubmit } = renderClientForm({ action: "/search" });
+      const event = createSubmitEvent({ entries: [], submitter });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(navigate).not.toHaveBeenCalled();
+      expect(
+        (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_SUBMITTER__,
+      ).toBeUndefined();
+    });
+  }
+
   it("strips existing query params from the action URL and warns in development", async () => {
     const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -305,7 +363,7 @@ describe("Form client GET interception", () => {
       entries: [["q", "react"]],
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
@@ -346,7 +404,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(navigate).toHaveBeenCalledWith(
@@ -380,7 +438,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
       "/search-alt?q=fallback&lang=de&source=fallback-submitter",
@@ -408,7 +466,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     // hasUnsupportedSubmitterAttributes fires an error and returns true → no nav.
     expect(error).toHaveBeenCalledWith(
@@ -434,7 +492,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       '<Form> received a `formAction` that contains search params: "/search-alt?lang=fr". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
@@ -466,7 +524,7 @@ describe("Form client GET interception", () => {
       submitter,
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(error).toHaveBeenCalledWith(
       `<Form>'s \`target\` was set to an unsupported value via \`formTarget="_blank"\`. This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
@@ -487,7 +545,7 @@ describe("Form client GET interception", () => {
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     // Bails silently — no unsupported-attribute warning, no navigation, no preventDefault.
     expect(error).not.toHaveBeenCalled();
@@ -503,15 +561,20 @@ describe("Form client GET interception", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search" });
     const submitter = new FakeButtonElement({
-      attributes: { formaction: "javascript:void(0)" },
+      attributes: {
+        formaction: "javascript:globalThis.__VINEXT_FORM_DANGEROUS_SUBMITTER__=true",
+      },
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(warn).not.toHaveBeenCalled();
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+    expect(
+      (globalThis as Record<string, unknown>).__VINEXT_FORM_DANGEROUS_SUBMITTER__,
+    ).toBeUndefined();
   });
 
   it("respects onSubmit calling preventDefault — no client-side navigation", async () => {
@@ -526,7 +589,7 @@ describe("Form client GET interception", () => {
     const { onSubmit } = renderClientForm({ action: "/search", onSubmit: userOnSubmit });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(userOnSubmit).toHaveBeenCalledOnce();
     expect(event.preventDefault).toHaveBeenCalledOnce();
@@ -539,7 +602,7 @@ describe("Form client GET interception", () => {
     const { onSubmit } = renderClientForm({ action: "/search", replace: true });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
       "/search?q=react",
@@ -570,12 +633,16 @@ describe("Form Pages Router soft navigation", () => {
   function createPagesWindowStub() {
     const pushState = vi.fn();
     const replaceState = vi.fn();
+    const assign = vi.fn();
+    const replace = vi.fn();
     const scrollTo = vi.fn();
     const dispatched: Event[] = [];
 
     return {
       pushState,
       replaceState,
+      assign,
+      replace,
       scrollTo,
       dispatched,
       window: {
@@ -592,6 +659,8 @@ describe("Form Pages Router soft navigation", () => {
           search: "",
           hash: "",
           hostname: "localhost",
+          assign,
+          replace,
         },
         scrollTo,
         scrollX: 0,
@@ -620,14 +689,47 @@ describe("Form Pages Router soft navigation", () => {
     // Regression for #1355: without interception, the browser would submit
     // the form and trigger a full page reload (`didMpaNavigate` -> true).
     // Calling preventDefault is the only thing that can stop that.
+    const push = vi.fn(async () => true);
+    vi.doMock("../packages/vinext/src/shims/router.js", () => ({
+      default: { push, replace: vi.fn(async () => true) },
+    }));
     installPagesGlobals();
     const { onSubmit } = renderClientForm({ action: "/results" });
     const event = createSubmitEvent({ entries: [["q", "react"]] });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(push).toHaveBeenCalledOnce());
   });
+
+  for (const replace of [false, true]) {
+    it(`hard-navigates with location.${replace ? "replace" : "assign"} when Pages Router navigation fails`, async () => {
+      const routerMethod = vi.fn(async () => {
+        throw new Error("forced Pages Router setup failure");
+      });
+      vi.doMock("../packages/vinext/src/shims/router.js", () => ({
+        default: {
+          push: replace ? vi.fn(async () => true) : routerMethod,
+          replace: replace ? routerMethod : vi.fn(async () => true),
+        },
+      }));
+      const { assign, replace: replaceLocation, pushState, replaceState } = installPagesGlobals();
+      const { onSubmit } = renderClientForm({ action: "/results", replace });
+      const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+      void onSubmit(event);
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(replace ? replaceLocation : assign).toHaveBeenCalledWith(
+          "http://localhost:3000/results?q=react",
+        ),
+      );
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+  }
 
   it("does not call preventDefault when submitter overrides method to POST", async () => {
     // POST forms (e.g. server actions) must not be intercepted by the Form's
@@ -640,10 +742,60 @@ describe("Form Pages Router soft navigation", () => {
     });
     const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  for (const [name, action, submitter] of [
+    ["form action", "http://[", null],
+    [
+      "submitter formAction override",
+      "/results",
+      new FakeButtonElement({ attributes: { formaction: "http://[" } }),
+    ],
+  ] as const) {
+    it(`retains native fallback when a malformed ${name} cannot construct a destination`, () => {
+      const { assign, replace, pushState, replaceState } = installPagesGlobals();
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+      expect(() => onSubmit(event)).toThrow();
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(assign).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const [name, action, submitter] of [
+    ["form action", "data:text/html,dangerous", null],
+    [
+      "submitter formAction override",
+      "/results",
+      new FakeButtonElement({ attributes: { formaction: "vbscript:dangerous" } }),
+    ],
+  ] as const) {
+    it(`blocks a dangerous ${name} without falling through to history`, async () => {
+      const { pushState, replaceState, dispatched } = installPagesGlobals();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { onSubmit } = renderClientForm({ action });
+      const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+      expect(() => onSubmit(event)).toThrow(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+      expect(error).toHaveBeenCalledWith(
+        "Next.js has blocked a javascript: URL as a security precaution.",
+      );
+
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(dispatched).toHaveLength(0);
+    });
+  }
 });
 
 describe("Form function action (client/server action)", () => {
@@ -755,7 +907,7 @@ describe("Form file input warning", () => {
       event.defaultPrevented = true;
     });
 
-    await onSubmit(event);
+    void onSubmit(event);
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
@@ -780,6 +932,141 @@ describe("Form file input warning", () => {
 // ─── prefetch prop ──────────────────────────────────────────────────────
 
 describe("Form prefetch prop", () => {
+  it("viewport-prefetches App Router forms with loading-shell request metadata", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const effects: Array<() => void | (() => void)> = [];
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response("prefetched")),
+    );
+    const observe = vi.fn();
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+
+    class FakeIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = vi.fn(() => []);
+    }
+
+    const { window } = createWindowStub();
+    vi.stubGlobal("window", {
+      ...window,
+      navigator: { userAgent: "Mozilla/5.0" },
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+    const { ref } = renderClientForm({ action: "/search" }, { effects });
+    const form = {} as HTMLFormElement;
+    ref(form);
+    for (const effect of effects) effect();
+
+    expect(observe).toHaveBeenCalledWith(form);
+    intersectionCallback?.(
+      [
+        {
+          intersectionRatio: 1,
+          isIntersecting: true,
+          target: form,
+        } as unknown as IntersectionObserverEntry,
+      ],
+      {} as IntersectionObserver,
+    );
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+
+    const [url, init] = fetch.mock.calls[0]!;
+    const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    expect(requestUrl).toContain("/search");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Rsc")).toBe("1");
+    expect(headers.get("X-Vinext-Rsc-Render-Mode")).toBe("prefetch-loading-shell");
+    expect(init).toMatchObject({ credentials: "include", priority: "low", purpose: "prefetch" });
+  });
+
+  it("does not observe or fetch when prefetch={false}", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const effects: Array<() => void | (() => void)> = [];
+    const fetch = vi.fn();
+    const observe = vi.fn();
+
+    class FakeIntersectionObserver {
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = vi.fn(() => []);
+    }
+
+    const { window } = createWindowStub();
+    vi.stubGlobal("window", {
+      ...window,
+      navigator: { userAgent: "Mozilla/5.0" },
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+    const { ref } = renderClientForm({ action: "/search", prefetch: false }, { effects });
+    ref({} as HTMLFormElement);
+    for (const effect of effects) effect();
+
+    expect(observe).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not viewport-prefetch App Router forms for a bot user agent", async () => {
+    // App Router Form prefetches through vinext's shared RSC prefetch path,
+    // which mirrors the bot suppression applied to Link/router.prefetch.
+    vi.stubEnv("NODE_ENV", "production");
+    const effects: Array<() => void | (() => void)> = [];
+    const fetch = vi.fn();
+    const observe = vi.fn();
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+
+    class FakeIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = vi.fn(() => []);
+    }
+
+    const { window } = createWindowStub();
+    vi.stubGlobal("window", {
+      ...window,
+      navigator: {
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+    const { ref } = renderClientForm({ action: "/search" }, { effects });
+    const form = {} as HTMLFormElement;
+    ref(form);
+    for (const effect of effects) effect();
+
+    expect(observe).toHaveBeenCalledWith(form);
+    intersectionCallback?.(
+      [
+        {
+          intersectionRatio: 1,
+          isIntersecting: true,
+          target: form,
+        } as unknown as IntersectionObserverEntry,
+      ],
+      {} as IntersectionObserver,
+    );
+    await Promise.resolve();
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("accepts prefetch={false} without errors", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => {

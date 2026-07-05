@@ -35,7 +35,12 @@ import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  escapeHtmlAttr,
+  safeJsonStringify,
+} from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -45,6 +50,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
+  findFileWithExts,
   findFileWithExtensions,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
@@ -62,7 +68,8 @@ import {
   matchesPagesStaticPath,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
-import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
   loadUserDocumentInitialProps,
@@ -75,6 +82,10 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
+import {
+  attachPagesRequestCookies,
+  getPagesPreviewDataFromCookieHeader,
+} from "./pages-node-compat.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -104,6 +115,58 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
       ),
     ),
   );
+}
+
+const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
+
+type PagesClientAssetsModule = {
+  default?: {
+    ssrManifest?: Record<string, string[]>;
+  };
+};
+
+function createDevInitialStylesheetHeadHTML(options: {
+  ssrManifest: Record<string, string[]> | null | undefined;
+  moduleIds: (string | null | undefined)[];
+  nonceAttr: string;
+}): string {
+  const { ssrManifest, moduleIds, nonceAttr } = options;
+  if (!ssrManifest || moduleIds.length === 0) return "";
+
+  const seen = new Set<string>();
+  let html = "";
+  for (const moduleId of moduleIds) {
+    const files = getManifestFilesForModule(ssrManifest, moduleId);
+    if (!files) continue;
+    for (const file of files) {
+      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
+      seen.add(file);
+      const href = createPagesDevAssetUrl(file);
+      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+    }
+  }
+  return html;
+}
+
+async function collectDevInitialStylesheetHeadHTML(
+  runner: ModuleImporter,
+  moduleIds: (string | null | undefined)[],
+  nonceAttr: string,
+): Promise<string> {
+  try {
+    const pagesClientAssets = (await runner.import(
+      "virtual:vinext-pages-client-assets",
+    )) as PagesClientAssetsModule;
+    return createDevInitialStylesheetHeadHTML({
+      ssrManifest: pagesClientAssets.default?.ssrManifest,
+      moduleIds,
+      nonceAttr,
+    });
+  } catch {
+    // If dev asset metadata is unavailable, keep the existing client-graph
+    // CSS behavior instead of failing the page render.
+    return "";
+  }
 }
 
 /**
@@ -181,6 +244,7 @@ async function streamPageToResponse(
     url: string;
     server: ViteDevServer;
     fontHeadHTML: string;
+    assetHeadHTML?: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
@@ -220,9 +284,10 @@ async function streamPageToResponse(
     url,
     server,
     fontHeadHTML,
+    assetHeadHTML = "",
     scripts,
     DocumentComponent,
-    statusCode = 200,
+    statusCode,
     extraHeaders,
     getHeadHTML,
     enhancePageElement,
@@ -247,6 +312,7 @@ async function streamPageToResponse(
     scriptNonce,
     context: documentContext,
   });
+  if (res.headersSent || res.writableEnded) return;
 
   let bodyStream: ReadableStream<Uint8Array>;
   if (documentRenderPage.status === "rendered") {
@@ -305,8 +371,11 @@ async function streamPageToResponse(
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML || fontHeadHTML || assetHeadHTML) {
+      docHtml = docHtml.replace(
+        "</head>",
+        `  ${fontHeadHTML}${headHTML}\n  ${assetHeadHTML}\n</head>`,
+      );
     }
     // Inject scripts: replace placeholder or append before </body>
     docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
@@ -322,6 +391,7 @@ async function streamPageToResponse(
 <html>
 <head>
   ${fontHeadHTML}${headHTML}
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -343,7 +413,7 @@ async function streamPageToResponse(
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
   const headers: Record<string, string> = {
-    "Content-Type": "text/html",
+    "Content-Type": "text/html; charset=utf-8",
     "Transfer-Encoding": "chunked",
   };
   if (extraHeaders) {
@@ -355,7 +425,7 @@ async function streamPageToResponse(
       }
     }
   }
-  res.writeHead(statusCode, headers);
+  res.writeHead(statusCode ?? res.statusCode, headers);
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
@@ -440,6 +510,15 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  /**
+   * Whether `reactStrictMode: true` is set in next.config. When true, the dev
+   * hydration script sets `window.__VINEXT_REACT_STRICT_MODE__` so
+   * `wrapWithRouterContext` wraps the tree in `<React.StrictMode>` on the
+   * initial hydration and every navigation. Pages Router default is OFF
+   * (Next.js: `reactStrictMode === null ? false`), so callers pass
+   * `nextConfig?.reactStrictMode === true`.
+   */
+  reactStrictMode = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -482,6 +561,7 @@ export function createSSRHandler(
     const _reqStart = now();
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
+    attachPagesRequestCookies(req);
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
@@ -718,6 +798,7 @@ export function createSSRHandler(
         // and `useRouter().isFallback === true`, matching Next.js render.tsx.
         let isFallbackRender = false;
         let shouldPersistFallbackData = false;
+        let staticPropsPreviewData: ReturnType<typeof getPagesPreviewDataFromCookieHeader> = false;
 
         // Handle getStaticPaths for dynamic routes: validate the path,
         // respect `fallback: false` (return 404 for unlisted paths), and
@@ -849,6 +930,15 @@ export function createSSRHandler(
           renderProps = { ...renderProps, __N_SSP: true };
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
+          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie);
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           const context = {
             params: userFacingParams,
@@ -859,6 +949,7 @@ export function createSSRHandler(
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
+            ...previewContext,
           };
           const result = await pageModule.getServerSideProps(context);
           // If gSSP called res.end() directly (short-circuit pattern),
@@ -1000,6 +1091,18 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
+          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
+            isOnDemandRevalidate,
+          });
+          staticPropsPreviewData = previewData;
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           if (
             !isOnDemandRevalidate &&
@@ -1008,7 +1111,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1021,7 +1125,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const hitHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
               "Cache-Control": hitCacheControl,
             };
@@ -1038,7 +1142,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1269,7 +1374,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const staleHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
               "Cache-Control": staleCacheControl,
             };
@@ -1294,9 +1399,11 @@ export function createSSRHandler(
             revalidateReason: (isOnDemandRevalidate ? "on-demand" : "stale") as
               | "on-demand"
               | "stale",
+            ...previewContext,
           };
           const generatedPageData =
             !isOnDemandRevalidate &&
+            previewData === false &&
             cached?.isStale === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest &&
@@ -1360,9 +1467,14 @@ export function createSSRHandler(
           }
 
           // Extract revalidate period for ISR caching after render
-          if (typeof result?.revalidate === "number" && result.revalidate > 0) {
+          if (
+            previewData === false &&
+            typeof result?.revalidate === "number" &&
+            result.revalidate > 0
+          ) {
             isrRevalidateSeconds = result.revalidate;
           } else if (
+            previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest
           ) {
@@ -1413,7 +1525,7 @@ export function createSSRHandler(
         // by getServerSideProps (cookies, status codes, etc.) are preserved
         // because we already let gSSP mutate `res` above.
         if (isDataReq) {
-          if (shouldPersistFallbackData) {
+          if (shouldPersistFallbackData && staticPropsPreviewData === false) {
             const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
             await isrSet(
@@ -1505,6 +1617,12 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
+        const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+          runner,
+          [appAssetPath, route.filePath],
+          nonceAttr,
+        );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
@@ -1596,6 +1714,9 @@ const rawPageProps = props.pageProps;
 const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
 window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleSource}") };
 window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
+// reactStrictMode flag — read by wrapWithRouterContext so the <React.StrictMode>
+// wrap is applied on initial hydration and every navigation (matches Next.js).
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictMode === true)};
 
 async function hydrate() {
   let hydrateRootOptions;
@@ -1717,6 +1838,7 @@ hydrate();
           url,
           server,
           fontHeadHTML,
+          assetHeadHTML,
           scripts: allScripts,
           DocumentComponent,
           statusCode,
@@ -1724,11 +1846,12 @@ hydrate();
           // Forward the per-request nonce so the shared renderPage helper can
           // apply `withScriptNonce` once (it owns that responsibility).
           scriptNonce,
-          // Minimal DocumentContext for `getInitialProps`, matching prod parity.
+          // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
             query,
             asPath: requestAsPath,
+            ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,
@@ -1807,7 +1930,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
@@ -1886,6 +2009,7 @@ async function renderErrorPage(
   fileMatcher?: ValidFileMatcher,
   err?: Error,
 ): Promise<void> {
+  attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
   const candidates =
@@ -1893,10 +2017,10 @@ async function renderErrorPage(
 
   for (const candidate of candidates) {
     try {
-      const candidatePath = path.join(pagesDir, candidate);
-      if (!findFileWithExtensions(candidatePath, matcher)) continue;
+      const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      if (!errorAssetPath) continue;
 
-      const errorModule = await importModule(runner, candidatePath);
+      const errorModule = await importModule(runner, errorAssetPath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1904,9 +2028,10 @@ async function renderErrorPage(
       // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
+      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          const appModule = await importModule(runner, appPathErr);
+          const appModule = await importModule(runner, appAssetPath ?? appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -1969,6 +2094,14 @@ async function renderErrorPage(
       const element = createErrorElement(AppComponent, ErrorComponent);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+      const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
+      const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
+      const nonceAttr = createNonceAttribute(scriptNonce);
+      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        runner,
+        [appAssetPath, errorAssetPath],
+        nonceAttr,
+      );
 
       if (DocumentComponent) {
         const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
@@ -1976,6 +2109,7 @@ async function renderErrorPage(
           url,
           server,
           fontHeadHTML: "",
+          assetHeadHTML,
           scripts: "",
           DocumentComponent,
           statusCode,
@@ -2012,13 +2146,14 @@ async function renderErrorPage(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
 </body>
 </html>`;
         const transformedHtml = await server.transformIndexHtml(url, html);
-        res.writeHead(statusCode, { "Content-Type": "text/html" });
+        res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
         res.end(transformedHtml);
       }
       return;

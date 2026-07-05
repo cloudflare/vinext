@@ -14,6 +14,7 @@ import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   isNextjsBenchmarkInput,
+  nextjsBenchmarkInputTreeJq,
   nextjsInputFingerprint,
 } from "../benchmarks/perf/nextjs-input-fingerprint.mts";
 import { DEFAULT_PAIRED_ROUNDS, pairedRevisionOrder } from "../benchmarks/perf/pairing.mts";
@@ -236,6 +237,37 @@ describe("paired performance benchmarks", () => {
     }
     expect(isNextjsBenchmarkInput("benchmarks/perf/format-pr-comment.mjs")).toBe(false);
     expect(isNextjsBenchmarkInput("benchmarks/nextjs/app/page.tsx")).toBe(false);
+  });
+
+  const jqAvailable = spawnSync("jq", ["--version"], { encoding: "utf8" }).status === 0;
+  (jqAvailable ? it : it.skip)("keeps the remote tree jq predicate aligned with JS inputs", () => {
+    const entries = [
+      richGitTreeEntry(".github/workflows/perf.yml", "0"),
+      richGitTreeEntry("benchmarks/generate-app.mjs", "1"),
+      richGitTreeEntry("benchmarks/nextjs/package.json", "2"),
+      richGitTreeEntry("benchmarks/nextjs/app", "3"),
+      richGitTreeEntry("benchmarks/nextjs/app/page.tsx", "4"),
+      richGitTreeEntry("benchmarks/nextjs/appfoo/page.tsx", "5"),
+      richGitTreeEntry("benchmarks/perf/scenarios.json", "6"),
+      richGitTreeEntry("benchmarks/perf/README.md", "7"),
+      richGitTreeEntry("benchmarks/perf/format-pr-comment.mjs", "8"),
+      richGitTreeEntry("benchmarks/perf/upload-results.mjs", "9"),
+      richGitTreeEntry("benchmarks/perf/validate-results.mjs", "10"),
+      richGitTreeEntry("packages/vinext/src/index.ts", "11"),
+      { path: "benchmarks/perf/scenarios.json", sha: "tree", type: "tree", mode: "040000" },
+    ];
+
+    const jq = spawnSync("jq", [nextjsBenchmarkInputTreeJq], {
+      input: JSON.stringify(githubTree(entries)),
+      encoding: "utf8",
+    });
+
+    expect(jq.status, jq.stderr).toBe(0);
+    expect(JSON.parse(jq.stdout).tree).toEqual(
+      entries
+        .filter((entry) => entry.type === "blob" && isNextjsBenchmarkInput(entry.path))
+        .map((entry) => ({ path: entry.path, sha: entry.sha, type: entry.type })),
+    );
   });
 
   it("rejects symlinked bundle outputs", () => {
@@ -667,7 +699,7 @@ describe("paired performance benchmarks", () => {
             scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
   });
 
@@ -709,7 +741,7 @@ describe("paired performance benchmarks", () => {
         ),
       [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(nextjsInputs),
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(nextjsInputs),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
   });
 
@@ -745,7 +777,7 @@ describe("paired performance benchmarks", () => {
             scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${commitSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${commitSha}`]: commit(measuredAt),
     });
   }, 15_000);
 
@@ -807,8 +839,69 @@ describe("paired performance benchmarks", () => {
       [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(baseInputs),
       [`repos/cloudflare/vinext/git/trees/${mergeSha}?recursive=1`]: githubTree(baseInputs),
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(staleHeadInputs),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     });
+  });
+
+  it("filters remote tree responses before validating skipped Next.js inputs", () => {
+    const headSha = "a".repeat(40);
+    const baseSha = "b".repeat(40);
+    const mergeSha = "c".repeat(40);
+    const measuredAt = "2026-06-18T12:00:00.000Z";
+    const nextjsInputs = [
+      gitTreeEntry("benchmarks/nextjs/package.json", "1"),
+      gitTreeEntry("benchmarks/generate-app.mjs", "2"),
+      gitTreeEntry("benchmarks/perf/scenarios.json", "3"),
+    ];
+    const ignoredEntries = [
+      richGitTreeEntry("benchmarks/nextjs/app/page.tsx", "app"),
+      richGitTreeEntry("benchmarks/perf/README.md", "readme"),
+      richGitTreeEntry("benchmarks/perf/format-pr-comment.mjs", "formatter"),
+      { path: "benchmarks/perf", sha: "tree", type: "tree", mode: "040000" },
+      ...Array.from({ length: 5_000 }, (_, index) =>
+        richGitTreeEntry(`packages/vinext/src/generated-${index}.ts`, `${index}`),
+      ),
+    ];
+    const payload = performancePayload({
+      headSha,
+      baseSha,
+      measuredAt,
+      skippedImplementations: ["nextjs"],
+      benchmarks: [performanceBenchmark("vinext", true)],
+    });
+
+    const requests = validatePerformancePayload(payload, "pull_request", {
+      "repos/cloudflare/vinext/actions/runs/123": sourceRun("pull_request", headSha),
+      "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha, mergeSha),
+      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${baseSha}`]:
+        githubFile(
+          JSON.stringify({
+            scenarios: [
+              performanceScenario([
+                { id: "nextjs", label: "Next.js", compareBase: true },
+                { id: "vinext", label: "vinext", compareBase: true },
+              ]),
+            ],
+          }),
+        ),
+      [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree([
+        ...nextjsInputs,
+        ...ignoredEntries,
+      ]),
+      [`repos/cloudflare/vinext/git/trees/${mergeSha}?recursive=1`]: githubTree([
+        ...nextjsInputs,
+        ...ignoredEntries,
+      ]),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
+    });
+
+    const treeRequests = requests.filter((request) => request[1]?.includes("/git/trees/"));
+    expect(treeRequests).toHaveLength(2);
+    for (const request of treeRequests) {
+      const jqIndex = request.indexOf("--jq");
+      expect(jqIndex).toBeGreaterThan(-1);
+      expect(request[jqIndex + 1]).toBe(nextjsBenchmarkInputTreeJq);
+    }
   });
 
   it("rejects skipped Next.js when a benchmark runtime input changed", () => {
@@ -881,7 +974,7 @@ describe("paired performance benchmarks", () => {
             ],
           }),
         ),
-      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+      [`repos/cloudflare/vinext/git/commits/${headSha}`]: commit(measuredAt),
     };
 
     expect(() => validatePerformancePayload(payload, "pull_request", responses)).not.toThrow();
@@ -906,6 +999,7 @@ function validatePerformancePayload(
   const directory = mkdtempSync(join(tmpdir(), "vinext-perf-validator-"));
   const payloadPath = join(directory, "results.json");
   const responsesPath = join(directory, "responses.json");
+  const requestsPath = join(directory, "requests.jsonl");
   const ghPath = join(directory, "gh");
   writeFileSync(payloadPath, JSON.stringify(payload));
   writeFileSync(responsesPath, JSON.stringify(githubResponses));
@@ -918,11 +1012,37 @@ function validatePerformancePayload(
   writeFileSync(
     ghPath,
     `#!/usr/bin/env node
-const responses = JSON.parse(require("node:fs").readFileSync(process.env.MOCK_GH_RESPONSES, "utf8"));
-const response = responses[process.argv[3]];
+const fs = require("node:fs");
+fs.appendFileSync(process.env.MOCK_GH_REQUESTS, JSON.stringify(process.argv.slice(2)) + "\\n");
+const responses = JSON.parse(fs.readFileSync(process.env.MOCK_GH_RESPONSES, "utf8"));
+let response = responses[process.argv[3]];
 if (response === undefined) {
   console.error("Unexpected gh api request:", process.argv[3]);
   process.exit(1);
+}
+const jqIndex = process.argv.indexOf("--jq");
+function isNextjsBenchmarkInput(path) {
+  if (path === ".github/workflows/perf.yml" || path === "benchmarks/generate-app.mjs") return true;
+  if (path.startsWith("benchmarks/nextjs/")) return !path.startsWith("benchmarks/nextjs/app/");
+  return (
+    path.startsWith("benchmarks/perf/") &&
+    path !== "benchmarks/perf/README.md" &&
+    path !== "benchmarks/perf/format-pr-comment.mjs" &&
+    path !== "benchmarks/perf/upload-results.mjs" &&
+    path !== "benchmarks/perf/validate-results.mjs"
+  );
+}
+if (
+  jqIndex !== -1 &&
+  process.argv[jqIndex + 1] === process.env.MOCK_TREE_JQ &&
+  Array.isArray(response.tree)
+) {
+  response = {
+    truncated: response.truncated,
+    tree: response.tree
+      .filter((entry) => entry.type === "blob" && isNextjsBenchmarkInput(entry.path))
+      .map((entry) => ({ path: entry.path, sha: entry.sha, type: entry.type })),
+  };
 }
 process.stdout.write(JSON.stringify(response));
 `,
@@ -937,11 +1057,14 @@ process.stdout.write(JSON.stringify(response));
       env: {
         ...process.env,
         PATH: `${directory}:${process.env.PATH}`,
+        GITHUB_REPOSITORY: "cloudflare/vinext",
         GITHUB_TOKEN: "test",
         VINEXT_PERF_SOURCE_EVENT: sourceEvent,
         VINEXT_PERF_SOURCE_RUN_ID: "123",
         VINEXT_PERF_SOURCE_RUN_ATTEMPT: "1",
         MOCK_GH_RESPONSES: responsesPath,
+        MOCK_GH_REQUESTS: requestsPath,
+        MOCK_TREE_JQ: nextjsBenchmarkInputTreeJq,
       },
       encoding: "utf8",
     },
@@ -949,6 +1072,12 @@ process.stdout.write(JSON.stringify(response));
   if (validation.status !== 0) {
     throw new Error(validation.stderr || validation.stdout || "Performance validation failed");
   }
+  const requests = readFileSync(requestsPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+  return requests;
 }
 
 function performancePayload({
@@ -1136,10 +1265,14 @@ function gitTreeEntry(path: string, sha: string) {
   return { path, sha, type: "blob" };
 }
 
-function githubTree(tree: Array<ReturnType<typeof gitTreeEntry>>) {
+function richGitTreeEntry(path: string, sha: string) {
+  return { path, sha, type: "blob", mode: "100644", size: 123, url: "https://example.test" };
+}
+
+function githubTree(tree: Array<{ path: string; sha: string; type: string }>) {
   return { truncated: false, tree };
 }
 
 function commit(measuredAt: string) {
-  return { commit: { committer: { date: measuredAt } } };
+  return { committer: { date: measuredAt } };
 }

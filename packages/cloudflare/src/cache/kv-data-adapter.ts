@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
 
+export const DEFAULT_KV_DATA_CACHE_BINDING = "VINEXT_KV_CACHE";
+
 /** Options accepted by {@link kvDataAdapter}, forwarded to the runtime factory. */
 export type KvDataAdapterOptions = {
   /** KV namespace binding name on the Worker `env`. @default "VINEXT_KV_CACHE" */

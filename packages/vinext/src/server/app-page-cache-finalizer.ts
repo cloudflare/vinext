@@ -70,6 +70,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
+  omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -174,10 +175,17 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
+      const linkHeader = response.headers.get("link");
       const writes = [
         options.isrSet(
           htmlKey,
-          buildAppPageCacheValue(cachedHtml, undefined, 200, htmlRenderObservation),
+          buildAppPageCacheValue(
+            cachedHtml,
+            undefined,
+            200,
+            htmlRenderObservation,
+            linkHeader ? { link: linkHeader } : undefined,
+          ),
           cachePolicy.revalidateSeconds,
           pageTags,
           cachePolicy.expireSeconds,
@@ -228,7 +236,9 @@ export function finalizeAppPageRscCacheResponse(
   }
 
   const clientHeaders = new Headers(response.headers);
-  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
+  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+    omitCacheState: options.omitPendingDynamicCacheState === true,
+  });
 
   return new Response(response.body, {
     status: response.status,
@@ -241,13 +251,13 @@ export function scheduleAppPageRscCacheWrite(
   options: ScheduleAppPageRscCacheWriteOptions,
 ): boolean {
   const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild) {
+  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild || options.mountedSlotsHeader) {
     return false;
   }
 
   const rscKey = options.isrRscKey(
     options.cleanPathname,
-    options.mountedSlotsHeader,
+    null,
     options.renderMode,
     options.interceptionContext,
   );

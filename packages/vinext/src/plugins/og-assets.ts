@@ -49,6 +49,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -328,7 +329,7 @@ export function createOgAssetsPlugin(): Plugin {
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
             const chunkDir = path.posix.dirname(chunk.fileName);
-            const rel = path.posix.relative(chunkDir, emitted);
+            const rel = normalizePathSeparators(path.relative(chunkDir, emitted));
             const ref = rel.startsWith(".") ? rel : `./${rel}`;
 
             // Use MagicString so the chunk's sourcemap stays in sync with the
