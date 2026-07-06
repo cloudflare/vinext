@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
   generateBuildId: () => "test-build-id",
   env: {
     CUSTOM_VAR: "hello-from-config",

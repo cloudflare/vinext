@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createClientReferencePreloader } from "../packages/vinext/src/server/app-client-reference-preloader.js";
 
 function createDeferred(): { promise: Promise<void>; resolve: () => void } {

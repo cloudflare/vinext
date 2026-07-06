@@ -75,7 +75,7 @@ export default defineConfig({
 });
 ```
 
-In most cases `vinext deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
+In most cases `npx @vinext/cloudflare deploy` generates this automatically. Only use manual config when customizing the worker entry or adding bindings.
 
 ## wrangler.jsonc — Cloudflare Workers
 
@@ -179,7 +179,7 @@ NITRO_PRESET=node npx vite build
 
 Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET` is often unnecessary.
 
-**For Cloudflare Workers,** Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
+**For Cloudflare Workers,** Nitro works but the native integration (`npx @vinext/cloudflare deploy` / `vp exec vinext-cloudflare deploy` / `@cloudflare/vite-plugin`) is recommended for the best experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
 
 ## VinextOptions
 
@@ -188,7 +188,7 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 | `appDir` | `string`  | project root | Custom base directory for `app/` and `pages/`     |
 | `rsc`    | `boolean` | `true`       | Auto-register `@vitejs/plugin-rsc` for App Router |
 
-## vinext deploy flags
+## @vinext/cloudflare deploy flags
 
 | Flag                 | Description                              |
 | -------------------- | ---------------------------------------- |

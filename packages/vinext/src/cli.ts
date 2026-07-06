@@ -34,9 +34,12 @@ import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
+  findVinextNextConfigInPlugins,
   loadNextConfig,
   resolveNextConfig,
+  resolveNextConfigInput,
   PHASE_PRODUCTION_BUILD,
+  type NextConfigInput,
 } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
@@ -228,6 +231,7 @@ function hasPagesDir(): boolean {
 
 type BuildViteConfigMetadata = {
   emptyOutDir?: boolean;
+  nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   routeRootConfig: VinextRouteRootConfig | null;
 };
@@ -236,7 +240,9 @@ async function loadBuildViteConfigMetadata(
   vite: ViteModule,
   root: string,
 ): Promise<BuildViteConfigMetadata> {
-  if (!hasViteConfig(root)) return { prerenderConfig: null, routeRootConfig: null };
+  if (!hasViteConfig(root)) {
+    return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+  }
 
   // Read the raw user config before the multi-environment build so
   // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
@@ -248,8 +254,9 @@ async function loadBuildViteConfigMetadata(
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
-    prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
-    routeRootConfig: findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
+    nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
+    prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+    routeRootConfig: await findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
   };
 }
 
@@ -484,10 +491,11 @@ async function buildApp() {
 
   const root = process.cwd();
   const isApp = hasAppDir(normalizePathSeparators(root));
-  const resolvedNextConfig = await resolveNextConfig(
-    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
-    root,
-  );
+  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
+  const rawNextConfig = buildConfigMetadata.nextConfig
+    ? await resolveNextConfigInput(buildConfigMetadata.nextConfig, PHASE_PRODUCTION_BUILD)
+    : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  const resolvedNextConfig = await resolveNextConfig(rawNextConfig, root);
 
   // Coordinate a single build ID across every vinext() plugin instance in this
   // build. A hybrid app+pages build runs the App Router multi-environment build
@@ -562,8 +570,6 @@ async function buildApp() {
       });
     }
   }
-
-  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
 
   cleanBuildOutput({
     root,
@@ -693,10 +699,11 @@ async function buildApp() {
     prerenderResult = await runPrerender({
       root: normalizePathSeparators(process.cwd()),
       concurrency: parsed.prerenderConcurrency,
+      nextConfig: resolvedNextConfig,
     });
     await emitPrerenderPathManifest({
       root: normalizePathSeparators(process.cwd()),
-      nextConfigOverride: resolvedNextConfig,
+      nextConfig: resolvedNextConfig,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }

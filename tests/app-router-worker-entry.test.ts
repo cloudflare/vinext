@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 describe("App Router Production server worker entry compatibility", () => {
   it("accepts Worker-style default exports from dist/server/index.js", async () => {

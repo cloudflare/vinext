@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Plugin } from "vite";
 import { createRscReferenceValidationNormalizerPlugin } from "../packages/vinext/src/plugins/rsc-reference-validation-normalizer.js";
 

@@ -25,6 +25,11 @@ function buildExtensionGlob(stem: string, extensions: readonly string[]): string
   return `${stem}.{${extensions.join(",")}}`;
 }
 
+function includeDotDirectoryMatches(pattern: string): string {
+  if (!pattern.startsWith("**/")) return pattern;
+  return `{**,**/.*/**}/${pattern.slice(3)}`;
+}
+
 export type ValidFileMatcher = {
   extensions: string[];
   dottedExtensions: string[];
@@ -186,7 +191,7 @@ export async function* scanWithExtensions(
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
-  const pattern = buildExtensionGlob(stem, extensions);
+  const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),

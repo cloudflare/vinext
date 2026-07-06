@@ -89,12 +89,8 @@ function readBuiltBuildId(serverDir: string): string | null {
 type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
-  /**
-   * Override next.config values. Merged on top of the config loaded from disk.
-   * Intended for tests that need to exercise a specific config (e.g. output: 'export')
-   * without writing a next.config file.
-   */
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: import("../config/next-config.js").ResolvedNextConfig;
   /**
    * Override the path to the Pages Router server bundle.
    * Defaults to `<root>/dist/server/entry.js`.
@@ -185,14 +181,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
   const serverDir = path.dirname(rscBundlePath);
 
-  const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : // Note: shallow merge — nested keys like `images` or `i18n` in
-      // nextConfigOverride replace the entire nested object from loadedConfig.
-      // This is intentional for test usage (top-level overrides only); a deep
-      // merge would be needed to support partial nested overrides in the future.
-      { ...loadedConfig };
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : { ...(await resolveNextConfig(await loadNextConfig(root), root)) };
   // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
   // rather than re-resolving a fresh one. `config.buildId` is consumed when
   // computing prerendered-output identity (prerender.ts), so re-resolving here

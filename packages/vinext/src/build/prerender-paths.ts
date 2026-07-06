@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Server as HttpServer } from "node:http";
-import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
+import {
+  loadNextConfig,
+  resolveNextConfig,
+  type ResolvedNextConfig,
+} from "../config/next-config.js";
 import { appRouter } from "../routing/app-router.js";
 import { apiRouter, pagesRouter } from "../routing/pages-router.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
@@ -33,7 +37,8 @@ const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: ResolvedNextConfig;
   appDir?: string | null;
   pagesDir?: string | null;
   routeRootConfig?: VinextRouteRootConfig | null;
@@ -372,13 +377,9 @@ export async function emitPrerenderPathManifest(
     ? path.dirname(rscBundlePath)
     : path.dirname(pagesBundlePath);
   const manifestDir = path.join(root, "dist", "server");
-  const loadedConfig = await resolveNextConfig(
-    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
-    root,
-  );
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : { ...loadedConfig };
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : { ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)) };
   const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(bundleServerDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;
