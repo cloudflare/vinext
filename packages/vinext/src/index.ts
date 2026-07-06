@@ -531,9 +531,8 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 }
 
 async function collectDevPagesAppStylesheetAssets(
-  root: string,
   appFilePath: string,
-  resolve: ResolveFromImporter,
+  getModuleDependencies: (modulePath: string) => Promise<DevPagesModuleDependency[]>,
 ): Promise<string[]> {
   const stylesheetAssets: string[] = [];
   const seenAssets = new Set<string>();
@@ -541,9 +540,45 @@ async function collectDevPagesAppStylesheetAssets(
 
   async function visitModule(modulePath: string): Promise<void> {
     const cleanModulePath = stripViteModuleQuery(modulePath);
-    if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return;
     if (seenModules.has(cleanModulePath)) return;
     seenModules.add(cleanModulePath);
+
+    for (const dependency of await getModuleDependencies(cleanModulePath)) {
+      if (dependency.type === "stylesheet") {
+        if (seenAssets.has(dependency.asset)) continue;
+        seenAssets.add(dependency.asset);
+        stylesheetAssets.push(dependency.asset);
+      } else {
+        await visitModule(dependency.id);
+      }
+    }
+  }
+
+  await visitModule(appFilePath);
+  return stylesheetAssets;
+}
+
+type DevPagesModuleDependency =
+  | { type: "stylesheet"; asset: string }
+  | { type: "script"; id: string };
+
+function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFromImporter) {
+  const cache = new Map<string, Promise<DevPagesModuleDependency[]>>();
+
+  return function getModuleDependencies(modulePath: string): Promise<DevPagesModuleDependency[]> {
+    const cleanModulePath = stripViteModuleQuery(modulePath);
+    const cached = cache.get(cleanModulePath);
+    if (cached) return cached;
+
+    const pending = collectModuleDependencies(cleanModulePath);
+    cache.set(cleanModulePath, pending);
+    return pending;
+  };
+
+  async function collectModuleDependencies(
+    cleanModulePath: string,
+  ): Promise<DevPagesModuleDependency[]> {
+    if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return [];
 
     let ast: ReturnType<typeof parseAst>;
     try {
@@ -551,9 +586,10 @@ async function collectDevPagesAppStylesheetAssets(
         lang: parserLanguageForScript(cleanModulePath),
       });
     } catch {
-      return;
+      return [];
     }
 
+    const dependencies: DevPagesModuleDependency[] = [];
     for (const statement of ast.body as AstStaticDependencyDeclaration[]) {
       if (
         statement.type !== "ImportDeclaration" &&
@@ -575,21 +611,17 @@ async function collectDevPagesAppStylesheetAssets(
 
       if (isStylesheetSpecifier(specifier)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
-        if (!asset || seenAssets.has(asset)) continue;
-        seenAssets.add(asset);
-        stylesheetAssets.push(asset);
-        continue;
-      }
-
-      if (specifier.includes("?") || specifier.includes("#")) continue;
-      if (isScriptModuleId(resolved.id)) {
-        await visitModule(resolved.id);
+        if (asset) dependencies.push({ type: "stylesheet", asset });
+      } else if (
+        !specifier.includes("?") &&
+        !specifier.includes("#") &&
+        isScriptModuleId(resolved.id)
+      ) {
+        dependencies.push({ type: "script", id: resolved.id });
       }
     }
+    return dependencies;
   }
-
-  await visitModule(appFilePath);
-  return stylesheetAssets;
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
@@ -3538,11 +3570,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(appFilePath ? [appFilePath] : []),
               ...pagesRoutes.map((route) => route.filePath),
             ];
+            const getModuleDependencies = createDevPagesModuleDependencyReader(
+              root,
+              this.resolve.bind(this),
+            );
             for (const moduleFilePath of moduleFilePaths) {
               const stylesheetAssets = await collectDevPagesAppStylesheetAssets(
-                root,
                 moduleFilePath,
-                this.resolve.bind(this),
+                getModuleDependencies,
               );
               if (stylesheetAssets.length > 0) {
                 ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
