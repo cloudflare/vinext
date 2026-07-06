@@ -215,6 +215,31 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
+  it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
+    writeProject("true");
+    fs.appendFileSync(
+      path.join(tmpDir, "vite.config.ts"),
+      '\nthrow new Error("vite config loaded");\n',
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true, prerenderAll: true })).rejects.toThrow(
+      "vite config loaded",
+    );
+  });
+
+  it("loads Vite config even when disk config already enables static export", async () => {
+    writeProject("true");
+    writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    fs.appendFileSync(
+      path.join(tmpDir, "vite.config.ts"),
+      '\nthrow new Error("vite config loaded");\n',
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true })).rejects.toThrow("vite config loaded");
+  });
+
   it("loads Vite config once for all deploy metadata", async () => {
     writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile("dist/server/BUILD_ID", "build-a\n");

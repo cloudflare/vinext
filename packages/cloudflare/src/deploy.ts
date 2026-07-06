@@ -276,7 +276,9 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   );
   const plugins = loaded?.config.plugins;
   return {
-    cacheConfig: await findVinextCacheConfigInPlugins(plugins),
+    cacheConfig: viteConfigHasCacheAdapter(root)
+      ? await findVinextCacheConfigInPlugins(plugins)
+      : null,
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
     routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
