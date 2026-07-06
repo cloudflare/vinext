@@ -4,6 +4,7 @@ import MagicString from "magic-string";
 import { parseAst, type Plugin } from "vite";
 import {
   collectBindingNames,
+  DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   hasRange,
   isAstRecord,
@@ -23,6 +24,9 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
+const DYNAMIC_REQUEST_PRESCAN = new RegExp(
+  String.raw`(?:\brequire\b|${DYNAMIC_IMPORT_PRESCAN.source})`,
+);
 const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
@@ -885,6 +889,7 @@ export function createIgnoreDynamicRequestsPlugin(
         id: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
         },
+        code: DYNAMIC_REQUEST_PRESCAN,
       },
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];

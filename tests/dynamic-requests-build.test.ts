@@ -132,6 +132,25 @@ function dynamic() {
 }
 
 describe("App Router dynamic requests", () => {
+  it("natively filters source that cannot contain dynamic requests", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const codeFilter = transform.filter?.code;
+    if (!(codeFilter instanceof RegExp)) {
+      throw new Error("dynamic request code filter not found");
+    }
+
+    expect(codeFilter.test('import value from "package";')).toBe(false);
+    expect(codeFilter.test("export const value = getValue();")).toBe(false);
+    expect(codeFilter.test("require(request)")).toBe(true);
+    expect(codeFilter.test("require /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import(request)")).toBe(true);
+    expect(codeFilter.test("import /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import\n// comment\n(request)")).toBe(true);
+  });
+
   it("matches Next.js environment scoping", () => {
     const transform = createIgnoreDynamicRequestsPlugin(() => [
       "transpiled",
