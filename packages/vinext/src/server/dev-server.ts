@@ -737,7 +737,7 @@ export function createSSRHandler(
                 pagesNextData,
               )
             : true;
-        const initialRouterQuery = getPagesInitialRouterQuery(query, pagesNextData, false);
+        const initialRouterQuery = getPagesInitialRouterQuery(query, params, pagesNextData, false);
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
@@ -865,7 +865,7 @@ export function createSSRHandler(
             if (isFallbackRender && typeof routerShim.setSSRContext === "function") {
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
-                query: getPagesInitialRouterQuery(query, pagesNextData, true),
+                query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
                 asPath: requestAsPath,
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,

@@ -1376,11 +1376,12 @@ function isPagesRouterDocumentActive(): boolean {
 }
 
 function markPagesRouterReady(): boolean {
-  if (typeof window === "undefined" || routerRuntimeState.pagesRouterReady) return false;
-  routerRuntimeState.pagesRouterReady = true;
+  if (typeof window === "undefined") return false;
   if (window.__NEXT_DATA__?.isFallback !== true) {
     routerRuntimeState.pagesRouterInitialState = false;
   }
+  if (routerRuntimeState.pagesRouterReady) return false;
+  routerRuntimeState.pagesRouterReady = true;
   return true;
 }
 

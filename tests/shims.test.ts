@@ -15006,7 +15006,11 @@ describe("Pages Router router helpers", () => {
 
 describe("Pages Router concurrent navigation", () => {
   it("serializes an empty initial query for auto-export and fallback renders", () => {
-    function readQuery(options: { autoExport?: boolean; isFallback?: boolean }) {
+    function readQuery(options: {
+      autoExport?: boolean;
+      hasRewrites?: boolean;
+      isFallback?: boolean;
+    }) {
       const script = buildPagesNextDataScript({
         buildId: null,
         i18n: {},
@@ -15016,13 +15020,16 @@ describe("Pages Router concurrent navigation", () => {
         query: { slug: "draft", view: "full" },
         routePattern: "/docs/[slug]",
         safeJsonStringify,
-        nextData: options.autoExport ? { autoExport: true } : undefined,
+        nextData: options.autoExport
+          ? { autoExport: true, __vinext: { hasRewrites: options.hasRewrites === true } }
+          : undefined,
       });
       return JSON.parse(script.match(/>([\s\S]*)<\/script>/)![1]).query;
     }
 
     expect(readQuery({ autoExport: true })).toEqual({});
     expect(readQuery({ isFallback: true })).toEqual({});
+    expect(readQuery({ autoExport: true, hasRewrites: true })).toEqual({ slug: "draft" });
   });
 
   it("serializes the full initial query for ordinary server renders", () => {

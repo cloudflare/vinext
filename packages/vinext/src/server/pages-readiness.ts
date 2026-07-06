@@ -25,21 +25,31 @@ type PagesReadinessNextData = Pick<
   __vinext: Pick<NonNullable<VinextNextData["__vinext"]>, "hasRewrites">;
 };
 
+type PagesRouterQueryNextData = Pick<VinextNextData, "autoExport" | "gsp"> & {
+  __vinext?: { hasRewrites?: boolean };
+};
+
 export function getPagesInitialRouterQuery<T extends Record<string, unknown>>(
   query: T,
-  nextData: Pick<VinextNextData, "autoExport"> | undefined,
+  params: Record<string, unknown>,
+  nextData: PagesRouterQueryNextData | undefined,
   isFallback: boolean,
-): T | Record<string, never> {
-  return nextData?.autoExport === true || isFallback ? {} : query;
+): Record<string, unknown> {
+  if (isFallback) return {};
+  if (nextData?.autoExport !== true) return query;
+  return nextData.__vinext?.hasRewrites === true ? params : {};
 }
 
 export function getPagesSerializedRouterQuery<T extends Record<string, unknown>>(
   query: T,
   params: Record<string, unknown>,
-  nextData: Pick<VinextNextData, "autoExport" | "gsp"> | undefined,
+  nextData: PagesRouterQueryNextData | undefined,
   isFallback: boolean,
 ): T | Record<string, unknown> {
-  if (nextData?.autoExport === true || isFallback) return {};
+  if (isFallback) return {};
+  if (nextData?.autoExport === true) {
+    return nextData.__vinext?.hasRewrites === true ? params : {};
+  }
   return nextData?.gsp === true ? params : query;
 }
 

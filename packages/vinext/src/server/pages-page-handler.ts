@@ -459,7 +459,7 @@ export function createPagesPageHandler(
                 pagesNextData,
               )
             : true;
-        const initialRouterQuery = getPagesInitialRouterQuery(query, pagesNextData, false);
+        const initialRouterQuery = getPagesInitialRouterQuery(query, params, pagesNextData, false);
 
         function applySSRContext(extra?: Record<string, unknown>): void {
           if (typeof setSSRContext === "function") {
@@ -673,7 +673,7 @@ export function createPagesPageHandler(
         if (isFallbackRender && typeof setSSRContext === "function") {
           setSSRContext({
             pathname: routePattern,
-            query: getPagesInitialRouterQuery(query, pagesNextData, true),
+            query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
             asPath: renderAsPath ?? routeUrl,
             navigationIsReady: false,
             locale,
