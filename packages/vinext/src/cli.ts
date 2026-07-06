@@ -53,7 +53,6 @@ import {
 } from "./server/dev-lockfile.js";
 import { generateRouteTypes } from "./typegen.js";
 import { normalizePathSeparators } from "./utils/path.js";
-import { selectHybridPagesUserPlugins } from "./utils/plugin-options.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 import {
   findVinextRouteRootConfigInPlugins,
@@ -617,7 +616,24 @@ async function buildApp() {
           root,
         );
         if (loaded?.config.plugins) {
-          userTransformPlugins = await selectHybridPagesUserPlugins(loaded.config.plugins);
+          const flat = (loaded.config.plugins as unknown[]).flat(Infinity) as {
+            name?: string;
+          }[];
+          userTransformPlugins = flat.filter(
+            (p): p is import("vite").Plugin =>
+              !!p &&
+              typeof p.name === "string" &&
+              // vinext and its sub-plugins — re-registered below
+              !p.name.startsWith("vinext:") &&
+              // @vitejs/plugin-react — auto-registered by vinext
+              !p.name.startsWith("vite:react") &&
+              // @vitejs/plugin-rsc and its sub-plugins — App Router only
+              !p.name.startsWith("rsc:") &&
+              p.name !== "vite-rsc-load-module-dev-proxy" &&
+              // cloudflare() — injects multi-env environments block which
+              // conflicts with the plain SSR build config below
+              !p.name.startsWith("vite-plugin-cloudflare"),
+          );
         }
       }
       await vite.build({
