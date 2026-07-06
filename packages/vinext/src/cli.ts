@@ -699,7 +699,7 @@ async function buildApp() {
     prerenderResult = await runPrerender({
       root: normalizePathSeparators(process.cwd()),
       concurrency: parsed.prerenderConcurrency,
-      nextConfigOverride: resolvedNextConfig,
+      nextConfig: resolvedNextConfig,
     });
     await emitPrerenderPathManifest({
       root: normalizePathSeparators(process.cwd()),

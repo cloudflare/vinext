@@ -19,17 +19,21 @@ import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
+  findVinextNextConfigInPlugins,
   loadNextConfig,
-  loadVinextNextConfigFromViteConfig,
   resolveNextConfig,
   resolveNextConfigInput,
+  type NextConfigInput,
 } from "vinext/internal/config/next-config";
 import {
+  findVinextCacheConfigInPlugins,
+  findVinextPrerenderConfigInPlugins,
+  findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
-  loadVinextCacheConfigFromViteConfig,
-  loadVinextPrerenderConfigFromViteConfig,
-  loadVinextRouteRootConfigFromViteConfig,
   resolveVinextPrerenderDecision,
+  type ResolvedVinextPrerenderConfig,
+  type VinextCacheConfig,
+  type VinextRouteRootConfig,
 } from "vinext/internal/config/prerender";
 import {
   detectProject,
@@ -105,6 +109,13 @@ export type DeployOptions = {
 };
 
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
+
+type DeployViteConfigMetadata = {
+  cacheConfig: VinextCacheConfig | null;
+  nextConfig: NextConfigInput | null;
+  prerenderConfig: ResolvedVinextPrerenderConfig | null;
+  routeRootConfig: VinextRouteRootConfig | null;
+};
 
 function parsePositiveIntegerArg(raw: string, flag: string): number {
   if (raw === "") {
@@ -256,6 +267,22 @@ async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {
   return (await import(/* @vite-ignore */ viteUrl)) as ProjectViteApi;
 }
 
+async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteConfigMetadata> {
+  const vite = await loadProjectViteApi(root);
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  const plugins = loaded?.config.plugins;
+  return {
+    cacheConfig: findVinextCacheConfigInPlugins(plugins),
+    nextConfig: await findVinextNextConfigInPlugins(plugins),
+    prerenderConfig: findVinextPrerenderConfigInPlugins(plugins),
+    routeRootConfig: findVinextRouteRootConfigInPlugins(plugins),
+  };
+}
+
 async function runBuild(info: ProjectInfo, env: string | undefined): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
@@ -277,15 +304,11 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
 
 async function populateKVCacheFromPrerenderedArtifacts(
   root: string,
-  buildEnv: string | undefined,
   wranglerEnv: string | undefined,
+  cacheConfig: VinextCacheConfig | null,
 ): Promise<void> {
   if (!viteConfigHasCacheAdapter(root)) return;
 
-  const vite = await loadProjectViteApi(root);
-  const cacheConfig = await withCloudflareEnv(buildEnv, () =>
-    loadVinextCacheConfigFromViteConfig(vite, root),
-  );
   const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
   if (!kvConfig) return;
 
@@ -820,9 +843,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
+  const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
+    loadDeployViteConfigMetadata(info.root),
+  );
   const nextConfig = await withCloudflareEnv(buildEnv, async () => {
-    const vite = await loadProjectViteApi(info.root);
-    const inlineNextConfig = await loadVinextNextConfigFromViteConfig(vite, info.root);
+    const inlineNextConfig = viteConfigMetadata.nextConfig;
     const rawNextConfig = inlineNextConfig
       ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
       : await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
@@ -831,10 +856,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
   const vinextPrerenderConfig = shouldLoadVinextPrerenderConfig
-    ? await withCloudflareEnv(buildEnv, async () => {
-        const vite = await loadProjectViteApi(info.root);
-        return loadVinextPrerenderConfigFromViteConfig(vite, info.root);
-      })
+    ? viteConfigMetadata.prerenderConfig
     : null;
   const prerenderDecision = resolveVinextPrerenderDecision({
     prerenderAllFlag: options.prerenderAll,
@@ -852,14 +874,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   if (shouldEmitPrerenderPathManifest) {
-    const routeRootConfig = await withCloudflareEnv(buildEnv, async () => {
-      const vite = await loadProjectViteApi(info.root);
-      return loadVinextRouteRootConfigFromViteConfig(vite, info.root);
-    });
     await emitPrerenderPathManifest({
       root: info.root,
       nextConfigOverride: nextConfig,
-      routeRootConfig,
+      routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
 
@@ -877,7 +895,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await runPrerender({
       root: info.root,
       concurrency: options.prerenderConcurrency,
-      nextConfigOverride: nextConfig,
+      nextConfig,
     });
     ranPrerender = true;
   }
@@ -886,8 +904,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     try {
       await populateKVCacheFromPrerenderedArtifacts(
         root,
-        buildEnv,
         deployEnv === "production" && !options.env ? undefined : deployEnv,
+        viteConfigMetadata.cacheConfig,
       );
     } catch (error) {
       console.log(

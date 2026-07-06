@@ -1525,6 +1525,30 @@ describe("runPrerender — output: 'export' wiring", () => {
     ).rejects.toThrow(/Static export failed/);
   });
 
+  it("does not reload disk config when the caller supplies resolved config", async () => {
+    const configPath = path.join(PAGES_FIXTURE, "next.config.mjs");
+    const originalConfig = fs.readFileSync(configPath, "utf-8");
+
+    try {
+      fs.writeFileSync(configPath, 'throw new Error("disk config loaded unexpectedly");\n');
+      const [{ runPrerender }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/run-prerender.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
+
+      await expect(
+        runPrerender({
+          root: PAGES_FIXTURE,
+          nextConfig,
+          pagesBundlePath,
+        }),
+      ).rejects.toThrow(/Static export failed/);
+    } finally {
+      fs.writeFileSync(configPath, originalConfig);
+    }
+  });
+
   it("does not rewrite the Worker entry when prerender validation fails", async () => {
     const workerEntry = path.join(PAGES_FIXTURE, "dist", "server", "index.js");
     const source = 'export default { fetch() { return new Response("unchanged"); } };\n';
