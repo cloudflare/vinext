@@ -1202,7 +1202,7 @@ function discoverSlotSubRoutes(
 
       const subPages = findSlotSubPages(slotDir, matcher);
       for (const { relativePath, pagePath } of subPages) {
-        const subSegments = relativePath.split(path.sep);
+        const subSegments = relativePath.split("/");
         const convertedSubRoute = convertSegmentsToRouteParts(subSegments);
         if (!convertedSubRoute) continue;
 
@@ -1490,7 +1490,7 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
       const subDir = path.join(dir, entry.name);
       const page = findFile(subDir, "page", matcher);
       if (page) {
-        const relativePath = path.relative(slotDir, subDir);
+        const relativePath = normalizePathSeparators(path.relative(slotDir, subDir));
         results.push({ relativePath, pagePath: page });
       }
       // Continue scanning deeper for nested sub-pages
@@ -1525,8 +1525,8 @@ function findSlotConfigLayoutTreePositions(
   layoutPaths: readonly string[],
 ): number[] {
   return layoutPaths.map((layoutPath) => {
-    const relativeDir = path.relative(slotDir, path.dirname(layoutPath));
-    return relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0;
+    const relativeDir = normalizePathSeparators(path.relative(slotDir, path.dirname(layoutPath)));
+    return relativeDir ? relativeDir.split("/").filter(Boolean).length : 0;
   });
 }
 
@@ -1812,8 +1812,8 @@ function computeLayoutTreePositions(appDir: string, layouts: string[]): number[]
   return layouts.map((layoutPath) => {
     const layoutDir = path.dirname(layoutPath);
     if (layoutDir === appDir) return 0;
-    const relative = path.relative(appDir, layoutDir);
-    return relative.split(path.sep).length;
+    const relative = normalizePathSeparators(path.relative(appDir, layoutDir));
+    return relative.split("/").length;
   });
 }
 
@@ -2149,7 +2149,7 @@ function findMirroredSlotPage(
   };
   let best: Candidate | null = null;
   for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
-    const slotSegments = relativePath.split(path.sep);
+    const slotSegments = relativePath.split("/");
     const slotUrl = convertSegmentsToRouteParts(slotSegments);
     if (!slotUrl) continue;
     if (!patternsCompatible(slotUrl.urlSegments, routeUrl.urlSegments)) continue;
