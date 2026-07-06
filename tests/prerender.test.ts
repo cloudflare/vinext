@@ -1506,12 +1506,17 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
 
 describe("runPrerender — output: 'export' wiring", () => {
   let pagesBundlePath: string;
+  let exportNextConfig: Awaited<
+    ReturnType<typeof import("../packages/vinext/src/config/next-config.js").resolveNextConfig>
+  >;
 
   beforeAll(async () => {
     // Build pages-basic to a fresh tmpdir — no fixture copying needed.
-    // Pass the bundle path and a nextConfigOverride to runPrerender so it
+    // Pass the bundle path and resolved config to runPrerender so it
     // exercises output: 'export' without touching the real next.config.mjs.
     pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    exportNextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
   }, 120_000);
 
   it("throws when next.config output: 'export' and SSR routes exist", async () => {
@@ -1519,10 +1524,34 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/Static export failed/);
+  });
+
+  it("does not reload disk config when the caller supplies resolved config", async () => {
+    const configPath = path.join(PAGES_FIXTURE, "next.config.mjs");
+    const originalConfig = fs.readFileSync(configPath, "utf-8");
+
+    try {
+      fs.writeFileSync(configPath, 'throw new Error("disk config loaded unexpectedly");\n');
+      const [{ runPrerender }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/run-prerender.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
+
+      await expect(
+        runPrerender({
+          root: PAGES_FIXTURE,
+          nextConfig,
+          pagesBundlePath,
+        }),
+      ).rejects.toThrow(/Static export failed/);
+    } finally {
+      fs.writeFileSync(configPath, originalConfig);
+    }
   });
 
   it("does not rewrite the Worker entry when prerender validation fails", async () => {
@@ -1536,7 +1565,7 @@ describe("runPrerender — output: 'export' wiring", () => {
       await expect(
         runPrerender({
           root: PAGES_FIXTURE,
-          nextConfigOverride: { output: "export" },
+          nextConfig: exportNextConfig,
           pagesBundlePath,
         }),
       ).rejects.toThrow(/Static export failed/);
@@ -1552,7 +1581,7 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/\/ssr/);

@@ -30,6 +30,7 @@
     "@types/node": "catalog:",
     "am-i-vibing": "catalog:",
     "magic-string": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {

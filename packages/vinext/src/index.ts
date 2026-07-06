@@ -1,6 +1,7 @@
 import type {
   Alias,
   CSSModulesOptions,
+  HotUpdateOptions,
   Logger,
   Plugin,
   PluginOption,
@@ -73,6 +74,7 @@ import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
+  VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY,
   loadNextConfig,
   resolveNextConfigInput,
   resolveNextConfig,
@@ -1491,7 +1493,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
   }
 
-  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+  const configuredReactOptions =
+    options.react && options.react !== true ? options.react : undefined;
+  const reactOptions = configuredReactOptions;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
@@ -1505,7 +1509,36 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     }
     const reactImport = import(pathToFileURL(resolvedReactPath).href);
     reactPluginPromise = reactImport
-      .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
+      .then((mod) => {
+        const react = (mod as VitePluginReactModule).default;
+        const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
+          const originalApply = plugin.apply;
+          return {
+            ...plugin,
+            apply(config, env) {
+              if (env.command !== command) return false;
+              if (!originalApply) return true;
+              if (typeof originalApply === "function") {
+                return originalApply(config, env);
+              }
+              return originalApply === env.command;
+            },
+          };
+        };
+        const buildPlugins = react(reactOptions).map((plugin) =>
+          limitToCommand(plugin as Plugin, "build"),
+        );
+        const hasConfiguredReactInclude =
+          configuredReactOptions !== undefined &&
+          Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
+        const serveOptions = hasConfiguredReactInclude
+          ? reactOptions
+          : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
+        const servePlugins = react(serveOptions).map((plugin) =>
+          limitToCommand(plugin as Plugin, "serve"),
+        );
+        return [...buildPlugins, ...servePlugins];
+      })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
           cause,
@@ -1582,11 +1615,48 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return mdxDelegatePromise;
   }
 
+  const mdxProxyPlugin: Plugin = {
+    name: "vinext:mdx",
+    enforce: "pre",
+    transform: {
+      filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
+      async handler(code, id, options) {
+        const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
+        if (delegate?.transform) {
+          const hook = delegate.transform;
+          const transform = typeof hook === "function" ? hook : hook.handler;
+          return transform.call(this, code, id, options);
+        }
+
+        if (!hasUserMdxPlugin) {
+          throw new Error(
+            `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
+              `Install @mdx-js/rollup or register an MDX plugin manually.`,
+          );
+        }
+      },
+    },
+  };
+
+  const mdxConfigProxyPlugin: Plugin = {
+    name: "vinext:mdx-config",
+    enforce: "pre",
+    config(config, env) {
+      if (!mdxDelegate?.config) return;
+      const hook = mdxDelegate.config;
+      const fn = typeof hook === "function" ? hook : hook.handler;
+      return fn.call(this, config, env);
+    },
+  };
+
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     createStyledJsxPlugin(earlyBaseDir),
+    // Compile MDX to JSX before @vitejs/plugin-react handles the generated
+    // component and injects Fast Refresh registration in dev.
+    mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component
@@ -1731,6 +1801,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Expose normalized prerender config to build/deploy metadata loaders that
       // inspect the Vite plugin array after a fresh config load.
       ...({ [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]: prerenderConfig } as Record<
+        string,
+        unknown
+      >),
+      ...({ [VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY]: options.nextConfig ?? null } as Record<
         string,
         unknown
       >),
@@ -3880,48 +3954,10 @@ export const loadServerActionClient = ${
     },
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
-    // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
-    // during vinext:config's config() (when MDX files are detected), but
-    // plugins returned from config() hooks run too late in the pipeline —
-    // after vite:import-analysis. This top-level proxy with enforce:"pre"
-    // ensures MDX transforms run at the correct stage. Both vinext:config
-    // and this proxy are enforce:"pre", and vinext:config comes first in
-    // the array, so mdxDelegate is already set when this proxy's hooks fire.
-    {
-      name: "vinext:mdx",
-      enforce: "pre",
-      config(config, env) {
-        if (!mdxDelegate?.config) return;
-        const hook = mdxDelegate.config;
-        const fn = typeof hook === "function" ? hook : hook.handler;
-        return fn.call(this, config, env);
-      },
-      transform: {
-        // Native id filter so the JS handler only runs for `.mdx` files instead
-        // of being invoked for every module in the graph just to bail. The
-        // case-insensitive `\.mdx$` include covers cross-platform extension
-        // casing; `exclude: /\?/` skips query imports like `foo.mdx?raw`
-        // (@mdx-js/rollup ignores the query and would compile them as MDX) —
-        // including the `foo.mdx?something.mdx` edge case where the id still
-        // ends in `.mdx`.
-        filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
-        async handler(code, id, options) {
-          const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
-          if (delegate?.transform) {
-            const hook = delegate.transform;
-            const transform = typeof hook === "function" ? hook : hook.handler;
-            return transform.call(this, code, id, options);
-          }
-
-          if (!hasUserMdxPlugin) {
-            throw new Error(
-              `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
-                `Install @mdx-js/rollup or register an MDX plugin manually.`,
-            );
-          }
-        },
-      },
-    },
+    // `vinext:config` creates the lazy MDX delegate during its config hook.
+    // Forward the delegate's config hook afterward while keeping the MDX
+    // transform itself before React in the transform pipeline.
+    mdxConfigProxyPlugin,
     createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
     // that exist in Next.js's bundled React canary but not in stable React 19.
@@ -3977,56 +4013,61 @@ export const loadServerActionClient = ${
     {
       name: "vinext:pages-router",
 
-      // HMR: trigger full-reload for Pages Router page changes.
-      // Even with @vitejs/plugin-react providing React Fast Refresh,
-      // the Pages Router injects hydration via inline <script type="module">
-      // which may not be tracked in Vite's module graph. Explicitly
-      // sending full-reload ensures changes are always reflected in
-      // the browser.
-      hotUpdate(options: { file: string; server: ViteDevServer; modules: unknown[] }) {
-        if (!hasPagesDir) return;
-        const isPagesAppFile = (filePath: string): boolean => {
-          const relativePath = path.relative(pagesDir, filePath);
-          return (
-            !relativePath.includes("/") &&
-            relativePath.startsWith("_app.") &&
-            fileMatcher.extensionRegex.test(filePath)
-          );
-        };
-        const isPotentialPagesAssetGraphScript = (filePath: string): boolean => {
-          const cleanPath = stripViteModuleQuery(filePath);
-          if (!path.isAbsolute(cleanPath)) return false;
-          if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-          const relativeRootPath = path.relative(root, cleanPath);
-          if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath)) return false;
-          if (
-            relativeRootPath.includes("/node_modules/") ||
-            relativeRootPath.startsWith("node_modules/")
-          ) {
-            return false;
+      // Keep the generated Pages asset manifest fresh while allowing Vite and
+      // @vitejs/plugin-react to handle normal module updates. Next.js preserves
+      // browser state for Pages Router Fast Refresh, including edits to _app.
+      hotUpdate: {
+        order: "post",
+        handler(options: HotUpdateOptions) {
+          if (!hasPagesDir) return;
+          const isPagesAppFile = (filePath: string): boolean => {
+            const relativePath = path.relative(pagesDir, filePath);
+            return (
+              !relativePath.includes("/") &&
+              relativePath.startsWith("_app.") &&
+              fileMatcher.extensionRegex.test(filePath)
+            );
+          };
+          const isPotentialPagesAssetGraphScript = (filePath: string): boolean => {
+            const cleanPath = stripViteModuleQuery(filePath);
+            if (!path.isAbsolute(cleanPath)) return false;
+            if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
+            const relativeRootPath = path.relative(root, cleanPath);
+            if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath))
+              return false;
+            if (
+              relativeRootPath.includes("/node_modules/") ||
+              relativeRootPath.startsWith("node_modules/")
+            ) {
+              return false;
+            }
+            const relativeAppPath = path.relative(appDir, cleanPath);
+            return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
+          };
+          const pagesAppChanged = isPagesAppFile(options.file);
+          const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(options.file);
+          const pagesAssetGraphChanged =
+            pagesAppChanged ||
+            STYLESHEET_FILE_RE.test(options.file) ||
+            pagesAssetGraphScriptChanged;
+          if (pagesAssetGraphChanged) {
+            for (const env of Object.values(options.server.environments)) {
+              const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
+              if (mod) env.moduleGraph.invalidateModule(mod);
+            }
           }
-          const relativeAppPath = path.relative(appDir, cleanPath);
-          return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
-        };
-        const pagesAppChanged = isPagesAppFile(options.file);
-        const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(options.file);
-        const pagesAssetGraphChanged =
-          pagesAppChanged || STYLESHEET_FILE_RE.test(options.file) || pagesAssetGraphScriptChanged;
-        if (pagesAssetGraphChanged) {
-          for (const env of Object.values(options.server.environments)) {
-            const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
-            if (mod) env.moduleGraph.invalidateModule(mod);
+          if (this.environment?.name === "ssr" && pagesAssetGraphScriptChanged) {
+            for (const mod of options.modules) {
+              this.environment.moduleGraph.invalidateModule(
+                mod,
+                new Set(),
+                options.timestamp,
+                true,
+              );
+            }
+            return [];
           }
-        }
-        if (pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged)) {
-          options.server.ws.send({ type: "full-reload" });
-          return [];
-        }
-        if (hasAppDir) return;
-        if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
-          options.server.environments.client.hot.send({ type: "full-reload" });
-          return [];
-        }
+        },
       },
 
       configureServer(server: ViteDevServer) {
@@ -4116,13 +4157,12 @@ export const loadServerActionClient = ${
           pagesRunner?.clearCache();
         }
 
-        function invalidatePagesClientAssetsModule(reloadDocument = false) {
+        function invalidatePagesClientAssetsModule() {
           for (const env of Object.values(server.environments)) {
             const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
           pagesRunner?.clearCache();
-          if (reloadDocument) server.ws.send({ type: "full-reload" });
         }
 
         function invalidateAppRoutingModules() {
@@ -4260,9 +4300,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
           // chokidar reports native separators on Windows; pagesDir is canonical slash.
           if (
@@ -4280,6 +4318,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }
@@ -4291,9 +4330,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -4304,9 +4341,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
           // chokidar reports native separators on Windows; pagesDir is canonical slash.
           if (
@@ -4324,6 +4359,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }

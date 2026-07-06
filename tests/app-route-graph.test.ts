@@ -10,6 +10,7 @@ import {
   type AppRouteGraphRoute,
   type RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import { matchAppRoute } from "../packages/vinext/src/routing/app-router.js";
 
 // pathslash picks its platform flavor once at module load: on POSIX the
 // default export is plain node:path.posix and `toSlash` is an identity, so the
@@ -1442,6 +1443,30 @@ describe("App Router route graph builder", () => {
 
       expect(patterns).toContain("/products/:variant.id");
       expect(patterns).toContain("/users/:user@domain");
+    });
+  });
+
+  it("discovers route handlers inside dot-directories like .well-known", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, ".well-known/openid-configuration/route.ts", EMPTY_ROUTE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/.well-known/openid-configuration");
+
+      expect(route.routePath).toBe(
+        path.posix.join(appDir, ".well-known/openid-configuration/route.ts"),
+      );
+      expect(route.ids.routeHandler).toBe("route-handler:/.well-known/openid-configuration");
+      expect(graph.routeManifest.segmentGraph.routeHandlers.get(route.ids.routeHandler!)).toEqual({
+        id: "route-handler:/.well-known/openid-configuration",
+        routeId: "route:/.well-known/openid-configuration",
+        pattern: "/.well-known/openid-configuration",
+      });
+      expect(matchAppRoute("/.well-known/openid-configuration", graph.routes)).toEqual({
+        params: {},
+        route,
+      });
     });
   });
 

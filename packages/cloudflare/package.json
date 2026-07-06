@@ -58,6 +58,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "vinext": "workspace:*",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "peerDependencies": {
