@@ -1,6 +1,7 @@
 import type {
   Alias,
   CSSModulesOptions,
+  HotUpdateOptions,
   Logger,
   Plugin,
   PluginOption,
@@ -3981,56 +3982,61 @@ export const loadServerActionClient = ${
     {
       name: "vinext:pages-router",
 
-      // HMR: trigger full-reload for Pages Router page changes.
-      // Even with @vitejs/plugin-react providing React Fast Refresh,
-      // the Pages Router injects hydration via inline <script type="module">
-      // which may not be tracked in Vite's module graph. Explicitly
-      // sending full-reload ensures changes are always reflected in
-      // the browser.
-      hotUpdate(options: { file: string; server: ViteDevServer; modules: unknown[] }) {
-        if (!hasPagesDir) return;
-        const isPagesAppFile = (filePath: string): boolean => {
-          const relativePath = normalizePathSeparators(path.relative(pagesDir, filePath));
-          return (
-            !relativePath.includes("/") &&
-            relativePath.startsWith("_app.") &&
-            fileMatcher.extensionRegex.test(filePath)
-          );
-        };
-        const isPotentialPagesAssetGraphScript = (filePath: string): boolean => {
-          const cleanPath = stripViteModuleQuery(filePath);
-          if (!path.isAbsolute(cleanPath)) return false;
-          if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-          const relativeRootPath = normalizePathSeparators(path.relative(root, cleanPath));
-          if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath)) return false;
-          if (
-            relativeRootPath.includes("/node_modules/") ||
-            relativeRootPath.startsWith("node_modules/")
-          ) {
-            return false;
+      // Keep the generated Pages asset manifest fresh while allowing Vite and
+      // @vitejs/plugin-react to handle normal module updates. Next.js preserves
+      // browser state for Pages Router Fast Refresh, including edits to _app.
+      hotUpdate: {
+        order: "post",
+        handler(options: HotUpdateOptions) {
+          if (!hasPagesDir) return;
+          const isPagesAppFile = (filePath: string): boolean => {
+            const relativePath = normalizePathSeparators(path.relative(pagesDir, filePath));
+            return (
+              !relativePath.includes("/") &&
+              relativePath.startsWith("_app.") &&
+              fileMatcher.extensionRegex.test(filePath)
+            );
+          };
+          const isPotentialPagesAssetGraphScript = (filePath: string): boolean => {
+            const cleanPath = stripViteModuleQuery(filePath);
+            if (!path.isAbsolute(cleanPath)) return false;
+            if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
+            const relativeRootPath = normalizePathSeparators(path.relative(root, cleanPath));
+            if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath))
+              return false;
+            if (
+              relativeRootPath.includes("/node_modules/") ||
+              relativeRootPath.startsWith("node_modules/")
+            ) {
+              return false;
+            }
+            const relativeAppPath = normalizePathSeparators(path.relative(appDir, cleanPath));
+            return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
+          };
+          const pagesAppChanged = isPagesAppFile(options.file);
+          const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(options.file);
+          const pagesAssetGraphChanged =
+            pagesAppChanged ||
+            STYLESHEET_FILE_RE.test(options.file) ||
+            pagesAssetGraphScriptChanged;
+          if (pagesAssetGraphChanged) {
+            for (const env of Object.values(options.server.environments)) {
+              const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
+              if (mod) env.moduleGraph.invalidateModule(mod);
+            }
           }
-          const relativeAppPath = normalizePathSeparators(path.relative(appDir, cleanPath));
-          return relativeAppPath.startsWith("..") || path.isAbsolute(relativeAppPath);
-        };
-        const pagesAppChanged = isPagesAppFile(options.file);
-        const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(options.file);
-        const pagesAssetGraphChanged =
-          pagesAppChanged || STYLESHEET_FILE_RE.test(options.file) || pagesAssetGraphScriptChanged;
-        if (pagesAssetGraphChanged) {
-          for (const env of Object.values(options.server.environments)) {
-            const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
-            if (mod) env.moduleGraph.invalidateModule(mod);
+          if (this.environment?.name === "ssr" && pagesAssetGraphScriptChanged) {
+            for (const mod of options.modules) {
+              this.environment.moduleGraph.invalidateModule(
+                mod,
+                new Set(),
+                options.timestamp,
+                true,
+              );
+            }
+            return [];
           }
-        }
-        if (pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged)) {
-          options.server.ws.send({ type: "full-reload" });
-          return [];
-        }
-        if (hasAppDir) return;
-        if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
-          options.server.environments.client.hot.send({ type: "full-reload" });
-          return [];
-        }
+        },
       },
 
       configureServer(server: ViteDevServer) {
@@ -4120,13 +4126,12 @@ export const loadServerActionClient = ${
           pagesRunner?.clearCache();
         }
 
-        function invalidatePagesClientAssetsModule(reloadDocument = false) {
+        function invalidatePagesClientAssetsModule() {
           for (const env of Object.values(server.environments)) {
             const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
           pagesRunner?.clearCache();
-          if (reloadDocument) server.ws.send({ type: "full-reload" });
         }
 
         function invalidateAppRoutingModules() {
@@ -4264,9 +4269,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
@@ -4279,6 +4282,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }
@@ -4290,9 +4294,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -4303,9 +4305,7 @@ export const loadServerActionClient = ${
             hasPagesDir &&
             (pagesAppChanged || STYLESHEET_FILE_RE.test(filePath) || pagesAssetGraphScriptChanged)
           ) {
-            invalidatePagesClientAssetsModule(
-              pagesAppChanged || (!hasAppDir && pagesAssetGraphScriptChanged),
-            );
+            invalidatePagesClientAssetsModule();
           }
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
@@ -4318,6 +4318,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }

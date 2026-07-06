@@ -3426,6 +3426,7 @@ describe("Virtual server entry generation", () => {
       expect(pagesPlugin).toBeDefined();
       const hotUpdate = pagesPlugin.hotUpdate;
       expect(hotUpdate).toBeDefined();
+      expect(hotUpdate).toMatchObject({ order: "post" });
       const hotUpdateResult =
         typeof hotUpdate === "function"
           ? await hotUpdate.call(pagesPlugin, {
@@ -3442,6 +3443,115 @@ describe("Virtual server entry generation", () => {
       expect(hotUpdateResult).toBeUndefined();
       expect(wsSend).not.toHaveBeenCalledWith({ type: "full-reload" });
       expect(clientHotSend).not.toHaveBeenCalledWith({ type: "full-reload" });
+    } finally {
+      wsSend.mockRestore();
+      clientHotSend.mockRestore();
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not force full reload for Pages Router Fast Refresh updates", async () => {
+    // Ported from Next.js:
+    // test/development/pages-dir/custom-app-hmr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/custom-app-hmr/index.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-fast-refresh-"));
+    const sharedPath = path.join(tmpDir, "lib", "shared.ts");
+    const appPath = path.join(tmpDir, "pages", "_app.tsx");
+    const pagePath = path.join(tmpDir, "pages", "index.tsx");
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(sharedPath, 'export const shared = "shared";\n');
+    fs.writeFileSync(appPath, PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      pagePath,
+      'import { shared } from "../lib/shared";\n' +
+        "export default function Home() { return <div>{shared}</div>; }\n",
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const wsSend = vi.spyOn(testServer.ws, "send");
+    const clientHotSend = vi.spyOn(testServer.environments.client.hot, "send");
+
+    try {
+      const pagesPlugin = testServer.config.plugins.find(
+        (plugin): plugin is any => plugin.name === "vinext:pages-router",
+      );
+      expect(pagesPlugin).toBeDefined();
+      const hotUpdate = pagesPlugin.hotUpdate;
+      expect(hotUpdate).toBeDefined();
+
+      for (const file of [sharedPath, appPath, pagePath]) {
+        const hotUpdateResult =
+          typeof hotUpdate === "function"
+            ? await hotUpdate.call(pagesPlugin, {
+                file,
+                server: testServer,
+                modules: [{ id: file }],
+              })
+            : await hotUpdate.handler.call(pagesPlugin, {
+                file,
+                server: testServer,
+                modules: [{ id: file }],
+              });
+
+        expect(hotUpdateResult).toBeUndefined();
+      }
+
+      expect(wsSend).not.toHaveBeenCalledWith({ type: "full-reload" });
+      expect(clientHotSend).not.toHaveBeenCalledWith({ type: "full-reload" });
+
+      const ssrModule = testServer.environments.ssr.moduleGraph.createFileOnlyEntry(pagePath);
+      const invalidateModule = vi.spyOn(
+        testServer.environments.ssr.moduleGraph,
+        "invalidateModule",
+      );
+      const ssrHotUpdateResult =
+        typeof hotUpdate === "function"
+          ? await hotUpdate.call(
+              { environment: testServer.environments.ssr },
+              {
+                type: "update",
+                file: pagePath,
+                timestamp: Date.now(),
+                modules: [ssrModule],
+                read: () => fs.readFileSync(pagePath, "utf8"),
+                server: testServer,
+              },
+            )
+          : await hotUpdate.handler.call(
+              { environment: testServer.environments.ssr },
+              {
+                type: "update",
+                file: pagePath,
+                timestamp: Date.now(),
+                modules: [ssrModule],
+                read: () => fs.readFileSync(pagePath, "utf8"),
+                server: testServer,
+              },
+            );
+
+      expect(ssrHotUpdateResult).toEqual([]);
+      expect(invalidateModule).toHaveBeenCalledWith(
+        ssrModule,
+        expect.any(Set),
+        expect.any(Number),
+        true,
+      );
+
+      wsSend.mockClear();
+      testServer.watcher.emit("add", pagePath);
+      testServer.watcher.emit("unlink", pagePath);
+      expect(wsSend).toHaveBeenCalledTimes(2);
+      expect(wsSend).toHaveBeenNthCalledWith(1, { type: "full-reload" });
+      expect(wsSend).toHaveBeenNthCalledWith(2, { type: "full-reload" });
     } finally {
       wsSend.mockRestore();
       clientHotSend.mockRestore();
