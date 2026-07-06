@@ -116,7 +116,18 @@ describe("App Router Production server self-hosted next/font/google headers", ()
       const builder = await createBuilder({
         root: FONT_FIXTURE_DIR,
         configFile: false,
-        plugins: [vinext({ appDir: FONT_FIXTURE_DIR })],
+        plugins: [
+          vinext({
+            appDir: FONT_FIXTURE_DIR,
+            // Pin a deploymentId: the ?dpl= asset query must NOT leak into
+            // font preload hrefs. A preload only matches a later font
+            // request when the URLs are byte-identical, and the @font-face
+            // src URLs are emitted bare — appending ?dpl= to the preloads
+            // made the browser download every font twice (wasted preload +
+            // late re-fetch once the CSS parsed).
+            nextConfig: () => ({ deploymentId: "dpl-font-prod-test" }),
+          }),
+        ],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -168,6 +179,24 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     );
     expect(html).not.toContain(FONT_FIXTURE_DIR);
     expect(html).not.toContain(".vinext/fonts");
+  });
+
+  it("emits font preload hrefs byte-identical to the @font-face src URLs (no ?dpl= query)", async () => {
+    const res = await fetch(`${fontBaseUrl}/`);
+    const html = await res.text();
+    const preloadHrefs = [
+      ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
+    ].map((m) => m[1]);
+    expect(preloadHrefs.length).toBeGreaterThan(0);
+    const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
+    expect(styleMatch).not.toBeNull();
+    for (const href of preloadHrefs) {
+      // The deploymentId is pinned in this build; if it leaks into the
+      // preload href the URL no longer matches the @font-face src and the
+      // preload becomes a wasted duplicate download.
+      expect(href).not.toContain("dpl");
+      expect(styleMatch![1]).toContain(`url(${href})`);
+    }
   });
 
   it("emits served URLs in the injected <style data-vinext-fonts> block", async () => {
