@@ -14228,7 +14228,7 @@ describe("next/compat/router shim", () => {
 
     setSSRContext({
       pathname: "/posts/[id]",
-      query: { id: "42", view: "full" },
+      query: {},
       asPath: "/posts/42?view=full",
       navigationIsReady: false,
       nextData: {
@@ -14284,7 +14284,7 @@ describe("next/compat/router shim", () => {
       __NEXT_DATA__: {
         props: {},
         page: "/posts/[id]",
-        query: { id: "42", view: "full" },
+        query: {},
         autoExport: true,
         isFallback: false,
       },
@@ -14343,7 +14343,7 @@ describe("next/compat/router shim", () => {
 
     setSSRContext({
       pathname: "/docs/[slug]",
-      query: { slug: "draft", from: "fallback" },
+      query: {},
       asPath: "/docs/draft?from=fallback",
       navigationIsReady: false,
       isFallback: true,
@@ -14360,6 +14360,134 @@ describe("next/compat/router shim", () => {
       expect(captured).toEqual({});
     } finally {
       setSSRContext(null);
+    }
+  });
+
+  it("useRouter().query preserves the serialized fallback snapshot until resolution", async () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: { pathname: "/docs/draft", search: "", hash: "" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+      __NEXT_DATA__: {
+        props: {},
+        page: "/docs/[slug]",
+        query: {},
+        gsp: true,
+        isFallback: true,
+      },
+    };
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const { useRouter, wrapWithRouterContext } =
+        await import("../packages/vinext/src/shims/router.js");
+
+      let captured: any;
+      function Probe() {
+        captured = useRouter();
+        return React.createElement("span", null, JSON.stringify(captured.query));
+      }
+
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>{}</span>");
+      expect(captured.isReady).toBe(true);
+      expect(captured.isFallback).toBe(true);
+      expect(captured.query).toEqual({});
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("useRouter().query defers URL search for non-dynamic auto-export hydration", async () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: { pathname: "/about", search: "?view=full", hash: "" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+      __NEXT_DATA__: {
+        props: {},
+        page: "/about",
+        query: {},
+        autoExport: true,
+        isFallback: false,
+      },
+    };
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const { useRouter, wrapWithRouterContext, _markPagesRouterReady } = routerModule;
+      let captured: any;
+      function Probe() {
+        captured = useRouter();
+        return React.createElement("span", null, JSON.stringify(captured.query));
+      }
+
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(captured.isReady).toBe(false);
+      expect(captured.query).toEqual({});
+
+      expect(_markPagesRouterReady()).toBe(true);
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(captured.query).toEqual({ view: "full" });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("useRouter().query preserves serialized GSP params before merging URL search", async () => {
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: { pathname: "/posts/42", search: "?view=full", hash: "" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() {},
+      __NEXT_DATA__: {
+        props: {},
+        page: "/posts/[id]",
+        query: { id: "42" },
+        gsp: true,
+        isFallback: false,
+      },
+    };
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const { useRouter, wrapWithRouterContext, _markPagesRouterReady } = routerModule;
+      let captured: any;
+      function Probe() {
+        captured = useRouter();
+        return React.createElement("span", null, JSON.stringify(captured.query));
+      }
+
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(captured.isReady).toBe(false);
+      expect(captured.query).toEqual({ id: "42" });
+
+      expect(_markPagesRouterReady()).toBe(true);
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(captured.query).toEqual({ id: "42", view: "full" });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
     }
   });
 
@@ -14877,6 +15005,44 @@ describe("Pages Router router helpers", () => {
 });
 
 describe("Pages Router concurrent navigation", () => {
+  it("serializes an empty initial query for auto-export and fallback renders", () => {
+    function readQuery(options: { autoExport?: boolean; isFallback?: boolean }) {
+      const script = buildPagesNextDataScript({
+        buildId: null,
+        i18n: {},
+        isFallback: options.isFallback,
+        pageProps: {},
+        params: { slug: "draft" },
+        query: { slug: "draft", view: "full" },
+        routePattern: "/docs/[slug]",
+        safeJsonStringify,
+        nextData: options.autoExport ? { autoExport: true } : undefined,
+      });
+      return JSON.parse(script.match(/>([\s\S]*)<\/script>/)![1]).query;
+    }
+
+    expect(readQuery({ autoExport: true })).toEqual({});
+    expect(readQuery({ isFallback: true })).toEqual({});
+  });
+
+  it("serializes the full initial query for ordinary server renders", () => {
+    const script = buildPagesNextDataScript({
+      buildId: null,
+      i18n: {},
+      pageProps: {},
+      params: { slug: "published" },
+      query: { slug: "published", view: "full" },
+      routePattern: "/docs/[slug]",
+      safeJsonStringify,
+      nextData: { gssp: true },
+    });
+
+    expect(JSON.parse(script.match(/>([\s\S]*)<\/script>/)![1]).query).toEqual({
+      slug: "published",
+      view: "full",
+    });
+  });
+
   it("installs the Pages Router popstate runtime before exposing window.next.router", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();

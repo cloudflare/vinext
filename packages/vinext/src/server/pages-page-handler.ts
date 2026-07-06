@@ -21,7 +21,7 @@ import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
-import { buildPagesReadinessNextData } from "./pages-readiness.js";
+import { buildPagesReadinessNextData, getPagesInitialRouterQuery } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
@@ -459,12 +459,13 @@ export function createPagesPageHandler(
                 pagesNextData,
               )
             : true;
+        const initialRouterQuery = getPagesInitialRouterQuery(query, pagesNextData, false);
 
         function applySSRContext(extra?: Record<string, unknown>): void {
           if (typeof setSSRContext === "function") {
             setSSRContext({
               pathname: routePattern,
-              query,
+              query: initialRouterQuery,
               asPath: renderAsPath ?? routeUrl,
               navigationIsReady,
               locale,
@@ -672,7 +673,7 @@ export function createPagesPageHandler(
         if (isFallbackRender && typeof setSSRContext === "function") {
           setSSRContext({
             pathname: routePattern,
-            query,
+            query: getPagesInitialRouterQuery(query, pagesNextData, true),
             asPath: renderAsPath ?? routeUrl,
             navigationIsReady: false,
             locale,

@@ -430,6 +430,7 @@ type PagesRouterRuntimeState = {
   routerDidNavigate: boolean;
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
+  pagesRouterInitialState: boolean;
   publicRouter?: Record<string, unknown>;
 };
 
@@ -458,6 +459,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     routerDidNavigate: false,
     deprecatedEventBridgeInstalled: false,
     pagesRouterReady: typeof window === "undefined" || !shouldDeferInitialPagesRouterReady(),
+    pagesRouterInitialState: typeof window !== "undefined",
   };
 }
 
@@ -991,15 +993,8 @@ function _buildClientPagesNavigationContext(
     return _cachedClientPagesNavCtx;
   }
   const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
-  // The browser URL is the authoritative source after a Pages client
-  // navigation. `__NEXT_DATA__.query` is serialized for the rendered document
-  // and can briefly lag behind the committed history URL while navigation
-  // listeners publish snapshots, so using it first would leak stale params from
-  // the page we just left.
   const params = isReady
-    ? (extractRouteParamsFromPath(routePattern, resolvedPath) ??
-      getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
-      {})
+    ? (getRouteParamsFromQuery(routePattern, getPathnameAndQuery().query) ?? {})
     : null;
   const isAutoExportDynamic =
     nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
@@ -1068,10 +1063,12 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
     }
     const isReady = ssrCtx.navigationIsReady ?? true;
     const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
+    const usesSerializedInitialQuery =
+      ssrCtx.isFallback === true || ssrCtx.nextData?.autoExport === true;
     const params = isReady
-      ? (extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ??
-        getRouteParamsFromQuery(ssrCtx.pathname, ssrCtx.query) ??
-        {})
+      ? ((usesSerializedInitialQuery
+          ? getRouteParamsFromQuery(ssrCtx.pathname, ssrCtx.query)
+          : extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath)) ?? {})
       : null;
     const isAutoExportDynamic =
       ssrCtx.nextData?.autoExport === true && extractRouteParamNames(ssrCtx.pathname).length > 0;
@@ -1185,16 +1182,6 @@ type RouteQueryNextData = {
   isFallback?: boolean;
 };
 
-function shouldDeferPagesRouterQuery(
-  routePattern: string,
-  isReady: boolean,
-  nextData: RouteQueryNextData | undefined,
-): boolean {
-  const isAutoExportDynamic =
-    nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
-  return !isReady && (nextData?.isFallback === true || isAutoExportDynamic);
-}
-
 function extractRouteParamsFromPath(
   pattern: string,
   pathname: string,
@@ -1259,6 +1246,17 @@ function getRouteQueryFromNextData(
   return routeQuery;
 }
 
+function copySerializedPagesQuery(
+  query: RouteQueryNextData["query"],
+): Record<string, string | string[]> {
+  const result: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (typeof value === "string") result[key] = value;
+    else if (Array.isArray(value)) result[key] = [...value];
+  }
+  return result;
+}
+
 function getPathnameAndQuery(): {
   pathname: string;
   query: Record<string, string | string[]>;
@@ -1268,16 +1266,8 @@ function getPathnameAndQuery(): {
     const _ssrCtx = _getSSRContext();
     if (_ssrCtx) {
       const query: Record<string, string | string[]> = {};
-      const shouldDeferQuery = shouldDeferPagesRouterQuery(
-        _ssrCtx.pathname,
-        _ssrCtx.navigationIsReady ?? true,
-        { ..._ssrCtx.nextData, isFallback: _ssrCtx.isFallback },
-      );
-
-      if (!shouldDeferQuery) {
-        for (const [key, value] of Object.entries(_ssrCtx.query)) {
-          query[key] = Array.isArray(value) ? [...value] : value;
-        }
+      for (const [key, value] of Object.entries(_ssrCtx.query)) {
+        query[key] = Array.isArray(value) ? [...value] : value;
       }
       return { pathname: _ssrCtx.pathname, query, asPath: _ssrCtx.asPath };
     }
@@ -1289,9 +1279,11 @@ function getPathnameAndQuery(): {
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
   const nextData = window.__NEXT_DATA__;
-  let query: Record<string, string | string[]> = {};
-  if (!shouldDeferPagesRouterQuery(pathname, isPagesRouterReady(), nextData)) {
-    const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
+  let query = copySerializedPagesQuery(nextData?.query);
+  if (!routerRuntimeState.pagesRouterInitialState) {
+    const routeQuery =
+      extractRouteParamsFromPath(pathname, resolvedPath) ??
+      getRouteQueryFromNextData(nextData, resolvedPath);
     // URL search params always reflect the current URL
     const searchQuery: Record<string, string | string[]> = {};
     const params = new URLSearchParams(window.location.search);
@@ -1386,11 +1378,19 @@ function isPagesRouterDocumentActive(): boolean {
 function markPagesRouterReady(): boolean {
   if (typeof window === "undefined" || routerRuntimeState.pagesRouterReady) return false;
   routerRuntimeState.pagesRouterReady = true;
+  if (window.__NEXT_DATA__?.isFallback !== true) {
+    routerRuntimeState.pagesRouterInitialState = false;
+  }
   return true;
+}
+
+function markPagesRouterLiveState(): void {
+  routerRuntimeState.pagesRouterInitialState = false;
 }
 
 function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
   if (typeof window === "undefined") return;
+  routerRuntimeState.pagesRouterInitialState = true;
   routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
     nextData.page,
     window.location.search,
@@ -2067,6 +2067,7 @@ async function renderPagesNavigationTarget(
 
   const nextData = buildPagesNavigationNextData(target, props);
   window.__NEXT_DATA__ = nextData;
+  markPagesRouterLiveState();
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
@@ -2439,6 +2440,7 @@ async function navigateClientHtml(
     routerRuntimeState.lastHash = window.location.hash;
   }
   window.__NEXT_DATA__ = nextData;
+  markPagesRouterLiveState();
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
@@ -3170,6 +3172,9 @@ async function performNavigation(
   if (mode === "push") saveScrollPosition();
   const isQueryUpdating = options?._h === 1;
   if (!isQueryUpdating) {
+    markPagesRouterLiveState();
+  }
+  if (!isQueryUpdating) {
     routerEvents.emit("routeChangeStart", resolved, { shallow });
   }
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
@@ -3189,6 +3194,7 @@ async function performNavigation(
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   } else {
+    markPagesRouterLiveState();
     // Shallow navigations skip the render-commit path, so apply the scroll
     // reset synchronously here — before routeChangeComplete. This matches the
     // non-shallow path, where the x/y reset runs inside the render-commit

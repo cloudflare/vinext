@@ -25,6 +25,14 @@ type PagesReadinessNextData = Pick<
   __vinext: Pick<NonNullable<VinextNextData["__vinext"]>, "hasRewrites">;
 };
 
+export function getPagesInitialRouterQuery<T extends Record<string, unknown>>(
+  query: T,
+  nextData: Pick<VinextNextData, "autoExport"> | undefined,
+  isFallback: boolean,
+): T | Record<string, never> {
+  return nextData?.autoExport === true || isFallback ? {} : query;
+}
+
 /**
  * Build the readiness flags for a Pages Router render. Shared by the dev and
  * production Pages render paths.

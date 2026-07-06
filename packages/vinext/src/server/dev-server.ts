@@ -61,7 +61,7 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
-import { buildPagesReadinessNextData } from "./pages-readiness.js";
+import { buildPagesReadinessNextData, getPagesInitialRouterQuery } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
   getPagesRouteParams,
@@ -733,10 +733,11 @@ export function createSSRHandler(
                 pagesNextData,
               )
             : true;
+        const initialRouterQuery = getPagesInitialRouterQuery(query, pagesNextData, false);
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
-            query,
+            query: initialRouterQuery,
             asPath: requestAsPath,
             navigationIsReady,
             nextData: pagesNextData,
@@ -860,7 +861,7 @@ export function createSSRHandler(
             if (isFallbackRender && typeof routerShim.setSSRContext === "function") {
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
-                query,
+                query: getPagesInitialRouterQuery(query, pagesNextData, true),
                 asPath: requestAsPath,
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
@@ -1330,7 +1331,7 @@ export function createSSRHandler(
                         {
                           props: freshRenderProps,
                           page: patternToNextFormat(route.pattern),
-                          query: params,
+                          query: getPagesInitialRouterQuery(params, freshPagesNextData, false),
                           buildId: process.env.__VINEXT_BUILD_ID,
                           isFallback: false,
                           locale: locale ?? currentDefaultLocale,
@@ -1773,7 +1774,7 @@ hydrate();
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: getPagesInitialRouterQuery(query, serializedPagesNextData, isFallbackRender),
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
