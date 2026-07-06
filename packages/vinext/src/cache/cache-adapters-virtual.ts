@@ -14,6 +14,7 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
@@ -59,23 +60,10 @@ type ViteConfigLoader = {
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
 };
 
-async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
-  if (value instanceof Promise) {
-    await flattenPluginOptions(await value, target);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) await flattenPluginOptions(item, target);
-    return;
-  }
-  if (value) target.push(value);
-}
-
 export async function findVinextCacheConfigInPlugins(
   plugins: import("vite").PluginOption[] | undefined,
 ): Promise<VinextCacheConfig | null> {
-  const flattened: unknown[] = [];
-  await flattenPluginOptions(plugins, flattened);
+  const flattened = await flattenPluginOptions(plugins);
 
   for (const plugin of flattened) {
     if (!plugin || typeof plugin !== "object") continue;

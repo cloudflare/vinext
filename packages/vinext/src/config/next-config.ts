@@ -14,6 +14,7 @@ import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
@@ -356,23 +357,10 @@ type ViteConfigLoader = {
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
 };
 
-async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
-  if (value instanceof Promise) {
-    await flattenPluginOptions(await value, target);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) await flattenPluginOptions(item, target);
-    return;
-  }
-  if (value) target.push(value);
-}
-
 export async function findVinextNextConfigInPlugins(
   plugins: PluginOption[] | undefined,
 ): Promise<NextConfigInput | null> {
-  const flattened: unknown[] = [];
-  await flattenPluginOptions(plugins, flattened);
+  const flattened = await flattenPluginOptions(plugins);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;

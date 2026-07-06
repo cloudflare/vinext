@@ -1,4 +1,5 @@
 import type { PluginOption } from "vite";
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
 export {
   findVinextCacheConfigInPlugins,
@@ -67,23 +68,10 @@ export function normalizeVinextPrerenderConfig(
   );
 }
 
-async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
-  if (value instanceof Promise) {
-    await flattenPluginOptions(await value, target);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) await flattenPluginOptions(item, target);
-    return;
-  }
-  if (value) target.push(value);
-}
-
 export async function findVinextPrerenderConfigInPlugins(
   plugins: PluginOption[] | undefined,
 ): Promise<ResolvedVinextPrerenderConfig | null> {
-  const flattened: unknown[] = [];
-  await flattenPluginOptions(plugins, flattened);
+  const flattened = await flattenPluginOptions(plugins);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;
@@ -99,8 +87,7 @@ export async function findVinextPrerenderConfigInPlugins(
 export async function findVinextRouteRootConfigInPlugins(
   plugins: PluginOption[] | undefined,
 ): Promise<VinextRouteRootConfig | null> {
-  const flattened: unknown[] = [];
-  await flattenPluginOptions(plugins, flattened);
+  const flattened = await flattenPluginOptions(plugins);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;
