@@ -1492,7 +1492,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
   }
 
-  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+  const configuredReactOptions =
+    options.react && options.react !== true ? options.react : undefined;
+  const reactOptions = configuredReactOptions;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
@@ -1506,7 +1508,36 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     }
     const reactImport = import(pathToFileURL(resolvedReactPath).href);
     reactPluginPromise = reactImport
-      .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
+      .then((mod) => {
+        const react = (mod as VitePluginReactModule).default;
+        const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
+          const originalApply = plugin.apply;
+          return {
+            ...plugin,
+            apply(config, env) {
+              if (env.command !== command) return false;
+              if (!originalApply) return true;
+              if (typeof originalApply === "function") {
+                return originalApply(config, env);
+              }
+              return originalApply === env.command;
+            },
+          };
+        };
+        const buildPlugins = react(reactOptions).map((plugin) =>
+          limitToCommand(plugin as Plugin, "build"),
+        );
+        const hasConfiguredReactInclude =
+          configuredReactOptions !== undefined &&
+          Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
+        const serveOptions = hasConfiguredReactInclude
+          ? reactOptions
+          : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
+        const servePlugins = react(serveOptions).map((plugin) =>
+          limitToCommand(plugin as Plugin, "serve"),
+        );
+        return [...buildPlugins, ...servePlugins];
+      })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
           cause,
@@ -1583,11 +1614,48 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return mdxDelegatePromise;
   }
 
+  const mdxProxyPlugin: Plugin = {
+    name: "vinext:mdx",
+    enforce: "pre",
+    transform: {
+      filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
+      async handler(code, id, options) {
+        const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
+        if (delegate?.transform) {
+          const hook = delegate.transform;
+          const transform = typeof hook === "function" ? hook : hook.handler;
+          return transform.call(this, code, id, options);
+        }
+
+        if (!hasUserMdxPlugin) {
+          throw new Error(
+            `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
+              `Install @mdx-js/rollup or register an MDX plugin manually.`,
+          );
+        }
+      },
+    },
+  };
+
+  const mdxConfigProxyPlugin: Plugin = {
+    name: "vinext:mdx-config",
+    enforce: "pre",
+    config(config, env) {
+      if (!mdxDelegate?.config) return;
+      const hook = mdxDelegate.config;
+      const fn = typeof hook === "function" ? hook : hook.handler;
+      return fn.call(this, config, env);
+    },
+  };
+
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     createStyledJsxPlugin(earlyBaseDir),
+    // Compile MDX to JSX before @vitejs/plugin-react handles the generated
+    // component and injects Fast Refresh registration in dev.
+    mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component
@@ -3885,48 +3953,10 @@ export const loadServerActionClient = ${
     },
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
-    // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
-    // during vinext:config's config() (when MDX files are detected), but
-    // plugins returned from config() hooks run too late in the pipeline —
-    // after vite:import-analysis. This top-level proxy with enforce:"pre"
-    // ensures MDX transforms run at the correct stage. Both vinext:config
-    // and this proxy are enforce:"pre", and vinext:config comes first in
-    // the array, so mdxDelegate is already set when this proxy's hooks fire.
-    {
-      name: "vinext:mdx",
-      enforce: "pre",
-      config(config, env) {
-        if (!mdxDelegate?.config) return;
-        const hook = mdxDelegate.config;
-        const fn = typeof hook === "function" ? hook : hook.handler;
-        return fn.call(this, config, env);
-      },
-      transform: {
-        // Native id filter so the JS handler only runs for `.mdx` files instead
-        // of being invoked for every module in the graph just to bail. The
-        // case-insensitive `\.mdx$` include covers cross-platform extension
-        // casing; `exclude: /\?/` skips query imports like `foo.mdx?raw`
-        // (@mdx-js/rollup ignores the query and would compile them as MDX) —
-        // including the `foo.mdx?something.mdx` edge case where the id still
-        // ends in `.mdx`.
-        filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
-        async handler(code, id, options) {
-          const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
-          if (delegate?.transform) {
-            const hook = delegate.transform;
-            const transform = typeof hook === "function" ? hook : hook.handler;
-            return transform.call(this, code, id, options);
-          }
-
-          if (!hasUserMdxPlugin) {
-            throw new Error(
-              `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
-                `Install @mdx-js/rollup or register an MDX plugin manually.`,
-            );
-          }
-        },
-      },
-    },
+    // `vinext:config` creates the lazy MDX delegate during its config hook.
+    // Forward the delegate's config hook afterward while keeping the MDX
+    // transform itself before React in the transform pipeline.
+    mdxConfigProxyPlugin,
     createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
     // that exist in Next.js's bundled React canary but not in stable React 19.

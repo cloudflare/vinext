@@ -5,6 +5,7 @@ import { waitForHydration } from "../helpers";
 
 const BASE = "http://localhost:4173";
 const pagePath = path.resolve(process.cwd(), "tests/fixtures/pages-basic/pages/hmr-state.tsx");
+const mdxPagePath = path.resolve(process.cwd(), "tests/fixtures/pages-basic/pages/hmr-mdx.mdx");
 
 // Ported from Next.js:
 // test/development/pages-dir/custom-app-hmr/index.test.ts
@@ -40,5 +41,35 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
     ).toBe(true);
   } finally {
     await writeFile(pagePath, original);
+  }
+});
+
+// Ported from Next.js:
+// test/development/acceptance/ReactRefreshRegression.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/development/acceptance/ReactRefreshRegression.test.ts
+test("Pages Fast Refresh updates MDX routes without a full reload", async ({ page }) => {
+  const original = await readFile(mdxPagePath, "utf8");
+
+  try {
+    await page.goto(`${BASE}/hmr-mdx`);
+    await waitForHydration(page);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("MDX version one");
+    await page.evaluate(() => {
+      (window as unknown as { __HMR_MARKER__: true }).__HMR_MARKER__ = true;
+    });
+
+    await writeFile(mdxPagePath, original.replace("version one", "version two"));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("MDX version two");
+    expect(
+      await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
+    ).toBe(true);
+
+    await writeFile(mdxPagePath, original.replace("version one", "version three"));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("MDX version three");
+    expect(
+      await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
+    ).toBe(true);
+  } finally {
+    await writeFile(mdxPagePath, original);
   }
 });
