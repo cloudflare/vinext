@@ -353,10 +353,6 @@ type VinextNextConfigPlugin = {
   [VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY]?: NextConfigInput | null;
 };
 
-type ViteConfigLoader = {
-  loadConfigFromFile: typeof import("vite").loadConfigFromFile;
-};
-
 export async function findVinextNextConfigInPlugins(
   plugins: PluginOption[] | undefined,
 ): Promise<NextConfigInput | null> {
@@ -369,18 +365,6 @@ export async function findVinextNextConfigInPlugins(
   }
 
   return null;
-}
-
-export async function loadVinextNextConfigFromViteConfig(
-  vite: ViteConfigLoader,
-  root: string,
-): Promise<NextConfigInput | null> {
-  const loaded = await vite.loadConfigFromFile(
-    { command: "build", mode: "production" },
-    undefined,
-    root,
-  );
-  return await findVinextNextConfigInPlugins(loaded?.config.plugins);
 }
 
 /**

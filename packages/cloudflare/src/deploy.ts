@@ -309,6 +309,7 @@ async function populateKVCacheFromPrerenderedArtifacts(
   wranglerEnv: string | undefined,
   cacheConfig: VinextCacheConfig | null,
 ): Promise<void> {
+  // `loadDeployViteConfigMetadata` returns null unless a cache adapter is declared.
   const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
   if (!kvConfig) return;
 
