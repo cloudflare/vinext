@@ -120,6 +120,7 @@ export async function generateServerEntry(
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
+    crossOrigin: nextConfig?.crossOrigin,
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -373,6 +374,7 @@ const _renderPage = __createPagesPageHandler({
   vinextConfig: {
     basePath: vinextConfig.basePath,
     assetPrefix: vinextConfig.assetPrefix,
+    crossOrigin: vinextConfig.crossOrigin,
     trailingSlash: vinextConfig.trailingSlash,
     expireTime: vinextConfig.expireTime,
     htmlLimitedBots: vinextConfig.htmlLimitedBots,

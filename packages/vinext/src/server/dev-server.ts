@@ -76,6 +76,12 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
+import {
+  applyPagesDocumentAssetAttributes,
+  extractPagesDocumentAssetAttributes,
+  mergePagesDocumentAssetAttributes,
+  type PagesDocumentAssetAttributes,
+} from "./pages-document-asset-attributes.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import {
   hasPagesGetInitialProps,
@@ -265,6 +271,8 @@ async function streamPageToResponse(
     enhancePageElement?: ((opts: RenderPageEnhancers) => React.ReactElement) | undefined;
     /** Per-request CSP nonce forwarded to the shared renderPage helper. */
     scriptNonce?: string | undefined;
+    /** Configured Next.js crossOrigin mode for generated scripts/preloads. */
+    crossOrigin?: "anonymous" | "use-credentials" | undefined;
     /**
      * Minimal `DocumentContext` fields (`pathname`/`query`/`asPath`) forwarded
      * to `getInitialProps`. Mirrors the prod pipeline for parity.
@@ -292,6 +300,7 @@ async function streamPageToResponse(
     getHeadHTML,
     enhancePageElement,
     scriptNonce,
+    crossOrigin,
     documentContext,
     setDocumentInitialHead,
     bufferBodyBeforeHeaders = false,
@@ -368,6 +377,11 @@ async function streamPageToResponse(
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
     let docHtml = await renderToStringAsync(docElement);
+    const extracted = extractPagesDocumentAssetAttributes(docHtml);
+    docHtml = extracted.html;
+    const fallbackAttrs: PagesDocumentAssetAttributes = { nonce: scriptNonce, crossOrigin };
+    const nextScriptAttrs = mergePagesDocumentAssetAttributes(extracted.nextScript, fallbackAttrs);
+    const scriptsWithAttrs = applyPagesDocumentAssetAttributes(scripts, nextScriptAttrs);
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
@@ -378,12 +392,14 @@ async function streamPageToResponse(
       );
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scriptsWithAttrs);
     if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
+      docHtml = docHtml.replace("</body>", `  ${scriptsWithAttrs}\n</body>`);
     }
     shellTemplate = docHtml;
   } else {
+    const fallbackAttrs: PagesDocumentAssetAttributes = { nonce: scriptNonce, crossOrigin };
+    const scriptsWithAttrs = applyPagesDocumentAssetAttributes(scripts, fallbackAttrs);
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
     // canonical ordering. Don't duplicate them here.
@@ -395,7 +411,7 @@ async function streamPageToResponse(
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
-  ${scripts}
+  ${scriptsWithAttrs}
 </body>
 </html>`;
   }
@@ -510,6 +526,7 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  crossOrigin?: "anonymous" | "use-credentials",
   /**
    * Whether `reactStrictMode: true` is set in next.config. When true, the dev
    * hydration script sets `window.__VINEXT_REACT_STRICT_MODE__` so
@@ -1846,6 +1863,7 @@ hydrate();
           // Forward the per-request nonce so the shared renderPage helper can
           // apply `withScriptNonce` once (it owns that responsibility).
           scriptNonce,
+          crossOrigin,
           // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),

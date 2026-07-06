@@ -53,6 +53,18 @@ export function createNonceAttribute(nonce?: string): string {
   return ` nonce="${escapeHtmlAttr(nonce)}"`;
 }
 
-export function createInlineScriptTag(content: string, nonce?: string): string {
-  return `<script${createNonceAttribute(nonce)}>${content}</script>`;
+export function createCrossOriginAttribute(crossOrigin?: string): string {
+  if (crossOrigin === undefined) {
+    return "";
+  }
+
+  return ` crossorigin="${escapeHtmlAttr(crossOrigin)}"`;
+}
+
+export function createInlineScriptTag(
+  content: string,
+  nonce?: string,
+  options?: { crossOrigin?: string },
+): string {
+  return `<script${createNonceAttribute(nonce)}${createCrossOriginAttribute(options?.crossOrigin)}>${content}</script>`;
 }

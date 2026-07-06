@@ -29,6 +29,15 @@ describe("NextScript", () => {
     // Dev-server replaces this HTML comment with __NEXT_DATA__ + module script tags
     expect(html).toContain("<!-- __NEXT_SCRIPTS__ -->");
   });
+
+  it("serializes nonce and crossOrigin markers for generated script tags", () => {
+    const html = render(
+      React.createElement(NextScript, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-next-script=""');
+    expect(html).toContain('data-vinext-next-script-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-next-script-crossorigin="anonymous"');
+  });
 });
 
 describe("Head", () => {
@@ -39,7 +48,16 @@ describe("Head", () => {
   // flow through the same `data-next-head=""` dedupe step as user tags.
   it("renders an empty <head> when given no children (defaults flow via next/head)", () => {
     const html = render(React.createElement(Head));
-    expect(html).toBe("<head></head>");
+    expect(html).toBe('<head data-vinext-document-head=""></head>');
+  });
+
+  it("serializes nonce and crossOrigin markers for generated head asset tags", () => {
+    const html = render(
+      React.createElement(Head, { nonce: "test-nonce", crossOrigin: "anonymous" }),
+    );
+    expect(html).toContain('data-vinext-document-head=""');
+    expect(html).toContain('data-vinext-document-head-nonce="test-nonce"');
+    expect(html).toContain('data-vinext-document-head-crossorigin="anonymous"');
   });
 
   it("renders only user-provided children — defaults are not duplicated here", () => {
@@ -62,7 +80,7 @@ describe("Default Document", () => {
 
     // The dev-server does string replacement on this output.
     // If the nesting order breaks, SSR output will be malformed.
-    const headOpen = html.indexOf("<head>");
+    const headOpen = html.indexOf("<head");
     const bodyOpen = html.indexOf("<body>");
     const mainDiv = html.indexOf('id="__next"');
     const placeholder = html.indexOf("__NEXT_MAIN__");

@@ -5861,8 +5861,12 @@ describe("Production server middleware (Pages Router)", () => {
     expect(html).toContain(
       '<script id="__NEXT_DATA__" type="application/json" nonce="pages-prod">',
     );
-    expect(html).toMatch(/<script type="module" defer nonce="pages-prod" src="\/[^"]+"/);
-    expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
+    expect(html).toMatch(
+      /<script\b(?=[^>]*type="module")(?=[^>]*defer)(?=[^>]*nonce="pages-prod")(?=[^>]*src="\/[^"]+")[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link\b(?=[^>]*rel="modulepreload")(?=[^>]*nonce="pages-prod")(?=[^>]*href="\/[^"]+")[^>]*>/,
+    );
   });
 
   // Ported from Next.js: test/e2e/optimized-loading/test/index.test.ts
@@ -6529,6 +6533,27 @@ describe("Pages _document renderPage enhancers", () => {
     expect(html).not.toContain('id="page-content"');
   }
 
+  function expectHtmlTag(html: string, pattern: RegExp): string {
+    const match = html.match(pattern);
+    expect(match).not.toBeNull();
+    return match?.[0] ?? "";
+  }
+
+  function isVinextOwnedDocumentAssetTag(tag: string): boolean {
+    if (tag.includes('id="__NEXT_DATA__"')) return true;
+
+    if (tag.startsWith("<script")) {
+      if (/\ssrc=["']\/(?:@id|@vite)\//.test(tag)) return false;
+      if (!/\ssrc=/.test(tag)) return false;
+      return /\ssrc=["']\/(?:_next|assets)\//.test(tag);
+    }
+
+    return (
+      /\srel=["'](?:preload|modulepreload)["']/.test(tag) &&
+      /\shref=["']\/(?:_next|assets)\//.test(tag)
+    );
+  }
+
   beforeAll(async () => {
     fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-"));
     outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-out-"));
@@ -6546,6 +6571,11 @@ describe("Pages _document renderPage enhancers", () => {
     await fsp.writeFile(
       path.join(fixtureRoot, "package.json"),
       JSON.stringify({ private: true, dependencies: { next: "*", react: "*", "react-dom": "*" } }),
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "next.config.js"),
+      `module.exports = { crossOrigin: "anonymous" };
+`,
     );
     await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_app.tsx"),
@@ -6591,6 +6621,23 @@ export default function Page({ throwPage }: { throwPage: boolean }) {
 }
 export default function StaticGspPage() {
   return <p id="static-gsp-page-content">STATIC GSP</p>;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "head-assets.tsx"),
+      `import Head from "next/head";
+export default function HeadAssetsPage() {
+  return (
+    <>
+      <Head>
+        <script src="https://example.com/user.js" />
+        <link rel="stylesheet" href="https://example.com/user.css" />
+        <link rel="preload" href="/user-preload.js" as="script" />
+      </Head>
+      <p id="head-assets-page">HEAD ASSETS</p>
+    </>
+  );
 }
 `,
     );
@@ -6704,7 +6751,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head nonce="test-nonce"><style>{\`body { margin: 0 } /* custom! */\`}</style></Head><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript nonce="test-nonce" /></body></Html>
     );
   }
 }
@@ -6733,6 +6780,79 @@ export default class CustomDocument extends Document {
 
   // Ported from Next.js: test/e2e/app-document/rendering.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
+  it.each(["dev", "prod"] as const)(
+    "preserves custom Document Head children in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain("body { margin: 0 }");
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "adds nonces and crossOrigin to owned generated scripts and preload links in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      // Next.js emits JavaScript preloads as `link[rel=preload]`; vinext's Vite
+      // ESM build emits the equivalent entries as `link[rel=modulepreload]`.
+      const targetTags = Array.from(html.matchAll(/<(script|link)\b[^>]*>/g))
+        .map((match) => match[0])
+        .filter(isVinextOwnedDocumentAssetTag);
+
+      expect(targetTags.length).toBeGreaterThan(0);
+      for (const tag of targetTags) {
+        expect(tag).toContain('nonce="test-nonce"');
+        expect(tag).toContain('crossorigin="anonymous"');
+      }
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "does not apply Document asset attributes to user-authored next/head tags in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/head-assets`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+
+      const userScript = expectHtmlTag(
+        html,
+        /<script\b(?=[^>]*src="https:\/\/example\.com\/user\.js")[^>]*>/,
+      );
+      expect(userScript).not.toContain("nonce=");
+      expect(userScript).not.toContain("crossorigin");
+
+      const userStylesheet = expectHtmlTag(
+        html,
+        /<link\b(?=[^>]*rel="stylesheet")(?=[^>]*href="https:\/\/example\.com\/user\.css")[^>]*>/,
+      );
+      expect(userStylesheet).not.toContain("nonce=");
+      expect(userStylesheet).not.toContain("crossorigin");
+
+      const userPreload = expectHtmlTag(
+        html,
+        /<link\b(?=[^>]*rel="preload")(?=[^>]*href="\/user-preload\.js")[^>]*>/,
+      );
+      expect(userPreload).not.toContain("nonce=");
+      expect(userPreload).not.toContain("crossorigin");
+
+      const generatedTags = Array.from(html.matchAll(/<(script|link)\b[^>]*>/g))
+        .map((match) => match[0])
+        .filter(isVinextOwnedDocumentAssetTag);
+
+      expect(generatedTags.length).toBeGreaterThan(0);
+      for (const tag of generatedTags) {
+        expect(tag).toContain('nonce="test-nonce"');
+        expect(tag).toContain('crossorigin="anonymous"');
+      }
+    },
+  );
+
   it.each(["dev", "prod"] as const)("applies all renderPage enhancer forms in %s", async (mode) => {
     const url = mode === "dev" ? devUrl : prodUrl;
     for (const [query, expectedIds] of enhancerCases) {

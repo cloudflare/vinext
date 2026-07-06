@@ -9,7 +9,7 @@
  * template string.
  */
 
-import { createNonceAttribute } from "./html.js";
+import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { getPagesClientAssets } from "./pages-client-assets.js";
@@ -94,6 +94,8 @@ type CollectAssetTagsOptions = {
   moduleIds: (string | null | undefined)[];
   /** Script nonce for CSP. */
   scriptNonce?: string;
+  /** Configured Next.js crossOrigin mode for generated scripts/preloads. */
+  crossOrigin?: "anonymous" | "use-credentials";
   /**
    * When `false` (default), page scripts are emitted with the `defer`
    * attribute mirroring Next.js's `experimental.disableOptimizedLoading`
@@ -129,6 +131,14 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const tags: string[] = [];
   const seen = new Set<string>();
   const nonceAttr = createNonceAttribute(options.scriptNonce);
+  const crossOriginAttr =
+    options.crossOrigin === undefined
+      ? " crossorigin"
+      : ` crossorigin="${escapeHtmlAttr(options.crossOrigin)}"`;
+  const modulePreloadCrossOriginAttr =
+    options.crossOrigin === undefined
+      ? ""
+      : ` crossorigin="${escapeHtmlAttr(options.crossOrigin)}"`;
   // Mirrors Next.js `_document` behaviour: when `experimental.disableOptimizedLoading`
   // is false (the default), page scripts are emitted with `defer` in <head>. See
   // .nextjs-ref/packages/next/src/pages/_document.tsx getScripts().
@@ -165,14 +175,23 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const clientEntry = runtimeAssets.clientEntry;
   if (clientEntry) {
     seen.add(clientEntry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(clientEntry) + '" />');
+    tags.push(
+      '<link rel="modulepreload"' +
+        nonceAttr +
+        modulePreloadCrossOriginAttr +
+        ' href="' +
+        href(clientEntry) +
+        '" />',
+    );
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
         ' src="' +
         href(clientEntry) +
-        '" crossorigin></script>',
+        '"' +
+        crossOriginAttr +
+        "></script>",
     );
   }
 
@@ -237,14 +256,23 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         // Membership test uses the base-anchored `tf` (same key-space as
         // lazy chunk registry), NOT the re-anchored href.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(tf) + '" />');
+        tags.push(
+          '<link rel="modulepreload"' +
+            nonceAttr +
+            modulePreloadCrossOriginAttr +
+            ' href="' +
+            href(tf) +
+            '" />',
+        );
         tags.push(
           '<script type="module"' +
             deferAttr +
             nonceAttr +
             ' src="' +
             href(tf) +
-            '" crossorigin></script>',
+            '"' +
+            crossOriginAttr +
+            "></script>",
         );
       }
     }

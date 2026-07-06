@@ -88,6 +88,7 @@ type I18nConfig = {
 type VinextConfigSubset = {
   basePath: string;
   assetPrefix: string;
+  crossOrigin?: "anonymous" | "use-credentials";
   trailingSlash: boolean;
   expireTime?: number;
   htmlLimitedBots?: string;
@@ -752,6 +753,7 @@ export function createPagesPageHandler(
           manifest,
           moduleIds: pageModuleIds,
           scriptNonce,
+          crossOrigin: vinextConfig.crossOrigin,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           basePath: vinextConfig.basePath,
           assetPrefix: vinextConfig.assetPrefix,
@@ -807,6 +809,7 @@ export function createPagesPageHandler(
           routeUrl,
           safeJsonStringify,
           scriptNonce,
+          crossOrigin: vinextConfig.crossOrigin,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,

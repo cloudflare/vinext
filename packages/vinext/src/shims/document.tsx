@@ -7,6 +7,11 @@
  */
 import React from "react";
 
+type OriginProps = {
+  nonce?: string;
+  crossOrigin?: "anonymous" | "use-credentials" | "" | undefined;
+};
+
 export function Html({
   children,
   lang,
@@ -29,8 +34,26 @@ export function Html({
  * ordering (`<meta charset>` first, then `<meta viewport>`, then user tags,
  * all with `data-next-head=""`). See `test/e2e/next-head/index.test.ts`.
  */
-export function Head({ children }: { children?: React.ReactNode }) {
-  return <head>{children}</head>;
+export function Head({
+  children,
+  nonce,
+  crossOrigin,
+  ...props
+}: React.HTMLAttributes<HTMLHeadElement> &
+  OriginProps & {
+    children?: React.ReactNode;
+  }) {
+  const markerProps: Record<string, string> = { "data-vinext-document-head": "" };
+  if (typeof nonce === "string") markerProps["data-vinext-document-head-nonce"] = nonce;
+  if (typeof crossOrigin === "string") {
+    markerProps["data-vinext-document-head-crossorigin"] = crossOrigin;
+  }
+
+  return (
+    <head {...props} {...markerProps}>
+      {children}
+    </head>
+  );
 }
 
 /**
@@ -45,8 +68,16 @@ export function Main() {
  * actual hydration scripts (__NEXT_DATA__ + entry module).
  * Uses dangerouslySetInnerHTML so the HTML comment survives renderToString.
  */
-export function NextScript() {
-  return <span dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />;
+export function NextScript({ nonce, crossOrigin }: OriginProps) {
+  const markerProps: Record<string, string> = { "data-vinext-next-script": "" };
+  if (typeof nonce === "string") markerProps["data-vinext-next-script-nonce"] = nonce;
+  if (typeof crossOrigin === "string") {
+    markerProps["data-vinext-next-script-crossorigin"] = crossOrigin;
+  }
+
+  return (
+    <span {...markerProps} dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />
+  );
 }
 
 /**
