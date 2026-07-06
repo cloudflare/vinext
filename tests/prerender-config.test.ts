@@ -10,6 +10,8 @@ import {
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
   normalizeVinextPrerenderConfig,
+  loadVinextPrerenderConfigFromViteConfig,
+  loadVinextRouteRootConfigFromViteConfig,
   resolveVinextPrerenderDecision,
 } from "../packages/vinext/src/config/prerender.js";
 
@@ -58,6 +60,20 @@ describe("vinext prerender config", () => {
     expect(await findVinextRouteRootConfigInPlugins(plugins)).toMatchObject({
       appDir: "custom-app",
       disableAppRouter: true,
+    });
+  });
+
+  it("preserves promise-aware metadata loading through the internal Vite wrappers", async () => {
+    const plugins = Promise.resolve(vinext({ prerender: true, appDir: "custom-app" }));
+    const vite = {
+      loadConfigFromFile: async () => ({ config: { plugins: [plugins] } }),
+    } as never;
+
+    await expect(loadVinextPrerenderConfigFromViteConfig(vite, "/tmp/app")).resolves.toEqual({
+      routes: "*",
+    });
+    await expect(loadVinextRouteRootConfigFromViteConfig(vite, "/tmp/app")).resolves.toMatchObject({
+      appDir: "custom-app",
     });
   });
 

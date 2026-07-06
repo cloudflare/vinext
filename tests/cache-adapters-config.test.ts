@@ -14,6 +14,7 @@ import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
   findVinextCacheConfigInPlugins,
+  loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
@@ -137,6 +138,19 @@ describe("findVinextCacheConfigInPlugins", () => {
     ] as unknown as Parameters<typeof findVinextCacheConfigInPlugins>[0];
 
     expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
+  });
+
+  it("preserves promise-aware cache loading through the internal Vite wrapper", async () => {
+    const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
+    const vite = {
+      loadConfigFromFile: async () => ({
+        config: {
+          plugins: [Promise.resolve({ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache })],
+        },
+      }),
+    } as never;
+
+    await expect(loadVinextCacheConfigFromViteConfig(vite, "/tmp/app")).resolves.toBe(cache);
   });
 });
 
