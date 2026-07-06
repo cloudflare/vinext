@@ -37,13 +37,8 @@ const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
-  /** Fully resolved Next.js config from the production build/deploy caller. */
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
   nextConfig?: ResolvedNextConfig;
-  /**
-   * Override next.config values. Merged on top of the config loaded from disk.
-   * Ignored when `nextConfig` is supplied.
-   */
-  nextConfigOverride?: Partial<ResolvedNextConfig>;
   appDir?: string | null;
   pagesDir?: string | null;
   routeRootConfig?: VinextRouteRootConfig | null;
@@ -384,10 +379,7 @@ export async function emitPrerenderPathManifest(
   const manifestDir = path.join(root, "dist", "server");
   const config = options.nextConfig
     ? { ...options.nextConfig }
-    : {
-        ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)),
-        ...options.nextConfigOverride,
-      };
+    : { ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)) };
   const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(bundleServerDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;

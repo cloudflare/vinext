@@ -1506,12 +1506,17 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
 
 describe("runPrerender — output: 'export' wiring", () => {
   let pagesBundlePath: string;
+  let exportNextConfig: Awaited<
+    ReturnType<typeof import("../packages/vinext/src/config/next-config.js").resolveNextConfig>
+  >;
 
   beforeAll(async () => {
     // Build pages-basic to a fresh tmpdir — no fixture copying needed.
-    // Pass the bundle path and a nextConfigOverride to runPrerender so it
+    // Pass the bundle path and resolved config to runPrerender so it
     // exercises output: 'export' without touching the real next.config.mjs.
     pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    exportNextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
   }, 120_000);
 
   it("throws when next.config output: 'export' and SSR routes exist", async () => {
@@ -1519,7 +1524,7 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/Static export failed/);
@@ -1560,7 +1565,7 @@ describe("runPrerender — output: 'export' wiring", () => {
       await expect(
         runPrerender({
           root: PAGES_FIXTURE,
-          nextConfigOverride: { output: "export" },
+          nextConfig: exportNextConfig,
           pagesBundlePath,
         }),
       ).rejects.toThrow(/Static export failed/);
@@ -1576,7 +1581,7 @@ describe("runPrerender — output: 'export' wiring", () => {
     await expect(
       runPrerender({
         root: PAGES_FIXTURE,
-        nextConfigOverride: { output: "export" },
+        nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
     ).rejects.toThrow(/\/ssr/);
