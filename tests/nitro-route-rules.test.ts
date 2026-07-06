@@ -354,18 +354,22 @@ describe("vinext Nitro setup integration", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("/blog/*");
   });
 
-  it("skips route rule generation during Nitro dev", async () => {
+  it("propagates server externals but skips route rule generation during Nitro dev", async () => {
     const root = createAppProject();
     const nitroPlugin = await initializeNitroSetupPlugin(root);
     const nitro = {
       options: {
         dev: true,
         routeRules: {},
+        traceDeps: ["existing-trace"],
       },
     };
 
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({});
+    expect(nitro.options.traceDeps?.slice(0, 1)).toEqual(["existing-trace"]);
+    expect(nitro.options.traceDeps).toContain("pg");
+    expect(nitro.options.traceDeps).toContain("mongodb");
   });
 });
