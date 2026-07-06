@@ -532,6 +532,7 @@ export function createPagesPageHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl,
+            routeParams: params,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);

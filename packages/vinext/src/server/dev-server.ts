@@ -1403,6 +1403,7 @@ export function createSSRHandler(
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
+                          routeParams: params,
                         },
                       };
 
@@ -1774,6 +1775,7 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            routeParams: params,
           },
         };
 
@@ -1784,7 +1786,7 @@ export function createSSRHandler(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
+import Router, { getPagesNavigationIsReadyFromSerializedState, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -1848,8 +1850,15 @@ async function hydrate() {
   window.__NEXT_HYDRATED = true;
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
+  const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(
+    nextData.page,
+    window.location.search,
+    nextData,
+  );
+  if (!initialRouterIsReady) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.__vinext?.routeUrl;
+    await Router.replace(routeUrl || currentUrl, routeUrl ? currentUrl : undefined, { _h: 1, scroll: false });
   }
 }
 hydrate();

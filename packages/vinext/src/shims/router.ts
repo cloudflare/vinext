@@ -1180,6 +1180,9 @@ type RouteQueryNextData = {
   query?: Record<string, string | string[] | undefined>;
   autoExport?: boolean;
   isFallback?: boolean;
+  __vinext?: {
+    routeParams?: Record<string, string | string[]>;
+  };
 };
 
 function extractRouteParamsFromPath(
@@ -1219,6 +1222,13 @@ function getRouteQueryFromNextData(
   if (!nextData?.query || !nextData.page) return routeQuery;
 
   if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) {
+    const resolvedRouteParams = nextData.__vinext?.routeParams;
+    if (resolvedRouteParams) {
+      for (const [key, value] of Object.entries(resolvedRouteParams)) {
+        routeQuery[key] = Array.isArray(value) ? [...value] : value;
+      }
+      return routeQuery;
+    }
     for (const [key, value] of Object.entries(nextData.query)) {
       if (typeof value === "string") {
         routeQuery[key] = value;
@@ -1961,7 +1971,9 @@ function buildPagesNavigationNextData(
   props: Record<string, unknown>,
 ): NonNullable<Window["__NEXT_DATA__"]> & VinextNextData {
   const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
-  const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
+  const prev = window.__NEXT_DATA__ as
+    | (NonNullable<Window["__NEXT_DATA__"]> & VinextNextData)
+    | undefined;
   const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
   const nextLocale = hasI18n
     ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
@@ -1974,6 +1986,10 @@ function buildPagesNavigationNextData(
     query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
+    __vinext: {
+      ...prev?.__vinext,
+      routeParams: target.params,
+    },
     ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
 }

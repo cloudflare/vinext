@@ -47,6 +47,8 @@ export type VinextNextData = {
     hasRewrites?: boolean;
     /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */
     routeUrl?: string;
+    /** Server-resolved dynamic route params for rewrite-backed Pages routes. */
+    routeParams?: Record<string, string | string[]>;
   };
 } & NEXT_DATA;
 
