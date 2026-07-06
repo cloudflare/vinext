@@ -3337,6 +3337,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
     window.addEventListener("vinext:navigate", onNavigate);
     const readyTimer = isPagesRouterReady()
       ? window.setTimeout(() => {
+          markPagesRouterLiveState();
           setState(getRouterSnapshot());
           notifyNextNavigationPagesContext();
         }, 0)
