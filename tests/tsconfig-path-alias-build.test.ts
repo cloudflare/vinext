@@ -152,149 +152,145 @@ async function buildCloudflareAppFixture(root: string) {
   await builder.buildApp();
 }
 
-describe("App Router tsconfig path aliases in production builds", () => {
+describe("native Vite tsconfig paths build gaps", () => {
   afterEach(() => {
     for (const dir of tmpDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("transforms alias-based import.meta.glob and alias-based dynamic import in Cloudflare builds", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-alias-build-"));
+  it("expands a tsconfig-aliased import.meta.glob in a bundled RSC build", async () => {
+    // Vite's JavaScript import-glob path calls the plugin resolver, but the
+    // bundled Rolldown import-glob plugin does not currently apply
+    // resolve.tsconfigPaths to the glob's static prefix.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-glob-gap-"));
     tmpDirs.push(root);
-    writeCloudflareAppFixture(root, "vinext-tsconfig-alias-build");
+    writeCloudflareAppFixture(root, "vinext-tsconfig-glob-gap");
     writeFixtureFile(
       root,
       "app/page.tsx",
-      `import { getGlobPostCount } from "../lib/mdx-loader";
+      `import { postCount } from "../lib/posts";
 
 export default function HomePage() {
-  return <main>home {getGlobPostCount()}</main>;
+  return <main>posts: {postCount}</main>;
 }
 `,
     );
     writeFixtureFile(
       root,
-      "app/mdx-probe/page.mdx",
-      `# Probe
-
-This file exists only to trigger vinext's MDX auto-detection in the fixture.
+      "lib/posts.ts",
+      `export const posts = import.meta.glob("@/content/posts/**/*.mdx", { eager: true });
+export const postCount = Object.keys(posts).length;
 `,
     );
-    writeFixtureFile(
-      root,
-      "lib/mdx-loader.ts",
-      `type MdxModule = {
-  default: React.ComponentType;
-};
-
-export const mdxModules = import.meta.glob("@/content/posts/**/*.mdx", {
-  eager: true,
-}) as Record<string, MdxModule>;
-
-export function getGlobPostCount(): number {
-  return Object.keys(mdxModules).length;
-}
-`,
-    );
-    writeFixtureFile(
-      root,
-      "lib/mdx-dynamic.ts",
-      `export async function loadDynamicPost(year: string, month: string, day: string, slug: string) {
-  return await import(\`@/content/posts/\${year}/\${month}/\${day}/\${slug}/index.mdx\`);
-}
-`,
-    );
-    writeFixtureFile(
-      root,
-      "app/dynamic-posts/[year]/[month]/[day]/[slug]/page.tsx",
-      `import { notFound } from "next/navigation";
-import { loadDynamicPost } from "../../../../../../lib/mdx-dynamic";
-
-export default async function DynamicPostPage({
-  params,
-}: {
-  params: Promise<{ year: string; month: string; day: string; slug: string }>;
-}) {
-  const { year, month, day, slug } = await params;
-  const mod = await loadDynamicPost(year, month, day, slug).catch(() => null);
-
-  if (!mod) {
-    notFound();
-  }
-
-  const Content = mod.default;
-
-  return (
-    <main data-testid="dynamic-post-page">
-      <h1>Dynamic Post</h1>
-      <Content />
-    </main>
-  );
-}
-`,
-    );
-    writeFixtureFile(
-      root,
-      "content/posts/2024/01/02/glob-post/index.mdx",
-      `# Globbed-Only MDX Post
-
-This content came from an alias-based MDX import.
-`,
-    );
-    writeFixtureFile(
-      root,
-      "content/posts/2024/01/02/dynamic-post/index.mdx",
-      `# Dynamic MDX Post
-
-This content came from an alias-based dynamic MDX import.
-`,
-    );
+    writeFixtureFile(root, "content/posts/first.mdx", "# Glob gap sentinel\n");
 
     await buildCloudflareAppFixture(root);
 
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
-    expect(buildOutput).not.toContain("@/content/posts/");
+    expect(buildOutput).toContain("Glob gap sentinel");
   }, 60_000);
 
-  it("import.meta.glob with MDX files containing frontmatter does not cause parse errors (issue #659)", async () => {
+  it("expands a tsconfig-aliased variable dynamic import in a bundled RSC build", async () => {
+    // Vite's bundled dynamic-import-vars transform resolves the static prefix
+    // internally. User resolveId hooks and resolve.tsconfigPaths do not turn
+    // the aliased template into a relative pattern before analysis.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-dynamic-gap-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-tsconfig-dynamic-gap");
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import { loadPost } from "../lib/load-post";
+
+export default async function HomePage() {
+  const post = await loadPost("first");
+  return <main>{post.default({})}</main>;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "lib/load-post.ts",
+      "export function loadPost(slug: string) {\n" +
+        "  return import(`@/content/posts/${slug}.mdx`);\n" +
+        "}\n",
+    );
+    writeFixtureFile(root, "content/posts/first.mdx", "# Dynamic import gap sentinel\n");
+
+    await buildCloudflareAppFixture(root);
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    expect(buildOutput).not.toContain("@/content/posts/");
+    expect(buildOutput).toContain("Dynamic import gap sentinel");
+  }, 60_000);
+
+  it("uses the nearest importer tsconfig when expanding aliased glob patterns", async () => {
+    // Any fallback must preserve Vite's per-importer tsconfig discovery. A
+    // root-level alias map silently expands this pattern against the wrong
+    // config when a nested project overrides the same paths key.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tsconfig-nested-gap-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-tsconfig-nested-gap");
+    writeFixtureFile(
+      root,
+      "lib/tsconfig.json",
+      JSON.stringify({
+        compilerOptions: { paths: { "@/*": ["../content/*"] } },
+        include: ["**/*.ts"],
+      }),
+    );
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import { postCount } from "../lib/posts";
+
+export default function HomePage() {
+  return <main>nested posts: {postCount}</main>;
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "lib/posts.ts",
+      `export const posts = import.meta.glob("@/posts/**/*.mdx", { eager: true });
+export const postCount = Object.keys(posts).length;
+`,
+    );
+    writeFixtureFile(root, "content/posts/nested.mdx", "# Nested tsconfig gap sentinel\n");
+
+    await buildCloudflareAppFixture(root);
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    expect(buildOutput).not.toContain('import.meta.glob("@/posts/**/*.mdx"');
+    expect(buildOutput).toContain("Nested tsconfig gap sentinel");
+  }, 60_000);
+
+  it("compiles globbed MDX files containing frontmatter (issue #659)", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mdx-frontmatter-build-"));
     tmpDirs.push(root);
     writeCloudflareAppFixture(root, "vinext-mdx-frontmatter-test");
     writeFixtureFile(
       root,
       "app/page.tsx",
-      `import { getGlobPostCount } from "../lib/mdx-loader";
+      `import { postCount } from "../lib/posts";
 
 export default function HomePage() {
-  return <main>home {getGlobPostCount()}</main>;
+  return <main>posts: {postCount}</main>;
 }
 `,
     );
     writeFixtureFile(
       root,
-      "lib/mdx-loader.ts",
-      `type MdxModule = {
-  default: React.ComponentType;
-  frontmatter?: {
-    title: string;
-    date: string;
-  };
-};
-
-export const mdxModules = import.meta.glob("@/content/posts/**/*.mdx", {
-  eager: true,
-}) as Record<string, MdxModule>;
-
-export function getGlobPostCount(): number {
-  return Object.keys(mdxModules).length;
-}
+      "lib/posts.ts",
+      `export const posts = import.meta.glob("../content/posts/**/*.mdx", { eager: true });
+export const postCount = Object.keys(posts).length;
 `,
     );
     writeFixtureFile(
       root,
-      "content/posts/2025/08/20/second-post/index.mdx",
+      "content/posts/second.mdx",
       `---
 title: "Second Post"
 date: "2025-08-20"
@@ -307,24 +303,6 @@ date: "2025-08-20"
     await buildCloudflareAppFixture(root);
 
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
-    // Runs against the PRODUCTION DEFAULT (server minification ON).
-    expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
-    expect(buildOutput).not.toContain("@/content/posts/");
-    // Issue #659 was a build-time *parse failure*: the MDX frontmatter `---`
-    // fence broke compilation, so the module never produced runnable JSX. The
-    // regression guard is therefore "the MDX compiled to JSX". The fixture
-    // configures no remark-frontmatter plugin, so MDX legitimately renders the
-    // `---` block as an `<hr>` + heading text — that rendered text (including
-    // `title: "Second Post"`) is EXPECTED content, present identically in
-    // minified and unminified output, and is NOT a leak. (The old
-    // `not.toContain('title: "Second Post"')` check only ever passed by accident:
-    // unminified JS escaped the inner quotes as `title: \"Second Post\"`, so the
-    // bare substring never matched. Minification emits the same string inside a
-    // backtick template without escaping, exposing that the assertion was a
-    // quote-style artifact rather than a real signal — hence its removal.)
-    //
-    // The real leak we still guard against is the RAW YAML frontmatter surviving
-    // verbatim as a top-of-module `---` fence (the unparsed #659 shape).
     expect(buildOutput).toContain("text-red-500");
     expect(buildOutput).not.toMatch(/^---\s*$[\s\S]*?title:/m);
   }, 60_000);

@@ -15,7 +15,6 @@ import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
-import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 
 /**
@@ -955,23 +954,9 @@ export async function loadNextConfig(
   const filename = path.basename(configPath);
   const isTypeScriptConfig = /\.[cm]?ts$/.test(configPath);
 
-  // Mirror Next.js: read `compilerOptions.paths` from the project's
-  // tsconfig.json so aliased imports inside next.config.ts (e.g.
-  // `import { foo } from '@/foo'`) resolve at config-load time. Next.js
-  // passes `paths` and `baseUrl` to SWC; we thread both into Vite's resolver.
-  // See packages/next/src/build/next-config-ts/transpile-config.ts.
-  const tsconfigResolution = loadTsconfigResolutionForRoot(root);
-  const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
-
-  // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
-  // `resolve.tsconfigPaths` (oxc-resolver). `paths` aliases are materialized
-  // into `resolve.alias` so import.meta.glob and dynamic imports can see them.
-  //
-  // Note: installed packages stay externalized (so CJS config plugins like
-  // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
-  // baseUrl resolves bare imports that have no installed package of the same
-  // name; it does not shadow an installed package with a baseUrl-local file.
-  const useNativeTsconfigPaths = !!tsconfigBaseUrl;
+  // Mirror Next.js tsconfig path resolution for imports inside next.config.ts
+  // by delegating to Vite's native per-importer tsconfig resolver.
+  const useNativeTsconfigPaths = isTypeScriptConfig;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -986,13 +971,6 @@ export async function loadNextConfig(
       logLevel: "error",
       clearScreen: false,
       resolve: {
-        alias: tsconfigResolution.aliases,
-        // On Vite 8, use native tsconfig resolution (oxc-resolver
-        // `tsconfig: 'auto'`), which mirrors Next.js's SWC `paths` + `baseUrl`
-        // handling: it follows `extends` and resolves baseUrl-local bare imports
-        // via per-importer tsconfig discovery. Installed packages stay
-        // externalized, so a baseUrl-local file does not shadow a package of the
-        // same name.
         ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,

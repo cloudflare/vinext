@@ -1,16 +1,14 @@
 import type {
-  Alias,
   CSSModulesOptions,
   Logger,
   Plugin,
   PluginOption,
   ResolvedConfig,
-  ResolverFunction,
   SassPreprocessorOptions,
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createLogger, loadEnv, parseAst, transformWithOxc } from "vite";
+import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -135,7 +133,6 @@ import {
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
 } from "./utils/project.js";
-import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
@@ -166,7 +163,6 @@ import { createServerExternalsManifestPlugin } from "./plugins/server-externals-
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
-  parseStaticObjectLiteral,
   generateGoogleFontsVirtualModule,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
@@ -207,7 +203,6 @@ import {
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
-  relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import {
@@ -590,114 +585,6 @@ async function collectDevPagesAppStylesheetAssets(
   return stylesheetAssets;
 }
 
-const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
-
-function resolveTsconfigPathCandidate(candidate: string): string | null {
-  const candidates = candidate.endsWith(".json")
-    ? [candidate]
-    : [candidate, `${candidate}.json`, path.join(candidate, "tsconfig.json")];
-
-  for (const item of candidates) {
-    if (fs.existsSync(item) && fs.statSync(item).isFile()) {
-      return item;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Normalize a tsconfig `extends` field into a list of specifier strings.
- *
- * TypeScript 5.0+ allows `extends` to be either a string or an array of
- * strings. Matches Next.js's handling in
- * packages/next/src/build/next-config-ts/transpile-config.ts, where parents
- * are iterated in order and later entries override earlier ones.
- */
-function normalizeTsconfigExtends(extendsField: unknown): string[] {
-  if (typeof extendsField === "string") return [extendsField];
-  if (Array.isArray(extendsField)) {
-    return extendsField.filter((value): value is string => typeof value === "string");
-  }
-  return [];
-}
-
-function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
-  const fromDir = path.dirname(configPath);
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
-    return resolveTsconfigPathCandidate(path.resolve(fromDir, specifier));
-  }
-
-  const requireFromConfig = createRequire(configPath);
-  const candidates = [specifier, `${specifier}.json`, path.join(specifier, "tsconfig.json")];
-
-  for (const item of candidates) {
-    try {
-      return requireFromConfig.resolve(item);
-    } catch {}
-  }
-
-  return null;
-}
-
-function materializeTsconfigPathAliases(
-  pathsConfig: Record<string, unknown>,
-  baseUrl: string,
-  projectRoot: string,
-): Record<string, string> {
-  const aliases: Record<string, string> = {};
-
-  for (const [find, rawTargets] of Object.entries(pathsConfig)) {
-    const target = Array.isArray(rawTargets)
-      ? rawTargets.find((value): value is string => typeof value === "string")
-      : typeof rawTargets === "string"
-        ? rawTargets
-        : null;
-    if (!target) continue;
-
-    if (find.includes("*") || target.includes("*")) {
-      if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
-      if (find.indexOf("*") !== find.length - 1 || target.indexOf("*") !== target.length - 1) {
-        continue;
-      }
-
-      const aliasKey = find.slice(0, -2);
-      const targetDir = target.slice(0, -2);
-      if (!aliasKey || !targetDir) continue;
-
-      aliases[aliasKey] = toViteAliasReplacement(path.resolve(baseUrl, targetDir), projectRoot);
-      continue;
-    }
-
-    aliases[find] = toViteAliasReplacement(path.resolve(baseUrl, target), projectRoot);
-  }
-
-  return aliases;
-}
-
-function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
-  const normalizedPath = absolutePath.replace(/\\/g, "/");
-  const rootCandidates = new Set<string>([projectRoot]);
-  const realRoot = tryRealpathSync(projectRoot);
-  if (realRoot) rootCandidates.add(realRoot);
-
-  const pathCandidates = new Set<string>([absolutePath]);
-  const realPath = tryRealpathSync(absolutePath);
-  if (realPath) pathCandidates.add(realPath);
-
-  for (const rootCandidate of rootCandidates) {
-    for (const pathCandidate of pathCandidates) {
-      if (pathCandidate === rootCandidate) {
-        return normalizedPath;
-      }
-      const relativeId = relativeWithinRoot(rootCandidate, pathCandidate);
-      if (relativeId) return "/" + relativeId;
-    }
-  }
-
-  return normalizedPath;
-}
-
 function resolveSwcHelpersAlias(root: string): string | undefined {
   const rootRequire = createRequire(path.join(root, "package.json"));
   const resolvers: NodeRequire[] = [];
@@ -722,48 +609,6 @@ function resolveSwcHelpersAlias(root: string): string | undefined {
   }
 
   return undefined;
-}
-
-function loadTsconfigPathAliases(
-  configPath: string,
-  projectRoot: string,
-  seen = new Set<string>(),
-): Record<string, string> {
-  const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return {};
-  seen.add(normalizedPath);
-
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
-  } catch {
-    return {};
-  }
-  if (!parsed) return {};
-
-  let aliases: Record<string, string> = {};
-  // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
-  // order so later entries override earlier ones (matching Next.js).
-  for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
-    const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
-    if (extendedPath) {
-      aliases = { ...aliases, ...loadTsconfigPathAliases(extendedPath, projectRoot, seen) };
-    }
-  }
-
-  const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
-  const pathsConfig =
-    compilerOptions && isRecord(compilerOptions.paths) ? compilerOptions.paths : null;
-  if (!pathsConfig) return aliases;
-
-  const baseUrl =
-    compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
-  const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
-
-  return {
-    ...aliases,
-    ...materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot),
-  };
 }
 
 /**
@@ -814,130 +659,6 @@ function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
     warn(msg, options);
   };
   marker[VINEXT_FILTERED_OPTIMIZE_DEPS_WARN] = true;
-}
-
-// Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
-// transforms can see them via resolve.alias without re-reading config files per env.
-const _tsconfigAliasCache = new Map<string, Record<string, string>>();
-
-/**
- * Order materialized tsconfig path aliases by descending prefix length.
- *
- * TypeScript (and Next.js) match `paths` patterns by longest matched prefix,
- * regardless of declaration order, while Vite's alias plugin picks the first
- * matching entry. Overlapping patterns like `@/*` + `@/public/*` must
- * therefore be materialized longest-first or the general pattern shadows the
- * specific one (`@/public/foo.svg` would resolve into `src/public/`).
- */
-function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(aliases).sort((a, b) => b[0].length - a[0].length));
-}
-
-function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
-  if (_tsconfigAliasCache.has(projectRoot)) {
-    return _tsconfigAliasCache.get(projectRoot)!;
-  }
-
-  let aliases: Record<string, string> = {};
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
-    if (!fs.existsSync(candidate)) continue;
-    aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
-    break;
-  }
-
-  _tsconfigAliasCache.set(projectRoot, aliases);
-  return aliases;
-}
-
-/**
- * Stylesheet importer contexts as seen by Vite's internal CSS resolvers.
- *
- * Vite resolves CSS `@import`/`composes`/`url()` specifiers through a
- * dedicated resolver container that only runs the alias plugin plus Vite's
- * own resolver — user plugins never participate. The importer is either the
- * stylesheet's own path (sass, CSS modules `composes`, url() rewriting) or a
- * synthetic `<basedir>/*` (postcss-import, less).
- */
-const STYLESHEET_IMPORTER_RE = /\.(?:css|scss|sass|less|styl|stylus|pcss|sss)$/i;
-
-function isStylesheetImporter(importer: string | undefined): boolean {
-  if (!importer) return false;
-  if (importer.endsWith("/*") || importer.endsWith("\\*")) return true;
-  return STYLESHEET_IMPORTER_RE.test(stripViteModuleQuery(importer));
-}
-
-/**
- * Alias resolver for tsconfig-derived path aliases that keeps them out of
- * stylesheet resolution.
- *
- * TypeScript `paths` never apply to CSS in Next.js — `@import` specifiers in
- * stylesheets use standard bundler resolution, including package.json
- * `exports` maps. A blind prefix-replacement alias breaks that: with
- * `"@scope/ui/*": ["../../packages/ui/src/*"]` in tsconfig, an
- * `@import "@scope/ui/globals.css"` whose real target is `exports`-mapped
- * gets rewritten to a nonexistent source path and fails with ENOENT.
- *
- * Returning `null` for stylesheet importers makes the alias plugin fall
- * through, so Vite's own resolver handles the original specifier. JS/TS
- * importers keep the default alias behavior (Next.js applies `paths` there,
- * including for `import "@/styles/globals.css"` from a layout), and Vite's
- * glob/dynamic-import transforms — which require blind prefix replacement
- * because their patterns never exist on disk — keep working.
- */
-// `ResolverFunction` is typed with rolldown's synchronous resolveId signature,
-// but the alias plugin awaits resolver results, so an async resolver is fine —
-// hence the cast.
-const tsconfigAliasCustomResolver = async function (
-  this: { resolve: ResolveFromImporter },
-  updatedId: string,
-  importer: string | undefined,
-  options?: { skipSelf?: boolean },
-) {
-  if (isStylesheetImporter(importer)) return null;
-  // Mirror the alias plugin's default resolution for every other importer.
-  const resolved = await this.resolve(updatedId, importer, { ...options, skipSelf: true });
-  return resolved ?? { id: updatedId };
-} as unknown as ResolverFunction;
-
-/**
- * Convert the merged alias map into Vite alias entries, attaching the
- * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
- * Array order preserves the map's first-match ordering.
- */
-function buildResolveAliasEntries(
-  aliasMap: Record<string, string>,
-  tsconfigPathAliases: Record<string, string>,
-): Alias[] {
-  return Object.entries(aliasMap).map(([find, replacement]) =>
-    tsconfigPathAliases[find] === replacement
-      ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
-      : { find, replacement },
-  );
-}
-
-// Vite 8 logs a deprecation warning when `resolve.alias` contains a
-// `customResolver`. vinext uses one deliberately (see
-// `tsconfigAliasCustomResolver`): the aliases must stay in `resolve.alias`
-// for Vite's glob/dynamic-import transforms and internal resolvers, but must
-// not apply inside stylesheet resolution — and only a `customResolver` can
-// observe the importer there. Filter the warning so every project with
-// tsconfig `paths` doesn't boot with it.
-const ALIAS_CUSTOM_RESOLVER_DEPRECATION_RE =
-  /`resolve\.alias` contains an alias with `customResolver` option/;
-const VINEXT_FILTERED_ALIAS_DEPRECATION_WARN = Symbol.for("vinext.filteredAliasDeprecationWarn");
-
-function suppressAliasCustomResolverDeprecationWarning(logger: Logger): Logger {
-  const marker = logger as Logger & { [VINEXT_FILTERED_ALIAS_DEPRECATION_WARN]?: true };
-  if (marker[VINEXT_FILTERED_ALIAS_DEPRECATION_WARN]) return logger;
-
-  const warn = logger.warn.bind(logger);
-  logger.warn = (msg, warnOptions) => {
-    if (ALIAS_CUSTOM_RESOLVER_DEPRECATION_RE.test(stripAnsi(msg))) return;
-    warn(msg, warnOptions);
-  };
-  marker[VINEXT_FILTERED_ALIAS_DEPRECATION_WARN] = true;
-  return logger;
 }
 
 // Virtual module IDs for Pages Router production build
@@ -1752,20 +1473,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         root = normalizePathSeparators(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
-        const tsconfigPathAliases = resolveTsconfigAliases(root);
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
-
-        // tsconfig-derived alias entries carry a customResolver, which Vite 8
-        // reports as deprecated during config resolution. Filter that warning
-        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
-        // config.customLogger (rather than returning it) keeps mergeConfig
-        // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
-          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
-            config.customLogger ??
-              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
-          );
-        }
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2584,20 +2292,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   },
                 }),
           resolve: {
-            // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
-            // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
-            // tsconfig-derived entries carry a customResolver that keeps them out
-            // of stylesheet resolution (see tsconfigAliasCustomResolver).
-            alias: buildResolveAliasEntries(
-              {
-                ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
-                ...tsconfigPathAliases,
-                ...nextConfig.aliases,
-                ...nextShimMap,
-                "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-              },
-              tsconfigPathAliases,
-            ),
+            alias: {
+              ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
+              ...nextConfig.aliases,
+              ...nextShimMap,
+              "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+            },
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,

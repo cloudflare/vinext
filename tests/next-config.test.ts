@@ -663,6 +663,64 @@ describe("loadNextConfig with tsconfig path aliases", () => {
     expect(config?.env?.BAZ).toBe("baz");
   });
 
+  it("follows array-form tsconfig extends when resolving paths", async () => {
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "value.ts"), `export const value = "array";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@/*": ["./src/*"] } } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ extends: ["./tsconfig.base.json"] }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { value } from "@/value";\nexport default { env: { VALUE: value } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("array");
+  });
+
+  it("resolves exact non-wildcard tsconfig path aliases", async () => {
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "value.ts"), `export const value = "exact";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@value": ["./src/value.ts"] } } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { value } from "@value";\nexport default { env: { VALUE: value } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("exact");
+  });
+
+  it("resolves next.config.ts imports through jsconfig paths", async () => {
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "value.ts"), `export const value = "jsconfig";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "jsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@/*": ["./src/*"] } } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { value } from "@/value";\nexport default { env: { VALUE: value } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("jsconfig");
+  });
+
   it("follows extended tsconfig baseUrl when resolving bare imports", async () => {
     // Ported from Next.js: test/e2e/app-dir/next-config-ts/tsconfig-extends/
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/tsconfig-extends/next-config-ts-tsconfig-extends-cjs.test.ts

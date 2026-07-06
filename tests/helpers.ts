@@ -117,8 +117,7 @@ export async function startFixtureServer(
 
 /**
  * Normalize a config-hook `resolve.alias` value to a find→replacement record.
- * vinext emits alias entry arrays (so tsconfig-derived entries can carry a
- * customResolver); tests assert on the object view.
+ * Vite accepts both entry arrays and object maps; tests assert on one shape.
  */
 export function aliasEntriesToRecord(alias: unknown): Record<string, string> {
   if (Array.isArray(alias)) {
