@@ -1,7 +1,7 @@
 import http from "node:http";
 import fsp from "node:fs/promises";
 import { type ViteDevServer } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
 
 function decodeHtmlText(text: string): string {

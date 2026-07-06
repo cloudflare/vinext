@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
 
 function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
