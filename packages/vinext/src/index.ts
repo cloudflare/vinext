@@ -185,6 +185,7 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
@@ -562,16 +563,7 @@ type DevPagesModuleDependency =
   | { type: "script"; id: string };
 
 function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFromImporter) {
-  const cache = new Map<string, Promise<DevPagesModuleDependency[]>>();
-
-  return function getModuleDependencies(modulePath: string): Promise<DevPagesModuleDependency[]> {
-    const cached = cache.get(modulePath);
-    if (cached) return cached;
-
-    const pending = collectModuleDependencies(modulePath);
-    cache.set(modulePath, pending);
-    return pending;
-  };
+  return createModuleDependencyCache(collectModuleDependencies);
 
   async function collectModuleDependencies(
     modulePath: string,
@@ -622,8 +614,6 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
     return dependencies;
   }
 }
-
-export const _createDevPagesModuleDependencyReader = createDevPagesModuleDependencyReader;
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 

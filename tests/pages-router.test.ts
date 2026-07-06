@@ -8,7 +8,8 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
-import vinext, { _createDevPagesModuleDependencyReader } from "../packages/vinext/src/index.js";
+import vinext from "../packages/vinext/src/index.js";
+import { createModuleDependencyCache } from "../packages/vinext/src/build/module-dependency-cache.js";
 import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
@@ -3377,10 +3378,14 @@ describe("Virtual server entry generation", () => {
     );
     fs.writeFileSync(stylesheetPath, ".shared { color: red; }\n");
 
-    const resolve = vi.fn(async (id: string) =>
-      id === "../styles/shared.module.css" ? { id: stylesheetPath } : null,
-    );
-    const getModuleDependencies = _createDevPagesModuleDependencyReader(tmpDir, resolve);
+    const collect = vi.fn(async (moduleId: string) => {
+      const cleanModulePath = moduleId.split("?", 1)[0];
+      const source = fs.readFileSync(cleanModulePath, "utf8");
+      return source.includes("../styles/shared.module.css")
+        ? [{ type: "stylesheet", asset: "styles/shared.module.css" }]
+        : [];
+    });
+    const getModuleDependencies = createModuleDependencyCache(collect);
 
     try {
       const first = getModuleDependencies(sharedPath);
@@ -3388,10 +3393,10 @@ describe("Virtual server entry generation", () => {
       await expect(first).resolves.toEqual([
         { type: "stylesheet", asset: "styles/shared.module.css" },
       ]);
-      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(collect).toHaveBeenCalledTimes(1);
 
       await getModuleDependencies(`${sharedPath}?variant=a`);
-      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(collect).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

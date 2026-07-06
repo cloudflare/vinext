@@ -148,6 +148,7 @@ describe("App Router dynamic requests", () => {
     expect(codeFilter.test(String.raw`requ\u0069re(request)`)).toBe(true);
     expect(codeFilter.test(String.raw`\u{72}equire(request)`)).toBe(true);
     expect(codeFilter.test(String.raw`\u{00072}equire(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`const label = "caf\u00e9";`)).toBe(false);
     expect(codeFilter.test("require /* comment */ (request)")).toBe(true);
     expect(codeFilter.test("import(request)")).toBe(true);
     expect(codeFilter.test("import /* comment */ (request)")).toBe(true);

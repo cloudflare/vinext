@@ -24,7 +24,8 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
-const REQUIRE_PRESCAN = /(?:\brequire\b|\\u(?:[\da-f]{4}|\{[\da-f]+\}))/i;
+const REQUIRE_PRESCAN =
+  /(?:\brequire\b|(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\}))(?:q|\\u(?:0071|\{0*71\}))(?:u|\\u(?:0075|\{0*75\}))(?:i|\\u(?:0069|\{0*69\}))(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\})))/i;
 const DYNAMIC_REQUEST_PRESCAN = new RegExp(
   String.raw`(?:${REQUIRE_PRESCAN.source}|${DYNAMIC_IMPORT_PRESCAN.source})`,
   "i",
