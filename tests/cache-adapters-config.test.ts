@@ -121,13 +121,22 @@ describe("generateCacheAdaptersModule", () => {
 });
 
 describe("findVinextCacheConfigInPlugins", () => {
-  it("reads cache metadata from nested plugin arrays", () => {
+  it("reads cache metadata from nested plugin arrays", async () => {
     const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
     const plugins = [[{ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache }]] as unknown as Parameters<
       typeof findVinextCacheConfigInPlugins
     >[0];
 
-    expect(findVinextCacheConfigInPlugins(plugins)).toBe(cache);
+    expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
+  });
+
+  it("reads cache metadata from promised plugin composition", async () => {
+    const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
+    const plugins = [
+      Promise.resolve([{ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache }]),
+    ] as unknown as Parameters<typeof findVinextCacheConfigInPlugins>[0];
+
+    expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
   });
 });
 

@@ -59,19 +59,23 @@ type ViteConfigLoader = {
   loadConfigFromFile: typeof import("vite").loadConfigFromFile;
 };
 
-function flattenPluginOptions(value: unknown, target: unknown[]): void {
+async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
+  if (value instanceof Promise) {
+    await flattenPluginOptions(await value, target);
+    return;
+  }
   if (Array.isArray(value)) {
-    for (const item of value) flattenPluginOptions(item, target);
+    for (const item of value) await flattenPluginOptions(item, target);
     return;
   }
   if (value) target.push(value);
 }
 
-export function findVinextCacheConfigInPlugins(
+export async function findVinextCacheConfigInPlugins(
   plugins: import("vite").PluginOption[] | undefined,
-): VinextCacheConfig | null {
+): Promise<VinextCacheConfig | null> {
   const flattened: unknown[] = [];
-  flattenPluginOptions(plugins, flattened);
+  await flattenPluginOptions(plugins, flattened);
 
   for (const plugin of flattened) {
     if (!plugin || typeof plugin !== "object") continue;
@@ -91,7 +95,7 @@ export async function loadVinextCacheConfigFromViteConfig(
     undefined,
     root,
   );
-  return findVinextCacheConfigInPlugins(loaded?.config.plugins);
+  return await findVinextCacheConfigInPlugins(loaded?.config.plugins);
 }
 
 /**

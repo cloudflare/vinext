@@ -7,6 +7,7 @@ import {
 import { PHASE_PRODUCTION_BUILD } from "../packages/vinext/src/shims/constants.js";
 import {
   findVinextPrerenderConfigInPlugins,
+  findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
   normalizeVinextPrerenderConfig,
   resolveVinextPrerenderDecision,
@@ -37,14 +38,27 @@ describe("vinext prerender config", () => {
     ).toThrow('Currently only `routes: "*"` is supported');
   });
 
-  it("exposes normalized config on the vinext plugin for build-time config loading", () => {
+  it("exposes normalized config on the vinext plugin for build-time config loading", async () => {
     const plugins = vinext({ prerender: true });
-    expect(findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
+    expect(await findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
   });
 
-  it("exposes object-form config on the vinext plugin", () => {
+  it("exposes object-form config on the vinext plugin", async () => {
     const plugins = vinext({ prerender: { routes: "*" } });
-    expect(findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
+    expect(await findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
+  });
+
+  it("discovers prerender config through promised plugin composition", async () => {
+    const plugins = [Promise.resolve(vinext({ prerender: true }))];
+    expect(await findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
+  });
+
+  it("discovers route-root config through promised plugin composition", async () => {
+    const plugins = [Promise.resolve(vinext({ appDir: "custom-app", disableAppRouter: true }))];
+    expect(await findVinextRouteRootConfigInPlugins(plugins)).toMatchObject({
+      appDir: "custom-app",
+      disableAppRouter: true,
+    });
   });
 
   it("exposes inline Next.js config on the vinext plugin for CLI build metadata", async () => {

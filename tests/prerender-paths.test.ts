@@ -245,4 +245,23 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.paths).toEqual(["/pages-only"]);
   });
+
+  it("does not reload disk config when supplied resolved config", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.mjs", 'throw new Error("disk config loaded unexpectedly");\n');
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig({ trailingSlash: true }, tmpDir);
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, nextConfig });
+
+    expect(manifest?.trailingSlash).toBe(true);
+    expect(manifest?.paths).toEqual(["/"]);
+  });
 });

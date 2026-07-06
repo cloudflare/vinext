@@ -276,10 +276,10 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   );
   const plugins = loaded?.config.plugins;
   return {
-    cacheConfig: findVinextCacheConfigInPlugins(plugins),
+    cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
-    prerenderConfig: findVinextPrerenderConfigInPlugins(plugins),
-    routeRootConfig: findVinextRouteRootConfigInPlugins(plugins),
+    prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
+    routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
   };
 }
 
@@ -843,6 +843,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
+  // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
+  // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
   const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
     loadDeployViteConfigMetadata(info.root),
   );
@@ -876,7 +878,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (shouldEmitPrerenderPathManifest) {
     await emitPrerenderPathManifest({
       root: info.root,
-      nextConfigOverride: nextConfig,
+      nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }

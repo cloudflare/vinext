@@ -67,19 +67,23 @@ export function normalizeVinextPrerenderConfig(
   );
 }
 
-function flattenPluginOptions(value: unknown, target: unknown[]): void {
+async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
+  if (value instanceof Promise) {
+    await flattenPluginOptions(await value, target);
+    return;
+  }
   if (Array.isArray(value)) {
-    for (const item of value) flattenPluginOptions(item, target);
+    for (const item of value) await flattenPluginOptions(item, target);
     return;
   }
   if (value) target.push(value);
 }
 
-export function findVinextPrerenderConfigInPlugins(
+export async function findVinextPrerenderConfigInPlugins(
   plugins: PluginOption[] | undefined,
-): ResolvedVinextPrerenderConfig | null {
+): Promise<ResolvedVinextPrerenderConfig | null> {
   const flattened: unknown[] = [];
-  flattenPluginOptions(plugins, flattened);
+  await flattenPluginOptions(plugins, flattened);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;
@@ -92,11 +96,11 @@ export function findVinextPrerenderConfigInPlugins(
   return null;
 }
 
-export function findVinextRouteRootConfigInPlugins(
+export async function findVinextRouteRootConfigInPlugins(
   plugins: PluginOption[] | undefined,
-): VinextRouteRootConfig | null {
+): Promise<VinextRouteRootConfig | null> {
   const flattened: unknown[] = [];
-  flattenPluginOptions(plugins, flattened);
+  await flattenPluginOptions(plugins, flattened);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;
@@ -118,7 +122,7 @@ export async function loadVinextPrerenderConfigFromViteConfig(
     undefined,
     root,
   );
-  return findVinextPrerenderConfigInPlugins(loaded?.config.plugins);
+  return await findVinextPrerenderConfigInPlugins(loaded?.config.plugins);
 }
 
 export async function loadVinextRouteRootConfigFromViteConfig(
@@ -130,7 +134,7 @@ export async function loadVinextRouteRootConfigFromViteConfig(
     undefined,
     root,
   );
-  return findVinextRouteRootConfigInPlugins(loaded?.config.plugins);
+  return await findVinextRouteRootConfigInPlugins(loaded?.config.plugins);
 }
 
 export function resolveVinextPrerenderDecision(options: {

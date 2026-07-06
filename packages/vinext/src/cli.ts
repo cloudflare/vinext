@@ -255,8 +255,8 @@ async function loadBuildViteConfigMetadata(
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
-    prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
-    routeRootConfig: findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
+    prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+    routeRootConfig: await findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
   };
 }
 
@@ -703,7 +703,7 @@ async function buildApp() {
     });
     await emitPrerenderPathManifest({
       root: normalizePathSeparators(process.cwd()),
-      nextConfigOverride: resolvedNextConfig,
+      nextConfig: resolvedNextConfig,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }
