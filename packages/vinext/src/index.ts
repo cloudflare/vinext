@@ -539,11 +539,10 @@ async function collectDevPagesAppStylesheetAssets(
   const seenModules = new Set<string>();
 
   async function visitModule(modulePath: string): Promise<void> {
-    const cleanModulePath = stripViteModuleQuery(modulePath);
-    if (seenModules.has(cleanModulePath)) return;
-    seenModules.add(cleanModulePath);
+    if (seenModules.has(modulePath)) return;
+    seenModules.add(modulePath);
 
-    for (const dependency of await getModuleDependencies(cleanModulePath)) {
+    for (const dependency of await getModuleDependencies(modulePath)) {
       if (dependency.type === "stylesheet") {
         if (seenAssets.has(dependency.asset)) continue;
         seenAssets.add(dependency.asset);
@@ -566,18 +565,18 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
   const cache = new Map<string, Promise<DevPagesModuleDependency[]>>();
 
   return function getModuleDependencies(modulePath: string): Promise<DevPagesModuleDependency[]> {
-    const cleanModulePath = stripViteModuleQuery(modulePath);
-    const cached = cache.get(cleanModulePath);
+    const cached = cache.get(modulePath);
     if (cached) return cached;
 
-    const pending = collectModuleDependencies(cleanModulePath);
-    cache.set(cleanModulePath, pending);
+    const pending = collectModuleDependencies(modulePath);
+    cache.set(modulePath, pending);
     return pending;
   };
 
   async function collectModuleDependencies(
-    cleanModulePath: string,
+    modulePath: string,
   ): Promise<DevPagesModuleDependency[]> {
+    const cleanModulePath = stripViteModuleQuery(modulePath);
     if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return [];
 
     let ast: ReturnType<typeof parseAst>;
@@ -623,6 +622,8 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
     return dependencies;
   }
 }
+
+export const _createDevPagesModuleDependencyReader = createDevPagesModuleDependencyReader;
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 

@@ -8,7 +8,7 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
-import vinext from "../packages/vinext/src/index.js";
+import vinext, { _createDevPagesModuleDependencyReader } from "../packages/vinext/src/index.js";
 import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
@@ -3360,6 +3360,39 @@ describe("Virtual server entry generation", () => {
       expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/site.less");
     } finally {
       await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages dependency metadata reuses exact module ids", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-shared-assets-"));
+    fs.mkdirSync(path.join(tmpDir, "lib"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "styles"), { recursive: true });
+    const sharedPath = path.join(tmpDir, "lib", "shared.ts");
+    const stylesheetPath = path.join(tmpDir, "styles", "shared.module.css");
+    fs.writeFileSync(
+      sharedPath,
+      'import styles from "../styles/shared.module.css";\n' +
+        "export const sharedClassName = styles.shared;\n",
+    );
+    fs.writeFileSync(stylesheetPath, ".shared { color: red; }\n");
+
+    const resolve = vi.fn(async (id: string) =>
+      id === "../styles/shared.module.css" ? { id: stylesheetPath } : null,
+    );
+    const getModuleDependencies = _createDevPagesModuleDependencyReader(tmpDir, resolve);
+
+    try {
+      const first = getModuleDependencies(sharedPath);
+      expect(getModuleDependencies(sharedPath)).toBe(first);
+      await expect(first).resolves.toEqual([
+        { type: "stylesheet", asset: "styles/shared.module.css" },
+      ]);
+      expect(resolve).toHaveBeenCalledTimes(1);
+
+      await getModuleDependencies(`${sharedPath}?variant=a`);
+      expect(resolve).toHaveBeenCalledTimes(2);
+    } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

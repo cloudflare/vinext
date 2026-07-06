@@ -24,8 +24,10 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
+const REQUIRE_PRESCAN = /(?:\brequire\b|\\u(?:[\da-f]{4}|\{[\da-f]+\}))/i;
 const DYNAMIC_REQUEST_PRESCAN = new RegExp(
-  String.raw`(?:\brequire\b|${DYNAMIC_IMPORT_PRESCAN.source})`,
+  String.raw`(?:${REQUIRE_PRESCAN.source}|${DYNAMIC_IMPORT_PRESCAN.source})`,
+  "i",
 );
 const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -730,7 +732,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
   // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
   // bare `import` (static ESM) otherwise matched ~every module, so this plugin
   // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
-  if (!code.includes("require") && !mayContainDynamicImport(code)) return null;
+  if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
 
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =
