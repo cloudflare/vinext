@@ -309,8 +309,6 @@ async function populateKVCacheFromPrerenderedArtifacts(
   wranglerEnv: string | undefined,
   cacheConfig: VinextCacheConfig | null,
 ): Promise<void> {
-  if (!viteConfigHasCacheAdapter(root)) return;
-
   const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
   if (!kvConfig) return;
 

@@ -37,7 +37,12 @@ const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
+  /** Fully resolved Next.js config from the production build/deploy caller. */
   nextConfig?: ResolvedNextConfig;
+  /**
+   * Override next.config values. Merged on top of the config loaded from disk.
+   * Ignored when `nextConfig` is supplied.
+   */
   nextConfigOverride?: Partial<ResolvedNextConfig>;
   appDir?: string | null;
   pagesDir?: string | null;
