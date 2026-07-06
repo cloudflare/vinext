@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import type { PluginOption } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
@@ -17,6 +18,7 @@ import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
+export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -345,6 +347,53 @@ type NextConfigFactory = (
 ) => NextConfig | Promise<NextConfig>;
 
 export type NextConfigInput = NextConfig | NextConfigFactory;
+
+type VinextNextConfigPlugin = {
+  [VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY]?: NextConfigInput | null;
+};
+
+type ViteConfigLoader = {
+  loadConfigFromFile: typeof import("vite").loadConfigFromFile;
+};
+
+async function flattenPluginOptions(value: unknown, target: unknown[]): Promise<void> {
+  if (value instanceof Promise) {
+    await flattenPluginOptions(await value, target);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) await flattenPluginOptions(item, target);
+    return;
+  }
+  if (value) target.push(value);
+}
+
+export async function findVinextNextConfigInPlugins(
+  plugins: PluginOption[] | undefined,
+): Promise<NextConfigInput | null> {
+  const flattened: unknown[] = [];
+  await flattenPluginOptions(plugins, flattened);
+
+  for (const plugin of flattened) {
+    if (!isUnknownRecord(plugin)) continue;
+    const nextConfig = (plugin as VinextNextConfigPlugin)[VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY];
+    if (nextConfig) return nextConfig;
+  }
+
+  return null;
+}
+
+export async function loadVinextNextConfigFromViteConfig(
+  vite: ViteConfigLoader,
+  root: string,
+): Promise<NextConfigInput | null> {
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  return await findVinextNextConfigInPlugins(loaded?.config.plugins);
+}
 
 /**
  * Resolved configuration with all async values awaited.

@@ -73,6 +73,7 @@ import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
+  VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY,
   loadNextConfig,
   resolveNextConfigInput,
   resolveNextConfig,
@@ -1731,6 +1732,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Expose normalized prerender config to build/deploy metadata loaders that
       // inspect the Vite plugin array after a fresh config load.
       ...({ [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]: prerenderConfig } as Record<
+        string,
+        unknown
+      >),
+      ...({ [VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY]: options.nextConfig ?? null } as Record<
         string,
         unknown
       >),

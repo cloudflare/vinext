@@ -90,6 +90,33 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   );
 }
 
+function writeProjectWithInlineNextConfig(nextConfig: string): void {
+  writeFile("package.json", JSON.stringify({ name: "inline-next-config-app", type: "module" }));
+  writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/package.json",
+    JSON.stringify({ name: "@cloudflare/vite-plugin", type: "module", main: "index.js" }),
+  );
+  writeFile(
+    "node_modules/@cloudflare/vite-plugin/index.js",
+    "export function cloudflare() { return { name: 'test-cloudflare-plugin' }; }\n",
+  );
+  writeFile(
+    "wrangler.jsonc",
+    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+  );
+  writeFile(
+    "vite.config.ts",
+    [
+      'import { cloudflare } from "@cloudflare/vite-plugin";',
+      'import vinext from "../packages/vinext/src/index";',
+      "",
+      `export default { plugins: [vinext({ nextConfig: ${nextConfig} }), cloudflare()] };`,
+      "",
+    ].join("\n"),
+  );
+}
+
 function writeApiOnlyProject(): void {
   writeFile("package.json", JSON.stringify({ name: "warm-skip-build-app", type: "module" }));
   writeFile(
@@ -125,37 +152,6 @@ function writeApiOnlyProject(): void {
   writeFile("dist/server/index.js", "export default {};\n");
 }
 
-function writeProjectWithThrowingViteConfig(): void {
-  writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
-  writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
-  writeFile(
-    "node_modules/@cloudflare/vite-plugin/package.json",
-    JSON.stringify({ name: "@cloudflare/vite-plugin", type: "module", main: "index.js" }),
-  );
-  writeFile(
-    "node_modules/@cloudflare/vite-plugin/index.js",
-    "export function cloudflare() { return { name: 'test-cloudflare-plugin' }; }\n",
-  );
-  writeFile(
-    "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
-  );
-  writeFile("throws-on-load.js", 'throw new Error("vite config loaded unexpectedly");\n');
-  writeFile(
-    "vite.config.ts",
-    [
-      'import "./throws-on-load.js";',
-      'import { cloudflare } from "@cloudflare/vite-plugin";',
-      'import vinext from "../packages/vinext/src/index";',
-      "",
-      "export default {",
-      "  plugins: [vinext(), cloudflare({ viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] } })],",
-      "};",
-      "",
-    ].join("\n"),
-  );
-}
-
 describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
@@ -173,7 +169,13 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: tmpDir,
+        concurrency: undefined,
+        nextConfigOverride: expect.any(Object),
+      }),
+    );
     expect(
       vi.mocked(spawn).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
@@ -188,7 +190,28 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: tmpDir,
+        concurrency: undefined,
+        nextConfigOverride: expect.any(Object),
+      }),
+    );
+  });
+
+  it("runs static export during deploy when output export is configured inline", async () => {
+    writeProjectWithInlineNextConfig('{ output: "export" }');
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: tmpDir,
+        concurrency: undefined,
+        nextConfigOverride: expect.objectContaining({ output: "export" }),
+      }),
+    );
   });
 
   it("passes deploy prerender concurrency through config-triggered prerender", async () => {
@@ -197,27 +220,24 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, prerenderConcurrency: 3 });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: 3 });
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ root: tmpDir, concurrency: 3 }),
+    );
   });
 
-  it("does not load Vite config when the prerender-all flag already wins", async () => {
-    writeProjectWithThrowingViteConfig();
+  it("resolves function-form inline config inside the selected Cloudflare environment", async () => {
+    writeProjectWithInlineNextConfig(
+      '() => ({ output: process.env.CLOUDFLARE_ENV === "preview" ? "export" : undefined, generateBuildId: () => process.env.CLOUDFLARE_ENV ?? "missing" })',
+    );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true, prerenderAll: true });
+    await deploy({ root: tmpDir, skipBuild: true, env: "preview" });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
-    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
-  });
-
-  it("does not load Vite config when static export already wins", async () => {
-    writeProjectWithThrowingViteConfig();
-    writeFile("next.config.mjs", 'export default { output: "export" };\n');
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true });
-
-    expect(runPrerenderMock).toHaveBeenCalledWith({ root: tmpDir, concurrency: undefined });
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfigOverride: expect.objectContaining({ output: "export", buildId: "preview" }),
+      }),
+    );
   });
 
   it("uploads prerendered App Router artifacts to KV only when configured in Vite", async () => {

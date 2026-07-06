@@ -18,7 +18,12 @@ import { pathToFileURL } from "node:url";
 import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
-import { loadNextConfig, resolveNextConfig } from "vinext/internal/config/next-config";
+import {
+  loadNextConfig,
+  loadVinextNextConfigFromViteConfig,
+  resolveNextConfig,
+  resolveNextConfigInput,
+} from "vinext/internal/config/next-config";
 import {
   formatVinextPrerenderLabel,
   loadVinextCacheConfigFromViteConfig,
@@ -814,9 +819,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
-  const rawNextConfig = await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
-  const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
   const buildEnv = deployEnv === "production" && !options.env ? undefined : deployEnv;
+  const nextConfig = await withCloudflareEnv(buildEnv, async () => {
+    const vite = await loadProjectViteApi(info.root);
+    const inlineNextConfig = await loadVinextNextConfigFromViteConfig(vite, info.root);
+    const rawNextConfig = inlineNextConfig
+      ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
+      : await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
+    return resolveNextConfig(rawNextConfig, info.root);
+  });
 
   const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
   const vinextPrerenderConfig = shouldLoadVinextPrerenderConfig
@@ -863,7 +874,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    await runPrerender({ root: info.root, concurrency: options.prerenderConcurrency });
+    await runPrerender({
+      root: info.root,
+      concurrency: options.prerenderConcurrency,
+      nextConfigOverride: nextConfig,
+    });
     ranPrerender = true;
   }
 

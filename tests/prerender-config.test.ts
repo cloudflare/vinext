@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  findVinextNextConfigInPlugins,
+  resolveNextConfigInput,
+} from "../packages/vinext/src/config/next-config.js";
+import { PHASE_PRODUCTION_BUILD } from "../packages/vinext/src/shims/constants.js";
+import {
   findVinextPrerenderConfigInPlugins,
   formatVinextPrerenderLabel,
   normalizeVinextPrerenderConfig,
@@ -40,6 +45,31 @@ describe("vinext prerender config", () => {
   it("exposes object-form config on the vinext plugin", () => {
     const plugins = vinext({ prerender: { routes: "*" } });
     expect(findVinextPrerenderConfigInPlugins(plugins)).toEqual({ routes: "*" });
+  });
+
+  it("exposes inline Next.js config on the vinext plugin for CLI build metadata", async () => {
+    const nextConfig = { output: "export" } as const;
+    const plugins = vinext({ nextConfig });
+    expect(await findVinextNextConfigInPlugins(plugins)).toBe(nextConfig);
+  });
+
+  it("discovers inline Next.js config through promised plugin composition", async () => {
+    const nextConfig = { output: "export" } as const;
+    const plugins = Promise.resolve(vinext({ nextConfig }));
+    expect(await findVinextNextConfigInPlugins([plugins])).toBe(nextConfig);
+  });
+
+  it("preserves function-form inline config for production build resolution", async () => {
+    const nextConfig = (phase: string) => ({
+      output: phase === PHASE_PRODUCTION_BUILD ? ("export" as const) : undefined,
+    });
+    const plugins = vinext({ nextConfig });
+    const discoveredConfig = await findVinextNextConfigInPlugins(plugins);
+
+    expect(discoveredConfig).toBe(nextConfig);
+    expect(await resolveNextConfigInput(discoveredConfig!, PHASE_PRODUCTION_BUILD)).toEqual({
+      output: "export",
+    });
   });
 
   it("chooses the CLI flag before config or static export", () => {
