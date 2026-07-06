@@ -27,7 +27,7 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
-import { getPagesInitialRouterQuery } from "./pages-readiness.js";
+import { getPagesSerializedRouterQuery } from "./pages-readiness.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -280,8 +280,9 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: getPagesInitialRouterQuery(
+    query: getPagesSerializedRouterQuery(
       options.query ?? options.params,
+      options.params,
       options.nextData,
       options.isFallback === true,
     ),

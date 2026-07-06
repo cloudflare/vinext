@@ -33,6 +33,16 @@ export function getPagesInitialRouterQuery<T extends Record<string, unknown>>(
   return nextData?.autoExport === true || isFallback ? {} : query;
 }
 
+export function getPagesSerializedRouterQuery<T extends Record<string, unknown>>(
+  query: T,
+  params: Record<string, unknown>,
+  nextData: Pick<VinextNextData, "autoExport" | "gsp"> | undefined,
+  isFallback: boolean,
+): T | Record<string, unknown> {
+  if (nextData?.autoExport === true || isFallback) return {};
+  return nextData?.gsp === true ? params : query;
+}
+
 /**
  * Build the readiness flags for a Pages Router render. Shared by the dev and
  * production Pages render paths.

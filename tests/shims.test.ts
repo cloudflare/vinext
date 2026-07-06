@@ -15043,6 +15043,23 @@ describe("Pages Router concurrent navigation", () => {
     });
   });
 
+  it("serializes only route params for getStaticProps hydration", () => {
+    const script = buildPagesNextDataScript({
+      buildId: null,
+      i18n: {},
+      pageProps: {},
+      params: { slug: "published" },
+      query: { slug: "published", view: "full" },
+      routePattern: "/docs/[slug]",
+      safeJsonStringify,
+      nextData: { gsp: true },
+    });
+
+    expect(JSON.parse(script.match(/>([\s\S]*)<\/script>/)![1]).query).toEqual({
+      slug: "published",
+    });
+  });
+
   it("installs the Pages Router popstate runtime before exposing window.next.router", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();

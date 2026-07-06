@@ -61,7 +61,11 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
-import { buildPagesReadinessNextData, getPagesInitialRouterQuery } from "./pages-readiness.js";
+import {
+  buildPagesReadinessNextData,
+  getPagesInitialRouterQuery,
+  getPagesSerializedRouterQuery,
+} from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
   getPagesRouteParams,
@@ -1331,7 +1335,12 @@ export function createSSRHandler(
                         {
                           props: freshRenderProps,
                           page: patternToNextFormat(route.pattern),
-                          query: getPagesInitialRouterQuery(params, freshPagesNextData, false),
+                          query: getPagesSerializedRouterQuery(
+                            query,
+                            params,
+                            freshPagesNextData,
+                            false,
+                          ),
                           buildId: process.env.__VINEXT_BUILD_ID,
                           isFallback: false,
                           locale: locale ?? currentDefaultLocale,
@@ -1774,7 +1783,12 @@ hydrate();
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: getPagesInitialRouterQuery(query, serializedPagesNextData, isFallbackRender),
+            query: getPagesSerializedRouterQuery(
+              query,
+              params,
+              serializedPagesNextData,
+              isFallbackRender,
+            ),
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
