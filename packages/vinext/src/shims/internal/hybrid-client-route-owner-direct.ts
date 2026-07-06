@@ -9,6 +9,7 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../../client/vinext-next-data.js";
+import type { NextRewrite } from "../../config/next-config.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { compareHybridRoutePatterns } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
@@ -20,6 +21,10 @@ type HybridClientRouteMatches = {
   appMatch: VinextLinkPrefetchRoute | null;
   pagesMatch: VinextPagesLinkPrefetchRoute | null;
 };
+
+export type HybridClientRouteOwnerPrecheck =
+  | { kind: "needsRewriteEvaluation" }
+  | { kind: "resolved"; owner: HybridClientOwner | null };
 
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
@@ -95,4 +100,102 @@ export function resolveDirectHybridClientRouteOwner(
 ): HybridClientOwner | null {
   if (typeof window === "undefined") return null;
   return resolveMatchedHybridClientRouteOwner(matchDirectHybridClientRoutes(href, basePath));
+}
+
+function hasRewriteRules(rewrites: Window["__VINEXT_CLIENT_REWRITES__"]): boolean {
+  return (
+    rewrites !== undefined &&
+    (rewrites.beforeFiles.length > 0 ||
+      rewrites.afterFiles.length > 0 ||
+      rewrites.fallback.length > 0)
+  );
+}
+
+function splitPathname(pathname: string): string[] {
+  return pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+}
+
+function segmentCanBeMatchedStatically(patternSegment: string): boolean {
+  return !/[():*+?{}[\]\\]/.test(patternSegment) && !patternSegment.includes(":");
+}
+
+function rewriteSourceMayMatchPathname(source: string, pathname: string): boolean {
+  if (!source.startsWith("/") || source.includes("?") || source.includes("#")) return true;
+
+  const patternSegments = splitPathname(source);
+  const pathnameSegments = splitPathname(pathname);
+
+  for (let patternIndex = 0, pathnameIndex = 0; ; patternIndex++, pathnameIndex++) {
+    const patternSegment = patternSegments[patternIndex];
+    const pathnameSegment = pathnameSegments[pathnameIndex];
+
+    if (patternSegment === undefined) {
+      return pathnameSegment === undefined;
+    }
+
+    if (patternSegment.startsWith(":")) {
+      const match = /^:[A-Za-z][A-Za-z0-9_-]*([+*])?$/.exec(patternSegment);
+      if (!match) return true;
+
+      const modifier = match[1];
+      if (modifier === "*") return true;
+      if (modifier === "+") return pathnameSegment !== undefined;
+      if (pathnameSegment === undefined) return false;
+      continue;
+    }
+
+    if (!segmentCanBeMatchedStatically(patternSegment)) return true;
+    if (pathnameSegment !== patternSegment) return false;
+  }
+}
+
+function hasPotentialRewriteMatch(
+  href: string,
+  basePath: string,
+  rewrites: readonly NextRewrite[],
+): boolean {
+  if (rewrites.length === 0) return false;
+  const pathname = resolveSameOriginPathname(href, basePath);
+  if (pathname === null) return false;
+  return rewrites.some((rewrite) => rewriteSourceMayMatchPathname(rewrite.source, pathname));
+}
+
+export function hasPotentialHybridClientRewrite(href: string, basePath: string): boolean {
+  if (typeof window === "undefined") return false;
+
+  const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  if (rewrites === undefined || !hasRewriteRules(rewrites)) return false;
+
+  if (hasPotentialRewriteMatch(href, basePath, rewrites.beforeFiles)) return true;
+
+  const matches = matchDirectHybridClientRoutes(href, basePath);
+  if (
+    (matches.appMatch === null || matches.appMatch.isDynamic) &&
+    (matches.pagesMatch === null || matches.pagesMatch.isDynamic) &&
+    hasPotentialRewriteMatch(href, basePath, rewrites.afterFiles)
+  ) {
+    return true;
+  }
+
+  return (
+    matches.appMatch === null &&
+    matches.pagesMatch === null &&
+    hasPotentialRewriteMatch(href, basePath, rewrites.fallback)
+  );
+}
+
+export function resolveHybridClientRouteOwnerPrecheck(
+  href: string,
+  basePath: string,
+): HybridClientRouteOwnerPrecheck {
+  if (hasPotentialHybridClientRewrite(href, basePath)) {
+    return { kind: "needsRewriteEvaluation" };
+  }
+  return {
+    kind: "resolved",
+    owner:
+      typeof window === "undefined"
+        ? null
+        : resolveMatchedHybridClientRouteOwner(matchDirectHybridClientRoutes(href, basePath)),
+  };
 }

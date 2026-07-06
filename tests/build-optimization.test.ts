@@ -110,6 +110,15 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
   });
 
+  it("keeps lazy App Router runtime modules out of the eager vinext chunk", () => {
+    expect(clientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js")).toBe(
+      "vinext-hybrid-route-owner",
+    );
+    expect(
+      appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.ts?client"),
+    ).toBe("vinext-hybrid-route-owner");
+  });
+
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
     expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();

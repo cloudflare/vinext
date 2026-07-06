@@ -57,7 +57,10 @@ import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import {
+  resolveHybridClientRouteOwnerPrecheck,
+  type HybridClientOwner,
+} from "./internal/hybrid-client-route-owner-direct.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -79,6 +82,26 @@ import {
   releaseAppPrefetchFetchSlot,
   scheduleAppPrefetchFetch,
 } from "./internal/app-prefetch-fetch-queue.js";
+
+type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
+
+let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
+
+function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModule> {
+  hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
+  return hybridClientRouteOwnerModulePromise;
+}
+
+function resolveAppHybridClientRouteOwner(
+  href: string,
+  basePath: string,
+): HybridClientOwner | null | Promise<HybridClientOwner | null> {
+  const precheck = resolveHybridClientRouteOwnerPrecheck(href, basePath);
+  if (precheck.kind === "resolved") return precheck.owner;
+  return loadHybridClientRouteOwnerModule().then((module) =>
+    module.resolveHybridClientRouteOwner(href, basePath),
+  );
+}
 
 export {
   type NavigationContext,
@@ -1956,7 +1979,9 @@ export async function navigateClientSide(
   // requests) or render the App catch-all's path array. This is the
   // programmatic equivalent of the link click / prefetch check in
   // `link.tsx`.
-  const hybridOwner = resolveHybridClientRouteOwner(normalizedHref, __basePath);
+  const hybridOwnerResult = resolveAppHybridClientRouteOwner(normalizedHref, __basePath);
+  const hybridOwner =
+    hybridOwnerResult instanceof Promise ? await hybridOwnerResult : hybridOwnerResult;
   if (hybridOwner === "pages" || hybridOwner === "document") {
     const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
     notifyAppRouterTransitionStart(fullHref, mode);
@@ -2204,7 +2229,9 @@ const _appRouter: AppRouterInstance = {
       // an unusable cache entry. The matching `push`/`replace` call will
       // hard-navigate via `window.location`, so a no-op here is correct —
       // the document prefetch the link shim emits on hover still runs.
-      const hybridOwner = resolveHybridClientRouteOwner(prefetchHref, __basePath);
+      const hybridOwnerResult = resolveAppHybridClientRouteOwner(prefetchHref, __basePath);
+      const hybridOwner =
+        hybridOwnerResult instanceof Promise ? await hybridOwnerResult : hybridOwnerResult;
       if (hybridOwner === "pages" || hybridOwner === "document") {
         return;
       }

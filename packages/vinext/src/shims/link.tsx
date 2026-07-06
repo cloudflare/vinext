@@ -63,8 +63,16 @@ import {
   setLinkForCurrentNavigation,
   type PendingLinkSetter,
 } from "./internal/link-status-registry.js";
+import {
+  resolveHybridClientRouteOwnerPrecheck,
+  type HybridClientOwner,
+} from "./internal/hybrid-client-route-owner-direct.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+
+type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
+
+let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
 
 type NavigateEvent = {
   url: URL;
@@ -163,6 +171,22 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+
+function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModule> {
+  hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
+  return hybridClientRouteOwnerModulePromise;
+}
+
+function resolveLinkHybridClientRouteOwner(
+  href: string,
+  basePath: string,
+): HybridClientOwner | null | Promise<HybridClientOwner | null> {
+  const precheck = resolveHybridClientRouteOwnerPrecheck(href, basePath);
+  if (precheck.kind === "resolved") return precheck.owner;
+  return loadHybridClientRouteOwnerModule().then((module) =>
+    module.resolveHybridClientRouteOwner(href, basePath),
+  );
+}
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
@@ -451,6 +475,7 @@ function prefetchUrl(
   const runPrefetch = () => {
     void (async () => {
       if (hasAppNavigationRuntime()) {
+        if (isAppPrefetchSuppressed(fullHref)) return;
         if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
 
         const [
@@ -471,6 +496,7 @@ function prefetchUrl(
           import("../server/headers.js"),
           import("./internal/hybrid-client-route-owner.js"),
         ]);
+        if (isAppPrefetchSuppressed(fullHref)) return;
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,
@@ -875,6 +901,7 @@ type LinkPrefetchInstance = {
   locale?: string | false;
   mode: LinkPrefetchMode;
   pagesRouteHref?: string;
+  skipQueuedViewportPrefetch: boolean;
   queuedViewportPrefetch: boolean;
   routerMode: LinkPrefetchRouterMode;
   viewportPrefetched: boolean;
@@ -884,6 +911,29 @@ const observedLinkPrefetches = new WeakMap<Element, LinkPrefetchInstance>();
 const visibleLinkPrefetches = new Set<LinkPrefetchInstance>();
 const visibleAppPrefetchQueue: LinkPrefetchInstance[] = [];
 let visibleAppPrefetchDrainScheduled = false;
+const APP_PREFETCH_NAVIGATION_SUPPRESSION_MS = 5_000;
+const suppressedAppPrefetches = new Map<string, number>();
+
+function suppressAppPrefetchForNavigation(href: string): void {
+  // A click can race an intent/viewport prefetch that has started async setup
+  // but has not registered a cache entry yet. Once navigation owns the href,
+  // let it consume/fetch instead of starting a duplicate RSC request.
+  const expiresAt = Date.now() + APP_PREFETCH_NAVIGATION_SUPPRESSION_MS;
+  suppressedAppPrefetches.set(href, expiresAt);
+  globalThis.setTimeout(() => {
+    if (suppressedAppPrefetches.get(href) === expiresAt) {
+      suppressedAppPrefetches.delete(href);
+    }
+  }, APP_PREFETCH_NAVIGATION_SUPPRESSION_MS);
+}
+
+function isAppPrefetchSuppressed(href: string): boolean {
+  const expiresAt = suppressedAppPrefetches.get(href);
+  if (expiresAt === undefined) return false;
+  if (expiresAt > Date.now()) return true;
+  suppressedAppPrefetches.delete(href);
+  return false;
+}
 
 function drainVisibleAppPrefetchQueue(): void {
   visibleAppPrefetchDrainScheduled = false;
@@ -891,6 +941,10 @@ function drainVisibleAppPrefetchQueue(): void {
     const instance = visibleAppPrefetchQueue.pop();
     if (!instance) return;
     instance.queuedViewportPrefetch = false;
+    if (instance.skipQueuedViewportPrefetch) {
+      instance.skipQueuedViewportPrefetch = false;
+      continue;
+    }
     if (!instance.isVisible || instance.routerMode !== "app") continue;
     prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
   }
@@ -932,6 +986,13 @@ function pingVisibleLinkPrefetches(): void {
       scheduleVisibleAppPrefetch(instance);
     }
   }
+}
+
+function cancelQueuedViewportPrefetch(node: HTMLAnchorElement | null): void {
+  if (!node) return;
+  const instance = observedLinkPrefetches.get(node);
+  if (!instance?.queuedViewportPrefetch) return;
+  instance.skipQueuedViewportPrefetch = true;
 }
 
 function getSharedObserver(): IntersectionObserver | null {
@@ -1246,6 +1307,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               basePath: __basePath,
               currentOrigin: window.location.origin,
             }) ?? undefined),
+      skipQueuedViewportPrefetch: false,
       queuedViewportPrefetch: false,
       routerMode: getLinkPrefetchRouterMode(),
       viewportPrefetched: false,
@@ -1361,6 +1423,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     }
 
     e.preventDefault();
+    cancelQueuedViewportPrefetch(internalRef.current);
 
     const hasAppNavigationRuntime = Boolean(getNavigationRuntime()?.functions.navigate);
     const pagesNavigateHref =
@@ -1414,6 +1477,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         // Ignore URL parsing errors for relative/hash hrefs
       }
     }
+    suppressAppPrefetchForNavigation(absoluteFullHref);
 
     // Hybrid ownership check: when the App Router runtime is installed and
     // the target URL is owned by the Pages Router, soft-navigating with RSC
@@ -1427,13 +1491,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // is no RSC stream to suspend on, so the soft-navigation bookkeeping
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
-    const hybridOwner =
+    const hybridOwnerResult =
       HAS_PAGES_ROUTER && hasAppNavigationRuntime
-        ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
-            navigateHref,
-            __basePath,
-          )
+        ? resolveLinkHybridClientRouteOwner(navigateHref, __basePath)
         : null;
+    const hybridOwner =
+      hybridOwnerResult instanceof Promise ? await hybridOwnerResult : hybridOwnerResult;
     if (
       HAS_PAGES_ROUTER &&
       hasAppNavigationRuntime &&

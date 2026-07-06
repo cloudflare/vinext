@@ -22,6 +22,10 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "web-vitals",
 ]);
 
+const LAZY_CLIENT_RUNTIME_MODULE_CHUNKS = new Map([
+  ["shims/internal/hybrid-client-route-owner", "vinext-hybrid-route-owner"],
+]);
+
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
 // that layout so migrated apps keep stable, Next-shaped asset URLs.
@@ -82,6 +86,19 @@ function getPackageName(id: string): string | null {
   return rest.split("/")[0] || null;
 }
 
+function getRuntimeRelativeModuleId(id: string, shimsDir: string): string | null {
+  const normalizedId = id.replaceAll("\\", "/").split("?", 1)[0] ?? "";
+  const normalizedShimsDir = shimsDir.replaceAll("\\", "/");
+  if (!normalizedShimsDir.endsWith("/shims/")) return null;
+
+  const runtimeRoot = normalizedShimsDir.slice(0, -"shims/".length);
+  if (!normalizedId.startsWith(runtimeRoot)) return null;
+
+  const relativeId = normalizedId.slice(runtimeRoot.length);
+  const extensionIndex = relativeId.lastIndexOf(".");
+  return extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+}
+
 /**
  * Create a manualChunks function for client builds.
  *
@@ -125,6 +142,11 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       // with good compression efficiency.
       return undefined;
     }
+
+    const runtimeModuleId = getRuntimeRelativeModuleId(id, shimsDir);
+    const lazyRuntimeChunk =
+      runtimeModuleId === null ? undefined : LAZY_CLIENT_RUNTIME_MODULE_CHUNKS.get(runtimeModuleId);
+    if (lazyRuntimeChunk !== undefined) return lazyRuntimeChunk;
 
     if (id.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {

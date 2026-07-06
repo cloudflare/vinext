@@ -24,6 +24,11 @@ import type {
 } from "../packages/vinext/src/client/vinext-next-data.js";
 import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import {
+  hasPotentialHybridClientRewrite,
+  resolveHybridClientRouteOwnerPrecheck,
+  resolveDirectHybridClientRouteOwner,
+} from "../packages/vinext/src/shims/internal/hybrid-client-route-owner-direct.js";
+import {
   resolveHybridClientRewriteHref,
   resolveHybridClientRouteOwner,
 } from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
@@ -209,6 +214,43 @@ describe("resolveHybridClientRouteOwner", () => {
 
     expect(resolveHybridClientRouteOwner("/source", "")).toBeNull();
     expect(resolveHybridClientRouteOwner("/source?preview=1", "")).toBe("app");
+  });
+
+  it("keeps direct ownership synchronous when rewrite sources cannot match the URL", () => {
+    installWindow({
+      app: [appRoute(["nextjs-compat", "use-link-status", "post", ":id"])],
+      pages: [],
+      rewrites: {
+        afterFiles: [{ source: "/after-rewrite-about", destination: "/about" }],
+        beforeFiles: [{ source: "/rewrite-about", destination: "/about" }],
+        fallback: [{ source: "/mw-gated-fallback-pages", destination: "/pages-route" }],
+      },
+    });
+
+    const href = "/nextjs-compat/use-link-status/post/2";
+    expect(hasPotentialHybridClientRewrite(href, "")).toBe(false);
+    expect(resolveDirectHybridClientRouteOwner(href, "")).toBe("app");
+    expect(resolveHybridClientRouteOwnerPrecheck(href, "")).toEqual({
+      kind: "resolved",
+      owner: "app",
+    });
+  });
+
+  it("requires full rewrite evaluation when a rewrite source may match the URL", () => {
+    installWindow({
+      app: [appRoute(["source"], false), appRoute(["app-destination"], false)],
+      pages: [],
+      rewrites: {
+        afterFiles: [],
+        beforeFiles: [{ source: "/source", destination: "/app-destination" }],
+        fallback: [],
+      },
+    });
+
+    expect(hasPotentialHybridClientRewrite("/source", "")).toBe(true);
+    expect(resolveHybridClientRouteOwnerPrecheck("/source", "")).toEqual({
+      kind: "needsRewriteEvaluation",
+    });
   });
 
   it("applies every beforeFiles rewrite before choosing ownership", () => {
