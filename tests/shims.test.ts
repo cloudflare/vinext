@@ -14395,7 +14395,7 @@ describe("next/compat/router shim", () => {
 
       const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
       expect(html).toBe("<span>{}</span>");
-      expect(captured.isReady).toBe(true);
+      expect(captured.isReady).toBe(false);
       expect(captured.isFallback).toBe(true);
       expect(captured.query).toEqual({});
     } finally {
@@ -14526,6 +14526,15 @@ describe("next/compat/router shim", () => {
         query: {},
         autoExport: true,
         __vinext: { hasRewrites: true },
+      }),
+    ).toBe(false);
+    expect(
+      getPagesNavigationIsReadyFromSerializedState("/posts/[id]", "", {
+        props: {},
+        page: "/posts/[id]",
+        query: { id: "42" },
+        gsp: true,
+        isFallback: true,
       }),
     ).toBe(false);
   });

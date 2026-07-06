@@ -122,6 +122,57 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
   });
 });
 
+describe("createPagesPageHandler — serialized route metadata", () => {
+  async function renderNextData(pageModule: Record<string, unknown>) {
+    let nextData: Record<string, any> | undefined;
+    const route = makeRoute("/posts/:id", pageModule);
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [route],
+        matchRoute: () => ({ route, params: { id: "001" } }),
+        safeJsonStringify(value) {
+          if (value && typeof value === "object" && "page" in value && "__vinext" in value) {
+            nextData = value as Record<string, any>;
+          }
+          return JSON.stringify(value);
+        },
+      }),
+    );
+
+    const response = await handler(
+      makeRequest("/visible/1?draft=1"),
+      "/posts/001?draft=1",
+      null,
+      null,
+      { asPath: "/visible/1?draft=1" },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(nextData).toBeDefined();
+    return nextData!;
+  }
+
+  it("serializes only cache-key-stable route metadata into static-props HTML", async () => {
+    const nextData = await renderNextData(
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+    );
+
+    expect(nextData.__vinext).not.toHaveProperty("routeUrl");
+    expect(nextData.__vinext.routeParams).toEqual({ id: "001" });
+  });
+
+  it("retains request-specific route metadata for request-time HTML", async () => {
+    const nextData = await renderNextData(
+      makePageModule({ getServerSideProps: async () => ({ props: {} }) }),
+    );
+
+    expect(nextData.__vinext).toMatchObject({
+      routeUrl: "/posts/001?draft=1",
+      routeParams: { id: "001" },
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------

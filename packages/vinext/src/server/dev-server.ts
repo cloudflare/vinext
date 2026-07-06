@@ -1345,7 +1345,7 @@ export function createSSRHandler(
                       if (typeof routerShim.setSSRContext === "function") {
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
-                          query,
+                          query: getPagesInitialRouterQuery(query, params, pagesNextData, false),
                           asPath: requestAsPath,
                           navigationIsReady,
                           locale: locale ?? currentDefaultLocale,

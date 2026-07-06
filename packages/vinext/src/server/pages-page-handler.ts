@@ -531,8 +531,7 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
-            routeUrl,
-            routeParams: params,
+            ...(isStaticPropsRoute ? { routeParams: params } : { routeUrl, routeParams: params }),
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);

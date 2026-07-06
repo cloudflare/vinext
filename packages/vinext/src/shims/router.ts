@@ -1335,6 +1335,7 @@ export function getPagesNavigationIsReadyFromSerializedState(
   nextData?: VinextNextData,
 ): boolean {
   if (!routePattern) return true;
+  if (nextData?.isFallback === true) return false;
 
   // Mirrors the Pages Router constructor's initial `isReady` predicate:
   // data-driven pages are ready immediately, while auto-exported dynamic
@@ -3225,6 +3226,9 @@ async function performNavigation(
       else window.scrollTo(0, 0);
     }
   }
+  if (isQueryUpdating) {
+    markPagesRouterReady();
+  }
   onStateUpdate?.();
   if (!isQueryUpdating) {
     routerEvents.emit("routeChangeComplete", resolved, { shallow });
@@ -3331,19 +3335,14 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
       setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
-    let cancelled = false;
-    const readyTimer = window.setTimeout(() => {
-      if (cancelled) return;
-
-      const becameReady = markPagesRouterReady();
-      if (becameReady) {
-        setState(getRouterSnapshot());
-        notifyNextNavigationPagesContext();
-      }
-    }, 0);
+    const readyTimer = isPagesRouterReady()
+      ? window.setTimeout(() => {
+          setState(getRouterSnapshot());
+          notifyNextNavigationPagesContext();
+        }, 0)
+      : undefined;
     return () => {
-      cancelled = true;
-      window.clearTimeout(readyTimer);
+      if (readyTimer !== undefined) window.clearTimeout(readyTimer);
       window.removeEventListener("vinext:navigate", onNavigate);
     };
   }, []);
