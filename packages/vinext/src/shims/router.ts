@@ -1223,7 +1223,7 @@ function getRouteQueryFromNextData(
 
   if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) {
     const resolvedRouteParams = nextData.__vinext?.routeParams;
-    if (resolvedRouteParams) {
+    if (resolvedRouteParams && Object.keys(resolvedRouteParams).length > 0) {
       for (const [key, value] of Object.entries(resolvedRouteParams)) {
         routeQuery[key] = Array.isArray(value) ? [...value] : value;
       }
@@ -2823,6 +2823,7 @@ function updateHistory(
   mode: "push" | "replace",
   fullUrl: string,
   navState: { url: string; as: string; options: { locale?: string; shallow?: boolean } },
+  isHydrationQueryUpdate = false,
 ): void {
   const previousKey = getRouterStateKey(window.history.state);
   const key =
@@ -2841,7 +2842,9 @@ function updateHistory(
   routerRuntimeState.currentHistoryKey = key;
   routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
   routerRuntimeState.lastHash = window.location.hash;
-  routerRuntimeState.routerDidNavigate = true;
+  if (!isHydrationQueryUpdate) {
+    routerRuntimeState.routerDidNavigate = true;
+  }
 }
 
 /**
@@ -3195,7 +3198,7 @@ async function performNavigation(
     routerEvents.emit("routeChangeStart", resolved, { shallow });
   }
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
-  updateHistory(mode, full, navState);
+  updateHistory(mode, full, navState, isQueryUpdating);
   if (!shallow) {
     const result = await runNavigateClient(
       full,
