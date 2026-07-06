@@ -1076,10 +1076,20 @@ describe("Pages Router integration", () => {
     expect(search).toEqual({});
   });
 
-  it("next/navigation defers a dynamic getStaticProps Pages route when rewrites are configured", async () => {
-    const res = await fetch(`${baseUrl}/nav-compat-gsp/foobar`);
+  it("aligns dynamic getStaticProps SSR and serialized query before hydration", async () => {
+    const res = await fetch(`${baseUrl}/nav-compat-gsp/foobar?q=pages`);
     expect(res.status).toBe(200);
     const html = await res.text();
+
+    const routerQueryMatch = html.match(/<pre id="router-query">([^<]*)<\/pre>/);
+    expect(routerQueryMatch).not.toBeNull();
+    expect(JSON.parse(routerQueryMatch![1].replaceAll("&quot;", '"'))).toEqual({
+      slug: "foobar",
+    });
+
+    const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]).query).toEqual({ slug: "foobar" });
 
     const paramsMatch = html.match(/<pre id="use-params">([^<]*)<\/pre>/);
     expect(paramsMatch).not.toBeNull();

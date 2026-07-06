@@ -89,4 +89,17 @@ test.describe("Hydration", () => {
 
     void consoleErrors;
   });
+
+  test("getStaticProps query matches SSR before hydration and URL after mount", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto(`${BASE}/nav-compat-gsp/foobar?q=pages`);
+
+    await expect(page.locator("#router-query")).toHaveText('{"slug":"foobar"}');
+    await waitForHydration(page);
+    await expect(page.locator("#router-query")).toHaveText('{"q":"pages","slug":"foobar"}');
+
+    void consoleErrors;
+  });
 });

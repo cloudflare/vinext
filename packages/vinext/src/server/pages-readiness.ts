@@ -36,8 +36,8 @@ export function getPagesInitialRouterQuery<T extends Record<string, unknown>>(
   isFallback: boolean,
 ): Record<string, unknown> {
   if (isFallback) return {};
-  if (nextData?.autoExport !== true) return query;
-  return nextData.__vinext?.hasRewrites === true ? params : {};
+  if (nextData?.autoExport === true) return {};
+  return nextData?.gsp === true ? params : query;
 }
 
 export function getPagesSerializedRouterQuery<T extends Record<string, unknown>>(
@@ -47,9 +47,7 @@ export function getPagesSerializedRouterQuery<T extends Record<string, unknown>>
   isFallback: boolean,
 ): T | Record<string, unknown> {
   if (isFallback) return {};
-  if (nextData?.autoExport === true) {
-    return nextData.__vinext?.hasRewrites === true ? params : {};
-  }
+  if (nextData?.autoExport === true) return {};
   return nextData?.gsp === true ? params : query;
 }
 

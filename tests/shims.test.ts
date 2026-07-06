@@ -15029,7 +15029,7 @@ describe("Pages Router concurrent navigation", () => {
 
     expect(readQuery({ autoExport: true })).toEqual({});
     expect(readQuery({ isFallback: true })).toEqual({});
-    expect(readQuery({ autoExport: true, hasRewrites: true })).toEqual({ slug: "draft" });
+    expect(readQuery({ autoExport: true, hasRewrites: true })).toEqual({});
   });
 
   it("serializes the full initial query for ordinary server renders", () => {

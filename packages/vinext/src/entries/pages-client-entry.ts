@@ -139,6 +139,7 @@ import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import Router, {
+  getPagesNavigationIsReadyFromSerializedState,
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
 } from "next/router";
@@ -294,7 +295,12 @@ async function hydrate() {
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
 
-  if (nextData.isFallback) {
+  const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(
+    nextData.page,
+    window.location.search,
+    nextData,
+  );
+  if (!initialRouterIsReady) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
     await Router.replace(

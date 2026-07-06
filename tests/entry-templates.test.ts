@@ -1379,6 +1379,7 @@ describe("Pages Router entry template", () => {
         'const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};',
       );
       expect(code).toContain("import Router, {");
+      expect(code).toContain("getPagesNavigationIsReadyFromSerializedState,");
       expect(code).toContain("wrapWithRouterContext,");
       expect(code).toContain("_initializePagesRouterReadyFromNextData,");
       expect(code).toContain('} from "next/router";');
@@ -1387,7 +1388,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
-      expect(code).toContain("if (nextData.isFallback) {");
+      expect(code).toContain(
+        "const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(",
+      );
+      expect(code).toContain("if (!initialRouterIsReady) {");
       expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");
