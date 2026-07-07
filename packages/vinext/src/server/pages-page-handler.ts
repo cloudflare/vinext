@@ -675,7 +675,7 @@ export function createPagesPageHandler(
         if (isFallbackRender && typeof setSSRContext === "function") {
           setSSRContext({
             pathname: routePattern,
-            query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
+            query: getPagesInitialRouterQuery(query, params, pagesNextData, false),
             asPath: staticPropsAsPath,
             navigationIsReady: false,
             locale,

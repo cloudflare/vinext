@@ -285,7 +285,7 @@ export function buildPagesNextDataScript(
       options.query ?? options.params,
       options.params,
       options.nextData,
-      options.isFallback === true,
+      false,
     ),
     buildId: options.buildId,
     isFallback: options.isFallback === true,

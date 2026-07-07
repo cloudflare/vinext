@@ -147,6 +147,23 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
+  it("serializes resolved route params for production fallback shells", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isFallback: true,
+      nextData: {
+        gsp: true,
+        __vinext: { hasRewrites: false },
+      },
+    });
+
+    const html = await response.text();
+    expect(html).toContain('"query":{"slug":"post"}');
+    expect(html).toContain('"isFallback":true');
+  });
+
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
     const common = createCommonOptions();
 
