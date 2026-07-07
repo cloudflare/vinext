@@ -1391,7 +1391,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(
         "const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(",
       );
-      expect(code).toContain("if (!initialRouterIsReady) {");
+      expect(code).toContain("if (nextData.isFallback === true || !initialRouterIsReady) {");
       expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");

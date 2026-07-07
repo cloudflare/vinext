@@ -12,7 +12,12 @@ export default function Product({ pid, name }: ProductProps) {
   // When fallback: true and the page hasn't been generated yet,
   // router.isFallback would be true and props would be empty.
   if (router.isFallback) {
-    return <div>Loading product...</div>;
+    return (
+      <div>
+        Loading product...
+        <p data-testid="is-ready">isReady: {String(router.isReady)}</p>
+      </div>
+    );
   }
 
   return (
@@ -20,6 +25,8 @@ export default function Product({ pid, name }: ProductProps) {
       <h1>Product: {name}</h1>
       <p>Product ID: {pid}</p>
       <p data-testid="is-fallback">isFallback: {String(router.isFallback)}</p>
+      <p data-testid="is-ready">isReady: {String(router.isReady)}</p>
+      <p data-testid="query-pid">query.pid: {String(router.query.pid)}</p>
     </div>
   );
 }

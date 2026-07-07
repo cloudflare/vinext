@@ -165,6 +165,13 @@ test.describe("Client-side navigation", () => {
     ]);
   });
 
+  test("same-segment rewrite direct load preserves destination params", async ({ page }) => {
+    await page.goto(`${BASE}/rewrite-navigation-same/1`);
+    await waitForHydration(page);
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("001");
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation-same/1");
+  });
+
   test("same-segment rewrite interpolates router.replace route params", async ({ page }) => {
     // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts

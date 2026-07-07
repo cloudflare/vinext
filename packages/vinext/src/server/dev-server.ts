@@ -598,6 +598,7 @@ export function createSSRHandler(
    * `nextConfig?.reactStrictMode === true`.
    */
   reactStrictMode = false,
+  buildId = process.env.__VINEXT_BUILD_ID ?? "development",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -804,6 +805,9 @@ export function createSSRHandler(
           appComponent: AppComponent,
           hasRewrites,
         });
+        const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
+        const staticPropsAsPath = parsedResolvedUrl.pathname || "/";
+        const routerAsPath = isStaticPropsRoute ? staticPropsAsPath : requestAsPath;
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -817,7 +821,7 @@ export function createSSRHandler(
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
             query: initialRouterQuery,
-            asPath: requestAsPath,
+            asPath: routerAsPath,
             navigationIsReady,
             nextData: pagesNextData,
             locale: locale ?? currentDefaultLocale,
@@ -941,7 +945,7 @@ export function createSSRHandler(
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
                 query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
-                asPath: requestAsPath,
+                asPath: patternToNextFormat(route.pattern),
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
                 locales: i18nConfig?.locales,
@@ -1346,7 +1350,7 @@ export function createSSRHandler(
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
                           query: getPagesInitialRouterQuery(query, params, pagesNextData, false),
-                          asPath: requestAsPath,
+                          asPath: staticPropsAsPath,
                           navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,
@@ -1417,7 +1421,7 @@ export function createSSRHandler(
                             freshPagesNextData,
                             false,
                           ),
-                          buildId: process.env.__VINEXT_BUILD_ID,
+                          buildId,
                           isFallback: false,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,
@@ -1855,10 +1859,13 @@ async function hydrate() {
     window.location.search,
     nextData,
   );
-  if (!initialRouterIsReady) {
+  if (nextData.isFallback === true || !initialRouterIsReady) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
-    await Router.replace(routeUrl || currentUrl, routeUrl ? currentUrl : undefined, { _h: 1, scroll: false });
+    const fallbackRoute = nextData.isFallback === true
+      ? { pathname: nextData.page, query: { ...nextData.query, ...nextData.__vinext?.routeParams } }
+      : undefined;
+    await Router.replace(fallbackRoute || routeUrl || currentUrl, fallbackRoute || routeUrl ? currentUrl : undefined, { _h: 1, scroll: false });
   }
 }
 hydrate();
@@ -1874,7 +1881,7 @@ hydrate();
               serializedPagesNextData,
               isFallbackRender,
             ),
-            buildId: process.env.__VINEXT_BUILD_ID,
+            buildId,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,

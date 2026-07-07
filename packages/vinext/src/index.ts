@@ -5227,6 +5227,7 @@ export const loadServerActionClient = ${
                       nextConfig?.clientTraceMetadata,
                       nextConfig?.htmlLimitedBots,
                       nextConfig?.reactStrictMode === true,
+                      nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
                     ),
                   };
                 }

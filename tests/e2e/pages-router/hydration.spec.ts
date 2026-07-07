@@ -102,4 +102,21 @@ test.describe("Hydration", () => {
 
     void consoleErrors;
   });
+
+  test("fallback page resolves after mount without search parameters", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const pid = `fallback-${Date.now()}`;
+    await page.goto(`${BASE}/products/${pid}`);
+
+    await expect(page.getByText("Loading product...")).toBeVisible();
+    await expect(page.locator('[data-testid="is-ready"]')).toHaveText("isReady: true");
+    await expect(page.locator("h1")).toHaveText(`Product: Product ${pid}`);
+    await expect(page.locator('[data-testid="is-fallback"]')).toHaveText("isFallback: false");
+    await expect(page.locator('[data-testid="is-ready"]')).toHaveText("isReady: true");
+    await expect(page.locator('[data-testid="query-pid"]')).toHaveText(`query.pid: ${pid}`);
+
+    void consoleErrors;
+  });
 });

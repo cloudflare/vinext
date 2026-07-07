@@ -446,6 +446,8 @@ export function createPagesPageHandler(
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
         const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
+        const staticPropsAsPath = new URL(routeUrl, originalRequestUrl).pathname || "/";
+        const routerAsPath = isStaticPropsRoute ? staticPropsAsPath : (renderAsPath ?? routeUrl);
         const pagesNextData = buildPagesReadinessNextData({
           pageModule,
           appComponent: AppComponent as { getInitialProps?: unknown } | null,
@@ -466,7 +468,7 @@ export function createPagesPageHandler(
             setSSRContext({
               pathname: routePattern,
               query: initialRouterQuery,
-              asPath: renderAsPath ?? routeUrl,
+              asPath: routerAsPath,
               navigationIsReady,
               locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -611,7 +613,7 @@ export function createPagesPageHandler(
           AppComponent,
           params,
           query,
-          asPath: renderAsPath ?? routeUrl,
+          asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
           route: { isDynamic: route.isDynamic },
@@ -674,7 +676,7 @@ export function createPagesPageHandler(
           setSSRContext({
             pathname: routePattern,
             query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
-            asPath: renderAsPath ?? routeUrl,
+            asPath: routePattern,
             navigationIsReady: false,
             locale,
             locales: i18nConfig ? i18nConfig.locales : undefined,

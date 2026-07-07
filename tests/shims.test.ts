@@ -14395,7 +14395,7 @@ describe("next/compat/router shim", () => {
 
       const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
       expect(html).toBe("<span>{}</span>");
-      expect(captured.isReady).toBe(false);
+      expect(captured.isReady).toBe(true);
       expect(captured.isFallback).toBe(true);
       expect(captured.query).toEqual({});
     } finally {
@@ -14536,7 +14536,7 @@ describe("next/compat/router shim", () => {
         gsp: true,
         isFallback: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("preserves route param arrays, repeated search params, and hash in client router state", async () => {

@@ -300,12 +300,18 @@ async function hydrate() {
     window.location.search,
     nextData,
   );
-  if (!initialRouterIsReady) {
+  if (nextData.isFallback === true || !initialRouterIsReady) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
+    const fallbackRoute = nextData.isFallback === true
+      ? {
+          pathname: nextData.page,
+          query: { ...nextData.query, ...nextData.__vinext?.routeParams },
+        }
+      : undefined;
     await Router.replace(
-      routeUrl || currentUrl,
-      routeUrl ? currentUrl : undefined,
+      fallbackRoute || routeUrl || currentUrl,
+      fallbackRoute || routeUrl ? currentUrl : undefined,
       { _h: 1, scroll: false },
     );
   }

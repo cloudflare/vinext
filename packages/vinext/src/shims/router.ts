@@ -431,6 +431,7 @@ type PagesRouterRuntimeState = {
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
   pagesRouterInitialState: boolean;
+  initialRouteParamsAreAuthoritative: boolean;
   publicRouter?: Record<string, unknown>;
 };
 
@@ -460,6 +461,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     deprecatedEventBridgeInstalled: false,
     pagesRouterReady: typeof window === "undefined" || !shouldDeferInitialPagesRouterReady(),
     pagesRouterInitialState: typeof window !== "undefined",
+    initialRouteParamsAreAuthoritative: false,
   };
 }
 
@@ -1221,14 +1223,20 @@ function getRouteQueryFromNextData(
   const routeQuery: Record<string, string | string[]> = {};
   if (!nextData?.query || !nextData.page) return routeQuery;
 
-  if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) {
-    const resolvedRouteParams = nextData.__vinext?.routeParams;
-    if (resolvedRouteParams && Object.keys(resolvedRouteParams).length > 0) {
-      for (const [key, value] of Object.entries(resolvedRouteParams)) {
-        routeQuery[key] = Array.isArray(value) ? [...value] : value;
-      }
-      return routeQuery;
+  const currentRouteParams = extractRouteParamsFromPath(nextData.page, resolvedPath);
+  const resolvedRouteParams = nextData.__vinext?.routeParams;
+  if (
+    resolvedRouteParams &&
+    Object.keys(resolvedRouteParams).length > 0 &&
+    JSON.stringify(resolvedRouteParams) !== JSON.stringify(currentRouteParams)
+  ) {
+    for (const [key, value] of Object.entries(resolvedRouteParams)) {
+      routeQuery[key] = Array.isArray(value) ? [...value] : value;
     }
+    return routeQuery;
+  }
+
+  if (currentRouteParams === null) {
     for (const [key, value] of Object.entries(nextData.query)) {
       if (typeof value === "string") {
         routeQuery[key] = value;
@@ -1242,7 +1250,6 @@ function getRouteQueryFromNextData(
   const routeParamNames = extractRouteParamNames(nextData.page);
   if (routeParamNames.length === 0) return routeQuery;
 
-  const currentRouteParams = extractRouteParamsFromPath(nextData.page, resolvedPath);
   if (currentRouteParams) return currentRouteParams;
 
   for (const key of routeParamNames) {
@@ -1291,9 +1298,10 @@ function getPathnameAndQuery(): {
   const nextData = window.__NEXT_DATA__;
   let query = copySerializedPagesQuery(nextData?.query);
   if (!routerRuntimeState.pagesRouterInitialState) {
-    const routeQuery =
-      extractRouteParamsFromPath(pathname, resolvedPath) ??
-      getRouteQueryFromNextData(nextData, resolvedPath);
+    const routeQuery = routerRuntimeState.initialRouteParamsAreAuthoritative
+      ? getRouteQueryFromNextData(nextData, resolvedPath)
+      : (extractRouteParamsFromPath(pathname, resolvedPath) ??
+        getRouteQueryFromNextData(nextData, resolvedPath));
     // URL search params always reflect the current URL
     const searchQuery: Record<string, string | string[]> = {};
     const params = new URLSearchParams(window.location.search);
@@ -1335,7 +1343,6 @@ export function getPagesNavigationIsReadyFromSerializedState(
   nextData?: VinextNextData,
 ): boolean {
   if (!routePattern) return true;
-  if (nextData?.isFallback === true) return false;
 
   // Mirrors the Pages Router constructor's initial `isReady` predicate:
   // data-driven pages are ready immediately, while auto-exported dynamic
@@ -1403,6 +1410,16 @@ function markPagesRouterLiveState(): void {
 function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
   if (typeof window === "undefined") return;
   routerRuntimeState.pagesRouterInitialState = true;
+  const routePattern = nextData.page;
+  const resolvedRouteParams = nextData.__vinext?.routeParams;
+  const visibleRouteParams = routePattern
+    ? extractRouteParamsFromPath(routePattern, stripBasePath(window.location.pathname, __basePath))
+    : null;
+  routerRuntimeState.initialRouteParamsAreAuthoritative = Boolean(
+    resolvedRouteParams &&
+    Object.keys(resolvedRouteParams).length > 0 &&
+    JSON.stringify(resolvedRouteParams) !== JSON.stringify(visibleRouteParams),
+  );
   routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
     nextData.page,
     window.location.search,
@@ -1970,11 +1987,16 @@ async function loadPagesAppComponent(): Promise<PagesAppComponent | undefined> {
 function buildPagesNavigationNextData(
   target: PagesDataTarget,
   props: Record<string, unknown>,
+  isHydrationQueryUpdate = false,
 ): NonNullable<Window["__NEXT_DATA__"]> & VinextNextData {
-  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
   const prev = window.__NEXT_DATA__ as
     | (NonNullable<Window["__NEXT_DATA__"]> & VinextNextData)
     | undefined;
+  const routeParams =
+    isHydrationQueryUpdate && prev?.__vinext?.routeParams
+      ? prev.__vinext.routeParams
+      : target.params;
+  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), routeParams);
   const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
   const nextLocale = hasI18n
     ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
@@ -1989,7 +2011,7 @@ function buildPagesNavigationNextData(
     isFallback: false,
     __vinext: {
       ...prev?.__vinext,
-      routeParams: target.params,
+      routeParams,
     },
     ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
@@ -2083,7 +2105,7 @@ async function renderPagesNavigationTarget(
     element = React.createElement(PageComponent, pageProps);
   }
 
-  const nextData = buildPagesNavigationNextData(target, props);
+  const nextData = buildPagesNavigationNextData(target, props, options.isHydrationQueryUpdate);
   window.__NEXT_DATA__ = nextData;
   markPagesRouterLiveState();
   applyVinextLocaleGlobals(window, nextData);
@@ -3192,8 +3214,13 @@ async function performNavigation(
 
   if (mode === "push") saveScrollPosition();
   const isQueryUpdating = options?._h === 1;
+  if (isQueryUpdating && routerRuntimeState.activeAbortController) {
+    return false;
+  }
   if (!isQueryUpdating) {
+    routerRuntimeState.initialRouteParamsAreAuthoritative = false;
     markPagesRouterLiveState();
+    markPagesRouterReady();
   }
   if (!isQueryUpdating) {
     routerEvents.emit("routeChangeStart", resolved, { shallow });
@@ -3226,9 +3253,7 @@ async function performNavigation(
       else window.scrollTo(0, 0);
     }
   }
-  if (isQueryUpdating) {
-    markPagesRouterReady();
-  }
+  if (isQueryUpdating) markPagesRouterReady();
   onStateUpdate?.();
   if (!isQueryUpdating) {
     routerEvents.emit("routeChangeComplete", resolved, { shallow });
