@@ -3529,8 +3529,6 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-server-dom-webpack/client.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
-    // Windows-style path used by the shared package-name predicate.
-    "C:\\app\\node_modules\\react-dom\\server.js",
   ];
   const notMatching = [
     "/app/node_modules/react-icons/lib/index.js",
@@ -3555,5 +3553,11 @@ describe("RSC framework package matching", () => {
     for (const id of notMatching) {
       expect(isRscFrameworkModule(id)).toBe(false);
     }
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")("recognizes Windows-style ids", () => {
+    expect(RSC_FRAMEWORK_CHUNK_TEST.test("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
+    expect(isRscFrameworkModule("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
   });
 });

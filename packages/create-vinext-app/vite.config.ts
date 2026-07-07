@@ -4,6 +4,7 @@ const bundledDeps = [
   "@jridgewell/sourcemap-codec",
   "am-i-vibing",
   "magic-string",
+  "pathslash",
   "process-ancestry",
 ];
 

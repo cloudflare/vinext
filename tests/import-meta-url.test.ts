@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import {
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { toSlash } from "pathslash";
 
 describe("vinext:import-meta-url plugin", () => {
   let tmpDir: string;
@@ -22,7 +23,9 @@ describe("vinext:import-meta-url plugin", () => {
 
     await fsp.mkdir(path.dirname(pagePath), { recursive: true });
     await fsp.writeFile(pagePath, `export const url = import.meta.url;\n`);
-    canonicalPagePath = await fsp.realpath(pagePath);
+    // The plugin emits canonical forward-slash paths, so expectations are
+    // built from the slash form (path.dirname preserves separators on win32).
+    canonicalPagePath = toSlash(await fsp.realpath(pagePath));
     await fsp.symlink(realRoot, linkedRoot, "junction");
   });
 

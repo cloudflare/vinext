@@ -1,4 +1,8 @@
 import fs from "node:fs";
+// Standalone output assembly works entirely in native-separator space: it
+// copies directory trees with fs.cpSync filters that split on path.sep and
+// never feeds paths back into id/URL comparisons, so pathslash buys nothing.
+// oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire } from "node:module";
 import { readJsonFile } from "../utils/safe-json-file.js";

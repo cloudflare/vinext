@@ -20,6 +20,7 @@
  */
 
 import fs from "node:fs";
+import { toSlash } from "pathslash";
 import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { Route } from "../routing/pages-router.js";
@@ -651,7 +652,7 @@ export function classifyPagesRoute(filePath: string): {
   revalidate?: number;
 } {
   // API routes are identified by their path
-  const normalized = filePath.replace(/\\/g, "/");
+  const normalized = toSlash(filePath);
   if (normalized.includes("/pages/api/")) {
     return { type: "api" };
   }
@@ -886,9 +887,6 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 /**
  * Scans the project at `root`, classifies all routes, and prints the
  * Next.js-style build report to stdout.
- *
- * `root` must be forward-slash — it is passed to `findDir`. The caller (the
- * `vinext build` entry in cli.ts) normalizes it.
  */
 export async function printBuildReport(options: {
   root: string;

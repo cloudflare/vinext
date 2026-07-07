@@ -11,7 +11,7 @@
  */
 import fsp from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
+import path from "pathslash";
 import zlib from "node:zlib";
 import { promisify } from "node:util";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";

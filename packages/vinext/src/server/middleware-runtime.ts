@@ -1,7 +1,7 @@
 import "./server-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
-import path from "node:path";
+import path from "pathslash";
 import {
   getRequestExecutionContext,
   runWithExecutionContext,

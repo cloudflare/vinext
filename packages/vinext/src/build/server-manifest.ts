@@ -6,7 +6,7 @@
  * dependency.
  */
 
-import path from "node:path";
+import path from "pathslash";
 import { readJsonFile } from "../utils/safe-json-file.js";
 
 /**

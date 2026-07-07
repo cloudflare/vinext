@@ -44,7 +44,7 @@ import {
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
-import path from "node:path";
+import path from "pathslash";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
@@ -125,6 +125,9 @@ type PagesClientAssetsModule = {
   };
 };
 
+const transformedStylesheetAssetsCache = new WeakMap<ViteDevServer, Map<string, string[]>>();
+const transformedStylesheetAssetsWatchers = new WeakSet<ViteDevServer>();
+
 function createDevInitialStylesheetHeadHTML(options: {
   ssrManifest: Record<string, string[]> | null | undefined;
   moduleIds: (string | null | undefined)[];
@@ -148,16 +151,78 @@ function createDevInitialStylesheetHeadHTML(options: {
   return html;
 }
 
+async function collectTransformedStylesheetAssets(
+  server: ViteDevServer,
+  moduleIds: (string | null | undefined)[],
+): Promise<string[]> {
+  const clientEnvironment = server.environments.client;
+  if (!clientEnvironment) return [];
+
+  const cachedServerAssets = transformedStylesheetAssetsCache.get(server);
+  const cache = cachedServerAssets ?? new Map<string, string[]>();
+  if (!cachedServerAssets) transformedStylesheetAssetsCache.set(server, cache);
+  if (!transformedStylesheetAssetsWatchers.has(server)) {
+    transformedStylesheetAssetsWatchers.add(server);
+    const clearCache = () => cache.clear();
+    server.watcher.on("add", clearCache);
+    server.watcher.on("change", clearCache);
+    server.watcher.on("unlink", clearCache);
+  }
+
+  const cacheKey = moduleIds.filter((moduleId): moduleId is string => Boolean(moduleId)).join("\0");
+  const cachedAssets = cache.get(cacheKey);
+  if (cachedAssets) return cachedAssets;
+
+  const assets = new Set<string>();
+  const seenModules = new Set<string>();
+  async function visitModule(moduleUrl: string): Promise<void> {
+    if (seenModules.has(moduleUrl)) return;
+    seenModules.add(moduleUrl);
+    try {
+      await clientEnvironment.transformRequest(moduleUrl);
+      const moduleNode = await clientEnvironment.moduleGraph.getModuleByUrl(moduleUrl);
+      if (!moduleNode) return;
+      for (const importedModule of moduleNode.importedModules) {
+        if (
+          importedModule.type === "css" ||
+          /\.(?:css|scss|sass)(?:$|[?#])/i.test(importedModule.url)
+        ) {
+          if (importedModule.url.startsWith("//")) continue;
+          const assetUrl = importedModule.url.startsWith("\0")
+            ? `/@id/__x00__${importedModule.url.slice(1)}${importedModule.url.includes("?") ? "&" : "?"}direct`
+            : importedModule.url;
+          assets.add(assetUrl);
+        } else if (importedModule.type === "js") {
+          await visitModule(importedModule.url);
+        }
+      }
+    } catch {
+      // Preserve the source-manifest fallback when a third-party client
+      // transform fails while the server render itself remains valid.
+    }
+  }
+
+  for (const moduleId of moduleIds) {
+    if (!moduleId) continue;
+    await visitModule(createPagesDevModuleUrl(server.config.root, moduleId, "/"));
+  }
+  const result = [...assets];
+  cache.set(cacheKey, result);
+  return result;
+}
+
 async function collectDevInitialStylesheetHeadHTML(
+  server: ViteDevServer,
   runner: ModuleImporter,
   moduleIds: (string | null | undefined)[],
   nonceAttr: string,
 ): Promise<string> {
+  let manifestHTML = "";
   try {
     const pagesClientAssets = (await runner.import(
       "virtual:vinext-pages-client-assets",
     )) as PagesClientAssetsModule;
-    return createDevInitialStylesheetHeadHTML({
+    manifestHTML = createDevInitialStylesheetHeadHTML({
       ssrManifest: pagesClientAssets.default?.ssrManifest,
       moduleIds,
       nonceAttr,
@@ -165,8 +230,18 @@ async function collectDevInitialStylesheetHeadHTML(
   } catch {
     // If dev asset metadata is unavailable, keep the existing client-graph
     // CSS behavior instead of failing the page render.
-    return "";
   }
+
+  const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
+  if (transformedAssets.length === 0) return manifestHTML;
+
+  let html = manifestHTML;
+  for (const asset of transformedAssets) {
+    const href = asset.startsWith("/") ? asset : createPagesDevAssetUrl(asset);
+    if (html.includes(`href="${escapeHtmlAttr(href)}"`)) continue;
+    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+  }
+  return html;
 }
 
 /**
@@ -1619,6 +1694,7 @@ export function createSSRHandler(
         let fontHeadHTML = "";
         const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
         const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+          server,
           runner,
           [appAssetPath, route.filePath],
           nonceAttr,
@@ -2098,6 +2174,7 @@ async function renderErrorPage(
       const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
       const nonceAttr = createNonceAttribute(scriptNonce);
       const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        server,
         runner,
         [appAssetPath, errorAssetPath],
         nonceAttr,

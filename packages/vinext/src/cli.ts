@@ -16,7 +16,7 @@
 import vinext from "./index.js";
 import { runPrerender } from "./build/run-prerender.js";
 import { emitPrerenderPathManifest } from "./build/prerender-paths.js";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -34,9 +34,12 @@ import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
+  findVinextNextConfigInPlugins,
   loadNextConfig,
   resolveNextConfig,
+  resolveNextConfigInput,
   PHASE_PRODUCTION_BUILD,
+  type NextConfigInput,
 } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
@@ -49,7 +52,6 @@ import {
   tryAcquireLockfile,
 } from "./server/dev-lockfile.js";
 import { generateRouteTypes } from "./typegen.js";
-import { normalizePathSeparators } from "./utils/path.js";
 import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
 import {
   findVinextRouteRootConfigInPlugins,
@@ -228,6 +230,7 @@ function hasPagesDir(): boolean {
 
 type BuildViteConfigMetadata = {
   emptyOutDir?: boolean;
+  nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   routeRootConfig: VinextRouteRootConfig | null;
 };
@@ -236,7 +239,9 @@ async function loadBuildViteConfigMetadata(
   vite: ViteModule,
   root: string,
 ): Promise<BuildViteConfigMetadata> {
-  if (!hasViteConfig(root)) return { prerenderConfig: null, routeRootConfig: null };
+  if (!hasViteConfig(root)) {
+    return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+  }
 
   // Read the raw user config before the multi-environment build so
   // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
@@ -248,8 +253,9 @@ async function loadBuildViteConfigMetadata(
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
-    prerenderConfig: findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
-    routeRootConfig: findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
+    nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
+    prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+    routeRootConfig: await findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
   };
 }
 
@@ -482,12 +488,13 @@ async function buildApp() {
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
-  const root = process.cwd();
-  const isApp = hasAppDir(normalizePathSeparators(root));
-  const resolvedNextConfig = await resolveNextConfig(
-    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
-    root,
-  );
+  const root = toSlash(process.cwd());
+  const isApp = hasAppDir(root);
+  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
+  const rawNextConfig = buildConfigMetadata.nextConfig
+    ? await resolveNextConfigInput(buildConfigMetadata.nextConfig, PHASE_PRODUCTION_BUILD)
+    : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  const resolvedNextConfig = await resolveNextConfig(rawNextConfig, root);
 
   // Coordinate a single build ID across every vinext() plugin instance in this
   // build. A hybrid app+pages build runs the App Router multi-environment build
@@ -562,8 +569,6 @@ async function buildApp() {
       });
     }
   }
-
-  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
 
   cleanBuildOutput({
     root,
@@ -691,12 +696,13 @@ async function buildApp() {
     process.stdout.write("\x1b[0m");
     console.log(`  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     prerenderResult = await runPrerender({
-      root: normalizePathSeparators(process.cwd()),
+      root,
       concurrency: parsed.prerenderConcurrency,
+      nextConfig: resolvedNextConfig,
     });
     await emitPrerenderPathManifest({
-      root: normalizePathSeparators(process.cwd()),
-      nextConfigOverride: resolvedNextConfig,
+      root,
+      nextConfig: resolvedNextConfig,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }
@@ -707,7 +713,7 @@ async function buildApp() {
   process.stdout.write("\x1b[0m");
   const { printBuildReport } = await import("./build/report.js");
   await printBuildReport({
-    root: normalizePathSeparators(process.cwd()),
+    root,
     pageExtensions: resolvedNextConfig.pageExtensions,
     prerenderResult: prerenderResult ?? undefined,
   });
@@ -816,7 +822,7 @@ async function check() {
   console.log(`\n  vinext check\n`);
   console.log("  Scanning project...\n");
 
-  const result = runCheck(normalizePathSeparators(process.cwd()));
+  const result = runCheck(toSlash(process.cwd()));
   console.log(formatReport(result));
 }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { build, type ViteDevServer } from "vite";
 import path from "node:path";
 import http from "node:http";

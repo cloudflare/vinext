@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";

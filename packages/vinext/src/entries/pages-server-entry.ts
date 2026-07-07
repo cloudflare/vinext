@@ -9,7 +9,6 @@
  */
 import { readFile } from "node:fs/promises";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -51,22 +50,19 @@ export async function generateServerEntry(
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
-  const pageImports = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const pageImports = pageRoutes.map(
+    (r: Route, i: number) => `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
-  const apiImports = apiRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const apiImports = apiRoutes.map(
+    (r: Route, i: number) => `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
   // Build the route table — include filePath for SSR manifest lookup
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (r: Route, i: number) => {
-      const absPath = normalizePathSeparators(r.filePath);
       const dataKind = await getPagesDataKind(r.filePath);
-      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
     }),
   );
 
@@ -154,7 +150,7 @@ export async function generateServerEntry(
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};`
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};`
     : "";
 
   const instrumentationInitCode = instrumentationPath
@@ -173,7 +169,7 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};`
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
 
   // The matcher config is read from the middleware module at request time.
@@ -186,7 +182,7 @@ export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
-    filePath: ${JSON.stringify(normalizePathSeparators(middlewarePath))},
+    filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},

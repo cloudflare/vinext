@@ -20,7 +20,7 @@
 
 import type { ModuleRunner } from "vite/module-runner";
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 import {

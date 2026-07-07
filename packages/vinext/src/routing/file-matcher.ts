@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { escapeRegExp } from "../utils/regex.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -23,6 +22,11 @@ function buildExtensionGlob(stem: string, extensions: readonly string[]): string
     return `${stem}.${extensions[0]}`;
   }
   return `${stem}.{${extensions.join(",")}}`;
+}
+
+function includeDotDirectoryMatches(pattern: string): string {
+  if (!pattern.startsWith("**/")) return pattern;
+  return `{**,**/.*/**}/${pattern.slice(3)}`;
 }
 
 export type ValidFileMatcher = {
@@ -92,9 +96,6 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
- *
- * `dir` must be forward-slash. The returned path is built with `path.posix.join`,
- * so it is forward-slash too.
  */
 export function findFileWithExts(
   dir: string,
@@ -102,7 +103,7 @@ export function findFileWithExts(
   matcher: ValidFileMatcher,
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
-    const filePath = path.posix.join(dir, name + ext);
+    const filePath = path.join(dir, name + ext);
     if (existsSync(filePath)) return filePath;
   }
   return null;
@@ -176,9 +177,8 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
  * Use function-form exclude for Node < 22.14 compatibility.
  *
  * Yields forward-slash relative paths: node's glob emits native (backslash)
- * separators on Windows, so each match is normalized — this is the entry point
- * that lets downstream consumers treat the scanned paths as canonical
- * forward-slash ids.
+ * separators on Windows, so each match goes through `toSlash` — this is the
+ * boundary where external fs output enters the canonical forward-slash space.
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -186,11 +186,11 @@ export async function* scanWithExtensions(
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
-  const pattern = buildExtensionGlob(stem, extensions);
+  const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield normalizePathSeparators(file);
+    yield toSlash(file);
   }
 }

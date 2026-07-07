@@ -2,7 +2,7 @@ import type { ViteDevServer } from "vite";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
+import { toSlash } from "pathslash";
 import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
 
 export { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
@@ -361,7 +361,7 @@ function extractV8ParenMethodName(prefix: string): string | undefined {
 
 function normalizeProjectRoot(root: string | undefined): string | undefined {
   if (!root) return undefined;
-  const normalized = root.replaceAll("\\", "/").replace(/\/+$/, "");
+  const normalized = toSlash(root).replace(/\/+$/, "");
   return normalized || (root.startsWith("/") ? "/" : undefined);
 }
 
@@ -440,7 +440,7 @@ function isWindowsAbsolutePath(value: string): boolean {
 }
 
 function normalizeLocalPathForCompare(value: string): string {
-  const normalized = (stripTrailingSlash(value.replaceAll("\\", "/")) ?? "").replace(/\/+/g, "/");
+  const normalized = (stripTrailingSlash(toSlash(value)) ?? "").replace(/\/+/g, "/");
   return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
@@ -469,7 +469,7 @@ function normalizeIgnoreListPath(value: string): string {
     // Keep malformed paths comparable instead of dropping the frame.
   }
 
-  return path.replaceAll("\\", "/").toLowerCase();
+  return toSlash(path).toLowerCase();
 }
 
 function isExternalHttpFrame(file: string, requestHost: string | undefined): boolean {

@@ -102,6 +102,8 @@ export default {
         // imported by the bundled helper modules, not by src/index.ts directly.
         "am-i-vibing",
         "magic-string",
+        // Kept as an explicit package-local Vite+ toolchain dependency.
+        "vite",
       ],
     },
   },

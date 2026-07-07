@@ -15,7 +15,8 @@ import type {
   CacheHandlerValue,
   IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { isWindows, normalizePathSeparators } from "../packages/vinext/src/utils/path.ts";
+import { toSlash } from "pathslash";
+import { isWindows } from "../packages/vinext/src/utils/path.ts";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -14893,7 +14894,7 @@ describe("Pages Router concurrent navigation", () => {
   function fixtureModuleUrl(relativePath: string): string {
     const absolutePath = path.resolve(import.meta.dirname, relativePath);
     if (!isWindows) return absolutePath;
-    return "/@fs/" + normalizePathSeparators(absolutePath);
+    return "/@fs/" + toSlash(absolutePath);
   }
 
   function buildNavHtmlWithVinext(
@@ -23411,10 +23412,10 @@ describe("shim alias map .js variants", () => {
       handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
     };
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const clientShim = normalizePathSeparators(
+    const clientShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx"),
     );
-    const reactServerShim = normalizePathSeparators(
+    const reactServerShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.react-server.ts"),
     );
 
@@ -23448,7 +23449,7 @@ describe("shim alias map .js variants", () => {
     };
     const id = "vinext/server/app-rsc-handler";
     // resolveId returns a forward-slash id (Vite-canonical) on every platform.
-    const expected = normalizePathSeparators(
+    const expected = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-rsc-handler.ts"),
     );
 
@@ -23487,7 +23488,7 @@ describe("@vercel/og compatibility resolution", () => {
   it("routes direct @vercel/og app imports through the Next-compatible ImageResponse shim", () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const expectedShim = normalizePathSeparators(
+    const expectedShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
     );
 
@@ -23535,13 +23536,13 @@ describe("vinext shim package-subpath resolution", () => {
   it("strips JavaScript extensions and Vite queries from package subpaths", () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const expectedShim = normalizePathSeparators(
+    const expectedShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.ts"),
     );
-    const expectedReactServerShim = normalizePathSeparators(
+    const expectedReactServerShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.react-server.ts"),
     );
-    const expectedOgShim = normalizePathSeparators(
+    const expectedOgShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
     );
 

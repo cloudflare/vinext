@@ -23,7 +23,7 @@
  *     `runnerImport`'s inline environment (which has its own root).
  */
 import fs from "node:fs";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { createRequire } from "node:module";
 import { parseStaticObjectLiteral } from "../plugins/fonts.js";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
@@ -76,7 +76,7 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
 
   for (const item of candidates) {
     try {
-      return requireFromConfig.resolve(item);
+      return toSlash(requireFromConfig.resolve(item));
     } catch {}
   }
 

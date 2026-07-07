@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -307,13 +307,13 @@ import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPending
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
   middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};
+    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
     : ""
 }
 ${
   instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
+    ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
@@ -1196,7 +1196,7 @@ export default createAppRscHandler({
       cleanPathname,
       context,
       hadBasePath,
-      filePath: ${JSON.stringify(middlewarePath ? normalizePathSeparators(middlewarePath) : "")},
+      filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
       i18nConfig: __i18nConfig,
       isDataRequest,
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},

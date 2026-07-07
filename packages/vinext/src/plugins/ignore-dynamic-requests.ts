@@ -1,4 +1,4 @@
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { fileURLToPath } from "node:url";
 import MagicString from "magic-string";
 import { parseAst, type Plugin } from "vite";
@@ -901,7 +901,7 @@ export function createIgnoreDynamicRequestsPlugin(
         const absoluteId = path.resolve(cleanId);
         if (
           absoluteId === VINEXT_SOURCE_ROOT ||
-          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}${path.sep}`) ||
+          absoluteId.startsWith(`${VINEXT_SOURCE_ROOT}/`) ||
           PLUGIN_RSC_PATH.test(absoluteId)
         ) {
           return null;
@@ -918,7 +918,7 @@ function shouldTransformVeryDynamicRequests(
   transpiledPackages: readonly string[],
 ): boolean {
   if (environment.config.consumer === "server") return true;
-  const normalizedId = id.replaceAll("\\", "/");
+  const normalizedId = toSlash(id);
   if (!normalizedId.includes("/node_modules/")) return false;
   return !transpiledPackages.some((packageName) =>
     normalizedId.includes(`/node_modules/${packageName}/`),
