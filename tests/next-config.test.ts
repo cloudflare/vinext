@@ -1471,6 +1471,17 @@ describe("resolveNextConfig serverExternalPackages", () => {
     expect(resolved.serverExternalPackages).toEqual(["payload"]);
   });
 
+  it("throws when serverExternalPackages conflicts with transpilePackages", async () => {
+    await expect(
+      resolveNextConfig({
+        serverExternalPackages: ["payload", "sharp"],
+        transpilePackages: ["payload"],
+      }),
+    ).rejects.toThrow(
+      "The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': payload",
+    );
+  });
+
   it("preserves transpilePackages for default external precedence", async () => {
     const resolved = await resolveNextConfig({
       transpilePackages: ["typescript", "shiki"],

@@ -145,17 +145,19 @@ describe("compiler.define forwarding to Vite", () => {
         { command: "build" },
       );
 
-      // NEXT_RUNTIME is always injected for server environments in addition to
+      // Next.js compile-time server built-ins are injected in addition to
       // user-configured defineServer entries.
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        "process.browser": "false",
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        "process.browser": "false",
       });
       // Client environment must never receive server-only defines.
       expect(clientResult).toBeNull();
@@ -187,13 +189,15 @@ describe("compiler.define forwarding to Vite", () => {
       )) as { define?: Record<string, string> };
 
       // Top-level define (applies to all environments including client) must
-      // set NEXT_RUNTIME to '' — matching Next.js's client-bundle value.
+      // set client-bundle values that match Next.js.
       expect(configResult.define?.["process.env.NEXT_RUNTIME"]).toBe('""');
+      expect(configResult.define?.["process.browser"]).toBe("true");
 
-      // Server environments must override NEXT_RUNTIME to 'nodejs'.
+      // Server environments must override client defaults with server values.
       for (const env of ["rsc", "ssr"]) {
         const result = serverDefinePlugin!.configEnvironment!(env, {}, { command: "build" });
         expect(result?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
+        expect(result?.define?.["process.browser"]).toBe("false");
       }
 
       // Client environment returns null — it receives the top-level '' value
@@ -281,7 +285,7 @@ describe("compiler.define forwarding to Vite", () => {
 
     // Explicitly clear the build-time revalidate secret env var so the hook has
     // no user `defineServer` entries AND no baked revalidate-secret define —
-    // only the built-in NEXT_RUNTIME define is present.
+    // only the Next-compatible built-in defines are present.
     const prev = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
     delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
 
@@ -292,13 +296,17 @@ describe("compiler.define forwarding to Vite", () => {
         { command: "build" },
       );
       const rscResult = serverDefinePlugin!.configEnvironment!("rsc", {}, { command: "build" });
-      // NEXT_RUNTIME is always injected for server environments, so the hook
+      // Built-ins are always injected for server environments, so the hook
       // always returns a define object (never null) even without user defineServer.
       expect(rscResult).not.toBeNull();
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
+      expect(rscResult?.define?.["process.browser"]).toBe("false");
       // No other keys should be present when neither defineServer nor revalidate
       // secret are configured.
-      expect(Object.keys(rscResult!.define!)).toEqual(["process.env.NEXT_RUNTIME"]);
+      expect(Object.keys(rscResult!.define!)).toEqual([
+        "process.env.NEXT_RUNTIME",
+        "process.browser",
+      ]);
     } finally {
       if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
       else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;

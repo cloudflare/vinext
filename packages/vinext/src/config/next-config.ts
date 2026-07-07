@@ -1596,6 +1596,16 @@ export async function resolveNextConfig(
   );
   const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
   const transpilePackages = readStringArray(config.transpilePackages);
+  const externalPackageConflicts = transpilePackages.filter((pkg) =>
+    serverExternalPackages.includes(pkg),
+  );
+  if (externalPackageConflicts.length > 0) {
+    throw new Error(
+      `The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': ${externalPackageConflicts.join(
+        ", ",
+      )}`,
+    );
+  }
   const turbopackTranspilePackages = [...transpilePackages, ...DEFAULT_TRANSPILED_PACKAGES];
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
