@@ -676,7 +676,7 @@ export function createPagesPageHandler(
           setSSRContext({
             pathname: routePattern,
             query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
-            asPath: routePattern,
+            asPath: staticPropsAsPath,
             navigationIsReady: false,
             locale,
             locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -808,6 +808,7 @@ export function createPagesPageHandler(
             typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
           routePattern,
           routeUrl,
+          routerAsPath,
           safeJsonStringify,
           scriptNonce,
           statusCode: renderStatusCode,

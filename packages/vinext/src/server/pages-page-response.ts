@@ -206,6 +206,7 @@ type RenderPagesPageResponseOptions = {
   resetSSRHead?: (() => void) | undefined;
   routePattern: string;
   routeUrl: string;
+  routerAsPath?: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
   statusCode?: number;
@@ -537,7 +538,7 @@ export async function renderPagesPageResponse(
       res: options.documentReqRes?.res,
       pathname: options.routePattern,
       query: options.query ?? options.params,
-      asPath: options.routeUrl,
+      asPath: options.routerAsPath ?? options.routeUrl,
     },
   });
   if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {

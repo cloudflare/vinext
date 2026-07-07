@@ -1957,7 +1957,7 @@ hydrate();
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
             query,
-            asPath: requestAsPath,
+            asPath: routerAsPath,
             ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap

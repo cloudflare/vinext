@@ -1494,6 +1494,15 @@ function cancelPreviousRenderCommit(): void {
   routerRuntimeState.cancelPendingRenderCommit = null;
 }
 
+function cancelActiveNavigation(): void {
+  const controller = routerRuntimeState.activeAbortController;
+  if (!controller) return;
+  routerRuntimeState.navigationId++;
+  routerRuntimeState.activeAbortController = null;
+  controller.abort();
+  cancelPreviousRenderCommit();
+}
+
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
@@ -3149,6 +3158,10 @@ async function performNavigation(
   // didn't — so the hash-only shortcut MUST NOT skip the fetch. Mirrors
   // Next.js where `onlyAHashChange` runs only after the route is unchanged.
   if (options?._h !== 1 && interpolatedRoute === resolved && isHashOnlyChange(full)) {
+    cancelActiveNavigation();
+    routerRuntimeState.initialRouteParamsAreAuthoritative = false;
+    markPagesRouterLiveState();
+    markPagesRouterReady();
     // Snapshot the outgoing entry's scroll before updateHistory mints a new
     // key, so a later back-popstate restores the position the user had
     // reached here rather than {x: 0, y: 0}. Upstream snapshots inside
@@ -3242,6 +3255,7 @@ async function performNavigation(
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   } else {
+    cancelActiveNavigation();
     markPagesRouterLiveState();
     // Shallow navigations skip the render-commit path, so apply the scroll
     // reset synchronously here — before routeChangeComplete. This matches the
@@ -3522,6 +3536,11 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       return;
     }
   }
+
+  cancelActiveNavigation();
+  routerRuntimeState.initialRouteParamsAreAuthoritative = false;
+  markPagesRouterLiveState();
+  markPagesRouterReady();
 
   // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
   const currentHash = window.location.hash;
