@@ -3489,17 +3489,26 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   const wasFirst = routerRuntimeState.isFirstPopStateEvent;
   routerRuntimeState.isFirstPopStateEvent = false;
 
+  if (state === null || state === undefined) {
+    const { pathname, query } = getPathnameAndQuery();
+    const routeUrl = resolveUrl({ pathname, query });
+    const options: { locale?: string; shallow: boolean } = { shallow: false };
+    if (window.__VINEXT_LOCALE__ !== undefined) options.locale = window.__VINEXT_LOCALE__;
+    updateHistory(
+      "replace",
+      appUrl + window.location.hash,
+      { url: routeUrl, as: appUrl, options },
+      true,
+    );
+    return;
+  }
+
   // History entries that do not match the complete router state shape are not
   // owned by this runtime, even if they carry `__N: true`. Mirror Next.js's
   // foreign-state early exit so third-party or stale partial entries do not
   // trigger a spurious page fetch.
   //
-  // The `null` state case (e.g. the initial document load, scroll-restoration
-  // popstate, or tests that fire popstate without state) keeps the legacy
-  // behaviour where we treat it as a back/forward navigation so existing
-  // popstate tests stay green. Only an *object* state without `__N` is
-  // treated as foreign.
-  if (state !== null && state !== undefined && !isNextRouterState(state)) {
+  if (!isNextRouterState(state)) {
     return;
   }
 

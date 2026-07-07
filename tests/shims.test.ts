@@ -16125,8 +16125,10 @@ describe("Pages Router concurrent navigation", () => {
     const { win } = createNavWindow();
     (globalThis as any).window = win;
 
-    globalThis.fetch = async (_url: any, _init: any) =>
-      new Response("Internal Server Error", { status: 500 });
+    const fetch = vi.fn(
+      async (_url: any, _init: any) => new Response("Internal Server Error", { status: 500 }),
+    );
+    globalThis.fetch = fetch;
 
     const completedUrls: string[] = [];
     const errorUrls: string[] = [];
@@ -16171,8 +16173,10 @@ describe("Pages Router concurrent navigation", () => {
     const hrefAssignments = trackHrefAssignments(win);
     (globalThis as any).window = win;
 
-    globalThis.fetch = async (_url: any, _init: any) =>
-      new Response("Internal Server Error", { status: 500 });
+    const fetch = vi.fn(
+      async (_url: any, _init: any) => new Response("Internal Server Error", { status: 500 }),
+    );
+    globalThis.fetch = fetch;
 
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
@@ -16391,7 +16395,7 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
-  it("popstate fetches default-locale root through a locale-qualified URL", async () => {
+  it("null-state popstate repairs history without fetching", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
     const originalCustomEvent = globalThis.CustomEvent;
@@ -16448,7 +16452,7 @@ describe("Pages Router concurrent navigation", () => {
       popstateHandler!({ state: null });
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
+      expect(fetch).not.toHaveBeenCalled();
       expect(win.location.href).toBe("http://localhost/");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
@@ -17731,7 +17735,7 @@ describe("Pages Router concurrent navigation", () => {
     });
   });
 
-  it("popstate known failures schedule a single hard navigation", async () => {
+  it("null-state popstate does not schedule a hard navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
     const originalCustomEvent = globalThis.CustomEvent;
@@ -17746,8 +17750,10 @@ describe("Pages Router concurrent navigation", () => {
       constructor(public type: string) {}
     } as any;
 
-    globalThis.fetch = async (_url: any, _init: any) =>
-      new Response("Internal Server Error", { status: 500 });
+    const fetch = vi.fn(
+      async (_url: any, _init: any) => new Response("Internal Server Error", { status: 500 }),
+    );
+    globalThis.fetch = fetch;
 
     try {
       vi.resetModules();
@@ -17768,8 +17774,8 @@ describe("Pages Router concurrent navigation", () => {
       // Cross a task boundary so the async popstate chain has fully settled.
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
-      expect(hrefAssignments).toHaveLength(1);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(hrefAssignments).toEqual(["http://localhost/failing-page"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
