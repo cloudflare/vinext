@@ -15014,7 +15014,7 @@ describe("Pages Router router helpers", () => {
 });
 
 describe("Pages Router concurrent navigation", () => {
-  it("serializes an empty initial query for auto-export and fallback renders", () => {
+  it("serializes an empty auto-export query and resolved production fallback query", () => {
     function readQuery(options: {
       autoExport?: boolean;
       hasRewrites?: boolean;
@@ -15037,7 +15037,7 @@ describe("Pages Router concurrent navigation", () => {
     }
 
     expect(readQuery({ autoExport: true })).toEqual({});
-    expect(readQuery({ isFallback: true })).toEqual({});
+    expect(readQuery({ isFallback: true })).toEqual({ slug: "draft", view: "full" });
     expect(readQuery({ autoExport: true, hasRewrites: true })).toEqual({});
   });
 
