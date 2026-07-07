@@ -3537,11 +3537,6 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     }
   }
 
-  cancelActiveNavigation();
-  routerRuntimeState.initialRouteParamsAreAuthoritative = false;
-  markPagesRouterLiveState();
-  markPagesRouterReady();
-
   // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
   const currentHash = window.location.hash;
   const isHashOnly =
@@ -3588,6 +3583,11 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     });
     if (!shouldContinue) return;
   }
+
+  cancelActiveNavigation();
+  routerRuntimeState.initialRouteParamsAreAuthoritative = false;
+  markPagesRouterLiveState();
+  markPagesRouterReady();
 
   // Update trackers only after beforePopState confirms navigation proceeds.
   // If beforePopState cancels, the app stays on the previous history entry,
