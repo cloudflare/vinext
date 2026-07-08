@@ -21813,6 +21813,10 @@ describe("next/app shim", () => {
     expect(typeof AppDefault.getInitialProps).toBe("function");
     // origGetInitialProps is preserved for userland code that introspects it.
     expect(typeof AppDefault.origGetInitialProps).toBe("function");
+    expect(AppDefault.getInitialProps).toBe(AppDefault.origGetInitialProps);
+
+    class InheritedApp extends AppDefault {}
+    expect(InheritedApp.getInitialProps).toBe(InheritedApp.origGetInitialProps);
 
     const pageCtx = { req: { url: "/test" } };
     const Component = Object.assign(() => null, {
