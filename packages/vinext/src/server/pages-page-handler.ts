@@ -817,7 +817,7 @@ export function createPagesPageHandler(
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds,
           isStaticPropsRoute,
-          isrSet: options?.initialMiddlewareMatchCanVaryByRequest ? isrSetToOrigin : isrSet,
+          isrSet: isolateMiddlewareIsr ? isrSetToOrigin : isrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,
