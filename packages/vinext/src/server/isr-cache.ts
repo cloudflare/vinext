@@ -179,6 +179,16 @@ export async function isrGetFromOrigin(key: string): Promise<ISRCacheEntry | nul
   };
 }
 
+export function shouldIsolatePagesMiddlewareIsr(input: {
+  initialMiddlewareMatched?: boolean;
+  initialMiddlewareMatchCanVaryByRequest?: boolean;
+}): boolean {
+  return (
+    input.initialMiddlewareMatchCanVaryByRequest === true ||
+    (input.initialMiddlewareMatched === true && !getCdnCacheAdapter().ownsBackgroundRevalidation)
+  );
+}
+
 /**
  * Store a value in the ISR cache with a revalidation period.
  */

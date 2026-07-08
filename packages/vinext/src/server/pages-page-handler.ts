@@ -45,6 +45,7 @@ import {
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
   isOnDemandRevalidateRequest,
+  shouldIsolatePagesMiddlewareIsr,
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
@@ -583,6 +584,10 @@ export function createPagesPageHandler(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
+        const isolateMiddlewareIsr = shouldIsolatePagesMiddlewareIsr({
+          initialMiddlewareMatched: options?.initialMiddlewareMatched,
+          initialMiddlewareMatchCanVaryByRequest: options?.initialMiddlewareMatchCanVaryByRequest,
+        });
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -602,8 +607,8 @@ export function createPagesPageHandler(
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isrCacheKey: pageIsrCacheKey,
-          isrGet: options?.initialMiddlewareMatchCanVaryByRequest ? isrGetFromOrigin : isrGet,
-          isrSet: options?.initialMiddlewareMatchCanVaryByRequest ? isrSetToOrigin : isrSet,
+          isrGet: isolateMiddlewareIsr ? isrGetFromOrigin : isrGet,
+          isrSet: isolateMiddlewareIsr ? isrSetToOrigin : isrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
@@ -728,7 +733,7 @@ export function createPagesPageHandler(
               init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           } else if (isStaticPropsRoute) {
-            if (options?.initialMiddlewareMatchCanVaryByRequest === true) {
+            if (isolateMiddlewareIsr) {
               const headers = new Headers(init.headers);
               applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
               for (const [key, value] of headers) {

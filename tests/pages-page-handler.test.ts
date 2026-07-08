@@ -391,6 +391,28 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
+  it("prevents edge caching when matched middleware can vary its response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getStaticProps: async () => ({ props: {}, revalidate: 60 }),
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
+
+    const response = await handler(makeRequest("/about"), "/about", null, null, {
+      isDataReq: true,
+      initialMiddlewareMatched: true,
+    });
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
   it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
     // Next.js derives Pages data resolvedUrl/asPath from the parsed data
     // pathname. The trailingSlash data-path adjustment is middleware-only.

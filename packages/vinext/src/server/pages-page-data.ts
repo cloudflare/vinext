@@ -6,7 +6,11 @@ import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache-
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildPagesCacheValue,
+  shouldIsolatePagesMiddlewareIsr,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-node-compat.js";
 import {
   buildPagesNextDataScript,
@@ -910,7 +914,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (options.vinext?.initialMiddlewareMatchCanVaryByRequest === true) {
+      if (shouldIsolatePagesMiddlewareIsr(options.vinext ?? {})) {
         applyCdnResponseHeaders(hitResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
@@ -1008,7 +1012,7 @@ export async function resolvePagesPageData(
           routePath: options.routePattern,
           routeType: "render",
         },
-        { forceOrigin: options.vinext?.initialMiddlewareMatchCanVaryByRequest === true },
+        { forceOrigin: shouldIsolatePagesMiddlewareIsr(options.vinext ?? {}) },
       );
 
       const staleHtml = rewritePagesInitialMiddlewareMatched(
@@ -1024,7 +1028,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (options.vinext?.initialMiddlewareMatchCanVaryByRequest === true) {
+      if (shouldIsolatePagesMiddlewareIsr(options.vinext ?? {})) {
         applyCdnResponseHeaders(staleResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: same as the HIT branch — attach an

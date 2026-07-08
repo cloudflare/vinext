@@ -15,6 +15,7 @@ import {
 } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
+import { shouldIsolatePagesMiddlewareIsr } from "./isr-cache.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
@@ -690,12 +691,12 @@ export async function renderPagesPageResponse(
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (
     options.isrRevalidateSeconds &&
-    options.nextData?.__vinext?.initialMiddlewareMatchCanVaryByRequest === true
+    shouldIsolatePagesMiddlewareIsr(options.nextData?.__vinext ?? {})
   ) {
-    // The initial middleware match is request-specific (matcher conditions may
-    // depend on headers/cookies), so the rendered __NEXT_DATA__ cannot be shared
-    // by a CDN for the same URL. Keep origin ISR enabled, but prevent edge and
-    // browser caching of the request-specific response body.
+    // Middleware may produce request-specific rewrites, headers, cookies, or
+    // hydration state. Conditional matchers are isolated for every adapter;
+    // currently-matched middleware is also isolated when a CDN adapter could
+    // otherwise serve the response without executing middleware first.
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: ISR_NO_STORE_CACHE_CONTROL,
     });

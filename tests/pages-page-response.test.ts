@@ -1,5 +1,5 @@
 import React from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesPageResponse,
   isPagesStreamingBot,
@@ -7,6 +7,14 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
+
+afterEach(() => {
+  delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+});
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -331,6 +339,29 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.text();
+    await settleMicrotasks();
+    expect(common.isrSet).toHaveBeenCalledOnce();
+  });
+
+  it("disables edge ISR when currently matched middleware may vary the response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isrRevalidateSeconds: 60,
+      nextData: {
+        gsp: true,
+        __vinext: {
+          hasMiddleware: true,
+          initialMiddlewareMatched: true,
+        },
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
     await response.text();
     await settleMicrotasks();
     expect(common.isrSet).toHaveBeenCalledOnce();

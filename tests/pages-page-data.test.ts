@@ -1,11 +1,19 @@
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesIsrHtml,
   rewritePagesInitialMiddlewareMatched,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
+
+afterEach(() => {
+  delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+});
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -1080,6 +1088,43 @@ describe("pages page data", () => {
     if (result.kind !== "response") throw new Error("expected response result");
     expect(await result.response.text()).toContain('"initialMiddlewareMatched":true');
     expect(result.response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("keeps matched middleware cache HITs out of an active edge cache", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "fresh",
+            value: {
+              kind: "PAGES",
+              html: '<script id="__NEXT_DATA__" type="application/json">{"__vinext":{"initialMiddlewareMatched":false,"hasMiddleware":true}}</script>',
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps() {
+            return { props: {}, revalidate: 60 };
+          },
+        },
+        vinext: {
+          hasMiddleware: true,
+          initialMiddlewareMatched: true,
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.headers.get("cache-control")).toBe("no-store");
+    expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    expect(await result.response.text()).toContain('"initialMiddlewareMatched":true');
   });
 
   it("keeps middleware-aware stale ISR responses out of shared downstream caches", async () => {

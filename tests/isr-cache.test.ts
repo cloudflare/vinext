@@ -24,6 +24,7 @@ import {
   normalizeMountedSlotsHeader,
   setRevalidateDuration,
   getRevalidateDuration,
+  shouldIsolatePagesMiddlewareIsr,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -363,6 +364,28 @@ describe("ISR expire ceiling", () => {
     await expect(isrGet("origin-pages")).resolves.toBeNull();
     const originEntry = await isrGetFromOrigin("origin-pages");
     expect(originEntry?.value.value?.kind).toBe("PAGES");
+  });
+
+  it("isolates Pages middleware ISR according to matcher and adapter semantics", () => {
+    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(false);
+    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatchCanVaryByRequest: true })).toBe(
+      true,
+    );
+
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return { "Cache-Control": cacheControl };
+      },
+      async revalidateTag() {},
+    });
+
+    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(true);
+    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: false })).toBe(false);
   });
 
   it("serves stale within expire and treats entries beyond expire as hard misses", async () => {
