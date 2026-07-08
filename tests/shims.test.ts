@@ -21774,10 +21774,42 @@ describe("next/error shim", () => {
     expect(html).toContain("Application error: a client-side exception has occurred");
   });
 
-  it("derives statusCode from the response in getInitialProps", async () => {
+  it("matches the default Error getInitialProps static contract", async () => {
     const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
-    expect(ErrorComponent.getInitialProps({ res: { statusCode: 404 } })).toEqual({
+
+    expect(ErrorComponent.origGetInitialProps).toBe(ErrorComponent.getInitialProps);
+    expect(ErrorComponent.getInitialProps({ res: { statusCode: 500 } })).toEqual({
+      statusCode: 500,
+      hostname: undefined,
+    });
+    expect(ErrorComponent.getInitialProps({ err: { statusCode: 401 } })).toEqual({
+      statusCode: 401,
+      hostname: undefined,
+    });
+    expect(ErrorComponent.getInitialProps({})).toEqual({
       statusCode: 404,
+      hostname: undefined,
+    });
+  });
+
+  it("derives the Error hostname from the server request", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(
+      ErrorComponent.getInitialProps({
+        req: { url: "https://preview.example.com:8443/failure" },
+      }),
+    ).toEqual({
+      statusCode: 404,
+      hostname: "preview.example.com",
+    });
+    expect(
+      ErrorComponent.getInitialProps({
+        req: { url: "/failure", headers: { host: "fallback.example.com:3000" } },
+      }),
+    ).toEqual({
+      statusCode: 404,
+      hostname: "fallback.example.com",
     });
   });
 });

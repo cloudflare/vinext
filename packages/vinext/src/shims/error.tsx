@@ -17,14 +17,48 @@ import { RouterContext } from "./internal/router-context.js";
 
 type ErrorProps = {
   statusCode?: number;
+  hostname?: string;
   title?: string;
   withDarkMode?: boolean;
 };
 
 type ErrorContext = {
   err?: { statusCode?: number };
+  req?: {
+    url?: string;
+    headers?: { host?: string | string[] };
+  };
   res?: { statusCode?: number };
 };
+
+function getErrorInitialProps({
+  err,
+  req,
+  res,
+}: ErrorContext): ErrorProps & { statusCode: number } {
+  const statusCode = res?.statusCode || err?.statusCode || 404;
+  let hostname: string | undefined;
+
+  if (typeof window !== "undefined") {
+    hostname = window.location.hostname;
+  } else if (req) {
+    if (req.url) {
+      try {
+        hostname = new URL(req.url).hostname;
+      } catch {
+        // Node Pages requests commonly expose a path-only URL, so use the
+        // request Host header below when no absolute request URL is available.
+      }
+    }
+
+    if (!hostname) {
+      const host = Array.isArray(req.headers?.host) ? req.headers.host[0] : req.headers?.host;
+      if (host) hostname = new URL(`http://${host}`).hostname;
+    }
+  }
+
+  return { statusCode, hostname };
+}
 
 function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
   const defaultTitle = statusCode
@@ -90,9 +124,8 @@ function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
   );
 }
 
-ErrorComponent.getInitialProps = ({ err, res }: ErrorContext): ErrorProps => ({
-  statusCode: res?.statusCode ?? err?.statusCode,
-});
+ErrorComponent.getInitialProps = getErrorInitialProps;
+ErrorComponent.origGetInitialProps = getErrorInitialProps;
 
 export default ErrorComponent;
 
