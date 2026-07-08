@@ -720,7 +720,19 @@ export function createSSRHandler(
         return;
       }
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
+      await renderErrorPage(
+        server,
+        runner,
+        req,
+        res,
+        url,
+        pagesDir,
+        404,
+        undefined,
+        matcher,
+        undefined,
+        reactStrictMode,
+      );
       return;
     }
 
@@ -918,6 +930,8 @@ export function createSSRHandler(
               404,
               routerShim.wrapWithRouterContext,
               matcher,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -1075,6 +1089,9 @@ export function createSSRHandler(
               pagesDir,
               404,
               routerShim.wrapWithRouterContext,
+              undefined,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -1527,6 +1544,9 @@ export function createSSRHandler(
               pagesDir,
               404,
               routerShim.wrapWithRouterContext,
+              undefined,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -2050,6 +2070,7 @@ hydrate();
             undefined,
             matcher,
             e instanceof Error ? e : new Error(String(e)),
+            reactStrictMode,
           );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
@@ -2084,6 +2105,7 @@ async function renderErrorPage(
   wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
   fileMatcher?: ValidFileMatcher,
   err?: Error,
+  reactStrictMode = false,
 ): Promise<void> {
   attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
@@ -2116,12 +2138,18 @@ async function renderErrorPage(
 
       const createElement = React.createElement;
       res.statusCode = statusCode;
+      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
+      const errorRouter = {
+        pathname: errorPage,
+        query: parseQuery(url),
+        asPath: url,
+      };
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
         err,
-        pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
-        query: parseQuery(url),
+        pathname: errorPage,
+        query: errorRouter.query,
         asPath: url,
       });
       if (res.headersSent || res.writableEnded) return;
@@ -2135,17 +2163,13 @@ async function renderErrorPage(
               Component: ErrorComponent,
             }),
           Component: ErrorComponent,
-          router: {
-            pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
-            query: parseQuery(url),
-            asPath: url,
-          },
+          router: errorRouter,
           ctx: {
             req,
             res,
             err,
-            pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
-            query: parseQuery(url),
+            pathname: errorPage,
+            query: errorRouter.query,
             asPath: url,
           },
         });
@@ -2156,13 +2180,11 @@ async function renderErrorPage(
       // If the caller didn't supply wrapWithRouterContext, load it now.
       // runner.import() caches internally so the cost is negligible.
       let wrapFn = wrapWithRouterContext;
-      if (!wrapFn) {
-        try {
-          const errRouterShim = await importModule(runner, "next/router");
-          wrapFn = errRouterShim.wrapWithRouterContext;
-        } catch {
-          // router shim not available — continue without it
-        }
+      try {
+        const errRouterShim = await importModule(runner, "next/router");
+        wrapFn ??= errRouterShim.wrapWithRouterContext;
+      } catch {
+        // router shim not available — continue without it
       }
 
       // Try custom _document
@@ -2188,6 +2210,7 @@ async function renderErrorPage(
           ? createElement(FinalApp, {
               ...renderProps,
               Component: FinalComponent,
+              router: errorRouter,
             })
           : createElement(FinalComponent, errorProps);
         if (wrapFn) errorElement = wrapFn(errorElement);
@@ -2206,7 +2229,6 @@ async function renderErrorPage(
         [appAssetPath, errorAssetPath],
         nonceAttr,
       );
-      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const errorModuleSource = errorAssetPath
         ? createPagesDevModuleUrl(server.config.root, errorAssetPath, "/")
         : "next/error";
@@ -2226,11 +2248,17 @@ async function renderErrorPage(
 <script type="module"${nonceAttr}>
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext } from "next/router";
+import "vinext/instrumentation-client";
+import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
 const props = window.__NEXT_DATA__.props;
+_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);
+window.__VINEXT_PAGE_LOADERS__ = { [window.__NEXT_DATA__.page]: () => import("${errorModuleSource}") };
+window.__VINEXT_PAGE_PATTERNS__ = [window.__NEXT_DATA__.page];
+window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
+window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictMode === true)};
 const pageModule = await import("${errorModuleSource}");
 const PageComponent = pageModule.default;
 let element;
@@ -2245,9 +2273,23 @@ element = React.createElement(AppComponent, { ...props, Component: PageComponent
 let resolveHydrationCommit;
 const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
 element = wrapWithRouterContext(element, resolveHydrationCommit);
-window.__VINEXT_ROOT__ = hydrateRoot(document.getElementById("__next"), element);
+let hydrateRootOptions;
+if (import.meta.env.DEV) {
+  const overlay = await import("vinext/dev-error-overlay");
+  overlay.installDevErrorOverlay();
+  overlay.installViteHmrErrorHandler(import.meta.hot);
+  overlay.reportInitialDevServerErrors();
+  hydrateRootOptions = {
+    onCaughtError: overlay.devOnCaughtError,
+    onUncaughtError: overlay.devOnUncaughtError,
+  };
+}
+window.__VINEXT_ROOT__ = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
 await hydrationCommitted;
+const hydratedAt = performance.now();
+window.__VINEXT_HYDRATED_AT = hydratedAt;
 window.__NEXT_HYDRATED = true;
+window.__NEXT_HYDRATED_AT = hydratedAt;
 window.__NEXT_HYDRATED_CB?.();
 </script>`;
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;

@@ -29,12 +29,12 @@ async function createDevelopmentFixture(): Promise<{
     path.join(pagesDir, "_app.tsx"),
     `import { useEffect, useState } from "react";
 
-export default function App({ Component, pageProps, customEnvelope }) {
+export default function App({ Component, pageProps, customEnvelope, router }) {
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
 
   return (
-    <main data-testid="custom-app" data-envelope={customEnvelope} data-hydrated={hydrated}>
+    <main data-testid="custom-app" data-envelope={customEnvelope} data-hydrated={hydrated} data-has-router={Boolean(router)}>
       <Component {...pageProps} />
     </main>
   );
@@ -107,11 +107,12 @@ test.describe("Pages Router framework error page development fallback", () => {
     const response = await page.goto(`${developmentApp.baseUrl}missing`, { waitUntil: "load" });
 
     expect(response?.status()).toBe(404);
-    await expect(page.locator("h1")).toHaveCount(0);
-    await expect(page.locator("h2")).toHaveText(
+    await expect(page.locator("#__next h1")).toHaveCount(0);
+    await expect(page.locator("#__next h2")).toHaveText(
       "Application error: a client-side exception has occurred (see the browser console for more information).",
     );
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-envelope", "preserved");
+    await expect(page.getByTestId("custom-app")).toHaveAttribute("data-has-router", "true");
     await waitForHydration(page);
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-hydrated", "true");
 
