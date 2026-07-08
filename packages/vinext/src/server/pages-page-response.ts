@@ -15,7 +15,6 @@ import {
 } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { shouldIsolatePagesMiddlewareIsr } from "./isr-cache.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
@@ -182,6 +181,7 @@ type RenderPagesPageResponseOptions = {
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
   isrRevalidateSeconds: number | null;
+  isolateMiddlewareIsr?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (
     key: string,
@@ -699,10 +699,7 @@ export async function renderPagesPageResponse(
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
-  } else if (
-    options.isrRevalidateSeconds &&
-    shouldIsolatePagesMiddlewareIsr(options.nextData?.__vinext ?? {})
-  ) {
+  } else if (options.isrRevalidateSeconds && options.isolateMiddlewareIsr === true) {
     // Middleware may produce request-specific rewrites, headers, cookies, or
     // hydration state. Isolate both matched middleware and request-varying
     // matchers so distinct visible sources cannot alias one destination entry.

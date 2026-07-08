@@ -326,6 +326,7 @@ describe("pages page response", () => {
     const response = await renderPagesPageResponse({
       ...common.options,
       isrRevalidateSeconds: 60,
+      isolateMiddlewareIsr: true,
       nextData: {
         gsp: true,
         __vinext: {
@@ -351,6 +352,7 @@ describe("pages page response", () => {
     const response = await renderPagesPageResponse({
       ...common.options,
       isrRevalidateSeconds: 60,
+      isolateMiddlewareIsr: true,
       nextData: {
         gsp: true,
         __vinext: {

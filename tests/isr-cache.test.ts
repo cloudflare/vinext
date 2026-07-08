@@ -366,8 +366,9 @@ describe("ISR expire ceiling", () => {
     expect(originEntry?.value.value?.kind).toBe("PAGES");
   });
 
-  it("isolates Pages middleware ISR for matched or request-varying middleware", () => {
-    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(true);
+  it("isolates Pages middleware ISR only when middleware can vary or changes cache identity", () => {
+    expect(shouldIsolatePagesMiddlewareIsr({})).toBe(false);
+    expect(shouldIsolatePagesMiddlewareIsr({ middlewareAffectsCacheIdentity: true })).toBe(true);
     expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatchCanVaryByRequest: true })).toBe(
       true,
     );
@@ -384,8 +385,8 @@ describe("ISR expire ceiling", () => {
       async revalidateTag() {},
     });
 
-    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(true);
-    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: false })).toBe(false);
+    expect(shouldIsolatePagesMiddlewareIsr({ middlewareAffectsCacheIdentity: true })).toBe(true);
+    expect(shouldIsolatePagesMiddlewareIsr({ middlewareAffectsCacheIdentity: false })).toBe(false);
   });
 
   it("keeps a replacement written in the same millisecond as tag invalidation", async () => {

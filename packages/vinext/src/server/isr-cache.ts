@@ -180,11 +180,12 @@ export async function isrGetFromOrigin(key: string): Promise<ISRCacheEntry | nul
 }
 
 export function shouldIsolatePagesMiddlewareIsr(input: {
-  initialMiddlewareMatched?: boolean;
   initialMiddlewareMatchCanVaryByRequest?: boolean;
+  middlewareAffectsCacheIdentity?: boolean;
 }): boolean {
   return (
-    input.initialMiddlewareMatched === true || input.initialMiddlewareMatchCanVaryByRequest === true
+    input.initialMiddlewareMatchCanVaryByRequest === true ||
+    input.middlewareAffectsCacheIdentity === true
   );
 }
 

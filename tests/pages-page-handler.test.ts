@@ -430,7 +430,7 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
-  it("prevents edge caching when matched middleware can vary its response", async () => {
+  it("preserves edge caching for matched pass-through middleware", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const routes = [
       makeRoute(
@@ -447,8 +447,8 @@ describe("createPagesPageHandler — _next/data", () => {
       initialMiddlewareMatched: true,
     });
 
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
-    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Control")).not.toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toContain("max-age=60");
     expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
@@ -489,7 +489,7 @@ describe("createPagesPageHandler — _next/data", () => {
       for (const source of ["/visible-a?draft=1", "/visible-b?draft=2"]) {
         const response = await handler(makeRequest(source), "/posts/001", null, null, {
           asPath: source,
-          initialMiddlewareMatched: true,
+          initialMiddlewareMatchCanVaryByRequest: true,
         });
         await response.text();
       }
@@ -504,6 +504,17 @@ describe("createPagesPageHandler — _next/data", () => {
       expect(cache.writes.map(({ tags }) => tags)).toEqual(
         expect.arrayContaining([["_N_T_/visible-a"], ["_N_T_/visible-b"]]),
       );
+
+      const beforeSamePathQueries = cache.writes.length;
+      for (const source of ["/visible-query?draft=1", "/visible-query?draft=2"]) {
+        const response = await handler(makeRequest(source), "/posts/001", null, null, {
+          asPath: source,
+          initialMiddlewareMatchCanVaryByRequest: true,
+        });
+        await response.text();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(new Set(cache.writes.slice(beforeSamePathQueries).map(({ key }) => key)).size).toBe(1);
 
       const sameSourceKeys: string[] = [];
       for (const [routeUrl, initialMiddlewareMatched] of [

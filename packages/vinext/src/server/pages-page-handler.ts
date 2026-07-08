@@ -596,15 +596,22 @@ export function createPagesPageHandler(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
+        const visiblePathname = new URL(routerAsPath, originalRequestUrl).pathname;
+        const middlewareAffectsCacheIdentity =
+          options?.initialMiddlewareMatched === true &&
+          (visiblePathname !== routePathname ||
+            (middlewareHeaders !== null &&
+              middlewareHeaders !== undefined &&
+              [...middlewareHeaders.keys()].length > 0));
         const isolateMiddlewareIsr = shouldIsolatePagesMiddlewareIsr({
-          initialMiddlewareMatched: options?.initialMiddlewareMatched,
           initialMiddlewareMatchCanVaryByRequest: options?.initialMiddlewareMatchCanVaryByRequest,
+          middlewareAffectsCacheIdentity,
         });
         const middlewareOverridesRequestHeaders =
           middlewareHeaders !== null &&
           middlewareHeaders !== undefined &&
           buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders) !== null;
-        const isrIdentityUrl = isolateMiddlewareIsr ? routerAsPath : routeUrl;
+        const isrIdentityUrl = isolateMiddlewareIsr ? visiblePathname : routeUrl;
         if (isOnDemandRevalidate && isolateMiddlewareIsr) {
           await invalidateIsrTags(getPagesPathCacheTags(isrIdentityUrl));
         }
@@ -612,7 +619,7 @@ export function createPagesPageHandler(
           ? (router: string, _pathname: string) =>
               pageIsrCacheKey(
                 `${router}:middleware`,
-                `${routerAsPath}::route=${encodeURIComponent(routeUrl)}`,
+                `${visiblePathname}::route=${encodeURIComponent(routePathname)}`,
               )
           : pageIsrCacheKey;
         const pageDataResult = await resolvePagesPageData({
@@ -852,6 +859,7 @@ export function createPagesPageHandler(
           isrCacheKey: requestIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds: middlewareOverridesRequestHeaders ? null : isrRevalidateSeconds,
+          isolateMiddlewareIsr,
           isStaticPropsRoute,
           isrSet: middlewareOverridesRequestHeaders
             ? async () => {}
