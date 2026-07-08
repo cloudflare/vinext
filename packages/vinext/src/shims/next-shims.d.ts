@@ -8,13 +8,14 @@
 
 declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
+  export type PreviewData = string | false | object | undefined;
   export type NextApiRequest = {
     query: Record<string, string | string[]>;
     body: unknown;
     cookies: Record<string, string>;
     preview?: boolean;
     draftMode?: boolean;
-    previewData?: string | false | object | undefined;
+    previewData?: PreviewData;
   } & IncomingMessage;
   export type NextApiResponse<T = unknown> = {
     status(code: number): NextApiResponse<T>;

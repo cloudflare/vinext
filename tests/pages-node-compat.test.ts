@@ -3,11 +3,13 @@ import {
   createPagesReqRes,
   getPagesPreviewData,
 } from "../packages/vinext/src/server/pages-node-compat.js";
-import type { NextApiRequest, NextApiResponse } from "next";
+import type { NextApiRequest, NextApiResponse, PreviewData } from "next";
 
 type NextApiRequestPreviewFields = Pick<NextApiRequest, "preview" | "draftMode" | "previewData">;
 
 const emptyNextApiRequestPreviewFields: NextApiRequestPreviewFields = {};
+
+const previewDataValues: PreviewData[] = ["preview", false, {}, undefined];
 
 function exerciseNextApiRequestPreviewTypes(req: NextApiRequest): NextApiRequestPreviewFields {
   req.preview = false;
@@ -34,6 +36,7 @@ function exerciseNextApiResponsePreviewTypes(res: NextApiResponse): Promise<void
 void exerciseNextApiResponsePreviewTypes;
 void exerciseNextApiRequestPreviewTypes;
 void emptyNextApiRequestPreviewFields;
+void previewDataValues;
 
 describe("Pages Node compat response", () => {
   it("setPreviewData appends both preview cookies while preserving existing cookies", () => {
