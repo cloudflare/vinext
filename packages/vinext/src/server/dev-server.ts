@@ -82,10 +82,13 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
+import { attachPagesRequestCookies } from "./pages-node-compat.js";
 import {
-  attachPagesRequestCookies,
-  getPagesPreviewDataFromCookieHeader,
-} from "./pages-node-compat.js";
+  appendPagesPreviewClearCookies,
+  getPagesPreviewState,
+  PAGES_PREVIEW_CACHE_CONTROL,
+  type PagesPreviewState,
+} from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -100,6 +103,33 @@ async function renderToStringAsync(element: React.ReactElement): Promise<string>
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+function applyDevPagesPreviewHeaders(
+  headers: Record<string, string | string[] | number>,
+  preview: PagesPreviewState,
+): void {
+  const removeHeader = (name: string) => {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === name) delete headers[key];
+    }
+  };
+  if (preview.data !== false) {
+    removeHeader("cache-control");
+    headers["Cache-Control"] = PAGES_PREVIEW_CACHE_CONTROL;
+  }
+  if (preview.shouldClear) {
+    const clearHeaders = new Headers();
+    appendPagesPreviewClearCookies(clearHeaders);
+    const existing: string[] = [];
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "set-cookie") continue;
+      if (Array.isArray(value)) existing.push(...value.map(String));
+      else existing.push(String(value));
+      delete headers[key];
+    }
+    headers["Set-Cookie"] = [...existing, ...clearHeaders.getSetCookie()];
+  }
 }
 
 async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<string> {
@@ -741,9 +771,10 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
-    const requestPreviewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
+    const requestPreview = getPagesPreviewState(req.headers.cookie, {
       isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
     });
+    const requestPreviewData = requestPreview.data;
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
@@ -881,7 +912,7 @@ export function createSSRHandler(
         // and `useRouter().isFallback === true`, matching Next.js render.tsx.
         let isFallbackRender = false;
         let shouldPersistFallbackData = false;
-        let staticPropsPreviewData: ReturnType<typeof getPagesPreviewDataFromCookieHeader> = false;
+        let staticPropsPreviewData = requestPreviewData;
 
         // Handle getStaticPaths for dynamic routes: validate the path,
         // respect `fallback: false` (return 404 for unlisted paths), and
@@ -1013,7 +1044,7 @@ export function createSSRHandler(
           renderProps = { ...renderProps, __N_SSP: true };
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
-          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie);
+          const previewData = requestPreviewData;
           const previewContext =
             previewData === false
               ? {}
@@ -1174,9 +1205,7 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
-          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
-            isOnDemandRevalidate,
-          });
+          const previewData = requestPreviewData;
           staticPropsPreviewData = previewData;
           const previewContext =
             previewData === false
@@ -1628,9 +1657,6 @@ export function createSSRHandler(
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
-          if (requestPreviewData !== false) {
-            dataHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
-          }
           if ((statusCode ?? 200) === 200) {
             const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
             dataHeaders["x-nextjs-matched-path"] = matchedPathname;
@@ -1640,6 +1666,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
@@ -1901,9 +1928,7 @@ hydrate();
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (requestPreviewData !== false) {
-          extraHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
-        } else if (isrRevalidateSeconds) {
+        if (requestPreviewData === false && isrRevalidateSeconds) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
@@ -1911,6 +1936,7 @@ hydrate();
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
+        applyDevPagesPreviewHeaders(extraHeaders, requestPreview);
 
         // Set HTTP Link header for font preloading.
         // This lets the browser (and CDN) start fetching font files before parsing HTML.

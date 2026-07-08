@@ -1,13 +1,11 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
   createHmac,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
-import { getRevalidateSecret, isRevalidateSecret } from "./isr-cache.js";
 
 export const PAGES_PREVIEW_CACHE_CONTROL =
   "private, no-cache, no-store, max-age=0, must-revalidate";
@@ -23,10 +21,33 @@ type PreviewResponse = {
   setHeader(name: string, value: string | number | boolean | string[]): unknown;
 };
 
-function deriveKey(purpose: "encryption" | "signing"): Buffer {
-  return createHash("sha256")
-    .update(`vinext-pages-preview-${purpose}\0${getRevalidateSecret()}`)
-    .digest();
+type PagesPreviewCredentials = {
+  bypassId: string;
+  encryptionKey: Buffer;
+  signingKey: Buffer;
+};
+
+let devCredentials: PagesPreviewCredentials | undefined;
+
+function decodeKey(value: string | undefined): Buffer | null {
+  if (!value || !/^[0-9a-f]{64}$/i.test(value)) return null;
+  return Buffer.from(value, "hex");
+}
+
+function getPagesPreviewCredentials(): PagesPreviewCredentials {
+  const bypassId = process.env.__VINEXT_PREVIEW_MODE_ID;
+  const encryptionKey = decodeKey(process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY);
+  const signingKey = decodeKey(process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY);
+  if (bypassId && encryptionKey && signingKey) return { bypassId, encryptionKey, signingKey };
+
+  if (!devCredentials) {
+    devCredentials = {
+      bypassId: randomBytes(16).toString("hex"),
+      encryptionKey: randomBytes(32),
+      signingKey: randomBytes(32),
+    };
+  }
+  return devCredentials;
 }
 
 function serializeCookie(
@@ -66,7 +87,8 @@ function normalizeSetCookie(value: string | number | boolean | string[] | undefi
 
 function encodePayload(data: PagesPreviewData, maxAge?: number): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", deriveKey("encryption"), iv);
+  const credentials = getPagesPreviewCredentials();
+  const cipher = createCipheriv("aes-256-gcm", credentials.encryptionKey, iv);
   const plaintext = JSON.stringify({
     data,
     ...(maxAge === undefined ? {} : { expiresAt: Date.now() + maxAge * 1000 }),
@@ -75,7 +97,7 @@ function encodePayload(data: PagesPreviewData, maxAge?: number): string {
   const encryptedToken = [iv, encrypted, cipher.getAuthTag()]
     .map((part) => part.toString("base64url"))
     .join(".");
-  const signature = createHmac("sha256", deriveKey("signing"))
+  const signature = createHmac("sha256", credentials.signingKey)
     .update(encryptedToken)
     .digest("base64url");
   return `${encryptedToken}.${signature}`;
@@ -88,13 +110,14 @@ function decodePayload(payload: string): PagesPreviewData | false {
       return false;
     }
     const encryptedToken = `${ivValue}.${encryptedValue}.${tagValue}`;
-    const expected = createHmac("sha256", deriveKey("signing")).update(encryptedToken).digest();
+    const credentials = getPagesPreviewCredentials();
+    const expected = createHmac("sha256", credentials.signingKey).update(encryptedToken).digest();
     const signature = Buffer.from(signatureValue, "base64url");
     if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) return false;
 
     const decipher = createDecipheriv(
       "aes-256-gcm",
-      deriveKey("encryption"),
+      credentials.encryptionKey,
       Buffer.from(ivValue, "base64url"),
     );
     decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
@@ -124,7 +147,7 @@ export function getPagesPreviewState(
   const bypass = cookies.__prerender_bypass;
   const payload = cookies.__next_preview_data;
   if (!bypass && !payload) return { data: false, shouldClear: false };
-  if (!bypass || !payload || !isRevalidateSecret(bypass)) {
+  if (!bypass || !payload || bypass !== getPagesPreviewCredentials().bypassId) {
     return { data: false, shouldClear: true };
   }
   const data = decodePayload(payload);
@@ -144,7 +167,7 @@ export function setPagesPreviewData(
   }
   response.setHeader("Set-Cookie", [
     ...normalizeSetCookie(response.getHeader("Set-Cookie")),
-    serializeCookie("__prerender_bypass", getRevalidateSecret(), options),
+    serializeCookie("__prerender_bypass", getPagesPreviewCredentials().bypassId, options),
     serializeCookie("__next_preview_data", payload, options),
   ]);
 }

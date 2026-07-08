@@ -368,3 +368,74 @@ describe("build-time revalidate secret define (security: server-only)", () => {
     expect(clientResult?.define?.["process.env.__VINEXT_REVALIDATE_SECRET"]).toBeUndefined();
   }, 15000);
 });
+
+describe("build-time preview credentials (security: separated and server-only)", () => {
+  const PREVIEW_ID = "b".repeat(32);
+  const SIGNING_KEY = "c".repeat(64);
+  const ENCRYPTION_KEY = "d".repeat(64);
+  const previous = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const [name, value] of Object.entries({
+      __VINEXT_SHARED_PREVIEW_MODE_ID: PREVIEW_ID,
+      __VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY: SIGNING_KEY,
+      __VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    })) {
+      previous.set(name, process.env[name]);
+      process.env[name] = value;
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    previous.clear();
+  });
+
+  async function getServerDefinePlugin(): Promise<VinextPlugin> {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    const serverDefinePlugin = plugins.find(
+      (plugin) => plugin.name === "vinext:compiler-define-server",
+    );
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    return serverDefinePlugin!;
+  }
+
+  it("bakes three independent preview values into server environments", async () => {
+    const plugin = await getServerDefinePlugin();
+    const result = plugin.configEnvironment!("ssr", {}, { command: "build" });
+    expect(result?.define).toMatchObject({
+      "process.env.__VINEXT_PREVIEW_MODE_ID": JSON.stringify(PREVIEW_ID),
+      "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY": JSON.stringify(SIGNING_KEY),
+      "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY": JSON.stringify(ENCRYPTION_KEY),
+    });
+    expect(new Set([PREVIEW_ID, SIGNING_KEY, ENCRYPTION_KEY]).size).toBe(3);
+  }, 15000);
+
+  it("never exposes preview credentials to the client environment", async () => {
+    const plugin = await getServerDefinePlugin();
+    const result = plugin.configEnvironment!("client", {}, { command: "build" });
+    expect(result).toBeNull();
+    for (const key of [
+      "process.env.__VINEXT_PREVIEW_MODE_ID",
+      "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY",
+      "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY",
+    ]) {
+      expect(result?.define?.[key]).toBeUndefined();
+    }
+  }, 15000);
+});

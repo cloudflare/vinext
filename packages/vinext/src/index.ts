@@ -5501,6 +5501,22 @@ export const loadServerActionClient = ${
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(sharedRevalidateSecret);
         }
+        const sharedPreviewModeId = process.env.__VINEXT_SHARED_PREVIEW_MODE_ID;
+        const sharedPreviewSigningKey = process.env.__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY;
+        const sharedPreviewEncryptionKey = process.env.__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY;
+        if (sharedPreviewModeId) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] =
+            JSON.stringify(sharedPreviewModeId);
+        }
+        if (sharedPreviewSigningKey) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] =
+            JSON.stringify(sharedPreviewSigningKey);
+        }
+        if (sharedPreviewEncryptionKey) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY"] = JSON.stringify(
+            sharedPreviewEncryptionKey,
+          );
+        }
 
         return { define: serverDefines };
       },

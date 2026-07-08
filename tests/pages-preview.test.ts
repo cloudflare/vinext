@@ -4,6 +4,7 @@ import {
   getPagesPreviewState,
   setPagesPreviewData,
 } from "../packages/vinext/src/server/pages-preview.js";
+import { getRevalidateSecret } from "../packages/vinext/src/server/isr-cache.js";
 
 function createResponse() {
   const headers = new Map<string, string | string[]>();
@@ -30,6 +31,7 @@ describe("Pages preview tokens", () => {
     const cookies = response.getHeader("set-cookie");
     if (!Array.isArray(cookies)) throw new Error("expected preview cookies");
     expect(cookies.join("\n")).not.toContain("draft");
+    expect(cookieHeader(response)).not.toContain(getRevalidateSecret());
     expect(getPagesPreviewState(cookieHeader(response))).toEqual({
       data: { secret: "draft" },
       shouldClear: false,

@@ -531,6 +531,15 @@ async function buildApp() {
   if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
     process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
   }
+  if (!process.env.__VINEXT_SHARED_PREVIEW_MODE_ID) {
+    process.env.__VINEXT_SHARED_PREVIEW_MODE_ID = randomBytes(16).toString("hex");
+  }
+  if (!process.env.__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY) {
+    process.env.__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY = randomBytes(32).toString("hex");
+  }
+  if (!process.env.__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY) {
+    process.env.__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY = randomBytes(32).toString("hex");
+  }
 
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");
