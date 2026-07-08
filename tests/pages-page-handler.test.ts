@@ -545,6 +545,26 @@ describe("createPagesPageHandler — _next/data", () => {
       );
       await revalidated.text();
       expect(cache.revalidatedTags).toContainEqual(["_N_T_/conditional"]);
+
+      const writesBeforeHeaderOverride = cache.writes.length;
+      const middlewareHeaders = new Headers({
+        "x-middleware-override-headers": "x-variant",
+        "x-middleware-request-x-variant": "one",
+      });
+      const headerVariant = await handler(
+        makeRequest("/conditional"),
+        "/posts/001",
+        null,
+        middlewareHeaders,
+        {
+          asPath: "/conditional",
+          initialMiddlewareMatched: true,
+        },
+      );
+      await headerVariant.text();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(cache.writes).toHaveLength(writesBeforeHeaderOverride);
+      expect(headerVariant.headers.get("Cache-Control")).toContain("no-store");
     } finally {
       delete process.env.__VINEXT_REVALIDATE_SECRET;
       setDataCacheHandler(new MemoryCacheHandler());

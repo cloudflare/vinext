@@ -59,6 +59,7 @@ import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -599,6 +600,10 @@ export function createPagesPageHandler(
           initialMiddlewareMatched: options?.initialMiddlewareMatched,
           initialMiddlewareMatchCanVaryByRequest: options?.initialMiddlewareMatchCanVaryByRequest,
         });
+        const middlewareOverridesRequestHeaders =
+          middlewareHeaders !== null &&
+          middlewareHeaders !== undefined &&
+          buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders) !== null;
         const isrIdentityUrl = isolateMiddlewareIsr ? routerAsPath : routeUrl;
         if (isOnDemandRevalidate && isolateMiddlewareIsr) {
           await invalidateIsrTags(getPagesPathCacheTags(isrIdentityUrl));
@@ -629,8 +634,16 @@ export function createPagesPageHandler(
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isrCacheKey: requestIsrCacheKey,
-          isrGet: isolateMiddlewareIsr ? isrGetFromOrigin : isrGet,
-          isrSet: isolateMiddlewareIsr ? isrSetToOrigin : isrSet,
+          isrGet: middlewareOverridesRequestHeaders
+            ? async () => null
+            : isolateMiddlewareIsr
+              ? isrGetFromOrigin
+              : isrGet,
+          isrSet: middlewareOverridesRequestHeaders
+            ? async () => {}
+            : isolateMiddlewareIsr
+              ? isrSetToOrigin
+              : isrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
@@ -809,7 +822,7 @@ export function createPagesPageHandler(
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         });
 
-        return await renderPagesPageResponse({
+        const pageResponse = await renderPagesPageResponse({
           assetTags,
           buildId,
           clearSsrContext() {
@@ -838,9 +851,13 @@ export function createPagesPageHandler(
           gsspRes,
           isrCacheKey: requestIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,
-          isrRevalidateSeconds,
+          isrRevalidateSeconds: middlewareOverridesRequestHeaders ? null : isrRevalidateSeconds,
           isStaticPropsRoute,
-          isrSet: isolateMiddlewareIsr ? isrSetToOrigin : isrSet,
+          isrSet: middlewareOverridesRequestHeaders
+            ? async () => {}
+            : isolateMiddlewareIsr
+              ? isrSetToOrigin
+              : isrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,
@@ -865,6 +882,15 @@ export function createPagesPageHandler(
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
+        });
+        if (!middlewareOverridesRequestHeaders) return pageResponse;
+
+        const responseHeaders = new Headers(pageResponse.headers);
+        applyCdnResponseHeaders(responseHeaders, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+        return new Response(pageResponse.body, {
+          status: pageResponse.status,
+          statusText: pageResponse.statusText,
+          headers: responseHeaders,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);
