@@ -28,13 +28,23 @@ async function createDevelopmentFixture(): Promise<{
   await fs.writeFile(
     path.join(pagesDir, "_app.tsx"),
     `import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 
 export default function App({ Component, pageProps, customEnvelope, router }) {
   const [hydrated, setHydrated] = useState(false);
+  const contextRouter = useRouter();
   useEffect(() => setHydrated(true), []);
 
   return (
-    <main data-testid="custom-app" data-envelope={customEnvelope} data-hydrated={hydrated} data-has-router={Boolean(router)}>
+    <main
+      data-testid="custom-app"
+      data-envelope={customEnvelope}
+      data-hydrated={hydrated}
+      data-has-router={Boolean(router)}
+      data-router-pathname={router?.pathname}
+      data-context-pathname={contextRouter.pathname}
+      data-context-as-path={contextRouter.asPath}
+    >
       <Component {...pageProps} />
     </main>
   );
@@ -113,6 +123,15 @@ test.describe("Pages Router framework error page development fallback", () => {
     );
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-envelope", "preserved");
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-has-router", "true");
+    await expect(page.getByTestId("custom-app")).toHaveAttribute("data-router-pathname", "/_error");
+    await expect(page.getByTestId("custom-app")).toHaveAttribute(
+      "data-context-pathname",
+      "/_error",
+    );
+    await expect(page.getByTestId("custom-app")).toHaveAttribute(
+      "data-context-as-path",
+      "/missing",
+    );
     await waitForHydration(page);
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-hydrated", "true");
 

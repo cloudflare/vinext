@@ -2114,6 +2114,8 @@ async function renderErrorPage(
     statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
 
   for (const candidate of candidates) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let errorRouterShim: any = null;
     try {
       const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
       if (!errorAssetPath && candidate !== "_error") continue;
@@ -2144,6 +2146,17 @@ async function renderErrorPage(
         query: parseQuery(url),
         asPath: url,
       };
+      try {
+        errorRouterShim = await importModule(runner, "next/router");
+        if (typeof errorRouterShim.setSSRContext === "function") {
+          errorRouterShim.setSSRContext({
+            ...errorRouter,
+            navigationIsReady: true,
+          });
+        }
+      } catch {
+        // router shim not available — continue without it
+      }
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
@@ -2180,12 +2193,7 @@ async function renderErrorPage(
       // If the caller didn't supply wrapWithRouterContext, load it now.
       // runner.import() caches internally so the cost is negligible.
       let wrapFn = wrapWithRouterContext;
-      try {
-        const errRouterShim = await importModule(runner, "next/router");
-        wrapFn ??= errRouterShim.wrapWithRouterContext;
-      } catch {
-        // router shim not available — continue without it
-      }
+      wrapFn ??= errorRouterShim?.wrapWithRouterContext;
 
       // Try custom _document
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -2352,6 +2360,10 @@ window.__NEXT_HYDRATED_CB?.();
       if (res.headersSent || res.writableEnded) return;
       // This candidate doesn't exist, try next
       continue;
+    } finally {
+      if (typeof errorRouterShim?.setSSRContext === "function") {
+        errorRouterShim.setSSRContext(null);
+      }
     }
   }
 
