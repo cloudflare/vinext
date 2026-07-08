@@ -132,6 +132,28 @@ describe("KVCacheHandler", () => {
     expect(result!.value!.kind).toBe("PAGES");
   });
 
+  it("keeps a replacement written in the same millisecond as tag invalidation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await handler.revalidateTag("_N_T_/visible");
+    await handler.set(
+      "pages:visible",
+      {
+        kind: "PAGES",
+        html: "<p>fresh</p>",
+        pageData: {},
+        headers: undefined,
+        status: 200,
+      },
+      { revalidate: 60, tags: ["_N_T_/visible"] },
+    );
+
+    await expect(handler.get("pages:visible")).resolves.toMatchObject({
+      value: { kind: "PAGES", html: "<p>fresh</p>" },
+    });
+  });
+
   it("returns valid entry with null value", async () => {
     store.set("cache:null-val", validEntry(null));
     const result = await handler.get("null-val");
