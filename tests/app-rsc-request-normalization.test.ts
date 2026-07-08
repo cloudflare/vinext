@@ -720,3 +720,151 @@ describe("normalizeRscRequest — percent-encoded segment-prefetch URLs", () => 
     expect(result.isRscRequest).toBe(true);
   });
 });
+
+// ── Path traversal security — segment-prefetch URLs ─────────────────────────
+
+describe("normalizeRscRequest — segment-prefetch traversal guard", () => {
+  it("rejects ..%2F traversal in originalPathname", () => {
+    // /foo/..%2Fbar.segments/_tree.segment.rsc extracts originalPathname
+    // as /foo/..%2Fbar. normalizePath treats ..%2Fbar as one opaque segment
+    // (not resolving .. against /), but downstream %2F decoding would steer
+    // routing outside /foo. The guard must reject this.
+    const result = normalizeRscRequest(req("/foo/..%2Fbar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("treats double-encoded ..%252F as opaque (no traversal possible)", () => {
+    // After strict percent-decode (encodePathDelimiters), %2F is re-encoded to
+    // %252F. The path /foo/..%252Fbar.segments/... decodes to
+    // /foo/..%252Fbar.segments/... (encodePathDelimiters re-encodes %2F).
+    // The guard sees ..%252F (not ..%2F), so it does NOT trigger. This is safe
+    // ONLY because no downstream layer performs a second percent-decode pass
+    // on pathname: normalizePath sees ..%252Fbar as one opaque segment that
+    // cannot resolve to a parent directory. If a downstream re-decode is ever
+    // introduced, %252F becomes %2F and this turns into a traversal — the
+    // guard must then also reject ..%25 sequences.
+    const result = normalized(
+      normalizeRscRequest(req("/foo/..%252Fbar.segments/_tree.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/foo/..%252Fbar");
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("rejects mixed-case ..%2f traversal", () => {
+    const result = normalizeRscRequest(req("/foo/..%2fbar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects backslash-encoded ..%5C traversal", () => {
+    // The strict decoder re-encodes both \ and %5C to %5C, so ..%5Cbar
+    // survives step 3 as an opaque token exactly like ..%2Fbar. Backslash
+    // acts as a path separator on Windows and in some downstream path
+    // stacks, so the guard must treat %5C like %2F.
+    const result = normalizeRscRequest(req("/foo/..%5Cbar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects mixed-case ..%5c traversal", () => {
+    const result = normalizeRscRequest(req("/foo/..%5cbar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects a raw backslash traversal ..\\ (re-encoded to ..%5C)", () => {
+    // A literal backslash in the URL is re-encoded to %5C by the strict
+    // decoder, converging on the same guarded form.
+    const result = normalizeRscRequest(req("/foo/..%5C..%5Cbar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects .. bounded by encoded fragment delimiter (..%23)", () => {
+    // %23 (#) is not a path separator, but a downstream re-decode + URL
+    // re-parse would truncate at the fragment, leaving a trailing .. in
+    // separator position (/foo/..#bar → path /foo/..). Rejected proactively.
+    const result = normalizeRscRequest(req("/foo/..%23bar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects .. bounded by encoded query delimiter (..%3F, mixed case)", () => {
+    // Same rationale as %23: re-decode + re-parse truncates at ?, leaving a
+    // trailing .. (/foo/..?bar → path /foo/..). Case-insensitive.
+    expect(
+      (normalizeRscRequest(req("/foo/..%3Fbar.segments/_tree.segment.rsc"), "") as Response).status,
+    ).toBe(400);
+    expect(
+      (normalizeRscRequest(req("/foo/..%3fbar.segments/_tree.segment.rsc"), "") as Response).status,
+    ).toBe(400);
+  });
+
+  it("rejects NUL bytes (%00) in the page path", () => {
+    // The strict decoder converts %00 to a literal NUL (only delimiters are
+    // re-encoded). NUL in the routed pathname enables cache-key truncation
+    // and header-injection style attacks in downstream consumers.
+    const result = normalizeRscRequest(req("/foo%00bar.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects NUL bytes (%00) in the segment path", () => {
+    // segmentPrefetchPath feeds Phase 2 consumers (cache keys, segment tree
+    // walks) — an embedded NUL must never reach them.
+    const result = normalizeRscRequest(req("/foo.segments/_t%00ree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("still allows benign triple-dot segments (not traversal)", () => {
+    // /foo/...bar contains .. as a substring but not as a bounded segment;
+    // the guard must not over-match.
+    const result = normalized(
+      normalizeRscRequest(req("/foo/...bar.segments/_tree.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/foo/...bar");
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("rejects boundary .. created by suffix stripping (/foo/...segments/)", () => {
+    // The .segments delimiter bites into the trailing dots: group 1 extracts
+    // as /foo/.. — an unresolved traversal the guard must catch.
+    const result = normalizeRscRequest(req("/foo/...segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("rejects percent-encoded .. (%2E%2E) with %2F slash", () => {
+    // /%2E%2E%2Ffoo.segments/_tree.segment.rsc: step 2 decodes %2E%2E%2F to
+    // ..%2F, resulting in /..%2Ffoo.segments/_tree.segment.rsc. normalizePath
+    // treats ..%2Ffoo as one opaque segment (no resolution since %2F is not /).
+    // The guard catches originalPathname=/..%2Ffoo.
+    const result = normalizeRscRequest(req("/%2E%2E%2Ffoo.segments/_tree.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("allows sanitized plain .. traversal (pre-resolved by normalizePath)", () => {
+    // /foo/../bar.segments/_tree.segment.rsc: step 3 (normalizePath) resolves
+    // /foo/../bar to /bar before step 6 runs. Extraction sees originalPathname
+    // = /bar (no ..), so the guard passes normally.
+    const result = normalized(
+      normalizeRscRequest(req("/foo/../bar.segments/_tree.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/bar");
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("rejects traversal in the segment path (group 2)", () => {
+    // /admin.segments/..%2F..%2Fetc/passwd.segment.rsc: the greedy group 1
+    // captures /admin, so the ..%2F sequences land in the *segment path*
+    // (group 2 = /..%2F..%2Fetc/passwd). segmentPrefetchPath is threaded
+    // through for Phase 2 segment-level response generation, so a traversal
+    // sequence there is a latent vulnerability for any future consumer that
+    // walks a tree keyed on it. The guard checks both captures and rejects
+    // this — no legitimate segment path contains a .. sequence.
+    const result = normalizeRscRequest(req("/admin.segments/..%2F..%2Fetc/passwd.segment.rsc"), "");
+    expect((result as Response).status).toBe(400);
+  });
+
+  it("passes through legitimate percent-encoded paths (no traversal)", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/foo%2Fbar.segments/_tree.segment.rsc"), ""),
+    );
+    // originalPathname = /foo%2Fbar — a single opaque segment, no .. sequence.
+    expect(result.pathname).toBe("/foo%2Fbar");
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+});

@@ -1,62 +1,59 @@
 import { describe, it, expect } from "vite-plus/test";
-import {
-  matchSegmentPrefetchRsc,
-  extractSegmentPrefetchRsc,
-} from "../packages/vinext/src/server/app-segment-prefetch-normalizer.js";
+import { extractSegmentPrefetchRsc } from "../packages/vinext/src/server/app-segment-prefetch-normalizer.js";
 
-describe("matchSegmentPrefetchRsc", () => {
+describe("extractSegmentPrefetchRsc — matching", () => {
   it("matches a root page route tree prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/.segments/_tree.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/.segments/_tree.segment.rsc")).not.toBeNull();
   });
 
   it("matches a page route tree prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard.segments/_tree.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/dashboard.segments/_tree.segment.rsc")).not.toBeNull();
   });
 
   it("matches a nested page route tree prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/blog/posts.segments/_tree.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/blog/posts.segments/_tree.segment.rsc")).not.toBeNull();
   });
 
   it("matches a root segment prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/.segments/_index.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/.segments/_index.segment.rsc")).not.toBeNull();
   });
 
   it("matches a page segment prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard.segments/__PAGE__.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/dashboard.segments/__PAGE__.segment.rsc")).not.toBeNull();
   });
 
   it("matches a nested page segment prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/blog/posts.segments/__PAGE__.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/blog/posts.segments/__PAGE__.segment.rsc")).not.toBeNull();
   });
 
   it("matches a layout segment prefetch", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard.segments/_index.segment.rsc")).toBe(true);
+    expect(extractSegmentPrefetchRsc("/dashboard.segments/_index.segment.rsc")).not.toBeNull();
   });
 
   it("does not match a regular .rsc URL", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard.rsc")).toBe(false);
+    expect(extractSegmentPrefetchRsc("/dashboard.rsc")).toBeNull();
   });
 
   it("does not match a regular HTML URL", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard")).toBe(false);
+    expect(extractSegmentPrefetchRsc("/dashboard")).toBeNull();
   });
 
   it("does not match a path with partial .segments prefix", () => {
-    expect(matchSegmentPrefetchRsc("/my.segments-page")).toBe(false);
+    expect(extractSegmentPrefetchRsc("/my.segments-page")).toBeNull();
   });
 
   it("does not match a .segment path missing .rsc", () => {
-    expect(matchSegmentPrefetchRsc("/dashboard.segments/_tree")).toBe(false);
+    expect(extractSegmentPrefetchRsc("/dashboard.segments/_tree")).toBeNull();
   });
 
   it("does not match an empty path", () => {
-    expect(matchSegmentPrefetchRsc("")).toBe(false);
+    expect(extractSegmentPrefetchRsc("")).toBeNull();
   });
 
   it("matches a deeply nested segment path", () => {
     expect(
-      matchSegmentPrefetchRsc("/dashboard/settings.segments/tab/profile/__PAGE__.segment.rsc"),
-    ).toBe(true);
+      extractSegmentPrefetchRsc("/dashboard/settings.segments/tab/profile/__PAGE__.segment.rsc"),
+    ).not.toBeNull();
   });
 });
 

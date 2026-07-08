@@ -24,6 +24,24 @@ import {
 import { extractSegmentPrefetchRsc } from "./app-segment-prefetch-normalizer.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
+/**
+ * Matches an unresolved `..` segment bounded by a real or percent-encoded
+ * structural delimiter (`/`, `%2F`, `%5C`, `%23`, `%3F`, any case).
+ *
+ * - `%5C`: the strict decoder (normalizePathnameForRouteMatchStrict)
+ *   re-encodes both `\` and `%5C` to `%5C`, so `..%5C` survives as an opaque
+ *   token exactly like `..%2F` — and backslash acts as a path separator on
+ *   Windows and in some downstream path stacks.
+ * - `%23` / `%3F`: encoded `#` and `?` are not path separators, but a
+ *   downstream re-decode followed by URL re-parsing would truncate at the
+ *   fragment/query delimiter, leaving a trailing `..` in separator position
+ *   (e.g. `/foo/..%23bar` → `/foo/..#bar` → path `/foo/..`). No legitimate
+ *   path places `..` adjacent to these sequences, so rejecting is free.
+ *
+ * Used by the segment-prefetch traversal guard below.
+ */
+const TRAVERSAL_GUARD_PATTERN = /(^|\/|%2f|%5c|%23|%3f)\.\.($|\/|%2f|%5c|%23|%3f)/i;
+
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
 export type NormalizedRscRequest = {
@@ -135,15 +153,49 @@ export function normalizeRscRequest(
   let segmentPrefetchPath: string | null = null;
   const extracted = extractSegmentPrefetchRsc(pathname);
   if (extracted) {
+    // Security: neither the extracted originalPathname nor the segmentPath may
+    // reintroduce path traversal sequences. normalizePath (step 4) resolved
+    // literal .. segments against / separators, but percent-encoded forms like
+    // ..%2F and ..%5C survive the strict decode (step 3) as single opaque
+    // segments and can be decoded later. Both captures are checked:
+    // segmentPath is threaded through for Phase 2 segment-level response
+    // generation, so a .. sequence there is a latent traversal for any future
+    // consumer that walks a tree keyed on it. No legitimate client produces
+    // traversal sequences in either capture.
+    //
+    // Double-encoded ..%252F is intentionally NOT rejected: the strict decode
+    // turns %25 into a literal %, leaving the opaque text "%252F" that
+    // normalizePath cannot resolve to a parent directory. This is safe ONLY
+    // because no downstream layer performs a second percent-decode pass on
+    // pathname. If a re-decode is ever added, this guard must also reject
+    // ..%25 sequences.
+    //
+    // NUL bytes are rejected outright: the strict decoder converts %00 to a
+    // literal \0 (it only re-encodes delimiters), and both captures feed
+    // Phase 2 consumers (cache keys, segment tree walks) where an embedded
+    // NUL enables key truncation and header-injection style attacks. This
+    // mirrors the step 9 interception-context sanitizer, which strips NULs
+    // for the same reason. No legitimate client emits NUL in either capture.
+    if (
+      TRAVERSAL_GUARD_PATTERN.test(extracted.originalPathname) ||
+      TRAVERSAL_GUARD_PATTERN.test(extracted.segmentPath) ||
+      extracted.originalPathname.includes("\0") ||
+      extracted.segmentPath.includes("\0")
+    ) {
+      return badRequestResponse();
+    }
     segmentPrefetchPath = extracted.segmentPath;
-    pathname = extracted.originalPathname;
+    pathname = normalizePath(extracted.originalPathname);
   }
 
   // Steps 7-8: RSC detection and cleanPathname.
   // Segment-prefetch requests are always treated as RSC requests regardless
   // of whether the rewritten pathname ends with .rsc, because the original
   // URL had a .segment.rsc suffix.
-  const isRscRequest = pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1" || segmentPrefetchPath !== null;
+  const isRscRequest =
+    pathname.endsWith(".rsc") ||
+    request.headers.get(RSC_HEADER) === "1" ||
+    segmentPrefetchPath !== null;
   const cleanPathname = stripRscSuffix(pathname);
 
   // Step 9: Validate and sanitize X-Vinext-Interception-Context.
@@ -166,6 +218,7 @@ export function normalizeRscRequest(
   const renderMode = isRscRequest
     ? parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER))
     : APP_RSC_RENDER_MODE_NAVIGATION;
+  // Step 12: Parse ClientReuseManifest hints on canonical RSC payload requests.
   const clientReuseManifest = isRscRequest
     ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
     : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);

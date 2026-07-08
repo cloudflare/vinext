@@ -12,6 +12,15 @@
  *
  * Constants match Next.js: RSC_SEGMENTS_DIR_SUFFIX = '.segments',
  * RSC_SEGMENT_SUFFIX = '.segment.rsc'
+ *
+ * ⚠️  Regex greediness: the leading (.*) in group 1 is greedy, so it captures
+ * the longest prefix that still allows the rest of the pattern to match. In
+ * practice this means group 1 captures everything BEFORE the LAST occurrence
+ * of `.segments` in the pathname. Pathname content that happens to contain the
+ * string `.segments` (e.g. `/my.segments-page`) does not trigger a false match
+ * because the literal `.segments` must occur at the boundary between the page
+ * path and the segment tree path. This behavior is correct for all
+ * well-formed inputs.
  */
 
 const RSC_SEGMENTS_DIR_SUFFIX = ".segments";
@@ -44,14 +53,4 @@ export function extractSegmentPrefetchRsc(pathname: string): SegmentPrefetchResu
   const match = pathname.match(SEGMENT_PREFETCH_PATTERN);
   if (!match) return null;
   return { originalPathname: match[1], segmentPath: match[2] };
-}
-
-/**
- * Check if a pathname matches the segment-prefetch URL pattern.
- *
- * Prefer extractSegmentPrefetchRsc() when you need the extracted path info,
- * since it runs the regex once and returns null for non-matches.
- */
-export function matchSegmentPrefetchRsc(pathname: string): boolean {
-  return SEGMENT_PREFETCH_PATTERN.test(pathname);
 }

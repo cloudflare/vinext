@@ -760,6 +760,8 @@ export default createAppRscHandler({
     scriptNonce,
     searchParams,
     renderMode,
+    // Phase 2: will be used for per-segment response generation. Currently
+    // threaded through unused — see NormalizedRscRequest.segmentPrefetchPath.
     segmentPrefetchPath,
   }) {
     const PageComponent = route.page?.default;
