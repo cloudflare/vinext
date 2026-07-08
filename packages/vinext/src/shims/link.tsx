@@ -1138,8 +1138,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // shared/lib/router/router.ts around L987).
   const unresolvedHref = as ?? resolveHref(href);
   const rawResolvedHref =
-    typeof unresolvedHref === "string" &&
-    (unresolvedHref.startsWith("?") || unresolvedHref.startsWith("#"))
+    typeof unresolvedHref === "string" && unresolvedHref.startsWith("#")
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, as) : null;

@@ -1003,7 +1003,11 @@ describe("Pages Router Link onClick semantics", () => {
     // Stub Pages Router navigation at our own boundary instead of mocking
     // `next/router` itself — keeps the mock surface to vinext-owned modules
     // and avoids the dynamic-import-into-unknown-module timing pitfall.
-    const pagesRouterCalls: { href: string; replace: boolean }[] = [];
+    const pagesRouterCalls: {
+      href: string;
+      replace: boolean;
+      interpolateDynamicRoute?: boolean;
+    }[] = [];
     vi.doMock(
       "../packages/vinext/src/client/pages-router-link-navigation.js",
       async (importOriginal) => ({
@@ -1013,9 +1017,17 @@ describe("Pages Router Link onClick semantics", () => {
         navigatePagesRouterLinkWithFallback: async ({
           navigation,
         }: {
-          navigation: { href: string; replace: boolean };
+          navigation: {
+            href: string;
+            replace: boolean;
+            interpolateDynamicRoute?: boolean;
+          };
         }) => {
-          pagesRouterCalls.push({ href: navigation.href, replace: navigation.replace });
+          pagesRouterCalls.push({
+            href: navigation.href,
+            replace: navigation.replace,
+            ...(navigation.interpolateDynamicRoute ? { interpolateDynamicRoute: true } : undefined),
+          });
         },
       }),
     );
@@ -1147,6 +1159,22 @@ describe("Pages Router Link onClick semantics", () => {
 
     expect(result.pagesRouterCalls).toEqual([
       { href: "/fr/about?tab=details#newhash", replace: false },
+    ]);
+  });
+
+  it("preserves dynamic interpolation for query-only string hrefs on rewritten paths", async () => {
+    const result = await renderPagesRouterLinkAndClick({
+      href: "?params=1",
+      currentHref: "https://example.com/rewrite-navigation/0",
+      pagesRouterAsPath: "/rewrite-navigation/0",
+    });
+
+    expect(result.pagesRouterCalls).toEqual([
+      {
+        href: "/rewrite-navigation/0?params=1",
+        replace: false,
+        interpolateDynamicRoute: true,
+      },
     ]);
   });
 
