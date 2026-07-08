@@ -24,6 +24,8 @@ export type PagesReqResRequest = Readable & {
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
+  preview?: true;
+  previewData?: PagesPreviewData;
 };
 
 type PagesReqResHeaders = {
@@ -46,6 +48,7 @@ export type PagesReqResResponse = Writable & {
     data: object | string,
     options?: { maxAge?: number; path?: string },
   ) => PagesReqResResponse;
+  clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -190,6 +193,20 @@ function serializePreviewCookie(
     parts.push(`Max-Age=${Math.trunc(options.maxAge)}`);
   }
   return parts.join("; ");
+}
+
+function serializeClearedPreviewCookie(
+  name: "__prerender_bypass" | "__next_preview_data",
+  options: { path?: string } = {},
+): string {
+  return [
+    `${name}=`,
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    "HttpOnly",
+    `Path=${options.path ?? "/"}`,
+    process.env.NODE_ENV !== "development" ? "SameSite=None" : "SameSite=Lax",
+    ...(process.env.NODE_ENV !== "development" ? ["Secure"] : []),
+  ].join("; ");
 }
 
 function decodePagesPreviewPayload(payload: string): PagesPreviewData | false {
@@ -393,6 +410,15 @@ class PagesResponseStream extends Writable {
     return this as PagesReqResResponse;
   }
 
+  clearPreviewData(options: { path?: string } = {}): PagesReqResResponse {
+    this.setHeader("Set-Cookie", [
+      ...normalizeSetCookieHeader(this.getHeader("Set-Cookie")),
+      serializeClearedPreviewCookie("__prerender_bypass", options),
+      serializeClearedPreviewCookie("__next_preview_data", options),
+    ]);
+    return this as PagesReqResResponse;
+  }
+
   override _write(
     chunk: Uint8Array | string,
     encoding: BufferEncoding,
@@ -530,6 +556,11 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     body: options.body,
   }) as PagesReqResRequest;
   attachPagesRequestCookies(req);
+  const previewData = getPagesPreviewData(options.request);
+  if (previewData !== false) {
+    req.preview = true;
+    req.previewData = previewData;
+  }
 
   let resolveResponse!: (value: Response) => void;
   let rejectResponse!: (error: Error) => void;

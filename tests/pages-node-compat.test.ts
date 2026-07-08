@@ -73,4 +73,41 @@ describe("Pages Node compat response", () => {
     });
     expect(getPagesPreviewData(request)).toBe(false);
   });
+
+  it("exposes preview state on API requests and clears both cookies", async () => {
+    const enabled = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/enable"),
+      url: "/api/enable",
+    });
+    enabled.res.setPreviewData({ hello: "world" });
+    const enabledCookies = enabled.res.getHeader("Set-Cookie");
+    if (!Array.isArray(enabledCookies)) throw new Error("expected Set-Cookie array");
+    const cookieHeader = enabledCookies.map((value) => value.split(";", 1)[0]).join("; ");
+
+    const { req, res, responsePromise } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/read", {
+        headers: { cookie: cookieHeader },
+      }),
+      url: "/api/read",
+    });
+
+    expect(req.preview).toBe(true);
+    expect(req.previewData).toEqual({ hello: "world" });
+    res.clearPreviewData({ path: "/docs" }).end("ok");
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(
+        /^__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=\/docs;/,
+      ),
+      expect.stringMatching(
+        /^__next_preview_data=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=\/docs;/,
+      ),
+    ]);
+  });
 });

@@ -686,6 +686,7 @@ export async function resolvePagesPageData(
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
   let shouldPersistFallbackData = false;
+  const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
@@ -699,7 +700,7 @@ export async function resolvePagesPageData(
       matchesPagesStaticPath(pathEntry, options.params, routeParams, options.routeUrl),
     );
 
-    if (fallback === false && !isValidPath) {
+    if (fallback === false && !isValidPath && previewData === false) {
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
       // Next.js' behavior. HTML navigations still get the configured 404 page.
@@ -711,7 +712,13 @@ export async function resolvePagesPageData(
     // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
     const isBotRequest =
       !!options.userAgent && isBotUserAgent(options.userAgent, options.htmlLimitedBots);
-    if (fallback === true && !isValidPath && !options.isDataReq && !isBotRequest) {
+    if (
+      fallback === true &&
+      !isValidPath &&
+      !options.isDataReq &&
+      !isBotRequest &&
+      previewData === false
+    ) {
       isFallback = true;
     }
     shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
@@ -719,7 +726,6 @@ export async function resolvePagesPageData(
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
-  const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
   const previewContext =
     previewData === false
       ? {}

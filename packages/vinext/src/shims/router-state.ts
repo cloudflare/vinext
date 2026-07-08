@@ -29,6 +29,7 @@ export type SSRContext = {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
+  isPreview?: boolean;
   isFallback?: boolean;
 };
 

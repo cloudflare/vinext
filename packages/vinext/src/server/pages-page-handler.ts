@@ -446,11 +446,18 @@ export function createPagesPageHandler(
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
         const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
-        const pagesNextData = buildPagesReadinessNextData({
-          pageModule,
-          appComponent: AppComponent as { getInitialProps?: unknown } | null,
-          hasRewrites,
-        });
+        const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+          request.headers.get(PRERENDER_REVALIDATE_HEADER),
+        );
+        const previewData = getPagesPreviewData(request, { isOnDemandRevalidate });
+        const pagesNextData = {
+          ...buildPagesReadinessNextData({
+            pageModule,
+            appComponent: AppComponent as { getInitialProps?: unknown } | null,
+            hasRewrites,
+          }),
+          ...(previewData === false ? {} : { isPreview: true as const }),
+        };
         const navigationIsReady =
           typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
@@ -485,7 +492,10 @@ export function createPagesPageHandler(
           }
         }
 
-        applySSRContext({ nextData: pagesNextData });
+        applySSRContext({
+          isPreview: previewData !== false,
+          nextData: pagesNextData,
+        });
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
@@ -566,9 +576,6 @@ export function createPagesPageHandler(
             url: originalRequestPathAndSearch,
           });
 
-        const isOnDemandRevalidate = isOnDemandRevalidateRequest(
-          request.headers.get(PRERENDER_REVALIDATE_HEADER),
-        );
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -605,7 +612,7 @@ export function createPagesPageHandler(
           // external client from forcing synchronous regeneration via an
           // arbitrary header value (cache-stampede/DoS vector).
           isOnDemandRevalidate,
-          previewData: getPagesPreviewData(request, { isOnDemandRevalidate }),
+          previewData,
           pageModule,
           AppComponent,
           params,
