@@ -1220,8 +1220,8 @@ function getRouteQueryFromNextData(
   nextData: RouteQueryNextData | undefined,
   resolvedPath: string,
 ): Record<string, string | string[]> {
-  const routeQuery: Record<string, string | string[]> = {};
-  if (!nextData?.query || !nextData.page) return routeQuery;
+  const serializedQuery = copySerializedPagesQuery(nextData?.query);
+  if (!nextData?.query || !nextData.page) return serializedQuery;
 
   const currentRouteParams = extractRouteParamsFromPath(nextData.page, resolvedPath);
   const resolvedRouteParams = nextData.__vinext?.routeParams;
@@ -1230,28 +1230,21 @@ function getRouteQueryFromNextData(
     Object.keys(resolvedRouteParams).length > 0 &&
     JSON.stringify(resolvedRouteParams) !== JSON.stringify(currentRouteParams)
   ) {
+    const routeQuery = { ...serializedQuery };
     for (const [key, value] of Object.entries(resolvedRouteParams)) {
       routeQuery[key] = Array.isArray(value) ? [...value] : value;
     }
     return routeQuery;
   }
 
-  if (currentRouteParams === null) {
-    for (const [key, value] of Object.entries(nextData.query)) {
-      if (typeof value === "string") {
-        routeQuery[key] = value;
-      } else if (Array.isArray(value)) {
-        routeQuery[key] = [...value];
-      }
-    }
-    return routeQuery;
-  }
+  if (currentRouteParams === null) return serializedQuery;
 
   const routeParamNames = extractRouteParamNames(nextData.page);
-  if (routeParamNames.length === 0) return routeQuery;
+  if (routeParamNames.length === 0) return serializedQuery;
 
-  if (currentRouteParams) return currentRouteParams;
+  if (currentRouteParams) return { ...serializedQuery, ...currentRouteParams };
 
+  const routeQuery = { ...serializedQuery };
   for (const key of routeParamNames) {
     const value = nextData.query[key];
     if (typeof value === "string") {
@@ -2960,6 +2953,20 @@ async function performNavigation(
     assertSafeNavigationUrl(String(as));
   }
 
+  // Next.js keeps the currently rendered error component during its internal
+  // hydration query update. Re-fetching the visible URL here can only return
+  // another 404, which would schedule a second hard navigation immediately
+  // after the browser has already loaded the custom error document.
+  const currentPage = window.__NEXT_DATA__?.page;
+  if (options?._h === 1 && (currentPage === "/404" || currentPage === "/_error")) {
+    routerRuntimeState.initialRouteParamsAreAuthoritative = false;
+    markPagesRouterLiveState();
+    markPagesRouterReady();
+    onStateUpdate?.();
+    dispatchNavigateEvent();
+    return true;
+  }
+
   const navigationLocale = resolveTransitionLocale(options?.locale);
   const replaceInheritedLocale =
     as === undefined &&
@@ -3374,15 +3381,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
       setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
-    const readyTimer = isPagesRouterReady()
-      ? window.setTimeout(() => {
-          markPagesRouterLiveState();
-          setState(getRouterSnapshot());
-          notifyNextNavigationPagesContext();
-        }, 0)
-      : undefined;
     return () => {
-      if (readyTimer !== undefined) window.clearTimeout(readyTimer);
       window.removeEventListener("vinext:navigate", onNavigate);
     };
   }, []);

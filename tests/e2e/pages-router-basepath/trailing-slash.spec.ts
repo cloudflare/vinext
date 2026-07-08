@@ -7,6 +7,22 @@ import { waitForHydration } from "../helpers";
 const BASE = "http://localhost:4190";
 
 test.describe("basePath + trailingSlash", () => {
+  test("does not add basePath again during hydration query updates", async ({ page }) => {
+    await page.goto(`${BASE}/docs/?hello=world#section`);
+    await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });
+    await waitForHydration(page);
+
+    await expect(page).toHaveURL(`${BASE}/docs/?hello=world#section`);
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          asPath: (window as any).next.router.asPath,
+          query: (window as any).next.router.query,
+        })),
+      )
+      .toEqual({ asPath: "/?hello=world#section", query: { hello: "world" } });
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });

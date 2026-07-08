@@ -15297,6 +15297,54 @@ describe("Pages Router concurrent navigation", () => {
     return { promise, resolve, reject };
   }
 
+  it("keeps the current error component during hydration query updates", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, pushState, replaceState, render } = createNavWindow();
+    win.location.pathname = "/to/some/404/path";
+    win.location.search = "?from=visible";
+    win.location.href = "http://localhost/to/some/404/path?from=visible";
+    (win as any).__NEXT_HYDRATED = true;
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/404",
+      query: {},
+      autoExport: true,
+      __vinext: { initialMiddlewareMatched: true },
+    } as any;
+    (globalThis as any).window = win;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as any;
+    vi.resetModules();
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      pushState.mockClear();
+      replaceState.mockClear();
+
+      await expect(
+        Router.replace("/to/some/404/path?from=visible", undefined, {
+          _h: 1,
+          scroll: false,
+        }),
+      ).resolves.toBe(true);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+      expect(win.location.pathname).toBe("/to/some/404/path");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+      expect(Router.query).toEqual({ from: "visible" });
+      expect(Router.isReady).toBe(true);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   function treeContainsReactType(node: unknown, type: unknown): boolean {
     if (!node || typeof node !== "object") return false;
     const el = node as { type?: unknown; props?: { children?: unknown } };

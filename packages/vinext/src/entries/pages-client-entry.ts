@@ -308,7 +308,10 @@ async function hydrate() {
     !initialRouterIsReady ||
     shouldUpdateForMiddleware
   ) {
-    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const currentPathname = Router.basePath && window.location.pathname.startsWith(Router.basePath)
+      ? window.location.pathname.slice(Router.basePath.length) || "/"
+      : window.location.pathname;
+    const currentUrl = currentPathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
     const liveSearchQuery = Object.create(null);
     for (const [key, value] of new URLSearchParams(window.location.search)) {

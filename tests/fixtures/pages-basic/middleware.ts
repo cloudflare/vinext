@@ -61,6 +61,17 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(target);
   }
 
+  // A middleware rewrite to a dynamic GSP route must preserve rewrite query
+  // values in the hydrated router while the route params remain authoritative.
+  if (url.pathname === "/mw-rewrite-gsp-query") {
+    const target = request.nextUrl.clone();
+    target.pathname = "/nav-compat-gsp/foobar";
+    target.searchParams.set("some", "middleware");
+    target.searchParams.set("hello", "config");
+    target.searchParams.set("slug", "wrong");
+    return NextResponse.rewrite(target);
+  }
+
   // Rewrite target carries its own query — middleware overlays its key onto
   // the existing nextUrl search before rewriting. The resulting query is the
   // exact final URL (not an auto-merge): keys explicitly set by middleware

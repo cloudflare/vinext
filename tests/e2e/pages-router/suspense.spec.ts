@@ -23,4 +23,15 @@ test.describe("Suspense and React.lazy (Pages Router)", () => {
       "Hello from lazy component",
     );
   });
+
+  test("does not replace streamed server content with fallback during hydration", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts
+    await page.goto(`${BASE}/streaming-hydration`);
+
+    expect(await page.locator("body").textContent()).toContain("next_streaming_data");
+    expect(await page.locator("body").textContent()).not.toContain("next_streaming_fallback");
+  });
 });
