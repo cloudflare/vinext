@@ -59,6 +59,7 @@ function isAppDirSuite(suite) {
 const APP_ROUTER_NON_APP_DIR_SUITES = ["test/e2e/next-form/default/next-form-prefetch.test.ts"];
 
 const CUSTOM_DEPLOY_ADAPTER_EXCLUDES = [
+  "test/e2e/app-dir/instant-navigation-testing-api/instant-navigation-testing-api.test.ts",
   "test/e2e/app-dir/segment-cache/memory-pressure/segment-cache-memory-pressure.test.ts",
 ];
 
