@@ -5,6 +5,13 @@ import {
 } from "../packages/vinext/src/server/pages-node-compat.js";
 import type { NextApiHandler, NextApiRequest, NextApiResponse, PreviewData } from "next";
 
+declare module "next" {
+  // oxlint-disable-next-line typescript/consistent-type-definitions
+  interface NextApiRequest {
+    userId?: string;
+  }
+}
+
 type NextApiRequestPreviewFields = Pick<NextApiRequest, "preview" | "draftMode" | "previewData">;
 
 const emptyNextApiRequestPreviewFields: NextApiRequestPreviewFields = {};
@@ -46,7 +53,10 @@ function exerciseNextApiResponsePreviewTypes(res: NextApiResponse): Promise<void
 const nextApiHandler: NextApiHandler<{ ok: boolean }> = (req, res) => {
   req.query.optional = undefined;
   req.cookies.optional = undefined;
+  req.userId = "user-123";
+  const userId: string | undefined = req.userId;
   res.status(200).json({ ok: true });
+  void userId;
 };
 
 void exerciseNextApiResponsePreviewTypes;

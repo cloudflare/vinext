@@ -10,7 +10,8 @@ declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
   type Env = { [key: string]: string | undefined };
   export type PreviewData = string | false | object | undefined;
-  export type NextApiRequest = {
+  // oxlint-disable-next-line typescript/consistent-type-definitions
+  export interface NextApiRequest extends IncomingMessage {
     query: Partial<{ [key: string]: string | string[] }>;
     cookies: Partial<{ [key: string]: string }>;
     body: any;
@@ -18,7 +19,7 @@ declare module "next" {
     draftMode?: boolean;
     preview?: boolean;
     previewData?: PreviewData;
-  } & IncomingMessage;
+  }
   export type NextApiResponse<Data = any> = ServerResponse & {
     send: (body: Data) => void;
     json: (body: Data) => void;
