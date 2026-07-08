@@ -983,9 +983,11 @@ describe("Link onNavigate prop", () => {
 
 describe("Pages Router Link onClick semantics", () => {
   async function renderPagesRouterLinkAndClick(args: {
-    href: string;
+    href: string | { pathname?: string; query?: Record<string, string>; hash?: string };
     props?: Record<string, unknown>;
     currentHref?: string;
+    pagesRouterAsPath?: string;
+    locale?: string;
   }) {
     vi.resetModules();
 
@@ -1002,15 +1004,21 @@ describe("Pages Router Link onClick semantics", () => {
     // `next/router` itself — keeps the mock surface to vinext-owned modules
     // and avoids the dynamic-import-into-unknown-module timing pitfall.
     const pagesRouterCalls: { href: string; replace: boolean }[] = [];
-    vi.doMock("../packages/vinext/src/client/pages-router-link-navigation.js", () => ({
-      navigatePagesRouterLinkWithFallback: async ({
-        navigation,
-      }: {
-        navigation: { href: string; replace: boolean };
-      }) => {
-        pagesRouterCalls.push({ href: navigation.href, replace: navigation.replace });
-      },
-    }));
+    vi.doMock(
+      "../packages/vinext/src/client/pages-router-link-navigation.js",
+      async (importOriginal) => ({
+        ...(await importOriginal<
+          typeof import("../packages/vinext/src/client/pages-router-link-navigation.js")
+        >()),
+        navigatePagesRouterLinkWithFallback: async ({
+          navigation,
+        }: {
+          navigation: { href: string; replace: boolean };
+        }) => {
+          pagesRouterCalls.push({ href: navigation.href, replace: navigation.replace });
+        },
+      }),
+    );
     // The handler still tries `await import("next/router")` before calling
     // navigatePagesRouterLink. Stub it so the import resolves cleanly (the
     // returned Router is never used because we mocked the navigation boundary).
@@ -1020,7 +1028,7 @@ describe("Pages Router Link onClick semantics", () => {
     const replaceState = vi.fn();
     const dispatchEvent = vi.fn();
     const currentUrl = new URL(args.currentHref ?? "https://example.com/current");
-    vi.stubGlobal("window", {
+    const windowValue: Record<string, unknown> = {
       // No vinext.navigationRuntime — that selects the Pages Router branch
       // inside Link's click handler.
       addEventListener: vi.fn(),
@@ -1035,7 +1043,18 @@ describe("Pages Router Link onClick semantics", () => {
       },
       scrollTo: vi.fn(),
       __NEXT_DATA__: { props: {} },
-    });
+    };
+    if (args.pagesRouterAsPath !== undefined) {
+      windowValue.next = {
+        router: { asPath: args.pagesRouterAsPath, reload() {} },
+      };
+    }
+    if (args.locale !== undefined) {
+      windowValue.__VINEXT_LOCALE__ = args.locale;
+      windowValue.__VINEXT_LOCALES__ = ["en", "fr"];
+      windowValue.__VINEXT_DEFAULT_LOCALE__ = "en";
+    }
+    vi.stubGlobal("window", windowValue);
 
     const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
     const React = await vi.importActual<typeof import("react")>("react");
@@ -1095,6 +1114,23 @@ describe("Pages Router Link onClick semantics", () => {
     expect(result.clickEvent.defaultPrevented).toBe(true);
     // ...and the Pages Router navigation is actually scheduled.
     expect(result.pagesRouterCalls).toEqual([{ href: "/", replace: false }]);
+  });
+
+  it("resolves hash-only URL objects against the current locale-free asPath", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const result = await renderPagesRouterLinkAndClick({
+      href: { hash: "#newhash" },
+      props: { locale: "fr" },
+      currentHref: "https://example.com/fr/about?tab=details#hash",
+      pagesRouterAsPath: "/about?tab=details",
+      locale: "fr",
+    });
+
+    expect(result.pagesRouterCalls).toEqual([
+      { href: "/fr/about?tab=details#newhash", replace: false },
+    ]);
   });
 
   it("preserves a basePath page when navigating to a hash link", async () => {

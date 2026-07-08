@@ -186,7 +186,9 @@ function resolveHref(href: LinkProps["href"]): string {
 
 function resolvePagesQueryOnlyHref(href: string): string {
   if (!HAS_PAGES_ROUTER) return href;
-  if (!href.startsWith("?") || typeof window === "undefined") return href;
+  if ((!href.startsWith("?") && !href.startsWith("#")) || typeof window === "undefined") {
+    return href;
+  }
 
   const pagesRouter = window.next?.appDir === true ? undefined : window.next?.router;
   const visibleHref =
@@ -1134,7 +1136,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Mirrors Next.js' Router.change(): `getRouteRegex` + `interpolateAs`
   // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
   // shared/lib/router/router.ts around L987).
-  const rawResolvedHref = as ?? resolveHref(href);
+  const isHashOnlyUrlObject =
+    typeof href !== "string" &&
+    href.pathname === undefined &&
+    href.query === undefined &&
+    typeof href.hash === "string" &&
+    href.hash.length > 0;
+  const unresolvedHref = as ?? resolveHref(href);
+  const rawResolvedHref =
+    isHashOnlyUrlObject && typeof unresolvedHref === "string"
+      ? resolvePagesQueryOnlyHref(unresolvedHref)
+      : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, as) : null;
   const routeHrefRaw = concreteRouteHref ?? (typeof href === "string" ? href : resolveHref(href));
 

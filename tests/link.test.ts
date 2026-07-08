@@ -524,6 +524,20 @@ describe("Link resolveHref", () => {
       }),
     ).toBe("/rewrite-navigation/0?");
   });
+
+  it("resolves hash-only Pages Links against locale-free router.asPath", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    expect(
+      resolvePagesRouterQueryOnlyHref("#newhash", {
+        asPath: "/about?tab=details",
+        basePath: "",
+        fallbackHref: "http://localhost/fr/about?tab=details#hash",
+        locales: ["en", "fr"],
+      }),
+    ).toBe("/about?tab=details#newhash");
+  });
 });
 
 // ─── isExternalUrl ──────────────────────────────────────────────────────

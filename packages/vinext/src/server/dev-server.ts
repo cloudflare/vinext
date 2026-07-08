@@ -732,7 +732,11 @@ export function createSSRHandler(
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
     const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq ? gsspResolvedUrl : originalUrl;
+    const requestAsPath = isDataReq
+      ? gsspResolvedUrl
+      : i18nConfig
+        ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
+        : originalUrl;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched

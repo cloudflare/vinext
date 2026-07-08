@@ -1113,16 +1113,19 @@ describe("i18n routing (Pages Router)", () => {
     // About page — uses getServerSideProps to expose locale
     await fsp.writeFile(
       path.join(i18nTmpDir, "pages", "about.tsx"),
-      `export function getServerSideProps({ locale, locales, defaultLocale }) {
+      `import { useRouter } from "next/router";
+export function getServerSideProps({ locale, locales, defaultLocale }) {
   return { props: { locale: locale || null, locales: locales || [], defaultLocale: defaultLocale || null } };
 }
 export default function About({ locale, locales, defaultLocale }) {
+  const router = useRouter();
   return (
     <div>
       <h1>About</h1>
       <p id="locale">{locale}</p>
       <p id="locales">{locales.join(",")}</p>
       <p id="defaultLocale">{defaultLocale}</p>
+      <p id="asPath">{router.asPath}</p>
     </div>
   );
 }`,
@@ -1215,6 +1218,16 @@ export default function About({ locale, locales, defaultLocale }) {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/<p id="locale">.*fr.*<\/p>/);
+  });
+
+  it("strips the locale prefix from router.asPath in dev SSR", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const res = await fetch(`${i18nBaseUrl}/fr/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="asPath">.*\/about\?hello=world.*<\/p>/);
   });
 
   it("passes correct locale to getServerSideProps for /de/about", async () => {
