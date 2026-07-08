@@ -600,7 +600,11 @@ export function createPagesPageHandler(
         });
         const isrIdentityUrl = isolateMiddlewareIsr ? routerAsPath : routeUrl;
         const requestIsrCacheKey = isolateMiddlewareIsr
-          ? (router: string, _pathname: string) => pageIsrCacheKey(router, isrIdentityUrl)
+          ? (router: string, _pathname: string) =>
+              pageIsrCacheKey(
+                `${router}:middleware`,
+                `${routerAsPath}::route=${encodeURIComponent(routeUrl)}`,
+              )
           : pageIsrCacheKey;
         const pageDataResult = await resolvePagesPageData({
           isDataReq,

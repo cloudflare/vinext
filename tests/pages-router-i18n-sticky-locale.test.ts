@@ -576,6 +576,41 @@ describe("Pages Router initial-entry history state", () => {
     }
   });
 
+  it("strips basePath and locale from the hydrated router snapshot", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, replaceState } = createNavWindow();
+    win.location.pathname = "/docs/fr/about";
+    win.location.search = "?draft=1";
+    win.location.href = "http://localhost/docs/fr/about?draft=1";
+    win.__NEXT_DATA__.page = "/about";
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    try {
+      await installRuntime(win);
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      expect(Router.asPath).toBe("/about?draft=1");
+      expect(replaceState.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ as: "/about?draft=1", url: "/about?draft=1" }),
+      );
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("install does not overwrite pre-existing history state", async () => {
     const previousWindow = (globalThis as any).window;
     const { win, replaceState } = createNavWindow();

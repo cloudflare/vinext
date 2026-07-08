@@ -1380,6 +1380,7 @@ describe("Pages Router entry template", () => {
       );
       expect(code).toContain("import Router, {");
       expect(code).toContain("getPagesNavigationIsReadyFromSerializedState,");
+      expect(code).toContain("getPagesRouterVisiblePath,");
       expect(code).toContain("wrapWithRouterContext,");
       expect(code).toContain("_initializePagesRouterReadyFromNextData,");
       expect(code).toContain('} from "next/router";');
@@ -1394,7 +1395,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("nextData.__vinext?.initialMiddlewareMatched === true");
       expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain(
-        "for (const [key, value] of new URLSearchParams(window.location.search))",
+        "const currentPathname = getPagesRouterVisiblePath(window.location.pathname);",
       );
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("fallbackRoute || routeUrl || currentUrl,");

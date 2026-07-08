@@ -1819,7 +1819,7 @@ export function createSSRHandler(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { getPagesNavigationIsReadyFromSerializedState, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
+import Router, { getPagesNavigationIsReadyFromSerializedState, getPagesRouterVisiblePath, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -1885,9 +1885,7 @@ async function hydrate() {
   );
   const shouldUpdateForMiddleware = nextData.__vinext?.initialMiddlewareMatched === true && (nextData.autoExport === true || nextData.gsp === true);
   if (nextData.isFallback === true || !initialRouterIsReady || shouldUpdateForMiddleware) {
-    const currentPathname = Router.basePath && window.location.pathname.startsWith(Router.basePath)
-      ? window.location.pathname.slice(Router.basePath.length) || "/"
-      : window.location.pathname;
+    const currentPathname = getPagesRouterVisiblePath(window.location.pathname);
     const currentUrl = currentPathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
     const liveSearchQuery = Object.create(null);

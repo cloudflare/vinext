@@ -141,6 +141,7 @@ import { hydrateRoot } from "react-dom/client";
 import Router, {
   getPagesNavigationIsReadyFromSerializedState,
   getPagesRouterLiveSearchQuery,
+  getPagesRouterVisiblePath,
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
 } from "next/router";
@@ -304,9 +305,7 @@ async function hydrate() {
     !initialRouterIsReady ||
     shouldUpdateForMiddleware
   ) {
-    const currentPathname = Router.basePath && window.location.pathname.startsWith(Router.basePath)
-      ? window.location.pathname.slice(Router.basePath.length) || "/"
-      : window.location.pathname;
+    const currentPathname = getPagesRouterVisiblePath(window.location.pathname);
     const currentUrl = currentPathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
     const fallbackRoute = nextData.isFallback === true

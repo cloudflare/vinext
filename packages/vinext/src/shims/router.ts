@@ -739,6 +739,19 @@ function removeNavigationLocalePrefix(url: string): string {
   }
 }
 
+function removeBrowserLocalePrefix(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+
+  const locale = getLocalePathPrefix(pathname, locales);
+  if (!locale) return pathname;
+  return pathname.slice(locale.length + 1) || "/";
+}
+
+export function getPagesRouterVisiblePath(pathname: string): string {
+  return removeBrowserLocalePrefix(stripBasePath(pathname, __basePath));
+}
+
 function isDefaultLocaleRootNavigation(url: string, locale: string | undefined): boolean {
   if (typeof window === "undefined") return false;
   if (!locale || locale !== window.__VINEXT_DEFAULT_LOCALE__) return false;
@@ -806,7 +819,7 @@ export function isHashOnlyChange(href: string): boolean {
  * navigates back.
  */
 function buildInitialRouterState(): VinextHistoryState {
-  const appPath = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  const appPath = getPagesRouterVisiblePath(window.location.pathname) + window.location.search;
   const options: { locale?: string; shallow?: boolean } = {};
   if (window.__VINEXT_LOCALE__ !== undefined) options.locale = window.__VINEXT_LOCALE__;
   return {
@@ -1090,7 +1103,7 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   // carry __NEXT_DATA__, so treating that alone as a Pages signal would let
   // compat fallback state shadow App Router navigation snapshots.
   if (!isPagesRouterDocumentActive()) return null;
-  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const resolvedPath = getPagesRouterVisiblePath(window.location.pathname);
   const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
   const pattern = resolvePagesRoutePatternForPath(nextData?.page, resolvedPath);
   if (!pattern) return null;
@@ -1291,7 +1304,7 @@ function getPathnameAndQuery(): {
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
-  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const resolvedPath = getPagesRouterVisiblePath(window.location.pathname);
   // In Next.js, router.pathname is the route pattern (e.g., "/posts/[id]"),
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
@@ -1323,11 +1336,15 @@ function getCurrentHistoryAsPath(): string | null {
       toBrowserNavigationHref(state.as, window.location.href, __basePath),
       window.location.href,
     );
-    if (stateUrl.pathname !== browserUrl.pathname || stateUrl.search !== browserUrl.search) {
+    if (
+      getPagesRouterVisiblePath(stateUrl.pathname) !==
+        getPagesRouterVisiblePath(browserUrl.pathname) ||
+      stateUrl.search !== browserUrl.search
+    ) {
       return null;
     }
-    const stateAs = stripHash(state.as);
-    const visibleAs = `${stripBasePath(window.location.pathname, __basePath)}${window.location.search}`;
+    const stateAs = getPagesRouterVisiblePath(stripHash(state.as));
+    const visibleAs = `${getPagesRouterVisiblePath(window.location.pathname)}${window.location.search}`;
     return `${stateAs || visibleAs}${window.location.hash}`;
   } catch {
     return null;

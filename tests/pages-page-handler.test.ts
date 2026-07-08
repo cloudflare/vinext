@@ -491,12 +491,37 @@ describe("createPagesPageHandler — _next/data", () => {
 
       expect(cache.writes.map(({ key }) => key)).toEqual(
         expect.arrayContaining([
-          expect.stringContaining("/visible-a?draft=1"),
-          expect.stringContaining("/visible-b?draft=2"),
+          expect.stringMatching(/pages:middleware:.*visible-a.*route=/),
+          expect.stringMatching(/pages:middleware:.*visible-b.*route=/),
         ]),
       );
       expect(cache.writes.map(({ tags }) => tags)).toEqual(
         expect.arrayContaining([["_N_T_/visible-a"], ["_N_T_/visible-b"]]),
+      );
+
+      const sameSourceKeys: string[] = [];
+      for (const [routeUrl, initialMiddlewareMatched] of [
+        ["/posts/001", false],
+        ["/posts/001", true],
+        ["/posts/002", true],
+      ] as const) {
+        const before = cache.writes.length;
+        const response = await handler(makeRequest("/conditional"), routeUrl, null, null, {
+          asPath: "/conditional",
+          initialMiddlewareMatched,
+        });
+        await response.text();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        sameSourceKeys.push(...cache.writes.slice(before).map(({ key }) => key));
+      }
+
+      expect(new Set(sameSourceKeys).size).toBe(3);
+      expect(sameSourceKeys).toEqual(
+        expect.arrayContaining([
+          expect.not.stringContaining("pages:middleware"),
+          expect.stringMatching(/pages:middleware:.*route=.*posts%2F001/),
+          expect.stringMatching(/pages:middleware:.*route=.*posts%2F002/),
+        ]),
       );
     } finally {
       setDataCacheHandler(new MemoryCacheHandler());
