@@ -3507,7 +3507,7 @@ function getTrackedPagesRouterAsPath(): string {
 
 function handlePagesRouterPopState(e: PopStateEvent): void {
   const browserUrl = window.location.pathname + window.location.search;
-  const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  const appUrl = getPagesRouterVisiblePath(window.location.pathname) + window.location.search;
 
   const state = e.state as unknown;
   const wasFirst = routerRuntimeState.isFirstPopStateEvent;

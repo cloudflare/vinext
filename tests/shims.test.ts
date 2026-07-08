@@ -16505,8 +16505,8 @@ describe("Pages Router concurrent navigation", () => {
     const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
 
     process.env.__NEXT_ROUTER_BASEPATH = "/docs";
-    win.location.pathname = "/docs/about";
-    win.location.href = "http://localhost/docs/about";
+    win.location.pathname = "/docs/id/about";
+    win.location.href = "http://localhost/docs/id/about";
     Object.assign(win, {
       __VINEXT_LOCALE__: "en",
       __VINEXT_LOCALES__: ["en", "id"],
@@ -16549,8 +16549,8 @@ describe("Pages Router concurrent navigation", () => {
       const popstateHandler = listeners.get("popstate");
       expect(popstateHandler).toBeDefined();
 
-      win.location.pathname = "/docs/about";
-      win.location.href = "http://localhost/docs/about";
+      win.location.pathname = "/docs/id/about";
+      win.location.href = "http://localhost/docs/id/about";
       popstateHandler!({ state: null });
       await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -16562,9 +16562,9 @@ describe("Pages Router concurrent navigation", () => {
           __N: true,
         }),
         "",
-        "/docs/about",
+        "/docs/id/about",
       );
-      expect(win.location.href).toBe("http://localhost/docs/about");
+      expect(win.location.href).toBe("http://localhost/docs/id/about");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
       vi.resetModules();
