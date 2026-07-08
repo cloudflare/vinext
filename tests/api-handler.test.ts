@@ -197,6 +197,98 @@ describe("handleApiRoute", () => {
     });
   });
 
+  describe("preview mode", () => {
+    it("sets, reads, and clears preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies.map((value) => value.split(";", 1)[0]).join("; ");
+
+      const observed: Record<string, unknown> = {};
+      const clearResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        clearResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({ preview: true, previewData: { draft: true } });
+      expect(clearResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
+        expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
+      ]);
+    });
+
+    it("rejects and clears tampered preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies
+        .map((value) => value.split(";", 1)[0])
+        .join("; ")
+        .replace(
+          /(__next_preview_data=)([^;])([^;]*)/,
+          (_match, prefix: string, first: string, rest: string) =>
+            `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+        );
+
+      const observed: Record<string, unknown> = {};
+      const response = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.previewData = req.previewData;
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        response,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({ preview: undefined, previewData: false });
+      expect(response._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+        expect.stringMatching(/^__next_preview_data=; Expires=/),
+      ]);
+    });
+  });
+
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {

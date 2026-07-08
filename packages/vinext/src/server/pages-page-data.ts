@@ -7,7 +7,7 @@ import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
-import type { PagesPreviewData } from "./pages-node-compat.js";
+import type { PagesPreviewData } from "./pages-preview.js";
 import {
   buildPagesNextDataScript,
   etagMatches,
@@ -742,6 +742,7 @@ export async function resolvePagesPageData(
   }
 
   let renderProps: PagesRenderProps = { pageProps };
+  if (previewData !== false) renderProps.__N_PREVIEW = true;
 
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);

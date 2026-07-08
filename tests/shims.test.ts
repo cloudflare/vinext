@@ -18178,6 +18178,51 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("updates and clears isPreview from Pages data response markers", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/preview": vi.fn(async () => makePageModule("preview")),
+        "/published": vi.fn(async () => makePageModule("published")),
+      },
+      sspPatterns: ["/preview", "/published"],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const href =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return new Response(
+        JSON.stringify({
+          ...(href.includes("/preview.json") ? { __N_PREVIEW: true } : {}),
+          pageProps: {},
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/preview");
+      expect(Router.isPreview).toBe(true);
+      expect(win.__NEXT_DATA__.isPreview).toBe(true);
+
+      await Router.push("/published");
+      expect(Router.isPreview).toBe(false);
+      expect(win.__NEXT_DATA__.isPreview).toBe(false);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("does not persist middleware-prefetched SSR data between prefetch and navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalDocument = (globalThis as any).document;

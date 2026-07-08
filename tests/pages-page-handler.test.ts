@@ -11,6 +11,10 @@ import {
   shouldEmitPagesClientTraceMetadata,
 } from "../packages/vinext/src/server/pages-page-handler.js";
 import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/server/pages-page-handler.js";
+import {
+  PAGES_PREVIEW_CACHE_CONTROL,
+  setPagesPreviewData,
+} from "../packages/vinext/src/server/pages-preview.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -18,6 +22,24 @@ import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/serve
 
 function makeRequest(pathname = "/", method = "GET"): Request {
   return new Request(`http://localhost${pathname}`, { method });
+}
+
+function makePreviewCookieHeader(data: object | string): string {
+  const headers = new Map<string, string | string[]>();
+  setPagesPreviewData(
+    {
+      getHeader(name) {
+        return headers.get(name.toLowerCase());
+      },
+      setHeader(name, value) {
+        headers.set(name.toLowerCase(), value as string | string[]);
+      },
+    },
+    data,
+  );
+  const cookies = headers.get("set-cookie");
+  if (!Array.isArray(cookies)) throw new Error("expected preview cookies");
+  return cookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
 }
 
 function makePageModule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -246,6 +268,65 @@ describe("createPagesPageHandler — _next/data", () => {
       | { asPath?: string }
       | undefined;
     expect(context?.asPath).toBe("/about?x=1");
+  });
+
+  it("marks preview data and forces private no-store caching", async () => {
+    const routeModule = makePageModule({
+      getStaticProps: async ({ previewData }: { previewData: unknown }) => ({
+        props: { previewData },
+      }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/about", routeModule)] }),
+    );
+    const dataUrl = "/_next/data/test-build-id/about.json";
+    const request = new Request(`http://localhost${dataUrl}`, {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, dataUrl, null, null, null);
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(await response.json()).toMatchObject({
+      __N_PREVIEW: true,
+      pageProps: { previewData: { draft: true } },
+    });
+  });
+});
+
+describe("createPagesPageHandler — preview responses", () => {
+  it("forces private no-store caching on preview HTML", async () => {
+    const handler = createPagesPageHandler(makeOpts());
+    const request = new Request("http://localhost/", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+  });
+
+  it("clears both cookies when preview data is tampered", async () => {
+    const handler = createPagesPageHandler(makeOpts());
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/", { headers: { cookie } }),
+      "/",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
   });
 });
 

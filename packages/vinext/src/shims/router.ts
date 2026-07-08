@@ -1951,6 +1951,7 @@ function buildPagesNavigationNextData(
     query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
+    isPreview: props.__N_PREVIEW === true,
     ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
 }
@@ -2148,7 +2149,9 @@ async function navigateClientData(
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
       const dataFetch =
-        initialTarget.dataKind === "static" ? fetchStaticPagesData : dedupedPagesDataFetch;
+        initialTarget.dataKind === "static" && Router.isPreview !== true
+          ? fetchStaticPagesData
+          : dedupedPagesDataFetch;
       res = await dataFetch(initialTarget.dataHref, {
         headers,
         signal: controller.signal,
@@ -2223,6 +2226,9 @@ async function navigateClientData(
   const rawPageProps = props.pageProps;
   const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
   if (initialTarget.dataKind === "server") {
+    evictPagesDataCache(initialTarget.dataHref);
+  }
+  if (props.__N_PREVIEW === true || Router.isPreview === true) {
     evictPagesDataCache(initialTarget.dataHref);
   }
 

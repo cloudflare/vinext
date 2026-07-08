@@ -29,7 +29,12 @@ import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 import { hasBasePath } from "../utils/base-path.js";
-import { attachPagesRequestCookies } from "./pages-node-compat.js";
+import {
+  attachPagesPreviewApi,
+  attachPagesRequestCookies,
+  type PagesReqResRequest,
+  type PagesReqResResponse,
+} from "./pages-node-compat.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -38,6 +43,8 @@ type NextApiRequest = {
   query: Record<string, string | string[]>;
   body: unknown;
   cookies: Record<string, string>;
+  preview?: true;
+  previewData: object | string | false;
 } & IncomingMessage;
 
 /**
@@ -49,6 +56,11 @@ type NextApiResponse = {
   send(data: unknown): void;
   redirect(statusOrUrl: number | string, url?: string): void;
   revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void>;
+  setPreviewData(
+    data: object | string,
+    options?: { maxAge?: number; path?: string },
+  ): NextApiResponse;
+  clearPreviewData(options?: { path?: string }): NextApiResponse;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {
@@ -286,7 +298,7 @@ function enhanceApiObjects(
   }) as NextApiRequest;
   attachPagesRequestCookies(apiReq);
 
-  const apiRes: NextApiResponse = Object.assign(res, {
+  const apiRes = Object.assign(res, {
     status(this: NextApiResponse, code: number) {
       this.statusCode = code;
       return this;
@@ -334,7 +346,11 @@ function enhanceApiObjects(
     async revalidate(this: NextApiResponse, urlPath: string, opts?: RevalidateOptions) {
       await performOnDemandRevalidate(req, urlPath, opts);
     },
-  });
+  }) as NextApiResponse;
+  attachPagesPreviewApi(
+    apiReq as unknown as PagesReqResRequest,
+    apiRes as unknown as PagesReqResResponse,
+  );
 
   return { apiReq, apiRes };
 }

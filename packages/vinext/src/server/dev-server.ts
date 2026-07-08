@@ -741,6 +741,9 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    const requestPreviewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
+    });
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
@@ -795,11 +798,14 @@ export function createSSRHandler(
             // _app exists but failed to load
           }
         }
-        const pagesNextData = buildPagesReadinessNextData({
-          pageModule,
-          appComponent: AppComponent,
-          hasRewrites,
-        });
+        const pagesNextData = {
+          ...buildPagesReadinessNextData({
+            pageModule,
+            appComponent: AppComponent,
+            hasRewrites,
+          }),
+          ...(requestPreviewData === false ? {} : { isPreview: true as const }),
+        };
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -819,6 +825,7 @@ export function createSSRHandler(
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
             domainLocales,
+            isPreview: requestPreviewData !== false,
           });
         }
         // Mark end of compile phase: everything from here is rendering.
@@ -866,6 +873,7 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let renderProps: Record<string, unknown> = { pageProps };
+        if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
         let isrRevalidateSeconds: number | null = null;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
@@ -1620,6 +1628,9 @@ export function createSSRHandler(
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
           };
+          if (requestPreviewData !== false) {
+            dataHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
+          }
           if ((statusCode ?? 200) === 200) {
             const matchedPathname = `${locale ? `/${locale}` : ""}${patternToNextFormat(route.pattern)}`;
             dataHeaders["x-nextjs-matched-path"] = matchedPathname;
@@ -1890,7 +1901,9 @@ hydrate();
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (isrRevalidateSeconds) {
+        if (requestPreviewData !== false) {
+          extraHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
+        } else if (isrRevalidateSeconds) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
