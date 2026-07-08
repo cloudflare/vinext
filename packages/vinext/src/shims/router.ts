@@ -3386,6 +3386,24 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const readyTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      const becameReady = markPagesRouterReady();
+      if (isPagesRouterReady()) {
+        setState((snapshot) => (snapshot.isReady ? snapshot : getRouterSnapshot()));
+      }
+      if (becameReady) {
+        notifyNextNavigationPagesContext();
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(readyTimer);
+    };
+  }, []);
+
   const router = useMemo(
     (): NextRouter =>
       buildRouterValue(pathname, query, asPath, isReady, {
@@ -3495,7 +3513,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (window.__VINEXT_LOCALE__ !== undefined) options.locale = window.__VINEXT_LOCALE__;
     updateHistory(
       "replace",
-      appUrl + window.location.hash,
+      browserUrl + window.location.hash,
       { url: routeUrl, as: appUrl, options },
       true,
     );

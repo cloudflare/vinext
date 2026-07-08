@@ -16462,14 +16462,16 @@ describe("Pages Router concurrent navigation", () => {
 
   it("null-state popstate repairs history without fetching", async () => {
     const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
     const originalFetch = globalThis.fetch;
     const originalCustomEvent = globalThis.CustomEvent;
     const listeners = new Map<string, (event: any) => void>();
     const { win } = createNavWindow();
     const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
 
-    win.location.pathname = "/about";
-    win.location.href = "http://localhost/about";
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    win.location.pathname = "/docs/about";
+    win.location.href = "http://localhost/docs/about";
     Object.assign(win, {
       __VINEXT_LOCALE__: "en",
       __VINEXT_LOCALES__: ["en", "id"],
@@ -16512,16 +16514,27 @@ describe("Pages Router concurrent navigation", () => {
       const popstateHandler = listeners.get("popstate");
       expect(popstateHandler).toBeDefined();
 
-      win.location.pathname = "/";
-      win.location.href = "http://localhost/";
+      win.location.pathname = "/docs/about";
+      win.location.href = "http://localhost/docs/about";
       popstateHandler!({ state: null });
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(fetch).not.toHaveBeenCalled();
-      expect(win.location.href).toBe("http://localhost/");
+      expect(win.history.replaceState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: "/",
+          as: "/about",
+          __N: true,
+        }),
+        "",
+        "/docs/about",
+      );
+      expect(win.location.href).toBe("http://localhost/docs/about");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
       vi.resetModules();
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {

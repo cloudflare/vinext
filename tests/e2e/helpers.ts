@@ -19,10 +19,10 @@ export function isAppRouterServerActionRequestForPath(request: Request, pathname
 
 /**
  * Wait for Pages Router hydration to complete.
- * Checks for window.__VINEXT_ROOT__.
+ * Waits for the hydration commit marker, not merely hydrateRoot creation.
  */
 export async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(() => Boolean(window.__VINEXT_ROOT__));
+  await page.waitForFunction(() => window.__NEXT_HYDRATED === true);
 }
 
 /**
