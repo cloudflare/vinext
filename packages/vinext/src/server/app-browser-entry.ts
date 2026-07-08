@@ -177,6 +177,7 @@ import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "./headers.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
@@ -1668,9 +1669,12 @@ function bootstrapHydration(
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
         : null;
-    const performHardNavigationForScrollIntent = (targetHref: string): boolean => {
+    const performHardNavigationForScrollIntent = (
+      targetHref: string,
+      mode?: "assign" | "replace",
+    ): boolean => {
       consumeAppRouterScrollIntent(scrollIntent ?? null);
-      const didNavigate = browserNavigationController.performHardNavigation(targetHref);
+      const didNavigate = browserNavigationController.performHardNavigation(targetHref, mode);
       if (!didNavigate) {
         clearAppNavigationFailureTarget(targetHref);
       }
@@ -2046,6 +2050,11 @@ function bootstrapHydration(
 
         const navContentType = navResponse.headers.get("content-type") ?? "";
         const streamedRedirectTarget = navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER);
+        const streamedRedirectTypeHeader = navResponse.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER);
+        const streamedRedirectType =
+          streamedRedirectTypeHeader === "push" || streamedRedirectTypeHeader === "replace"
+            ? streamedRedirectTypeHeader
+            : null;
         if (blockDangerousStreamedRscRedirect(navResponse, streamedRedirectTarget)) {
           return;
         }
@@ -2063,6 +2072,7 @@ function bootstrapHydration(
           responseUrl: navResponseUrl ?? navResponse.url,
           source: "live",
           streamedRedirectTarget,
+          streamedRedirectType,
         });
         if (liveFetchDecision.kind === "hardNavigate") {
           if (liveFetchDecision.discardBody) {
@@ -2078,7 +2088,10 @@ function bootstrapHydration(
               "[vinext] RSC streamed redirect resolved to the current URL — aborting navigation to prevent infinite loop.",
             );
           }
-          performHardNavigationForScrollIntent(liveFetchDecision.url);
+          performHardNavigationForScrollIntent(
+            liveFetchDecision.url,
+            liveFetchDecision.hardNavigationMode,
+          );
           return;
         }
 

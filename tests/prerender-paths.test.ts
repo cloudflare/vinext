@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 
 const closeMock = vi.hoisted(() => vi.fn((callback: () => void) => callback()));
 const startProdServerMock = vi.hoisted(() =>
@@ -89,7 +90,7 @@ describe("prerender path manifest", () => {
     expect(startProdServerMock).toHaveBeenCalledOnce();
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        rscEntryPath: path.join(tmpDir, "dist/server/index.js"),
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/server/index.js")),
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
@@ -150,7 +151,7 @@ describe("prerender path manifest", () => {
 
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        outDir: path.join(tmpDir, "dist"),
+        outDir: toSlash(path.join(tmpDir, "dist")),
         rscEntryPath: rscBundlePath,
       }),
     );
@@ -180,8 +181,8 @@ describe("prerender path manifest", () => {
 
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        outDir: path.join(tmpDir, "dist"),
-        rscEntryPath: path.join(tmpDir, "dist/custom-rsc/index.js"),
+        outDir: toSlash(path.join(tmpDir, "dist")),
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/custom-rsc/index.js")),
       }),
     );
     expect(fs.existsSync(path.join(tmpDir, "dist/custom-rsc/vinext-prerender-paths.json"))).toBe(

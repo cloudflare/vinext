@@ -90,6 +90,9 @@ export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manife
  */
 export const VINEXT_RSC_REDIRECT_HEADER = "X-Vinext-Rsc-Redirect";
 
+/** History update mode encoded by a streamed RSC redirect. */
+export const VINEXT_RSC_REDIRECT_TYPE_HEADER = "X-Vinext-Rsc-Redirect-Type";
+
 // ---------------------------------------------------------------------------
 // RSC protocol headers
 // ---------------------------------------------------------------------------

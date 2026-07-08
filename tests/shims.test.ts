@@ -15,7 +15,8 @@ import type {
   CacheHandlerValue,
   IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { isWindows, normalizePathSeparators } from "../packages/vinext/src/utils/path.ts";
+import { toSlash } from "pathslash";
+import { isWindows } from "../packages/vinext/src/utils/path.ts";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -878,6 +879,23 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("redirect() round-trips an empty URL through the shared digest parser", async () => {
+    const { redirect } = await import("../packages/vinext/src/shims/navigation.js");
+    const { parseNextRedirectDigest } =
+      await import("../packages/vinext/src/server/next-error-digest.js");
+
+    try {
+      redirect("");
+      expect.unreachable("should have thrown");
+    } catch (error: any) {
+      expect(parseNextRedirectDigest(error.digest)).toEqual({
+        status: 307,
+        type: null,
+        url: "",
+      });
+    }
+  });
+
   it("permanentRedirect() accepts an optional type parameter", async () => {
     const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
     try {
@@ -900,6 +918,23 @@ describe("next/navigation shim", () => {
     } catch (e: any) {
       const parts = e.digest.split(";");
       expect(parts[1]).toBe("replace");
+    }
+  });
+
+  it("permanentRedirect() round-trips an empty URL through the shared digest parser", async () => {
+    const { permanentRedirect } = await import("../packages/vinext/src/shims/navigation.js");
+    const { parseNextRedirectDigest } =
+      await import("../packages/vinext/src/server/next-error-digest.js");
+
+    try {
+      permanentRedirect("");
+      expect.unreachable("should have thrown");
+    } catch (error: any) {
+      expect(parseNextRedirectDigest(error.digest)).toEqual({
+        status: 308,
+        type: "replace",
+        url: "",
+      });
     }
   });
 
@@ -15259,7 +15294,7 @@ describe("Pages Router concurrent navigation", () => {
   function fixtureModuleUrl(relativePath: string): string {
     const absolutePath = path.resolve(import.meta.dirname, relativePath);
     if (!isWindows) return absolutePath;
-    return "/@fs/" + normalizePathSeparators(absolutePath);
+    return "/@fs/" + toSlash(absolutePath);
   }
 
   function buildNavHtmlWithVinext(
@@ -23844,10 +23879,10 @@ describe("shim alias map .js variants", () => {
       handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
     };
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const clientShim = normalizePathSeparators(
+    const clientShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx"),
     );
-    const reactServerShim = normalizePathSeparators(
+    const reactServerShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.react-server.ts"),
     );
 
@@ -23881,7 +23916,7 @@ describe("shim alias map .js variants", () => {
     };
     const id = "vinext/server/app-rsc-handler";
     // resolveId returns a forward-slash id (Vite-canonical) on every platform.
-    const expected = normalizePathSeparators(
+    const expected = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-rsc-handler.ts"),
     );
 
@@ -23920,7 +23955,7 @@ describe("@vercel/og compatibility resolution", () => {
   it("routes direct @vercel/og app imports through the Next-compatible ImageResponse shim", () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const expectedShim = normalizePathSeparators(
+    const expectedShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
     );
 
@@ -23968,13 +24003,13 @@ describe("vinext shim package-subpath resolution", () => {
   it("strips JavaScript extensions and Vite queries from package subpaths", () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
-    const expectedShim = normalizePathSeparators(
+    const expectedShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.ts"),
     );
-    const expectedReactServerShim = normalizePathSeparators(
+    const expectedReactServerShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.react-server.ts"),
     );
-    const expectedOgShim = normalizePathSeparators(
+    const expectedOgShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
     );
 

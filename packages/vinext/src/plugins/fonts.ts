@@ -26,7 +26,7 @@
 
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
 import { lastSignificantChar } from "../utils/has-trailing-comma.js";
@@ -499,7 +499,7 @@ async function fetchAndCacheFont(
     // dev, or asset for build", which was never true: the CSS is
     // embedded as a JavaScript string literal and Vite's asset pipeline
     // does not scan string literals. Do not resurrect that assumption.
-    css = css.split(fontUrl).join(filePath.replaceAll("\\", "/"));
+    css = css.split(fontUrl).join(filePath);
   }
 
   // Cache the rewritten CSS

@@ -1,4 +1,5 @@
 import type { UserConfig } from "vite";
+import { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -70,7 +71,7 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const normalizedId = id.replaceAll("\\", "/");
+  const normalizedId = toSlash(id);
   const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
   const rest = normalizedId.slice(nmIdx + "node_modules/".length);
@@ -126,9 +127,12 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       return undefined;
     }
 
-    if (id.startsWith(shimsDir)) {
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {
-        const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
         const extensionIndex = relativeId.lastIndexOf(".");
         const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
         if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;

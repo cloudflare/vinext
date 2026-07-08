@@ -12,9 +12,8 @@
  * per-request path (no extraHeaders) does zero object allocation for headers.
  */
 import fsp from "node:fs/promises";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 /** Content-type lookup for static assets. Shared with prod-server.ts. */
 export const CONTENT_TYPES: Record<string, string> = {
@@ -278,7 +277,7 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
   // `_next/static/media/name.<sha256-8>.<ext>`. Restrict this alternate form
   // to that managed directory so arbitrary static files such as
   // `_next/static/config.deadbeef.json` cannot receive a stale hash ETag.
-  const normalizedPath = normalizePathSeparators(relativePath);
+  const normalizedPath = toSlash(relativePath);
   const managedMediaSegment = `${ASSET_PREFIX_URL_DIR}/media/`;
   const isManagedMedia =
     normalizedPath.startsWith(managedMediaSegment) ||
@@ -351,7 +350,7 @@ async function* walkFilesWithStats(
     const stats = await Promise.all(batch.map((f) => fsp.stat(f)));
     for (let j = 0; j < batch.length; j++) {
       yield {
-        relativePath: normalizePathSeparators(path.relative(base, batch[j])),
+        relativePath: path.relative(base, batch[j]),
         fullPath: batch[j],
         stat: { size: stats[j].size, mtimeMs: stats[j].mtimeMs },
       };

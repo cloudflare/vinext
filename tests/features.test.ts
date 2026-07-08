@@ -25,7 +25,7 @@ import {
 } from "./helpers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -3893,7 +3893,7 @@ describe("instrumentation.ts support", () => {
     // Create a temp directory with an instrumentation.ts file. Production
     // always passes a forward-slash root (the config hook normalizes it), so
     // mirror that — findInstrumentationFile returns forward-slash paths.
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
@@ -3913,7 +3913,7 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),

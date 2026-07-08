@@ -1,4 +1,4 @@
-import React, { type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
@@ -49,6 +49,7 @@ import {
   type AppPageSpecialError,
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
+import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
@@ -1116,35 +1117,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   });
 }
 
-/**
- * Builds an RSC flight payload that encodes a redirect as a React error chunk.
- * We render a tiny element that immediately throws an `Error` whose `digest`
- * is the canonical `NEXT_REDIRECT;...` string. `renderToReadableStream`'s
- * `onError` returns that digest, react-server-dom-webpack serializes the
- * error into the stream, and the client's `RedirectErrorBoundary` decodes it
- * via `getURLFromRedirectError` / `getRedirectTypeFromError`.
- *
- * The thrown error's digest matches Next.js's well-known router error format,
- * so neither vinext's RSC error handler nor Next.js's reporter logs it as a
- * "real" server error. Mirrors `app-render.tsx generateDynamicFlightRenderResult`
- * where a redirect thrown during RSC rendering propagates through
- * `renderToFlightStream`'s `onError` callback into the flight payload.
- */
-function buildRscRedirectFlightStream<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  digest: string,
-): ReadableStream<Uint8Array> {
-  const throwingElement = React.createElement(function NextRedirectFlightThrower() {
-    const err = new Error("NEXT_REDIRECT") as Error & { digest: string };
-    err.digest = digest;
-    throw err;
-  });
-
-  return options.renderToReadableStream(throwingElement, {
-    onError: () => digest,
-  });
-}
-
 async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
@@ -1153,7 +1125,10 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream(options, rscOptions.digest),
+      buildRscRedirectFlightStream({
+        renderToReadableStream: options.renderToReadableStream,
+        digest: rscOptions.digest,
+      }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
     serveStreamingMetadata: shouldServeStreamingMetadata(
@@ -1196,7 +1171,10 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream(options, rscOptions.digest),
+      buildRscRedirectFlightStream({
+        renderToReadableStream: options.renderToReadableStream,
+        digest: rscOptions.digest,
+      }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
     serveStreamingMetadata: shouldServeStreamingMetadata(

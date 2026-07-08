@@ -36,6 +36,7 @@
     "knip": "catalog:",
     "msw": "catalog:",
     "next": "catalog:",
+    "pathslash": "catalog:",
     "playwright": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

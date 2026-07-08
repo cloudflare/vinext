@@ -26,9 +26,15 @@ import {
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
 import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
+import { toSlash } from "pathslash";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+
+/** Expected canonical (forward-slash) path for router-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
+}
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -484,11 +490,11 @@ describe("App Router route sorting (additional)", () => {
 
       expect(membersRoute).toBeDefined();
       expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
-        path.join("@team", "(a)", "members"),
+        canonical(path.join("@team", "(a)", "members")),
       );
       expect(
         membersRoute!.parallelSlots.find((slot) => slot.name === "analytics")!.pagePath,
-      ).toContain(path.join("@analytics", "(b)", "members"));
+      ).toContain(canonical(path.join("@analytics", "(b)", "members")));
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
@@ -578,15 +584,15 @@ describe("App Router route sorting (additional)", () => {
       expect(settingsRoute).toBeDefined();
       const teamSlots = settingsRoute!.parallelSlots.filter((slot) => slot.name === "team");
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect(teamSlots).toHaveLength(2);
       expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
-        path.join("settings", "@team", "page.tsx"),
+        canonical(path.join("settings", "@team", "page.tsx")),
       );
       expect(slotsByOwner.get("dashboard/@team")!.pagePath).toContain(
-        path.join("@team", "settings", "page.tsx"),
+        canonical(path.join("@team", "settings", "page.tsx")),
       );
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
@@ -644,12 +650,12 @@ describe("App Router route sorting (additional)", () => {
 
       const teamSlots = memberRoute!.parallelSlots.filter((slot) => slot.name === "team");
       const slotsByOwner = new Map(
-        teamSlots.map((slot) => [path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"), slot]),
+        teamSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect(teamSlots).toHaveLength(2);
       expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
-        path.join("settings", "@team", "member", "page.tsx"),
+        canonical(path.join("settings", "@team", "member", "page.tsx")),
       );
       expect(slotsByOwner.get("dashboard/@team")!.pagePath).toBeNull();
     } finally {

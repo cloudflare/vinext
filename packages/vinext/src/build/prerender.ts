@@ -16,7 +16,7 @@
  *   'export'   — SSR routes are build errors; ISR treated as static (no revalidate)
  */
 
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import os from "node:os";
 import type { Server as HttpServer } from "node:http";

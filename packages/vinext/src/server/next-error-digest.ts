@@ -2,9 +2,10 @@
  * Helpers for parsing Next.js error `digest` strings shared across the App
  * Router execution paths (server actions, page renders, route handlers).
  *
- * Next.js encodes special control flow as thrown errors carrying a `digest`
- * field with one of these formats:
- *  - `NEXT_REDIRECT;<type>;<encodedUrl>;<status>` — `redirect()` / `permanentRedirect()`
+ * Special control flow is encoded as thrown errors carrying a `digest` field.
+ * Redirect digests may appear as vinext's encoded three-part form or Next.js's
+ * raw, semicolon-terminated form:
+ *  - `NEXT_REDIRECT;<type>;<url>[;<status>[;]]` — `redirect()` / `permanentRedirect()`
  *  - `NEXT_NOT_FOUND` — `notFound()`
  *  - `NEXT_HTTP_ERROR_FALLBACK;<status>` — `forbidden()` / `unauthorized()` / etc.
  *
@@ -13,11 +14,9 @@
  * these helpers only handle the parsing — callers shape the result.
  */
 
-type NextRedirectDigest = {
-  status: number;
-  type: string | null;
-  url: string;
-};
+import { parseRedirectDigest, type RedirectDigest } from "../utils/redirect-digest.js";
+
+type NextRedirectDigest = RedirectDigest;
 
 type NextHttpErrorDigest = {
   status: number;
@@ -36,30 +35,15 @@ export function getNextErrorDigest(error: unknown): string | null {
 }
 
 /**
- * Parses a `NEXT_REDIRECT;<type>;<encodedUrl>;<status>` digest. Returns null
- * when the digest is not a redirect digest or the encoded URL segment is
- * missing. The `url` is decoded with `decodeURIComponent`; the `status`
- * defaults to 307 when omitted; an omitted `type` is left as null so the
- * caller can apply the correct context-sensitive default.
+ * Parses redirect digests from vinext's encoded three-part form and Next.js's
+ * raw, semicolon-terminated form. Returns null when the digest is not a
+ * redirect digest. Vinext's encoded URL is decoded with `decodeURIComponent`;
+ * Next.js's canonical raw URL is preserved verbatim. The `status` defaults to
+ * 307 when omitted; an omitted `type` is left as null so the caller can apply
+ * the correct context-sensitive default.
  */
 export function parseNextRedirectDigest(digest: string): NextRedirectDigest | null {
-  if (!digest.startsWith("NEXT_REDIRECT;")) {
-    return null;
-  }
-
-  const parts = digest.split(";");
-  const encodedUrl = parts[2];
-  if (!encodedUrl) {
-    return null;
-  }
-
-  const type = parts[1];
-
-  return {
-    status: parts[3] ? parseInt(parts[3], 10) : 307,
-    type: type || null,
-    url: decodeURIComponent(encodedUrl),
-  };
+  return parseRedirectDigest(digest);
 }
 
 /**
