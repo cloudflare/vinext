@@ -3,7 +3,7 @@ import {
   createPagesReqRes,
   getPagesPreviewData,
 } from "../packages/vinext/src/server/pages-node-compat.js";
-import type { NextApiRequest, NextApiResponse, PreviewData } from "next";
+import type { NextApiHandler, NextApiRequest, NextApiResponse, PreviewData } from "next";
 
 type NextApiRequestPreviewFields = Pick<NextApiRequest, "preview" | "draftMode" | "previewData">;
 
@@ -12,6 +12,12 @@ const emptyNextApiRequestPreviewFields: NextApiRequestPreviewFields = {};
 const previewDataValues: PreviewData[] = ["preview", false, {}, undefined];
 
 function exerciseNextApiRequestPreviewTypes(req: NextApiRequest): NextApiRequestPreviewFields {
+  req.query.missing = undefined;
+  req.cookies.missing = undefined;
+  req.body = undefined;
+  req.body = { nested: true };
+  req.env.EXAMPLE = undefined;
+  req.env.EXAMPLE = "value";
   req.preview = false;
   req.preview = undefined;
   req.draftMode = false;
@@ -27,16 +33,27 @@ function exerciseNextApiRequestPreviewTypes(req: NextApiRequest): NextApiRequest
 }
 
 function exerciseNextApiResponsePreviewTypes(res: NextApiResponse): Promise<void> {
+  const temporaryRedirectResponse: NextApiResponse = res.redirect("/next");
+  const permanentRedirectResponse: NextApiResponse = res.redirect(308, "/next");
   res.setPreviewData({ draft: true }, { maxAge: 60, path: "/preview" });
   res.clearPreviewData({ path: "/preview" });
   res.setDraftMode({ enable: true });
+  void temporaryRedirectResponse;
+  void permanentRedirectResponse;
   return res.revalidate("/preview", { unstable_onlyGenerated: true });
 }
+
+const nextApiHandler: NextApiHandler<{ ok: boolean }> = (req, res) => {
+  req.query.optional = undefined;
+  req.cookies.optional = undefined;
+  res.status(200).json({ ok: true });
+};
 
 void exerciseNextApiResponsePreviewTypes;
 void exerciseNextApiRequestPreviewTypes;
 void emptyNextApiRequestPreviewFields;
 void previewDataValues;
+void nextApiHandler;
 
 describe("Pages Node compat response", () => {
   it("setPreviewData appends both preview cookies while preserving existing cookies", () => {

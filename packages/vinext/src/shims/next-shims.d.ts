@@ -8,28 +8,36 @@
 
 declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
+  type Env = { [key: string]: string | undefined };
   export type PreviewData = string | false | object | undefined;
   export type NextApiRequest = {
-    query: Record<string, string | string[]>;
-    body: unknown;
-    cookies: Record<string, string>;
-    preview?: boolean;
+    query: Partial<{ [key: string]: string | string[] }>;
+    cookies: Partial<{ [key: string]: string }>;
+    body: any;
+    env: Env;
     draftMode?: boolean;
+    preview?: boolean;
     previewData?: PreviewData;
   } & IncomingMessage;
-  export type NextApiResponse<T = unknown> = {
-    status(code: number): NextApiResponse<T>;
-    json(data: T): void;
-    send(data: T): void;
-    redirect(statusOrUrl: number | string, url?: string): void;
-    setDraftMode(options: { enable: boolean }): NextApiResponse<T>;
+  export type NextApiResponse<Data = any> = ServerResponse & {
+    send: (body: Data) => void;
+    json: (body: Data) => void;
+    status: (statusCode: number) => NextApiResponse<Data>;
+    redirect(url: string): NextApiResponse<Data>;
+    redirect(status: number, url: string): NextApiResponse<Data>;
+    setDraftMode: (options: { enable: boolean }) => NextApiResponse<Data>;
     setPreviewData(
       data: object | string,
       options?: { maxAge?: number; path?: string },
-    ): NextApiResponse<T>;
-    clearPreviewData(options?: { path?: string }): NextApiResponse<T>;
+    ): NextApiResponse<Data>;
+    clearPreviewData(options?: { path?: string }): NextApiResponse<Data>;
     revalidate(urlPath: string, opts?: { unstable_onlyGenerated?: boolean }): Promise<void>;
-  } & ServerResponse;
+  };
+  export type NextApiHandler<T = any> = (
+    req: NextApiRequest,
+    res: NextApiResponse<T>,
+    // oxlint-disable-next-line typescript/no-redundant-type-constituents
+  ) => unknown | Promise<unknown>;
 }
 
 declare module "next/router" {
