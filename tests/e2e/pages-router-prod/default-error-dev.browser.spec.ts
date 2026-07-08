@@ -43,6 +43,7 @@ export default function App({ Component, pageProps, customEnvelope, router }) {
       data-hydrated={hydrated}
       data-has-router={Boolean(router)}
       data-router-pathname={router?.pathname}
+      data-router-ready={String(router?.isReady)}
       data-context-pathname={contextRouter.pathname}
       data-context-as-path={contextRouter.asPath}
     >
@@ -135,6 +136,7 @@ test.describe("Pages Router framework error page development fallback", () => {
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-envelope", "preserved");
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-has-router", "true");
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-router-pathname", "/_error");
+    await expect(page.getByTestId("custom-app")).toHaveAttribute("data-router-ready", "true");
     await expect(page.getByTestId("custom-app")).toHaveAttribute(
       "data-context-pathname",
       "/_error",
@@ -145,6 +147,7 @@ test.describe("Pages Router framework error page development fallback", () => {
     );
     await waitForHydration(page);
     await expect(page.getByTestId("custom-app")).toHaveAttribute("data-hydrated", "true");
+    await expect(page.getByTestId("custom-app")).toHaveAttribute("data-router-ready", "true");
 
     const nextData = await page.evaluate(() => window.__NEXT_DATA__);
     expect(nextData.props).toEqual({ customEnvelope: "preserved" });

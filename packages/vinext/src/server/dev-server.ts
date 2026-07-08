@@ -2279,7 +2279,8 @@ ${
     ? `const appModule = await import("${appModuleSource}");
 const AppComponent = appModule.default;
 window.__VINEXT_APP__ = AppComponent;
-element = React.createElement(AppComponent, { ...props, Component: PageComponent, pageProps: props.pageProps, router: Router });`
+const initialRouter = { ...Router, isReady: true };
+element = React.createElement(AppComponent, { ...props, Component: PageComponent, pageProps: props.pageProps, router: initialRouter });`
     : `element = React.createElement(PageComponent, props.pageProps ?? {});`
 }
 let resolveHydrationCommit;
