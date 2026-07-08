@@ -424,9 +424,23 @@ declare module "next/legacy/image" {
 }
 
 declare module "next/error" {
+  import type { IncomingMessage, ServerResponse } from "node:http";
+  import type { ParsedUrlQuery } from "node:querystring";
   import * as React from "react";
   import { ComponentType, ReactNode } from "react";
-  import type { NextPageContext } from "next";
+
+  type ErrorPageContext = {
+    err?: (Error & { statusCode?: number }) | null;
+    req?: IncomingMessage;
+    res?: ServerResponse;
+    pathname: string;
+    query: ParsedUrlQuery;
+    asPath?: string;
+    locale?: string;
+    locales?: readonly string[];
+    defaultLocale?: string;
+    AppTree: ComponentType<{ pageProps: unknown; [name: string]: unknown }>;
+  };
 
   export type ErrorProps = {
     statusCode: number;
@@ -437,8 +451,8 @@ declare module "next/error" {
 
   export default class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
     static displayName: string;
-    static getInitialProps: (context: NextPageContext) => ErrorProps | Promise<ErrorProps>;
-    static origGetInitialProps: (context: NextPageContext) => ErrorProps | Promise<ErrorProps>;
+    static getInitialProps: (context: ErrorPageContext) => ErrorProps | Promise<ErrorProps>;
+    static origGetInitialProps: (context: ErrorPageContext) => ErrorProps | Promise<ErrorProps>;
     render(): React.ReactNode;
   }
 
