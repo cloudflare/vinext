@@ -21,7 +21,7 @@ import { createPagesReqRes, getPagesPreviewData } from "./pages-node-compat.js";
 import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import { getPagesPathCacheTags, renderPagesPageResponse } from "./pages-page-response.js";
 import { buildPagesReadinessNextData, getPagesInitialRouterQuery } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -47,6 +47,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
   isOnDemandRevalidateRequest,
   shouldIsolatePagesMiddlewareIsr,
+  invalidateIsrTags,
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
@@ -599,6 +600,9 @@ export function createPagesPageHandler(
           initialMiddlewareMatchCanVaryByRequest: options?.initialMiddlewareMatchCanVaryByRequest,
         });
         const isrIdentityUrl = isolateMiddlewareIsr ? routerAsPath : routeUrl;
+        if (isOnDemandRevalidate && isolateMiddlewareIsr) {
+          await invalidateIsrTags(getPagesPathCacheTags(isrIdentityUrl));
+        }
         const requestIsrCacheKey = isolateMiddlewareIsr
           ? (router: string, _pathname: string) =>
               pageIsrCacheKey(

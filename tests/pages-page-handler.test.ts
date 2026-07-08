@@ -22,8 +22,8 @@ import type { CreatePagesPageHandlerOptions } from "../packages/vinext/src/serve
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeRequest(pathname = "/", method = "GET"): Request {
-  return new Request(`http://localhost${pathname}`, { method });
+function makeRequest(pathname = "/", method = "GET", headers?: HeadersInit): Request {
+  return new Request(`http://localhost${pathname}`, { method, headers });
 }
 
 function makePageModule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -455,6 +455,7 @@ describe("createPagesPageHandler — _next/data", () => {
   it("isolates origin ISR entries by visible rewrite source and tags", async () => {
     class RecordingCacheHandler extends MemoryCacheHandler {
       writes: Array<{ key: string; tags: unknown }> = [];
+      revalidatedTags: string[][] = [];
 
       override async set(
         key: string,
@@ -463,6 +464,11 @@ describe("createPagesPageHandler — _next/data", () => {
       ) {
         this.writes.push({ key, tags: ctx?.tags });
         await super.set(key, data, ctx);
+      }
+
+      override async revalidateTag(tags: string | string[]) {
+        this.revalidatedTags.push(Array.isArray(tags) ? tags : [tags]);
+        await super.revalidateTag(tags);
       }
     }
 
@@ -523,7 +529,24 @@ describe("createPagesPageHandler — _next/data", () => {
           expect.stringMatching(/pages:middleware:.*route=.*posts%2F002/),
         ]),
       );
+
+      process.env.__VINEXT_REVALIDATE_SECRET = "test-secret";
+      const revalidated = await handler(
+        makeRequest("/conditional", "HEAD", {
+          "x-prerender-revalidate": "test-secret",
+        }),
+        "/posts/001",
+        null,
+        null,
+        {
+          asPath: "/conditional",
+          initialMiddlewareMatchCanVaryByRequest: true,
+        },
+      );
+      await revalidated.text();
+      expect(cache.revalidatedTags).toContainEqual(["_N_T_/conditional"]);
     } finally {
+      delete process.env.__VINEXT_REVALIDATE_SECRET;
       setDataCacheHandler(new MemoryCacheHandler());
     }
   });

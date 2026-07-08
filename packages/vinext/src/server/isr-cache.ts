@@ -227,6 +227,11 @@ export async function isrSetToOrigin(
   });
 }
 
+export async function invalidateIsrTags(tags: string[]): Promise<void> {
+  await getDataCacheHandler().revalidateTag(tags);
+  await getCdnCacheAdapter().revalidateTag(tags);
+}
+
 export async function isrSetPrerenderedAppPage(
   key: string,
   data: CachedAppPageValue,
