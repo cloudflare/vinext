@@ -45,6 +45,7 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
   isDataReq?: boolean;
+  initialMiddlewareMatched?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
@@ -78,6 +79,7 @@ export async function fetchWorkerFilesystemRoute(
 
 export type MiddlewareResult = {
   continue: boolean;
+  matched?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -311,6 +313,7 @@ export async function runPagesRequest(
   let resolvedUrl = originalResolvedUrl;
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
+  let initialMiddlewareMatched = false;
   const serveFilesystemRoute = async (
     requestPathname: string,
     phase: FilesystemRoutePhase,
@@ -328,6 +331,7 @@ export async function runPagesRequest(
 
   if (typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    initialMiddlewareMatched = result.matched === true;
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -664,10 +668,13 @@ export async function runPagesRequest(
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
-    const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
-      ? { renderErrorPageOnMiss: false }
-      : isDataReq
-        ? { isDataReq: true }
+    const initialRenderOptions: PagesRenderOptions | undefined =
+      shouldDeferErrorPageOnMiss || isDataReq || initialMiddlewareMatched
+        ? {
+            ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
+            ...(isDataReq ? { isDataReq: true } : {}),
+            ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
+          }
         : undefined;
 
     // Convert staged middleware headers to a Web Headers object for renderPage.
@@ -712,7 +719,12 @@ export async function runPagesRequest(
         renderPageMatch = deps.matchPageRoute
           ? deps.matchPageRoute(resolvedPathname, request)
           : null;
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(
+          request,
+          resolvedUrl,
+          initialMiddlewareMatched ? { initialMiddlewareMatched: true } : undefined,
+          stagedHeaders,
+        );
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
@@ -720,7 +732,12 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(
+        request,
+        resolvedUrl,
+        initialMiddlewareMatched ? { initialMiddlewareMatched: true } : undefined,
+        stagedHeaders,
+      );
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
@@ -806,7 +823,13 @@ export async function runPagesRequest(
   return {
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    renderOptions:
+      isDataReq || initialMiddlewareMatched
+        ? {
+            ...(isDataReq ? { isDataReq: true } : {}),
+            ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
+          }
+        : undefined,
     stagedHeaders: middlewareHeaders,
     requestHeaders: request.headers,
     middlewareStatus,

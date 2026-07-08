@@ -20,6 +20,7 @@ import {
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getDataCacheHandler } from "vinext/shims/cache-handler";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -169,6 +170,15 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   };
 }
 
+export async function isrGetFromOrigin(key: string): Promise<ISRCacheEntry | null> {
+  const result = await getDataCacheHandler().get(key);
+  if (!result || !result.value || result.cacheState === "expired") return null;
+  return {
+    value: result,
+    isStale: result.cacheState === "stale",
+  };
+}
+
 /**
  * Store a value in the ISR cache with a revalidation period.
  */
@@ -186,6 +196,23 @@ export async function isrSet(
         : { revalidate: revalidateSeconds, expire: expireSeconds },
     // `revalidate` is the legacy vinext CacheHandler context field. `expire`
     // is new metadata and intentionally only lives inside cacheControl.
+    revalidate: revalidateSeconds,
+    tags: tags ?? [],
+  });
+}
+
+export async function isrSetToOrigin(
+  key: string,
+  data: IncrementalCacheValue,
+  revalidateSeconds: number,
+  tags?: string[],
+  expireSeconds?: number,
+): Promise<void> {
+  await getDataCacheHandler().set(key, data, {
+    cacheControl:
+      expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: expireSeconds },
     revalidate: revalidateSeconds,
     tags: tags ?? [],
   });
@@ -269,10 +296,11 @@ export function triggerBackgroundRegeneration(
     routePath: string;
     routeType: OnRequestErrorContext["routeType"];
   },
+  options?: { forceOrigin?: boolean },
 ): void {
   // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
   // origin must not also run in-process regeneration.
-  if (!getCdnCacheAdapter().ownsBackgroundRevalidation) return;
+  if (!options?.forceOrigin && !getCdnCacheAdapter().ownsBackgroundRevalidation) return;
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()

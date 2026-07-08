@@ -300,19 +300,40 @@ async function hydrate() {
     window.location.search,
     nextData,
   );
-  if (nextData.isFallback === true || !initialRouterIsReady) {
+  const shouldUpdateForMiddleware =
+    nextData.__vinext?.initialMiddlewareMatched === true &&
+    (nextData.autoExport === true || nextData.gsp === true);
+  if (
+    nextData.isFallback === true ||
+    !initialRouterIsReady ||
+    shouldUpdateForMiddleware
+  ) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
+    const liveSearchQuery = Object.create(null);
+    for (const [key, value] of new URLSearchParams(window.location.search)) {
+      const existing = liveSearchQuery[key];
+      liveSearchQuery[key] = existing === undefined
+        ? value
+        : Array.isArray(existing)
+          ? [...existing, value]
+          : [existing, value];
+    }
     const fallbackRoute = nextData.isFallback === true
       ? {
           pathname: nextData.page,
-          query: { ...nextData.query, ...nextData.__vinext?.routeParams },
+          query: { ...nextData.query, ...liveSearchQuery, ...nextData.__vinext?.routeParams },
         }
       : undefined;
     await Router.replace(
       fallbackRoute || routeUrl || currentUrl,
       fallbackRoute || routeUrl ? currentUrl : undefined,
-      { _h: 1, scroll: false },
+      {
+        _h: 1,
+        scroll: false,
+        shallow:
+          nextData.isFallback !== true && !shouldUpdateForMiddleware,
+      },
     );
   }
 }

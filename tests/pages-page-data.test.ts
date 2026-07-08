@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesIsrHtml,
+  rewritePagesInitialMiddlewareMatched,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
@@ -63,6 +64,24 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  it("rewrites only the request-specific middleware hydration bit in cached HTML", () => {
+    const html =
+      '<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"__vinext":{"initialMiddlewareMatched":false}}},"__vinext":{"initialMiddlewareMatched":false,"hasMiddleware":true}}</script>';
+
+    const matched = rewritePagesInitialMiddlewareMatched(html, true);
+    expect(matched).toContain('"initialMiddlewareMatched":true');
+    expect(matched).toContain('"pageProps":{"__vinext":{"initialMiddlewareMatched":false}}');
+    expect(rewritePagesInitialMiddlewareMatched(matched, false)).toContain(
+      '"initialMiddlewareMatched":false',
+    );
+  });
+
+  it("leaves legacy cached vinext data without the request bit unchanged", () => {
+    const html =
+      '<script id="__NEXT_DATA__" type="application/json">{"__vinext":{"hasMiddleware":true}}</script>';
+    expect(rewritePagesInitialMiddlewareMatched(html, true)).toBe(html);
+  });
+
   it("preserves non-object pageProps returned by custom app getInitialProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -110,7 +129,7 @@ describe("pages page data", () => {
     expect(html).toContain('<script src="/tail.js"></script>');
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
-    expect(html).toContain('"__vinext":{"hasMiddleware":true}');
+    expect(html).toContain('"__vinext":{"hasMiddleware":true,"initialMiddlewareMatched":false}');
   });
 
   it("preserves custom app props in fallback shells", async () => {
@@ -846,9 +865,7 @@ describe("pages page data", () => {
 
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(result.response.headers.get("cache-control")).toBe(
-      "s-maxage=15, stale-while-revalidate=285",
-    );
+    expect(result.response.headers.get("cache-control")).toBe("no-store");
     expect(result.response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
@@ -879,7 +896,9 @@ describe("pages page data", () => {
       "pages:/posts/post",
       expect.objectContaining({
         kind: "PAGES",
-        html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
+        html: expect.stringContaining(
+          '"__vinext":{"hasMiddleware":true,"initialMiddlewareMatched":false}',
+        ),
         pageData: { pageProps: { title: "fresh" } },
       }),
       15,
@@ -1021,6 +1040,73 @@ describe("pages page data", () => {
     }
     expect(result.response.headers.get("x-vinext-cache")).toBe("HIT");
     expect(appGip).not.toHaveBeenCalled();
+  });
+
+  it("applies the current request middleware match to a fresh ISR cache HIT", async () => {
+    const cachedHtml =
+      '<script id="__NEXT_DATA__" type="application/json">{"__vinext":{"initialMiddlewareMatched":false,"hasMiddleware":true}}</script>';
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "fresh",
+            value: {
+              kind: "PAGES",
+              html: cachedHtml,
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps() {
+            return { props: {}, revalidate: 60 };
+          },
+        },
+        vinext: { hasMiddleware: true, initialMiddlewareMatched: true },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(await result.response.text()).toContain('"initialMiddlewareMatched":true');
+    expect(result.response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("keeps middleware-aware stale ISR responses out of shared downstream caches", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheState: "stale",
+            cacheControl: { revalidate: 60 },
+            value: {
+              kind: "PAGES",
+              html: '<script id="__NEXT_DATA__" type="application/json">{"__vinext":{"initialMiddlewareMatched":false,"hasMiddleware":true}}</script>',
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps() {
+            return { props: {}, revalidate: 60 };
+          },
+        },
+        vinext: { hasMiddleware: true, initialMiddlewareMatched: false },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.headers.get("cache-control")).toBe("no-store");
+    expect(await result.response.text()).toContain('"initialMiddlewareMatched":false');
   });
 
   it("only runs _app.getInitialProps in the stale ISR regeneration path, not on the immediate stale response", async () => {

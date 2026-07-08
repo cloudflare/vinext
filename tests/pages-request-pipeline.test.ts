@@ -485,7 +485,7 @@ describe("middleware", () => {
     const result = await runPagesRequest(
       req,
       baseDeps({
-        runMiddleware: makeMiddleware({ continue: true, rewriteUrl: "/bar" }),
+        runMiddleware: makeMiddleware({ continue: true, matched: true, rewriteUrl: "/bar" }),
         renderPage,
       }),
     );
@@ -496,6 +496,28 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/bar",
+      { initialMiddlewareMatched: true },
+      expect.any(Headers),
+    );
+  });
+
+  it("config rewrites do not mark the initial middleware as matched", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/from"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/from", destination: "/to" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/to",
       undefined,
       expect.any(Headers),
     );
@@ -1552,6 +1574,29 @@ describe("fallback rewrites on 404", () => {
     expect(callCount).toBe(2);
   });
 
+  it("preserves an initial middleware match when rendering a fallback rewrite", async () => {
+    const renderPage = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(new Response("fallback", { status: 200 }));
+
+    await runPagesRequest(
+      makeRequest("/missing-page"),
+      baseDeps({
+        runMiddleware: makeMiddleware({ continue: true, matched: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [{ source: "/missing-page", destination: "/fallback" }],
+        },
+        renderPage,
+      }),
+    );
+
+    expect(renderPage.mock.calls[1][2]).toEqual({ initialMiddlewareMatched: true });
+  });
+
   it("continues fallback rewrites after an unresolved destination", async () => {
     const renderPage = vi.fn(
       async (_req: Request, resolvedUrl: string) =>
@@ -1613,6 +1658,24 @@ describe("deferred error page re-render on 404", () => {
     expect(callCount).toBe(2);
     // Second call should NOT have renderErrorPageOnMiss: false
     expect(renderPage.mock.calls[1][2]).toBeUndefined();
+  });
+
+  it("preserves an initial middleware match when rendering the deferred error page", async () => {
+    const renderPage = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(new Response("error page", { status: 404 }));
+
+    await runPagesRequest(
+      makeRequest("/missing-page"),
+      baseDeps({
+        runMiddleware: makeMiddleware({ continue: true, matched: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        renderPage,
+      }),
+    );
+
+    expect(renderPage.mock.calls[1][2]).toEqual({ initialMiddlewareMatched: true });
   });
 
   it("does not defer or run fallback rewrites for a data request (x-nextjs-data, worker path)", async () => {

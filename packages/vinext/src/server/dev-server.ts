@@ -70,6 +70,7 @@ import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
   getPagesRouteParams,
   matchesPagesStaticPath,
+  rewritePagesInitialMiddlewareMatched,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
@@ -637,6 +638,7 @@ export function createSSRHandler(
      */
     isDataReq: boolean = false,
     originalUrl: string = url,
+    initialMiddlewareMatched: boolean = false,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -817,6 +819,7 @@ export function createSSRHandler(
               )
             : true;
         const initialRouterQuery = getPagesInitialRouterQuery(query, params, pagesNextData, false);
+        const renderQuery = initialRouterQuery;
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
@@ -990,8 +993,8 @@ export function createSSRHandler(
             req,
             res,
             pathname: patternToNextFormat(route.pattern),
-            query,
-            asPath: requestAsPath,
+            query: renderQuery,
+            asPath: routerAsPath,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
@@ -1200,7 +1203,10 @@ export function createSSRHandler(
           ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
-            const cachedHtml = cachedPage.html;
+            const cachedHtml = rewritePagesInitialMiddlewareMatched(
+              cachedPage.html,
+              initialMiddlewareMatched,
+            );
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const { cacheControl: hitCacheControl } = decideIsr({
@@ -1211,7 +1217,7 @@ export function createSSRHandler(
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
-              "Cache-Control": hitCacheControl,
+              "Cache-Control": hasMiddleware ? ISR_NO_STORE_CACHE_CONTROL : hitCacheControl,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, hitHeaders);
@@ -1231,7 +1237,11 @@ export function createSSRHandler(
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
-            const cachedHtml = cachedPage.html;
+            const storedCachedHtml = cachedPage.html;
+            const cachedHtml = rewritePagesInitialMiddlewareMatched(
+              storedCachedHtml,
+              initialMiddlewareMatched,
+            );
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
 
             // Trigger background regeneration: re-run getStaticProps,
@@ -1246,8 +1256,8 @@ export function createSSRHandler(
                   executionContext: null,
                   ssrContext: {
                     pathname: patternToNextFormat(route.pattern),
-                    query,
-                    asPath: requestAsPath,
+                    query: renderQuery as Record<string, string | string[]>,
+                    asPath: routerAsPath,
                     navigationIsReady,
                     locale: locale ?? currentDefaultLocale,
                     locales: i18nConfig?.locales,
@@ -1305,15 +1315,15 @@ export function createSSRHandler(
                       Component: pageModule.default,
                       router: {
                         pathname: patternToNextFormat(route.pattern),
-                        query,
-                        asPath: requestAsPath,
+                        query: renderQuery,
+                        asPath: routerAsPath,
                       },
                       ctx: {
                         req: regenReq,
                         res: regenRes,
                         pathname: patternToNextFormat(route.pattern),
-                        query,
-                        asPath: requestAsPath,
+                        query: renderQuery,
+                        asPath: routerAsPath,
                         locale: locale ?? currentDefaultLocale,
                         locales: i18nConfig?.locales,
                         defaultLocale: currentDefaultLocale,
@@ -1349,7 +1359,7 @@ export function createSSRHandler(
                       if (typeof routerShim.setSSRContext === "function") {
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
-                          query: getPagesInitialRouterQuery(query, params, pagesNextData, false),
+                          query: renderQuery,
                           asPath: staticPropsAsPath,
                           navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
@@ -1407,6 +1417,7 @@ export function createSSRHandler(
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
+                          initialMiddlewareMatched: false,
                           routeParams: params,
                         },
                       };
@@ -1416,7 +1427,7 @@ export function createSSRHandler(
                           props: freshRenderProps,
                           page: patternToNextFormat(route.pattern),
                           query: getPagesSerializedRouterQuery(
-                            query,
+                            renderQuery,
                             params,
                             freshPagesNextData,
                             false,
@@ -1431,7 +1442,7 @@ export function createSSRHandler(
                         },
                       )}</script>`;
 
-                      const hydrationMatch = cachedHtml.match(
+                      const hydrationMatch = storedCachedHtml.match(
                         /<script type="module">[\s\S]*?<\/script>/,
                       );
                       const hydrationScript = hydrationMatch?.[0] ?? "";
@@ -1466,7 +1477,7 @@ export function createSSRHandler(
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
-              "Cache-Control": staleCacheControl,
+              "Cache-Control": hasMiddleware ? ISR_NO_STORE_CACHE_CONTROL : staleCacheControl,
             };
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, staleHeaders);
@@ -1591,7 +1602,7 @@ export function createSSRHandler(
             req,
             res,
             pathname: patternToNextFormat(route.pattern),
-            query,
+            query: renderQuery,
             asPath: requestAsPath,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -1779,6 +1790,7 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            initialMiddlewareMatched,
             routeParams: params,
           },
         };
@@ -1859,13 +1871,23 @@ async function hydrate() {
     window.location.search,
     nextData,
   );
-  if (nextData.isFallback === true || !initialRouterIsReady) {
+  const shouldUpdateForMiddleware = nextData.__vinext?.initialMiddlewareMatched === true && (nextData.autoExport === true || nextData.gsp === true);
+  if (nextData.isFallback === true || !initialRouterIsReady || shouldUpdateForMiddleware) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
+    const liveSearchQuery = Object.create(null);
+    for (const [key, value] of new URLSearchParams(window.location.search)) {
+      const existing = liveSearchQuery[key];
+      liveSearchQuery[key] = existing === undefined
+        ? value
+        : Array.isArray(existing)
+          ? [...existing, value]
+          : [existing, value];
+    }
     const fallbackRoute = nextData.isFallback === true
-      ? { pathname: nextData.page, query: { ...nextData.query, ...nextData.__vinext?.routeParams } }
+      ? { pathname: nextData.page, query: { ...nextData.query, ...liveSearchQuery, ...nextData.__vinext?.routeParams } }
       : undefined;
-    await Router.replace(fallbackRoute || routeUrl || currentUrl, fallbackRoute || routeUrl ? currentUrl : undefined, { _h: 1, scroll: false });
+    await Router.replace(fallbackRoute || routeUrl || currentUrl, fallbackRoute || routeUrl ? currentUrl : undefined, { _h: 1, scroll: false, shallow: nextData.isFallback !== true && !shouldUpdateForMiddleware });
   }
 }
 hydrate();
@@ -1915,6 +1937,8 @@ hydrate();
         );
 
         const allScripts = `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
+        const cachedNextDataScript = rewritePagesInitialMiddlewareMatched(nextDataScript, false);
+        const cachedAllScripts = `${cachedNextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
 
         // Build response headers: start with gSSP headers, then layer on
         // ISR and font preload headers (which take precedence).
@@ -1922,10 +1946,12 @@ hydrate();
           ...gsspExtraHeaders,
         };
         if (isrRevalidateSeconds) {
-          if (scriptNonce) {
+          if (scriptNonce || hasMiddleware) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
             extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);
+          }
+          if (!scriptNonce) {
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
@@ -1956,7 +1982,7 @@ hydrate();
           // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
-            query,
+            query: renderQuery,
             asPath: routerAsPath,
             ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },
@@ -2037,7 +2063,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${cachedAllScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);

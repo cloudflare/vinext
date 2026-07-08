@@ -90,6 +90,26 @@ test.describe("Hydration", () => {
     void consoleErrors;
   });
 
+  test("middleware-matched getServerSideProps does not refetch during hydration", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const dataRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/_next/data/")) dataRequests.push(request.url());
+    });
+
+    await page.goto(`${BASE}/ssr?middleware=matched`);
+    const initialTimestamp = await page.locator('[data-testid="timestamp"]').textContent();
+    await waitForHydration(page);
+    await page.waitForTimeout(100);
+
+    expect(dataRequests).toEqual([]);
+    await expect(page.locator('[data-testid="timestamp"]')).toHaveText(initialTimestamp!);
+
+    void consoleErrors;
+  });
+
   test("getStaticProps query matches SSR before hydration and URL after mount", async ({
     page,
     consoleErrors,
@@ -116,6 +136,43 @@ test.describe("Hydration", () => {
     await expect(page.locator('[data-testid="is-fallback"]')).toHaveText("isFallback: false");
     await expect(page.locator('[data-testid="is-ready"]')).toHaveText("isReady: true");
     await expect(page.locator('[data-testid="query-pid"]')).toHaveText(`query.pid: ${pid}`);
+
+    void consoleErrors;
+  });
+
+  test("fallback page merges visible search parameters after mount", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const pid = `fallback-search-${Date.now()}`;
+    await page.goto(`${BASE}/products/${pid}?ref=campaign&tag=one&tag=two`);
+
+    await expect(page.getByText("Loading product...")).toBeVisible();
+    await expect(page.locator("h1")).toHaveText(`Product: Product ${pid}`);
+    await expect(page.locator('[data-testid="query-pid"]')).toHaveText(`query.pid: ${pid}`);
+    await expect
+      .poll(async () =>
+        JSON.parse((await page.locator('[data-testid="router-query"]').textContent())!),
+      )
+      .toEqual({ pid, ref: "campaign", tag: ["one", "two"] });
+
+    void consoleErrors;
+  });
+
+  test("fallback route params override conflicting visible search parameters", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const pid = `fallback-conflict-${Date.now()}`;
+    await page.goto(`${BASE}/products/${pid}?pid=wrong&ref=campaign`);
+
+    await expect(page.getByText("Loading product...")).toBeVisible();
+    await expect(page.locator("h1")).toHaveText(`Product: Product ${pid}`);
+    await expect
+      .poll(async () =>
+        JSON.parse((await page.locator('[data-testid="router-query"]').textContent())!),
+      )
+      .toEqual({ pid, ref: "campaign" });
 
     void consoleErrors;
   });

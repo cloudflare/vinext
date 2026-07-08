@@ -43,6 +43,8 @@ export type VinextNextData = {
     appModuleUrl?: string;
     /** True when the Pages Router server has middleware/proxy configured. */
     hasMiddleware?: boolean;
+    /** True when middleware matched the initial request. */
+    initialMiddlewareMatched?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
     /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */

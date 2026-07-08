@@ -38,7 +38,9 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import {
   isrGet,
+  isrGetFromOrigin,
   isrSet,
+  isrSetToOrigin,
   isrCacheKey,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
@@ -194,6 +196,7 @@ export type CreatePagesPageHandlerOptions = {
 // Internal render options (mirrors the options shape passed to `renderPage`).
 type RenderPageOptions = {
   isDataReq?: boolean;
+  initialMiddlewareMatched?: boolean;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -270,6 +273,8 @@ export function createPagesPageHandler(
     AppComponent,
     DocumentComponent,
   } = opts;
+  const pagesIsrGet = hasMiddleware ? isrGetFromOrigin : isrGet;
+  const pagesIsrSet = hasMiddleware ? isrSetToOrigin : isrSet;
 
   function renderToStringAsync(element: ReactNode): Promise<string> {
     return renderToReadableStream(element).then((stream) => new Response(stream).text());
@@ -462,6 +467,7 @@ export function createPagesPageHandler(
               )
             : true;
         const initialRouterQuery = getPagesInitialRouterQuery(query, params, pagesNextData, false);
+        const renderQuery = initialRouterQuery;
 
         function applySSRContext(extra?: Record<string, unknown>): void {
           if (typeof setSSRContext === "function") {
@@ -533,7 +539,11 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
-            ...(isStaticPropsRoute ? { routeParams: params } : { routeUrl, routeParams: params }),
+            initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
+            ...(!isStaticPropsRoute && routeUrl !== (renderAsPath ?? originalRequestPathAndSearch)
+              ? { routeUrl }
+              : {}),
+            routeParams: params,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
@@ -591,8 +601,8 @@ export function createPagesPageHandler(
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isrCacheKey: pageIsrCacheKey,
-          isrGet,
-          isrSet,
+          isrGet: pagesIsrGet,
+          isrSet: pagesIsrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
@@ -612,7 +622,7 @@ export function createPagesPageHandler(
           pageModule,
           AppComponent,
           params,
-          query,
+          query: renderQuery,
           asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
@@ -646,6 +656,7 @@ export function createPagesPageHandler(
             return renderPage(request, url, manifest, middlewareHeaders, {
               statusCode: 404,
               asPath: renderAsPath ?? routeUrl,
+              initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
               renderErrorPageOnMiss: false,
               __forcedRoute: notFoundRoute,
             });
@@ -675,7 +686,7 @@ export function createPagesPageHandler(
         if (isFallbackRender && typeof setSSRContext === "function") {
           setSSRContext({
             pathname: routePattern,
-            query: getPagesInitialRouterQuery(query, params, pagesNextData, false),
+            query: getPagesInitialRouterQuery(query, params, pagesNextData, true),
             asPath: staticPropsAsPath,
             navigationIsReady: false,
             locale,
@@ -792,13 +803,13 @@ export function createPagesPageHandler(
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds,
           isStaticPropsRoute,
-          isrSet,
+          isrSet: pagesIsrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,
           props: renderProps,
           params,
-          query,
+          query: isFallbackRender ? {} : renderQuery,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },
@@ -854,6 +865,7 @@ export function createPagesPageHandler(
               return await renderPage(request, url, manifest, middlewareHeaders, {
                 statusCode: 500,
                 asPath: url,
+                initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
                 renderErrorPageOnMiss: false,
                 __isInternalErrorRender: true,
                 __forcedRoute: errorRoute,

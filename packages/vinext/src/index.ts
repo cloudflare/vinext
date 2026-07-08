@@ -5245,6 +5245,7 @@ export const loadServerActionClient = ${
                   req.__vinextMiddlewareStatus,
                   pipelineResult.isDataReq,
                   originalRequestUrl,
+                  pipelineResult.renderOptions?.initialMiddlewareMatched === true,
                 );
               }
             } catch (e) {

@@ -171,6 +171,73 @@ describe("createPagesPageHandler — serialized route metadata", () => {
       routeParams: { id: "001" },
     });
   });
+
+  it("omits routeUrl for ordinary request-time HTML", async () => {
+    let nextData: Record<string, any> | undefined;
+    const route = makeRoute(
+      "/posts/[id]",
+      makePageModule({ getServerSideProps: async () => ({ props: {} }) }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [route],
+        matchRoute: () => ({ route, params: { id: "001" } }),
+        safeJsonStringify(value) {
+          if (value && typeof value === "object" && "page" in value && "__vinext" in value) {
+            nextData = value as Record<string, any>;
+          }
+          return JSON.stringify(value);
+        },
+      }),
+    );
+
+    const response = await handler(
+      makeRequest("/posts/001?draft=1"),
+      "/posts/001?draft=1",
+      null,
+      null,
+      null,
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(nextData?.__vinext).not.toHaveProperty("routeUrl");
+    expect(nextData?.__vinext.routeParams).toEqual({ id: "001" });
+  });
+
+  it("passes only route params to _app for getStaticProps renders", async () => {
+    let appRouterQuery: unknown;
+    let appContextQuery: unknown;
+    const route = makeRoute(
+      "/posts/:id",
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+    );
+    const AppComponent = Object.assign(() => null, {
+      async getInitialProps(context: { router: { query: unknown }; ctx: { query: unknown } }) {
+        appRouterQuery = context.router.query;
+        appContextQuery = context.ctx.query;
+        return { pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent,
+        pageRoutes: [route],
+        matchRoute: () => ({ route, params: { id: "001" } }),
+      }),
+    );
+
+    const response = await handler(
+      makeRequest("/posts/001?theme=dark"),
+      "/posts/001?theme=dark",
+      null,
+      null,
+      null,
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(appRouterQuery).toEqual({ id: "001" });
+    expect(appContextQuery).toEqual({ id: "001" });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,6 +277,36 @@ describe("createPagesPageHandler — route miss", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+});
+
+describe("createPagesPageHandler — recursive middleware metadata", () => {
+  it("preserves initial middleware matching through custom 404 renders", async () => {
+    let nextData: Record<string, any> | undefined;
+    const pageRoute = makeRoute(
+      "/posts/:id",
+      makePageModule({ getServerSideProps: async () => ({ notFound: true }) }),
+    );
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [pageRoute, notFoundRoute],
+        matchRoute: () => ({ route: pageRoute, params: { id: "missing" } }),
+        safeJsonStringify(value) {
+          if (value && typeof value === "object" && "page" in value && "__vinext" in value) {
+            nextData = value as Record<string, any>;
+          }
+          return JSON.stringify(value);
+        },
+      }),
+    );
+
+    const response = await handler(makeRequest("/posts/missing"), "/posts/missing", null, null, {
+      initialMiddlewareMatched: true,
+    });
+    expect(response.status).toBe(404);
+    await response.text();
+    expect(nextData?.__vinext.initialMiddlewareMatched).toBe(true);
   });
 });
 

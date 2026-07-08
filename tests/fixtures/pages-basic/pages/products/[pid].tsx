@@ -27,6 +27,7 @@ export default function Product({ pid, name }: ProductProps) {
       <p data-testid="is-fallback">isFallback: {String(router.isFallback)}</p>
       <p data-testid="is-ready">isReady: {String(router.isReady)}</p>
       <p data-testid="query-pid">query.pid: {String(router.query.pid)}</p>
+      <p data-testid="router-query">{JSON.stringify(router.query)}</p>
     </div>
   );
 }

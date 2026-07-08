@@ -285,7 +285,7 @@ export function buildPagesNextDataScript(
       options.query ?? options.params,
       options.params,
       options.nextData,
-      false,
+      options.isFallback === true,
     ),
     buildId: options.buildId,
     isFallback: options.isFallback === true,
@@ -503,6 +503,7 @@ export async function renderPagesPageResponse(
     isFallback: options.isFallback,
     pageProps: options.pageProps,
     props: renderProps,
+    query: options.query,
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
@@ -510,6 +511,23 @@ export async function renderPagesPageResponse(
     nextData: options.nextData,
     vinext: options.vinext,
   });
+  const cachedNextDataScript =
+    options.vinext?.initialMiddlewareMatched === true
+      ? buildPagesNextDataScript({
+          buildId: options.buildId,
+          i18n: options.i18n,
+          isFallback: options.isFallback,
+          pageProps: options.pageProps,
+          props: renderProps,
+          query: options.query,
+          params: options.params,
+          routePattern: options.routePattern,
+          safeJsonStringify: options.safeJsonStringify,
+          scriptNonce: options.scriptNonce,
+          nextData: options.nextData,
+          vinext: { ...options.vinext, initialMiddlewareMatched: false },
+        })
+      : nextDataScript;
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -537,7 +555,12 @@ export async function renderPagesPageResponse(
       req: options.documentReqRes?.req,
       res: options.documentReqRes?.res,
       pathname: options.routePattern,
-      query: options.query ?? options.params,
+      query:
+        options.isFallback === true
+          ? {}
+          : options.isStaticPropsRoute === true
+            ? options.params
+            : (options.query ?? options.params),
       asPath: options.routerAsPath ?? options.routeUrl,
     },
   });
@@ -642,7 +665,7 @@ export async function renderPagesPageResponse(
       routePattern: options.routePattern,
       setCache: options.isrSet,
       shellPrefix,
-      shellSuffix,
+      shellSuffix: shellSuffix.replace(nextDataScript, cachedNextDataScript),
       status: finalStatus,
       stream: cacheBodyStream,
     });
@@ -665,6 +688,15 @@ export async function renderPagesPageResponse(
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
+  } else if (options.isrRevalidateSeconds && options.nextData?.__vinext?.hasMiddleware === true) {
+    // The initial middleware match is request-specific (matcher conditions may
+    // depend on headers/cookies), so the rendered __NEXT_DATA__ cannot be shared
+    // by a CDN for the same URL. Keep origin ISR enabled, but prevent edge and
+    // browser caching of the request-specific response body.
+    applyCdnResponseHeaders(responseHeaders, {
+      cacheControl: ISR_NO_STORE_CACHE_CONTROL,
+    });
+    setCacheStateHeaders(responseHeaders, "MISS");
   } else if (options.isrRevalidateSeconds) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,

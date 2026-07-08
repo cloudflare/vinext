@@ -2258,6 +2258,7 @@ describe("Pages Router integration", () => {
     expect(nextData.isFallback).toBe(true);
     // Empty pageProps on the fallback shell — client fetches them later.
     expect(nextData.props).toEqual({ pageProps: {} });
+    expect(nextData.query).toEqual({});
   });
 
   it("resolves real props for the data URL of an unlisted fallback: true path", async () => {
@@ -6131,6 +6132,7 @@ describe("Production server middleware (Pages Router)", () => {
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(true);
     expect(nextData.props).toEqual({ pageProps: {} });
+    expect(nextData.query).toEqual({});
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
@@ -6814,6 +6816,8 @@ export default ErrorPage;
 import { renderCounts } from "../render-counts";
 export default class CustomDocument extends Document {
   static async getInitialProps(ctx: any) {
+    const requestSearch = new URL(ctx.req?.url ?? "/", "http://_").searchParams;
+    const hasRequestFlag = (name: string) => ctx.query?.[name] || requestSearch.has(name);
     const enhanceComponent = (Component: any) => (props: any) => (
       <div><span id="render-page-enhance-component">RENDERED</span><Component {...props} /></div>
     );
@@ -6831,14 +6835,14 @@ export default class CustomDocument extends Document {
       <div id="document-error-enhancer"><Component {...props} /></div>
     );
     let options;
-    if (ctx.pathname !== "/_error" && ctx.query?.throwEnhancer) {
+    if (ctx.pathname !== "/_error" && hasRequestFlag("throwEnhancer")) {
       options = throwEnhancer;
-    } else if (ctx.query?.withEnhancer) {
+    } else if (hasRequestFlag("withEnhancer")) {
       options = enhanceComponent;
-    } else if (ctx.query?.withEnhanceComponent || ctx.query?.withEnhanceApp) {
+    } else if (hasRequestFlag("withEnhanceComponent") || hasRequestFlag("withEnhanceApp")) {
       options = {
-        enhanceComponent: ctx.query.withEnhanceComponent ? enhanceComponent : undefined,
-        enhanceApp: ctx.query.withEnhanceApp ? enhanceApp : undefined,
+        enhanceComponent: hasRequestFlag("withEnhanceComponent") ? enhanceComponent : undefined,
+        enhanceApp: hasRequestFlag("withEnhanceApp") ? enhanceApp : undefined,
       };
     }
     const documentCookie = ctx.req?.cookies?.theme ?? "missing";
@@ -6847,13 +6851,13 @@ export default class CustomDocument extends Document {
       documentCookie,
       ctx.res ? "has-res" : "missing-res",
     ].join("|");
-    if (ctx.query?.documentHeader) {
+    if (hasRequestFlag("documentHeader")) {
       ctx.res?.setHeader("x-document-cookie", documentCookie);
     }
-    if (ctx.query?.documentStatus && ctx.res) {
+    if (hasRequestFlag("documentStatus") && ctx.res) {
       ctx.res.statusCode = 202;
     }
-    if (ctx.query?.documentEnd && ctx.res) {
+    if (hasRequestFlag("documentEnd") && ctx.res) {
       ctx.res.statusCode = 203;
       ctx.res.setHeader("x-document-ended", "yes");
       ctx.res.end("DOCUMENT ENDED");
@@ -6864,8 +6868,8 @@ export default class CustomDocument extends Document {
         documentRequestContext,
       };
     }
-    if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
-    if (ctx.query?.manualDocumentHtml) {
+    if (ctx.pathname !== "/_error" && hasRequestFlag("invalidDocumentHtml")) return { html: null };
+    if (hasRequestFlag("manualDocumentHtml")) {
       return {
         html: '<article id="manual-document-html">MANUAL</article>',
         styles: <style data-manual-document-style>{".manual{color:blue}"}</style>,
@@ -6885,7 +6889,7 @@ export default class CustomDocument extends Document {
       styles:
         ctx.pathname === "/_error"
           ? <style data-error-document-style>{".error-document{color:red}"}</style>
-          : ctx.query?.throwStyles
+          : hasRequestFlag("throwStyles")
             ? <ThrowingStyle />
             : initialProps.styles,
       documentProp: "DOCUMENT",

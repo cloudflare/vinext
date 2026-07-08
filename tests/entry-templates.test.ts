@@ -1391,12 +1391,17 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(
         "const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(",
       );
-      expect(code).toContain("if (nextData.isFallback === true || !initialRouterIsReady) {");
+      expect(code).toContain("nextData.__vinext?.initialMiddlewareMatched === true");
       expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
+      expect(code).toContain(
+        "for (const [key, value] of new URLSearchParams(window.location.search))",
+      );
       expect(code).toContain("await Router.replace(");
-      expect(code).toContain("routeUrl || currentUrl,");
-      expect(code).toContain("routeUrl ? currentUrl : undefined,");
-      expect(code).toContain("{ _h: 1, scroll: false },");
+      expect(code).toContain("fallbackRoute || routeUrl || currentUrl,");
+      expect(code).toContain("fallbackRoute || routeUrl ? currentUrl : undefined,");
+      expect(code).toContain("nextData.__vinext?.initialMiddlewareMatched === true &&");
+      expect(code).toContain("nextData.autoExport === true || nextData.gsp === true");
+      expect(code).toContain("nextData.isFallback !== true && !shouldUpdateForMiddleware,");
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
       expect(code).toContain("hydrateRoot(container, element, hydrateRootOptions)");

@@ -16,7 +16,9 @@ import {
   appIsrRscKey,
   appIsrRouteKey,
   isrGet,
+  isrGetFromOrigin,
   isrSet,
+  isrSetToOrigin,
   buildPagesCacheValue,
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
@@ -40,6 +42,11 @@ import {
   revalidatePath,
   type CachedFetchValue,
 } from "../packages/vinext/src/shims/cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
@@ -334,6 +341,28 @@ describe("ISR expire ceiling", () => {
   beforeEach(() => {
     vi.useRealTimers();
     setCacheHandler(new MemoryCacheHandler());
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  });
+
+  it("uses the origin data cache when the active CDN adapter does not store pages", async () => {
+    const noOpCdn: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return { "Cache-Control": cacheControl };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(noOpCdn);
+
+    await isrSetToOrigin("origin-pages", buildPagesCacheValue("<html>cached</html>", {}), 60);
+
+    await expect(isrGet("origin-pages")).resolves.toBeNull();
+    const originEntry = await isrGetFromOrigin("origin-pages");
+    expect(originEntry?.value.value?.kind).toBe("PAGES");
   });
 
   it("serves stale within expire and treats entries beyond expire as hard misses", async () => {
@@ -392,6 +421,32 @@ describe("ISR expire ceiling", () => {
 // ─── triggerBackgroundRegeneration ───────────────────────────────────────
 
 describe("triggerBackgroundRegeneration", () => {
+  beforeEach(() => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  });
+
+  it("forces origin regeneration when an edge adapter owns normal revalidation", async () => {
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return { "Cache-Control": cacheControl };
+      },
+      async revalidateTag() {},
+    });
+    const renderFn = vi.fn().mockResolvedValue(undefined);
+
+    triggerBackgroundRegeneration("regen-force-origin", renderFn, undefined, {
+      forceOrigin: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(renderFn).toHaveBeenCalledOnce();
+  });
+
   it("calls the render function", async () => {
     const renderFn = vi.fn().mockResolvedValue(undefined);
     triggerBackgroundRegeneration("regen-test-1", renderFn);

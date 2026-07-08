@@ -147,7 +147,9 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
-  it("serializes resolved route params for production fallback shells", async () => {
+  // Ported from Next.js: test/integration/fallback-route-params/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/fallback-route-params/test/index.test.ts
+  it("serializes an empty query for production fallback shells", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -160,8 +162,51 @@ describe("pages page response", () => {
     });
 
     const html = await response.text();
-    expect(html).toContain('"query":{"slug":"post"}');
+    expect(html).toContain('"query":{}');
     expect(html).toContain('"isFallback":true');
+  });
+
+  it("serializes the full production query for server-rendered pages", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      query: { slug: "post", view: "full" },
+      nextData: {
+        gssp: true,
+        __vinext: { hasRewrites: false },
+      },
+    });
+
+    const html = await response.text();
+    expect(html).toContain('"query":{"slug":"post","view":"full"}');
+  });
+
+  it("passes only route params to _document for getStaticProps pages", async () => {
+    const common = createCommonOptions();
+    let documentQuery: unknown;
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      query: unknown;
+      renderPage: () => Promise<{ html: string }>;
+    }) => {
+      documentQuery = ctx.query;
+      return ctx.renderPage();
+    };
+
+    await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement: () => React.createElement("div"),
+      isStaticPropsRoute: true,
+      params: { slug: "post" },
+      query: { slug: "post", theme: "dark" },
+    });
+
+    expect(documentQuery).toEqual({ slug: "post" });
   });
 
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
@@ -265,6 +310,29 @@ describe("pages page response", () => {
       undefined,
       300,
     );
+  });
+
+  it("keeps origin ISR but disables shared response caching when middleware exists", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isrRevalidateSeconds: 60,
+      nextData: {
+        gsp: true,
+        __vinext: {
+          hasMiddleware: true,
+          initialMiddlewareMatched: true,
+        },
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.text();
+    await settleMicrotasks();
+    expect(common.isrSet).toHaveBeenCalledOnce();
   });
 
   it("records split UTF-8 chunks without corrupting cached ISR HTML", async () => {

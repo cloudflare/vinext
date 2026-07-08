@@ -224,6 +224,7 @@ export type ResolvePagesPageDataOptions = {
     key: string,
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
+    options?: { forceOrigin?: boolean },
   ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   vinext?: VinextNextData["__vinext"];
@@ -576,6 +577,39 @@ function buildPagesCacheResponse(
   });
 }
 
+export function rewritePagesInitialMiddlewareMatched(
+  html: string,
+  initialMiddlewareMatched: boolean,
+): string {
+  const scriptStart = html.search(
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
+  );
+  if (scriptStart < 0) return html;
+  const jsonStart = html.indexOf(">", scriptStart) + 1;
+  const jsonEnd = html.indexOf("</script>", jsonStart);
+  if (jsonStart <= 0 || jsonEnd < jsonStart) return html;
+
+  const json = html.slice(jsonStart, jsonEnd);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return html;
+  }
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.__vinext)) return html;
+
+  const currentValue = parsed.__vinext.initialMiddlewareMatched === true;
+  if (currentValue === initialMiddlewareMatched) return html;
+  const currentLiteral = `"initialMiddlewareMatched":${currentValue ? "true" : "false"}`;
+  const valueIndex = json.lastIndexOf(currentLiteral);
+  if (valueIndex < 0) return html;
+  const rewrittenJson =
+    json.slice(0, valueIndex) +
+    `"initialMiddlewareMatched":${initialMiddlewareMatched ? "true" : "false"}` +
+    json.slice(valueIndex + currentLiteral.length);
+  return html.slice(0, jsonStart) + rewrittenJson + html.slice(jsonEnd);
+}
+
 /**
  * For bot / crawler UAs, attach an ETag to a cached ISR response (HIT or
  * STALE) so it is consistent with the fresh-MISS path, then check for a
@@ -659,7 +693,9 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     // render emits, so the regenerated HTML hydrates with the identical initial
     // `router.isReady` the server computed instead of a flag-less fallback.
     nextData: options.nextData,
-    vinext: options.vinext,
+    vinext: options.vinext
+      ? { ...options.vinext, initialMiddlewareMatched: false }
+      : options.vinext,
   });
 
   return rewritePagesCachedHtml(options.cachedHtml, freshBody, nextDataScript);
@@ -738,7 +774,10 @@ export async function resolvePagesPageData(
   let renderProps: PagesRenderProps = { pageProps };
 
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
-    const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
+    const result = await loadPagesAppInitialRenderProps(
+      isFallback ? { ...options, query: {} } : options,
+      getSharedReqRes,
+    );
     if (result.kind === "response") {
       return {
         kind: "response",
@@ -858,8 +897,12 @@ export async function resolvePagesPageData(
       !options.isDataReq &&
       previewData === false
     ) {
-      const hitResponse = buildPagesCacheResponse(
+      const hitHtml = rewritePagesInitialMiddlewareMatched(
         cachedValue.html,
+        options.vinext?.initialMiddlewareMatched === true,
+      );
+      const hitResponse = buildPagesCacheResponse(
+        hitHtml,
         "HIT",
         options.fontLinkHeader,
         undefined,
@@ -867,11 +910,14 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
+      if (options.vinext?.hasMiddleware === true) {
+        applyCdnResponseHeaders(hitResponse.headers, { cacheControl: "no-store" });
+      }
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
       // for bot UAs so they are consistent with fresh-MISS bot responses (which
       // also carry an ETag via `renderPagesPageResponse`). When the incoming
       // `If-None-Match` matches (and no `Cache-Control: no-cache`), return 304.
-      const hitBotResult = applyBotETagAndCheck(hitResponse, cachedValue.html, options);
+      const hitBotResult = applyBotETagAndCheck(hitResponse, hitHtml, options);
       if (hitBotResult) return hitBotResult;
       return {
         kind: "response",
@@ -962,10 +1008,15 @@ export async function resolvePagesPageData(
           routePath: options.routePattern,
           routeType: "render",
         },
+        { forceOrigin: options.vinext?.hasMiddleware === true },
       );
 
-      const staleResponse = buildPagesCacheResponse(
+      const staleHtml = rewritePagesInitialMiddlewareMatched(
         cachedValue.html,
+        options.vinext?.initialMiddlewareMatched === true,
+      );
+      const staleResponse = buildPagesCacheResponse(
+        staleHtml,
         "STALE",
         options.fontLinkHeader,
         undefined,
@@ -973,9 +1024,12 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
+      if (options.vinext?.hasMiddleware === true) {
+        applyCdnResponseHeaders(staleResponse.headers, { cacheControl: "no-store" });
+      }
       // Bot / crawler ETag consistency: same as the HIT branch — attach an
       // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
-      const staleBotResult = applyBotETagAndCheck(staleResponse, cachedValue.html, options);
+      const staleBotResult = applyBotETagAndCheck(staleResponse, staleHtml, options);
       if (staleBotResult) return staleBotResult;
       return {
         kind: "response",
