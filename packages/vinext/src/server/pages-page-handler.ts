@@ -728,7 +728,13 @@ export function createPagesPageHandler(
               init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           } else if (isStaticPropsRoute) {
-            if (isrRevalidateSeconds) {
+            if (options?.initialMiddlewareMatchCanVaryByRequest === true) {
+              const headers = new Headers(init.headers);
+              applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+              for (const [key, value] of headers) {
+                init.headers[key] = value;
+              }
+            } else if (isrRevalidateSeconds) {
               const headers = new Headers(init.headers);
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(

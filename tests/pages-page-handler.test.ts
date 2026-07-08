@@ -5,7 +5,9 @@
  * verifying route matching, 404/500 fallback, _next/data envelope,
  * i18n redirect, 405 method check, and internal-error guard.
  */
-import { describe, it, expect, vi } from "vite-plus/test";
+import { afterEach, describe, it, expect, vi } from "vite-plus/test";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   createPagesPageHandler,
   shouldEmitPagesClientTraceMetadata,
@@ -328,6 +330,12 @@ describe("createPagesPageHandler — no default export", () => {
 // ---------------------------------------------------------------------------
 
 describe("createPagesPageHandler — _next/data", () => {
+  const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
+
+  afterEach(() => {
+    delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+  });
+
   it("detects /_next/data URL and returns JSON envelope", async () => {
     const routes = [makeRoute("/about")];
     const handler = createPagesPageHandler(
@@ -355,6 +363,32 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+
+  it("prevents edge caching when middleware matching can vary by request", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getStaticProps: async () => ({ props: {}, revalidate: 60 }),
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
+
+    const response = await handler(makeRequest("/about"), "/about", null, null, {
+      isDataReq: true,
+      initialMiddlewareMatchCanVaryByRequest: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
   it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
