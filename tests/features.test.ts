@@ -2589,17 +2589,32 @@ describe("metadata OG/Twitter inheritance", () => {
 
 describe("MetadataHead rendering", () => {
   let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
-  let renderMetadataToHtml: typeof import("../packages/vinext/src/shims/metadata.js").renderMetadataToHtml;
   let React: typeof import("react");
   let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     MetadataHead = mod.MetadataHead;
-    renderMetadataToHtml = mod.renderMetadataToHtml;
     React = await import("react");
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
   });
+
+  // Production renders MetadataHead's real hoistable elements rather than
+  // serializing them to a string, so assert the emitted tags by rendering the
+  // component to static markup.
+  function renderMetadataToHtml(
+    metadata: Parameters<typeof MetadataHead>[0]["metadata"],
+    pathname = "/",
+    options?: { trailingSlash?: boolean },
+  ): string {
+    return renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata,
+        pathname,
+        trailingSlash: options?.trailingSlash,
+      }),
+    );
+  }
 
   function metadataRouteImage(url: string): { url: string } {
     const image = { url };
@@ -2755,7 +2770,7 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="/apple.png"');
   });
 
-  it("serializes rich metadata for the streaming body outlet", () => {
+  it("renders rich metadata tags", () => {
     const html = renderMetadataToHtml(
       {
         metadataBase: new URL("https://example.com"),
@@ -2796,7 +2811,8 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('property="og:image:type"');
     expect(html).toContain('content="image/png"');
     expect(html).toContain('rel="alternate"');
-    expect(html).toContain('hreflang="en-US"');
+    // React emits the prop name as-is (hrefLang); HTML attributes are case-insensitive.
+    expect(html).toMatch(/hreflang="en-US"/i);
     expect(html).toContain('href="https://example.com/products/en"');
     expect(html).toContain('rel="icon"');
     expect(html).toContain('href="/icon.png"');
@@ -3231,9 +3247,14 @@ describe("MetadataHead rendering", () => {
       { trailingSlash: true },
     );
     expect(html).toContain('property="og:url" content="http://trailingslash.com/og/"');
-    expect(html).toContain('href="http://trailingslash.com/en/" hreflang="en"');
-    expect(html).toContain('href="http://trailingslash.com/print/" media="print"');
-    expect(html).toContain('href="http://trailingslash.com/feed/" type="application/rss+xml"');
+    // Assert the trailing-slashed url and its discriminator separately: React
+    // emits link attributes in a different order (and casing) than a raw string.
+    expect(html).toContain('href="http://trailingslash.com/en/"');
+    expect(html).toMatch(/hreflang="en"/i);
+    expect(html).toContain('href="http://trailingslash.com/print/"');
+    expect(html).toContain('media="print"');
+    expect(html).toContain('href="http://trailingslash.com/feed/"');
+    expect(html).toContain('type="application/rss+xml"');
   });
 
   it("resolves URL-object alternates as bases for the current pathname", () => {
@@ -3250,8 +3271,10 @@ describe("MetadataHead rendering", () => {
       "/docs",
       { trailingSlash: true },
     );
-    expect(html).toContain('href="http://trailingslash.com/docs/" hreflang="en"');
-    expect(html).toContain('href="http://trailingslash.com/docs?source=print" media="print"');
+    expect(html).toContain('href="http://trailingslash.com/docs/"');
+    expect(html).toMatch(/hreflang="en"/i);
+    expect(html).toContain('href="http://trailingslash.com/docs?source=print"');
+    expect(html).toContain('media="print"');
   });
 });
 
