@@ -354,6 +354,13 @@ function areStaticParamsAllowed(
   staticParams: readonly Record<string, unknown>[],
 ): boolean {
   const paramKeys = Object.keys(params);
+  const stringParamMatches = (value: string, staticValue: string): boolean => {
+    const normalizedValue = value.toLowerCase();
+    return (
+      normalizedValue === staticValue.toLowerCase() ||
+      normalizedValue === encodeURIComponent(staticValue).toLowerCase()
+    );
+  };
 
   return staticParams.some((staticParamSet) =>
     paramKeys.every((key) => {
@@ -372,14 +379,14 @@ function areStaticParamsAllowed(
           value.length === staticValue.length &&
           value.every((part, index) =>
             typeof staticValue[index] === "string"
-              ? part.toLowerCase() === staticValue[index].toLowerCase()
+              ? stringParamMatches(part, staticValue[index])
               : part === staticValue[index],
           )
         );
       }
 
       if (typeof staticValue === "string") {
-        return value.toLowerCase() === staticValue.toLowerCase();
+        return stringParamMatches(value, staticValue);
       }
 
       if (typeof staticValue === "number" || typeof staticValue === "boolean") {

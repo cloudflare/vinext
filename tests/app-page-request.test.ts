@@ -61,6 +61,23 @@ describe("app page request helpers", () => {
     expect(clearRequestContext).not.toHaveBeenCalled();
   });
 
+  it("allows canonical encoded App Page params from generateStaticParams", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      async generateStaticParams() {
+        return [{ id: "sticks & stones", path: ["a/b", "%61"] }];
+      },
+      isDynamicRoute: true,
+      params: {
+        id: "sticks%20%26%20stones",
+        path: ["a%2Fb", "%2561"],
+      },
+    });
+
+    expect(response).toBeNull();
+  });
+
   it("requires every segment generateStaticParams source to allow the params", async () => {
     const clearRequestContext = vi.fn();
     const layoutGenerateStaticParams = async () => [{ category: "docs" }];
