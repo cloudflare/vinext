@@ -20,7 +20,7 @@ import type { PagesPageModule } from "./pages-page-data.js";
  */
 type PagesReadinessNextData = Pick<
   VinextNextData,
-  "gssp" | "gsp" | "gip" | "appGip" | "autoExport"
+  "gssp" | "gsp" | "gip" | "appGip" | "autoExport" | "nextExport"
 > & {
   __vinext: Pick<NonNullable<VinextNextData["__vinext"]>, "hasRewrites">;
 };
@@ -40,12 +40,14 @@ export function buildPagesReadinessNextData(options: {
     typeof (options.pageModule.default as { getInitialProps?: unknown } | undefined)
       ?.getInitialProps === "function";
   const hasAppGip = typeof options.appComponent?.getInitialProps === "function";
+  const autoExport = !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip;
   return {
     gssp: hasPageGssp,
     gsp: hasPageGsp ? true : undefined,
     gip: hasPageGip,
     appGip: hasAppGip,
-    autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
+    autoExport,
+    nextExport: autoExport ? true : undefined,
     __vinext: { hasRewrites: options.hasRewrites },
   };
 }
