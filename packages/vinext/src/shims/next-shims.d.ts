@@ -8,6 +8,20 @@
 
 declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
+  import type { ParsedUrlQuery } from "node:querystring";
+  import type { ComponentType } from "react";
+  export type NextPageContext = {
+    err?: (Error & { statusCode?: number }) | null;
+    req?: IncomingMessage;
+    res?: ServerResponse;
+    pathname: string;
+    query: ParsedUrlQuery;
+    asPath?: string;
+    locale?: string;
+    locales?: readonly string[];
+    defaultLocale?: string;
+    AppTree: ComponentType<{ pageProps: unknown; [name: string]: unknown }>;
+  };
   export type NextApiRequest = {
     query: Record<string, string | string[]>;
     body: unknown;
@@ -412,6 +426,7 @@ declare module "next/legacy/image" {
 declare module "next/error" {
   import * as React from "react";
   import { ComponentType, ReactNode } from "react";
+  import type { NextPageContext } from "next";
 
   export type ErrorProps = {
     statusCode: number;
@@ -420,16 +435,10 @@ declare module "next/error" {
     withDarkMode?: boolean;
   };
 
-  type ErrorContext = {
-    err?: { statusCode?: number };
-    req?: { url?: string; headers?: { host?: string | string[] } };
-    res?: { statusCode?: number };
-  };
-
   export default class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
     static displayName: string;
-    static getInitialProps: (context: ErrorContext) => ErrorProps | Promise<ErrorProps>;
-    static origGetInitialProps: (context: ErrorContext) => ErrorProps | Promise<ErrorProps>;
+    static getInitialProps: (context: NextPageContext) => ErrorProps | Promise<ErrorProps>;
+    static origGetInitialProps: (context: NextPageContext) => ErrorProps | Promise<ErrorProps>;
     render(): React.ReactNode;
   }
 

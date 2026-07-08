@@ -10,6 +10,7 @@
  * `next/error`'s public surface.
  */
 import React from "react";
+import type { NextPageContext } from "next";
 import Head from "./head.js";
 import { isNextRouterError } from "./navigation.js";
 import { useUntrackedPathname } from "./internal/navigation-untracked.js";
@@ -30,16 +31,7 @@ export type ErrorProps = {
   withDarkMode?: boolean;
 };
 
-type ErrorContext = {
-  err?: { statusCode?: number };
-  req?: {
-    url?: string;
-    headers?: { host?: string | string[] };
-  };
-  res?: { statusCode?: number };
-};
-
-function getErrorInitialProps({ err, req, res }: ErrorContext): ErrorProps {
+function getErrorInitialProps({ err, req, res }: NextPageContext): ErrorProps {
   const statusCode = res?.statusCode ? res.statusCode : err ? err.statusCode! : 404;
   let hostname: string | undefined;
 
