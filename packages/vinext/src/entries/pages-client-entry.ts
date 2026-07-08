@@ -290,11 +290,6 @@ async function hydrate() {
   const root = hydrateRoot(container, element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
   await hydrationCommitted;
-  const hydratedAt = performance.now();
-  window.__VINEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED = true;
-  window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();
 
   const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(
     nextData.page,

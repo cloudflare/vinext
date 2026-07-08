@@ -237,6 +237,12 @@ type RenderPagesPageResponseOptions = {
   requestCacheControl?: string;
 };
 
+export function getPagesPathCacheTags(routeUrl: string): string[] {
+  const pathname = routeUrl.split("?")[0];
+  const stem = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  return [encodeCacheTag(`_N_T_${stem || "/"}`)];
+}
+
 function buildPagesFontHeadHtml(
   fontLinks: string[],
   fontPreloads: PagesFontPreload[],
@@ -425,6 +431,7 @@ function schedulePagesIsrCacheWrite(options: {
   pageData: Record<string, unknown>;
   revalidateSeconds: number;
   routePattern: string;
+  tags: string[];
   shellPrefix: string;
   shellSuffix: string;
   status: number;
@@ -443,7 +450,7 @@ function schedulePagesIsrCacheWrite(options: {
           status: options.status,
         },
         options.revalidateSeconds,
-        undefined,
+        options.tags,
         options.expireSeconds,
       ),
     )
@@ -664,6 +671,7 @@ export async function renderPagesPageResponse(
       pageData: options.pageProps,
       revalidateSeconds: options.isrRevalidateSeconds,
       routePattern: options.routePattern,
+      tags: getPagesPathCacheTags(options.routeUrl),
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix: shellSuffix.replace(nextDataScript, cachedNextDataScript),
@@ -705,11 +713,9 @@ export async function renderPagesPageResponse(
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
     // which Pages Router invalidation uses) while the default emits Cache-Control.
-    const isrPathname = options.routeUrl.split("?")[0];
-    const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
-      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+      tags: getPagesPathCacheTags(options.routeUrl),
     });
     setCacheStateHeaders(responseHeaders, "MISS");
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {

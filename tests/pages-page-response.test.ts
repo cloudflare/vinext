@@ -315,7 +315,7 @@ describe("pages page response", () => {
         pageData: { title: "hello" },
       }),
       60,
-      undefined,
+      ["_N_T_/posts/post"],
       300,
     );
   });
@@ -391,7 +391,7 @@ describe("pages page response", () => {
         html: expect.stringContaining("\u20ac<div>live-body</div>"),
       }),
       60,
-      undefined,
+      ["_N_T_/posts/post"],
       undefined,
     );
   });

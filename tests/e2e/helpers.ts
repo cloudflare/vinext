@@ -22,7 +22,11 @@ export function isAppRouterServerActionRequestForPath(request: Request, pathname
  * Waits for the hydration commit marker, not merely hydrateRoot creation.
  */
 export async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(() => window.__NEXT_HYDRATED === true);
+  await page.waitForFunction(
+    () =>
+      window.__NEXT_HYDRATED === true &&
+      (window.next?.router as { isReady?: boolean } | undefined)?.isReady === true,
+  );
 }
 
 /**

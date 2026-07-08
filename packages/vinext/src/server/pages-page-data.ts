@@ -16,6 +16,7 @@ import {
   buildPagesNextDataScript,
   etagMatches,
   generatePagesETag,
+  getPagesPathCacheTags,
   isPagesStreamingBot,
   requestsNoCache,
   type PagesGsspResponse,
@@ -1001,7 +1002,7 @@ export async function resolvePagesPageData(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
                 freshRevalidateSeconds,
-                undefined,
+                getPagesPathCacheTags(options.routeUrl),
                 options.expireSeconds,
               );
             }
@@ -1125,7 +1126,7 @@ export async function resolvePagesPageData(
           status: undefined,
         },
         revalidateSeconds,
-        undefined,
+        getPagesPathCacheTags(options.routeUrl),
         options.expireSeconds,
       );
     }

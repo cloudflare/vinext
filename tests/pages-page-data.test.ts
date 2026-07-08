@@ -230,7 +230,7 @@ describe("pages page data", () => {
         },
       }),
       10,
-      undefined,
+      ["_N_T_/posts/post"],
       300,
     );
   });
@@ -899,7 +899,7 @@ describe("pages page data", () => {
         pageData: { pageProps: { title: "fresh" } },
       }),
       15,
-      undefined,
+      ["_N_T_/posts/post"],
       300,
     );
     expect(isrSet).toHaveBeenCalledWith(
@@ -912,7 +912,7 @@ describe("pages page data", () => {
         pageData: { pageProps: { title: "fresh" } },
       }),
       15,
-      undefined,
+      ["_N_T_/posts/post"],
       300,
     );
   });

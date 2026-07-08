@@ -1434,10 +1434,10 @@ function markPagesRouterHydrated(): void {
   window.__NEXT_HYDRATED_CB?.();
 }
 
-function PagesRouterHydrationMarker(): null {
+function PagesRouterHydrationMarker({ isReady }: { isReady: boolean }): null {
   useEffect(() => {
-    markPagesRouterHydrated();
-  }, []);
+    if (isReady) markPagesRouterHydrated();
+  }, [isReady]);
 
   return null;
 }
@@ -3382,6 +3382,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   // vinext:navigate listener.
   useEffect(() => {
     const onNavigate = ((_e: CustomEvent) => {
+      markPagesRouterLiveState();
       setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
@@ -3435,7 +3436,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   const content = createElement(
     RouterContext.Provider,
     { value: router },
-    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker)),
+    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker, { isReady })),
   );
   return AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouter }, content)

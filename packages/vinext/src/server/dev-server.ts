@@ -44,6 +44,7 @@ import {
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { stripBasePath } from "../utils/base-path.js";
 import path from "node:path";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -743,9 +744,16 @@ export function createSSRHandler(
     // `url`, so the assignment is a no-op.
     req.url = originalUrl;
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
-    const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
+    const originalRequestUrl = new URL(originalUrl, "http://vinext.local");
+    const originalRequestSearch = originalRequestUrl.search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq ? gsspResolvedUrl : originalUrl;
+    const visibleRequestPath = stripBasePath(originalRequestUrl.pathname, basePath);
+    const visibleRequestUrl = visibleRequestPath + originalRequestSearch;
+    const requestAsPath = isDataReq
+      ? gsspResolvedUrl
+      : i18nConfig
+        ? extractLocaleFromUrlShared(visibleRequestUrl, i18nConfig).url
+        : visibleRequestUrl;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -1870,11 +1878,6 @@ async function hydrate() {
   const root = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
   await hydrationCommitted;
-  const hydratedAt = performance.now();
-  window.__VINEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED = true;
-  window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();
   const initialRouterIsReady = getPagesNavigationIsReadyFromSerializedState(
     nextData.page,
     window.location.search,
