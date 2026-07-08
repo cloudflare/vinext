@@ -21,6 +21,8 @@ type PreviewResponse = {
   setHeader(name: string, value: string | number | boolean | string[]): unknown;
 };
 
+const pagesPreviewCookiesCleared = Symbol("__prerender_bypass");
+
 type PagesPreviewCredentials = {
   bypassId: string;
   encryptionKey: Buffer;
@@ -191,11 +193,17 @@ export function clearPagesPreviewData(
   response: PreviewResponse,
   options: { path?: string } = {},
 ): void {
+  if (pagesPreviewCookiesCleared in response) return;
+
   response.setHeader("Set-Cookie", [
     ...normalizeSetCookie(response.getHeader("Set-Cookie")),
     serializeClearedCookie("__prerender_bypass", options),
     serializeClearedCookie("__next_preview_data", options),
   ]);
+  Object.defineProperty(response, pagesPreviewCookiesCleared, {
+    value: true,
+    enumerable: false,
+  });
 }
 
 export function appendPagesPreviewClearCookies(headers: Headers): void {

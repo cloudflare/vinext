@@ -31,6 +31,7 @@ export type PagesReqResRequest = Readable & {
   body: unknown;
   cookies: Record<string, string>;
   preview?: true;
+  draftMode?: true;
   previewData: PagesPreviewData | false;
 };
 
@@ -226,6 +227,7 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
   req.previewData = preview.data;
   if (preview.data !== false) {
     req.preview = true;
+    req.draftMode = true;
   }
   res.setPreviewData = (data, options = {}) => {
     setPagesPreviewData(res, data, options);

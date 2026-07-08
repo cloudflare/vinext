@@ -222,6 +222,7 @@ describe("handleApiRoute", () => {
         mockServer({
           default(req: any, res: any) {
             observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
             observed.previewData = req.previewData;
             res.setDraftMode({ enable: false });
             res.end();
@@ -233,7 +234,7 @@ describe("handleApiRoute", () => {
         [route("/api/draft")],
       );
 
-      expect(observed).toEqual({ preview: true, previewData: {} });
+      expect(observed).toEqual({ preview: true, draftMode: true, previewData: {} });
       expect(disableResponse._headers["set-cookie"]).toEqual([
         expect.stringMatching(/^__prerender_bypass=; Expires=/),
       ]);
@@ -263,6 +264,7 @@ describe("handleApiRoute", () => {
         mockServer({
           default(req: any, res: any) {
             observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
             observed.previewData = req.previewData;
             res.clearPreviewData({ path: "/docs" });
             res.end();
@@ -274,7 +276,11 @@ describe("handleApiRoute", () => {
         [route("/api/preview")],
       );
 
-      expect(observed).toEqual({ preview: true, previewData: { draft: true } });
+      expect(observed).toEqual({
+        preview: true,
+        draftMode: true,
+        previewData: { draft: true },
+      });
       expect(clearResponse._headers["set-cookie"]).toEqual([
         expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
         expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
@@ -312,7 +318,10 @@ describe("handleApiRoute", () => {
         mockServer({
           default(req: any, res: any) {
             observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
             observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.clearPreviewData();
             res.end();
           },
         }),
@@ -322,7 +331,11 @@ describe("handleApiRoute", () => {
         [route("/api/preview")],
       );
 
-      expect(observed).toEqual({ preview: undefined, previewData: false });
+      expect(observed).toEqual({
+        preview: undefined,
+        draftMode: undefined,
+        previewData: false,
+      });
       expect(response._headers["set-cookie"]).toEqual([
         expect.stringMatching(/^__prerender_bypass=; Expires=/),
         expect.stringMatching(/^__next_preview_data=; Expires=/),

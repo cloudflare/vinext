@@ -44,6 +44,7 @@ type NextApiRequest = {
   body: unknown;
   cookies: Record<string, string>;
   preview?: true;
+  draftMode?: true;
   previewData: object | string | false;
 } & IncomingMessage;
 

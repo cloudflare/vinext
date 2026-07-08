@@ -72,6 +72,7 @@ describe("Pages Node compat response", () => {
     });
 
     expect(req.preview).toBe(true);
+    expect(req.draftMode).toBe(req.preview);
     expect(req.previewData).toEqual({});
     res.setDraftMode({ enable: false });
     expect(res.getHeader("Set-Cookie")).toEqual([
@@ -126,6 +127,7 @@ describe("Pages Node compat response", () => {
     });
 
     expect(req.preview).toBe(true);
+    expect(req.draftMode).toBe(req.preview);
     expect(req.previewData).toEqual({ hello: "world" });
     res.clearPreviewData({ path: "/docs" }).end("ok");
 
@@ -138,6 +140,43 @@ describe("Pages Node compat response", () => {
       expect.stringMatching(
         /^__next_preview_data=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=\/docs;/,
       ),
+    ]);
+  });
+
+  it("clears preview cookies only once per response", () => {
+    const { res } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/clear"),
+      url: "/api/clear",
+    });
+
+    res.clearPreviewData();
+    res.clearPreviewData({ path: "/docs" });
+
+    expect(res.getHeader("Set-Cookie")).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
+
+  it("does not duplicate an automatic invalid-cookie clear", () => {
+    const { req, res } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/clear", {
+        headers: { cookie: "__prerender_bypass=invalid; __next_preview_data=invalid" },
+      }),
+      url: "/api/clear",
+    });
+
+    expect(req.preview).toBeUndefined();
+    expect(req.draftMode).toBeUndefined();
+    res.clearPreviewData({ path: "/docs" });
+
+    expect(res.getHeader("Set-Cookie")).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
     ]);
   });
 });
