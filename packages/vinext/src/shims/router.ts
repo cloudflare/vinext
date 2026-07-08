@@ -1451,10 +1451,10 @@ function markPagesRouterHydrated(): void {
   window.__NEXT_HYDRATED_CB?.();
 }
 
-function PagesRouterHydrationMarker({ isReady }: { isReady: boolean }): null {
+function PagesRouterHydrationMarker(): null {
   useEffect(() => {
-    if (isReady) markPagesRouterHydrated();
-  }, [isReady]);
+    markPagesRouterHydrated();
+  }, []);
 
   return null;
 }
@@ -3453,7 +3453,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   const content = createElement(
     RouterContext.Provider,
     { value: router },
-    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker, { isReady })),
+    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker)),
   );
   return AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouter }, content)
@@ -3989,16 +3989,7 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
     isReady: {
       enumerable: true,
       get(): boolean {
-        // `window.next.router.isReady` is used by the Next.js deploy harness as
-        // a post-reload signal before starting client navigations. Keep the
-        // singleton false until the generated Pages client entry's hydration
-        // effect has run, so page-level `useEffect` subscriptions are installed
-        // before tests/userland observe readiness. The provider-backed
-        // `useRouter().isReady` still uses the serialized readiness snapshot to
-        // avoid server/client markup drift during hydration.
-        return (
-          isPagesRouterReady() && (typeof window === "undefined" || window.__NEXT_HYDRATED === true)
-        );
+        return isPagesRouterReady();
       },
     },
     isPreview: { enumerable: true, value: false, writable: false },
