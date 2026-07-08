@@ -308,15 +308,15 @@ export async function executeMiddleware(
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
   const matcher = middlewareMatcher(options.module);
-
-  if (!matchesMiddleware(matchPathname, matcher, options.request, options.i18nConfig)) {
-    return { continue: true };
-  }
   const matchCanVaryByRequest = middlewareMatchCanVaryByRequest(
     matchPathname,
     matcher,
     options.i18nConfig,
   );
+
+  if (!matchesMiddleware(matchPathname, matcher, options.request, options.i18nConfig)) {
+    return { continue: true, matchCanVaryByRequest };
+  }
 
   const nextRequest = createNextRequest(
     options.request,

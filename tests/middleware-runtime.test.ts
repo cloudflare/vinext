@@ -12,6 +12,30 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("reports request-varying matcher state even when conditions do not match", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        config: {
+          matcher: [
+            {
+              source: "/conditional",
+              has: [{ type: "header", key: "x-allow", value: "1" }],
+            },
+          ],
+        },
+        default: () => undefined,
+      },
+      request: new Request("http://localhost:3000/conditional"),
+    });
+
+    expect(result).toMatchObject({
+      continue: true,
+      matchCanVaryByRequest: true,
+    });
+    expect(result.matched).toBeUndefined();
+  });
+
   it("exposes trusted data-request state to middleware", async () => {
     let capturedRequest: NextRequest | undefined;
     const module = {

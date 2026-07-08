@@ -673,7 +673,10 @@ export async function runPagesRequest(
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
     const initialRenderOptions: PagesRenderOptions | undefined =
-      shouldDeferErrorPageOnMiss || isDataReq || initialMiddlewareMatched
+      shouldDeferErrorPageOnMiss ||
+      isDataReq ||
+      initialMiddlewareMatched ||
+      initialMiddlewareMatchCanVaryByRequest
         ? {
             ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
             ...(isDataReq ? { isDataReq: true } : {}),
@@ -729,9 +732,9 @@ export async function runPagesRequest(
         response = await deps.renderPage(
           request,
           resolvedUrl,
-          initialMiddlewareMatched
+          initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
             ? {
-                initialMiddlewareMatched: true,
+                ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
                 ...(initialMiddlewareMatchCanVaryByRequest
                   ? { initialMiddlewareMatchCanVaryByRequest: true }
                   : {}),
@@ -749,9 +752,9 @@ export async function runPagesRequest(
       response = await deps.renderPage(
         request,
         resolvedUrl,
-        initialMiddlewareMatched
+        initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
           ? {
-              initialMiddlewareMatched: true,
+              ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
               ...(initialMiddlewareMatchCanVaryByRequest
                 ? { initialMiddlewareMatchCanVaryByRequest: true }
                 : {}),
@@ -845,10 +848,13 @@ export async function runPagesRequest(
     type: "render",
     resolvedUrl,
     renderOptions:
-      isDataReq || initialMiddlewareMatched
+      isDataReq || initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
         ? {
             ...(isDataReq ? { isDataReq: true } : {}),
             ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
+            ...(initialMiddlewareMatchCanVaryByRequest
+              ? { initialMiddlewareMatchCanVaryByRequest: true }
+              : {}),
           }
         : undefined,
     stagedHeaders: middlewareHeaders,

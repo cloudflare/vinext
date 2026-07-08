@@ -523,6 +523,27 @@ describe("middleware", () => {
     );
   });
 
+  it("propagates request-varying matcher state when middleware does not match", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/conditional"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: true,
+          matchCanVaryByRequest: true,
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/conditional",
+      { initialMiddlewareMatchCanVaryByRequest: true },
+      expect.any(Headers),
+    );
+  });
+
   it.each([
     { i18nConfig: null, requestPath: "/ssr-page", rewritePath: "/ssr-page-2" },
     {
