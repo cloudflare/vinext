@@ -161,15 +161,12 @@ export function compareHybridRoutePatterns(
   return "pages";
 }
 
-// Matches literal delimiter characters, their percent-encoded equivalents, and
-// residual percent escapes produced by decoding an encoded percent sign.
+// Matches literal delimiter characters and their percent-encoded equivalents.
 // Literal `/`, `#`, `?` can appear after decodeURIComponent when the input was
 // originally encoded (e.g. `%2F` → `/`); they are re-encoded to preserve their
-// role as delimiters. A residual escape such as `%61` from `%2561` must also
-// have its percent sign re-encoded so later param decoding cannot turn it into
-// `a`. `\` is included to handle both `%5C` and Windows-style path separators
-// that may appear in filesystem-derived route segments.
-const PATH_DELIMITER_REGEX = /([/#?\\]|%[0-9a-f]{2})/gi;
+// role as delimiters. `\` is included to handle both `%5C` and Windows-style
+// path separators that may appear in filesystem-derived route segments.
+const PATH_DELIMITER_REGEX = /([/#?\\]|%(2f|23|3f|5c))/gi;
 
 function encodePathDelimiters(segment: string): string {
   return segment.replace(PATH_DELIMITER_REGEX, (char) => encodeURIComponent(char));

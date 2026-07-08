@@ -7,8 +7,22 @@
  * Tests: ON-11 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
+import { request as httpRequest } from "node:http";
 
 const BASE = "http://localhost:4174";
+
+function getRawPath(path: string): Promise<{ body: string; status: number }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "localhost", path, port: 4174 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve({ body, status: res.statusCode ?? 0 }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 test.describe("Middleware Redirect (OpenNext compat)", () => {
   // Ref: opennextjs-cloudflare middleware.redirect.test.ts — "Middleware Redirect"
@@ -90,6 +104,10 @@ test.describe("Middleware Block (OpenNext compat)", () => {
     const response = await request.get("/%2561dmin");
     expect(response.status()).toBe(404);
     expect(await response.text()).not.toContain("Protected admin content");
+
+    const encodedStatic = await getRawPath("/%61dmin");
+    expect(encodedStatic.status).toBe(404);
+    expect(encodedStatic.body).not.toContain("Protected admin content");
   });
 
   for (const pathname of ["/foo/..%252fadmin", "/api/health/..%252fadmin"]) {

@@ -7982,7 +7982,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(matchPattern(normalized, "/dashboard")).toBe(false);
   });
 
-  it("RSC route matching does not double-decode pathnames", async () => {
+  it("RSC route matching preserves encoded static identity and canonicalizes page params", async () => {
     // Verify the generated entry delegates route matching to the typed helper.
     const { generateRscEntry } = await import("../packages/vinext/src/entries/app-rsc-entry.js");
     const code = generateRscEntry("/tmp/app", [
@@ -8012,17 +8012,17 @@ describe("double-encoded path handling in middleware", () => {
     ]);
     expect(code).toContain("createAppRscRouteMatcher as __createAppRscRouteMatcher");
     expect(code).toContain("return __routeMatcher.matchRoute(url);");
+    expect(code).toContain("return __routeMatcher.matchRequestRoute(url);");
 
     const routeMatchingSource = await readFile(
       new URL("../packages/vinext/src/server/app-rsc-route-matching.ts", import.meta.url),
       "utf8",
     );
-    // Verify it does NOT call decodeURIComponent (the comment mentions it but
-    // should not have an actual call like `decodeURIComponent(...)`)
-    expect(routeMatchingSource).not.toMatch(/\bdecodeURIComponent\s*\(/);
+    expect(routeMatchingSource).toContain("trieMatchRaw(routeTrie");
+    expect(routeMatchingSource).toContain("encodeURIComponent(decodeURIComponent(value))");
   });
 
-  it("App Router middleware receives a Request with the decoded pathname (not raw URL)", async () => {
+  it("App Router middleware receives a Request with the original encoded pathname", async () => {
     const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
     let capturedUrl: string | undefined;
     const module = {
@@ -8045,8 +8045,8 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.kind).toBe("continue");
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    expect(mwPathname).toBe("/%64ashboard");
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    expect(mwPathname).toBe("/%2564ashboard");
+    expect(mwPathname).not.toBe("/dashboard");
   });
 
   it("App Router middleware preserves status from NextResponse.next()", async () => {
@@ -8249,7 +8249,7 @@ describe("double-encoded path handling in middleware", () => {
     }
   });
 
-  it("Pages Router runMiddleware passes decoded pathname to middleware function", async () => {
+  it("Pages Router runMiddleware preserves the encoded pathname for middleware", async () => {
     const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     // Create a mock Vite server that returns a middleware module
     let capturedUrl: string | undefined;
@@ -8265,19 +8265,45 @@ describe("double-encoded path handling in middleware", () => {
       }),
     };
 
-    // Send a double-encoded path. The request-boundary normalizer decodes the
-    // encoded percent sign once, then re-encodes the residual %64 escape so a
-    // later URL parse or route-param decode cannot turn it into /dashboard.
+    // Next.js may use a decoded pathname for matcher eligibility, but the
+    // middleware-facing NextRequest keeps the original encoded URL pathname.
     const testUrl = "http://localhost:3000/%2564ashboard";
     const request = new Request(testUrl);
     await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
-    // Middleware should receive the canonical, idempotently normalized URL.
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
     expect(mwPathname).toBe("/%2564ashboard");
     // It must NOT be double-decoded to /dashboard
     expect(mwPathname).not.toBe("/dashboard");
+  });
+
+  it("uses the normalized pathname for matching without exposing it to middleware", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    let capturedPathname: string | undefined;
+    const mockRunner = {
+      import: async () => ({
+        default: (req: Request) => {
+          capturedPathname = new URL(req.url).pathname;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+        config: { matcher: "/admin" },
+      }),
+    };
+
+    const request = new Request("http://localhost:3000/%61dmin");
+    await runMiddleware(
+      mockRunner as any,
+      "/tmp/middleware.ts",
+      request,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/admin",
+    );
+
+    expect(capturedPathname).toBe("/%61dmin");
   });
 
   it("runMiddleware accepts named proxy export", async () => {

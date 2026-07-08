@@ -610,8 +610,8 @@ function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
 }
 
-function matchNormalizedRoute(url) {
-  return __routeMatcher.matchNormalizedRoute(url);
+function matchRequestRoute(url) {
+  return __routeMatcher.matchRequestRoute(url);
 }
 
 /**
@@ -1192,7 +1192,7 @@ export default createAppRscHandler({
       : ""
   }
   matchRoute,
-  matchNormalizedRoute,
+  matchRequestRoute,
   ${
     middlewarePath
       ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request }) {

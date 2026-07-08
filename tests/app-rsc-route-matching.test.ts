@@ -80,18 +80,32 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("does not decode already-normalized request pathnames twice", () => {
+  it("matches encoded request pathnames with Next.js App Router semantics", () => {
     const matcher = createAppRscRouteMatcher([
       route("/admin", ["admin"]),
       route("/files/:name", ["files", ":name"]),
+      { ...route("/api/:name", ["api", ":name"]), routeHandler: {} },
     ]);
 
     expect(matcher.matchRoute("/%61dmin")).toMatchObject({
       route: { pattern: "/admin" },
     });
-    expect(matcher.matchNormalizedRoute("/%2561dmin")).toBeNull();
-    expect(matcher.matchNormalizedRoute("/files/a%2561")).toMatchObject({
+    expect(matcher.matchRequestRoute("/%61dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/%2561dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/files/%61")).toMatchObject({
+      params: { name: "a" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2561")).toMatchObject({
+      params: { name: "a%2561" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2Fb")).toMatchObject({
+      params: { name: "a%2Fb" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2561")).toMatchObject({
       params: { name: "a%61" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2Fb")).toMatchObject({
+      params: { name: "a/b" },
     });
   });
 
@@ -710,6 +724,7 @@ type TestSiblingIntercept = {
 type TestRoute = {
   pattern: string;
   patternParts: string[];
+  routeHandler?: unknown;
   slots?: Record<string, { intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };

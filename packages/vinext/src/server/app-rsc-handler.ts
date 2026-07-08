@@ -322,7 +322,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   isDev: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
-  matchNormalizedRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -523,6 +523,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
   const originalResolvedUrl = resolvedUrl;
@@ -536,10 +537,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const canonicalPathname = cleanPathname;
 
   const basePathState = { basePath: options.basePath, hadBasePath };
-  let cleanPathnameIsNormalized = true;
+  let cleanPathnameIsRequestPathname = true;
   const matchCleanPathname = () =>
-    cleanPathnameIsNormalized && options.matchNormalizedRoute
-      ? options.matchNormalizedRoute(cleanPathname)
+    cleanPathnameIsRequestPathname && options.matchRequestRoute
+      ? options.matchRequestRoute(requestCleanPathname)
       : options.matchRoute(cleanPathname);
 
   if (
@@ -640,7 +641,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    if (middlewareResult.rewritten) cleanPathnameIsNormalized = false;
+    if (middlewareResult.rewritten) cleanPathnameIsRequestPathname = false;
     didMiddlewareRewrite = middlewareResult.rewritten;
     didMiddlewareRewritePathname = cleanPathname !== normalized.cleanPathname;
     if (middlewareResult.search !== null) {
@@ -683,7 +684,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (beforeFilesRewrite) {
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-      cleanPathnameIsNormalized = false;
+      cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
     }
   }
@@ -719,7 +720,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       if (!rewritten) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-      cleanPathnameIsNormalized = false;
+      cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
       actionMatch = matchCleanPathname();
       if (actionMatch) break;
@@ -744,7 +745,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         if (!rewritten) continue;
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-        cleanPathnameIsNormalized = false;
+        cleanPathnameIsRequestPathname = false;
         filesystemRouteEligible = true;
         actionMatch = matchCleanPathname();
         if (actionMatch) break;
@@ -961,7 +962,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       if (!afterFilesRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-      cleanPathnameIsNormalized = false;
+      cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
@@ -1007,7 +1008,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       if (!fallbackRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-      cleanPathnameIsNormalized = false;
+      cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;

@@ -4074,6 +4074,11 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        server.middlewares.use((req, _res, next) => {
+          req.__vinextOriginalEncodedUrl ??= req.url;
+          next();
+        });
+
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
@@ -4710,6 +4715,7 @@ export const loadServerActionClient = ${
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
+              let middlewareUrl = req.__vinextOriginalEncodedUrl ?? url;
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -4759,6 +4765,13 @@ export const loadServerActionClient = ${
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = stripped + qs;
                 pathname = stripped;
+                const middlewarePathname = middlewareUrl.split("?")[0];
+                if (middlewarePathname.startsWith(bp)) {
+                  const middlewareQs = middlewareUrl.includes("?")
+                    ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
+                    : "";
+                  middlewareUrl = (middlewarePathname.slice(bp.length) || "/") + middlewareQs;
+                }
               }
 
               if (nextConfig) {
@@ -4813,6 +4826,7 @@ export const loadServerActionClient = ${
                     capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
                   );
                   url = pagePathname + qs;
+                  middlewareUrl = url;
                   pathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
@@ -4947,7 +4961,7 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(url, mwOrigin), {
+                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
                       });

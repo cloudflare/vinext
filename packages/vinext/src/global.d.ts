@@ -486,6 +486,8 @@ declare module "node:http" {
      * the final response status.
      */
     __vinextMiddlewareStatus?: number;
+    /** Encoded request URL captured before Vite normalizes the pathname. */
+    __vinextOriginalEncodedUrl?: string;
   }
 }
 

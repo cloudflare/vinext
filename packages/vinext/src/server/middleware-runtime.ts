@@ -244,10 +244,11 @@ function createNextRequest(
   // configured value. Out-of-basePath ("absolute path") requests must stay
   // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
   // getNextPathnameInfo semantics).
+  const requestPathname = url.pathname;
   const mwPathname =
-    basePath && hadBasePath
-      ? addBasePathToPathname(normalizedPathname, basePath)
-      : normalizedPathname;
+    basePath && hadBasePath && !hasBasePath(requestPathname, basePath)
+      ? addBasePathToPathname(requestPathname, basePath)
+      : requestPathname;
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
