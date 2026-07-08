@@ -845,8 +845,9 @@ describe("handleApiRoute", () => {
 
   describe("res.redirect()", () => {
     it("redirects with default 307 when given only a URL", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect("/dashboard");
+        returnedResponse = res.redirect("/dashboard");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/login");
@@ -856,12 +857,16 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(307);
       expect(res._headers["location"]).toBe("/dashboard");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/dashboard");
       expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with custom status code", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect(301, "/new-location");
+        returnedResponse = res.redirect(301, "/new-location");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/old");
@@ -871,6 +876,10 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(301);
       expect(res._headers["location"]).toBe("/new-location");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/new-location");
+      expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with 302 status code", async () => {
@@ -885,6 +894,34 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(302);
       expect(res._headers["location"]).toBe("https://external.com");
+    });
+
+    it.each([
+      [null, undefined],
+      [307, undefined],
+      [true, "/destination"],
+    ])("rejects invalid redirect arguments %#", async (statusOrUrl, url) => {
+      const handler = vi.fn((_req: any, res: any) => {
+        res.redirect(statusOrUrl, url);
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/invalid-redirect");
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/invalid-redirect", [
+        route("/api/invalid-redirect"),
+      ]);
+
+      expect(reportRequestError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(res._statusCode).toBe(500);
+      expect(res._body).toBe("Internal Server Error");
     });
   });
 

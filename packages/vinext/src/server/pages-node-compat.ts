@@ -48,7 +48,7 @@ export type PagesReqResResponse = Writable & {
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
-  redirect: (statusOrUrl: number | string, url?: string) => void;
+  redirect: (statusOrUrl: number | string, url?: string) => PagesReqResResponse;
   getHeaders: () => PagesReqResHeaders;
   revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
   setPreviewData: (
@@ -333,13 +333,20 @@ class PagesResponseStream extends Writable {
     this.end(String(data));
   }
 
-  redirect(statusOrUrl: number | string, url?: string): void {
+  redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
     if (typeof statusOrUrl === "string") {
-      this.writeHead(307, { Location: statusOrUrl });
-    } else {
-      this.writeHead(statusOrUrl, { Location: url ?? "" });
+      url = statusOrUrl;
+      statusOrUrl = 307;
     }
+    if (typeof statusOrUrl !== "number" || typeof url !== "string") {
+      throw new Error(
+        "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+      );
+    }
+    this.writeHead(statusOrUrl, { Location: url });
+    this.write(url);
     this.end();
+    return this as PagesReqResResponse;
   }
 
   getHeaders(): PagesReqResHeaders {

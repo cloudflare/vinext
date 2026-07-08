@@ -55,7 +55,7 @@ type NextApiResponse = {
   status(code: number): NextApiResponse;
   json(data: unknown): void;
   send(data: unknown): void;
-  redirect(statusOrUrl: number | string, url?: string): void;
+  redirect(statusOrUrl: number | string, url?: string): NextApiResponse;
   revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void>;
   setPreviewData(
     data: object | string,
@@ -334,11 +334,18 @@ function enhanceApiObjects(
 
     redirect(this: NextApiResponse, statusOrUrl: number | string, url?: string) {
       if (typeof statusOrUrl === "string") {
-        this.writeHead(307, { Location: statusOrUrl });
-      } else {
-        this.writeHead(statusOrUrl, { Location: url ?? "" });
+        url = statusOrUrl;
+        statusOrUrl = 307;
       }
+      if (typeof statusOrUrl !== "number" || typeof url !== "string") {
+        throw new Error(
+          "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        );
+      }
+      this.writeHead(statusOrUrl, { Location: url });
+      this.write(url);
       this.end();
+      return this;
     },
 
     // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
