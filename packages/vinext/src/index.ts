@@ -47,6 +47,7 @@ import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
+import type { SsrRenderTransport } from "./entries/ssr-render-transport.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
@@ -1325,6 +1326,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let ssrRenderTransport: SsrRenderTransport = "node";
   let nitroTraceDepsFromServerExternals: string[] = [];
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
@@ -1397,6 +1399,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       fileMatcher,
       middlewarePath,
       instrumentationPath,
+      ssrRenderTransport,
     );
   }
 
@@ -2369,6 +2372,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             typeof p.name === "string" &&
             (p.name === "nitro" || p.name.startsWith("nitro:")),
         );
+        ssrRenderTransport = hasCloudflarePlugin || hasNitroPlugin ? "web" : "node";
 
         // Resolve PostCSS string plugin names that Vite can't handle.
         // Next.js projects commonly use array-form plugins like
@@ -3658,7 +3662,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return generateImageAdaptersModule(options.images);
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
-            return generateSsrEntry(hasPagesDir);
+            return generateSsrEntry(hasPagesDir, ssrRenderTransport);
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
             const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);

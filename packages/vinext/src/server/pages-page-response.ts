@@ -202,6 +202,7 @@ type RenderPagesPageResponseOptions = {
   query?: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
+  renderToString?: (element: ReactNode) => Promise<string>;
   resetSSRHead?: (() => void) | undefined;
   routePattern: string;
   routeUrl: string;
@@ -516,13 +517,16 @@ export async function renderPagesPageResponse(
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent: options.DocumentComponent,
     enhancePageElement: options.enhancePageElement,
-    renderToReadableStream: options.renderToReadableStream,
+    renderToString:
+      options.renderToString ??
+      (async (element) => readStreamAsText(await options.renderToReadableStream(element))),
     // Render the collected `styles` fragment with the plain stream renderer
     // rather than the full `<Document>` shell renderer — the styles tree is a
     // standalone fragment, so it doesn't need the heavier document pipeline.
     // Mirrors the dev path, which passes its `renderToStringAsync` wrapper.
-    renderStylesToString: async (element) =>
-      readStreamAsText(await options.renderToReadableStream(element)),
+    renderStylesToString:
+      options.renderToString ??
+      (async (element) => readStreamAsText(await options.renderToReadableStream(element))),
     scriptNonce: options.scriptNonce,
     context: {
       err: options.err,

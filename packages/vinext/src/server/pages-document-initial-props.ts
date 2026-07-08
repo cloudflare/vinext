@@ -44,7 +44,6 @@ import { withScriptNonce } from "vinext/shims/script-nonce-context";
 // and was flagged by reviewers as unnecessary work — and worse, it left a
 // per-request `await` on the fast path where the user had no override.
 import BaseDocument from "vinext/shims/document";
-import { readStreamAsText } from "../utils/text-stream.js";
 
 const BASE_GET_INITIAL_PROPS = (
   BaseDocument as unknown as {
@@ -105,8 +104,8 @@ type DocumentRenderPageInput = {
    * nonce responsibility so the prod and dev paths stay symmetric.
    */
   enhancePageElement?: ((opts: RenderPageEnhancers) => ReactNode) | undefined;
-  /** Render a React tree to a UTF-8 byte stream (prod/dev specific). */
-  renderToReadableStream: (element: React.ReactElement) => Promise<ReadableStream<Uint8Array>>;
+  /** Render a React tree to an HTML string (prod/dev specific). */
+  renderToString: (element: React.ReactElement) => Promise<string>;
   /** Render the document `styles` element to an HTML string. */
   renderStylesToString: (element: React.ReactElement) => Promise<string>;
   /** Per-request CSP nonce applied to the enhanced page tree, if any. */
@@ -193,8 +192,7 @@ export async function runDocumentRenderPage(
     // Nonce responsibility lives here so prod and dev produce identical
     // output — callers' `enhancePageElement` must not apply it themselves.
     const wrapped = withScriptNonce(enhancedElement as React.ReactElement, input.scriptNonce);
-    const stream = await input.renderToReadableStream(wrapped);
-    const html = await readStreamAsText(stream);
+    const html = await input.renderToString(wrapped);
     return { html, head: [] };
   };
 

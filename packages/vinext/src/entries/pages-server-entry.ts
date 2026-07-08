@@ -15,6 +15,7 @@ import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { hasExportedName } from "../build/report.js";
+import type { SsrRenderTransport } from "./ssr-render-transport.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -44,6 +45,7 @@ export async function generateServerEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   middlewarePath: string | null,
   instrumentationPath: string | null,
+  ssrRenderTransport: SsrRenderTransport = "web",
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
@@ -198,12 +200,17 @@ export async function runMiddleware(request) {
 }
 `;
 
-  // The server entry is a self-contained module that uses Web-standard APIs
-  // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
+  const pagesRenderRuntimePath = resolveEntryPath(
+    `../server/pages-render-runtime.${ssrRenderTransport}.js`,
+    import.meta.url,
+  );
+
+  // Keep the generated entry as routing/config glue; the selected runtime
+  // module owns React's Node/Web render transport.
   return `
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderPagesToReadableStream as _renderToReadableStream, renderPagesToString as _renderToStringAsync } from ${JSON.stringify(pagesRenderRuntimePath)};
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
@@ -268,12 +275,6 @@ __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemoryS
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
 // by _app are included in every page's <link rel="stylesheet"> set.
 const _appAssetPath = ${appAssetPathJson};
-
-async function _renderToStringAsync(element) {
-  const stream = await renderToReadableStream(element);
-  await stream.allReady;
-  return new Response(stream).text();
-}
 
 async function _renderIsrPassToStringAsync(element) {
   // The cache-fill render is a second render pass for the same request.
@@ -414,7 +415,8 @@ const _renderPage = __createPagesPageHandler({
       return preloads;
     } catch { return []; }
   },
-  renderToReadableStream,
+  renderToReadableStream: _renderToReadableStream,
+  renderToString: _renderToStringAsync,
   renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
   safeJsonStringify,
   sanitizeDestination: sanitizeDestinationLocal,

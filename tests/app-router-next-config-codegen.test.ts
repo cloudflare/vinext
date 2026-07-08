@@ -187,6 +187,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("handleApiRoute, matchApiRoute, matchPageRoute, pageRoutes, renderPage");
   });
 
+  it("selects the target-specific App SSR runtime module", () => {
+    const webCode = generateSsrEntry(false, "web");
+    const nodeCode = generateSsrEntry(false, "node");
+
+    expect(webCode).toContain("app-ssr-entry.web");
+    expect(webCode).not.toContain("app-ssr-entry.node");
+    expect(nodeCode).toContain("app-ssr-entry.node");
+    expect(nodeCode).not.toContain("app-ssr-entry.web");
+  });
+
   it("embeds basePath and trailingSlash alongside config", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", true, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],

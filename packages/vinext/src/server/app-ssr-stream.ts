@@ -12,7 +12,7 @@ import {
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
 
-type RscEmbedTransform = {
+export type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
   /** Resolves when all raw bytes from the embed stream have been read. */
@@ -20,7 +20,7 @@ type RscEmbedTransform = {
 };
 
 type HtmlInsertion = string | (() => string);
-type InlineCssManifest = Record<string, string>;
+export type InlineCssManifest = Record<string, string>;
 export type InitialNavigationCacheMetadata = {
   kind: "dynamic" | "static";
   dynamicStaleTimeSeconds?: number;
@@ -441,24 +441,45 @@ const DOCUMENT_CLOSE_SUFFIX = "</body></html>";
  *    to no-op and let the user-rendered Script (in its source-order
  *    position) ship as-is.
  */
-export function createTickBufferedTransform(
-  rscEmbed: RscEmbedTransform,
-  injectHTML: HtmlInsertion = "",
-  injectAfterHeadOpenHTML: HtmlInsertion = "",
-  inlineCssManifest?: InlineCssManifest,
-  inlineCssPrependCss = "",
-  inlineCssPrependFallbackHTML = "",
-  inlineCssScriptNonce?: string,
-): TransformStream<Uint8Array, Uint8Array> {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
+export type AppHtmlInsertionState = {
+  push(chunk: string): void;
+  flushTick(): string[];
+  finish(): Promise<string[]>;
+};
+
+export type CreateAppHtmlInsertionStateOptions = {
+  rscEmbed: RscEmbedTransform;
+  injectHTML?: HtmlInsertion;
+  injectAfterHeadOpenHTML?: HtmlInsertion;
+  inlineCssManifest?: InlineCssManifest;
+  inlineCssPrependCss?: string;
+  inlineCssPrependFallbackHTML?: string;
+  inlineCssScriptNonce?: string;
+};
+
+/**
+ * Target-neutral App SSR HTML insertion state. Web and Node stream adapters own
+ * byte decoding/encoding; this state owns the ordered HTML/RSC insertions so
+ * both runtimes share the same boundary-sensitive algorithm.
+ */
+export function createAppHtmlInsertionState(
+  options: CreateAppHtmlInsertionStateOptions,
+): AppHtmlInsertionState {
+  const {
+    rscEmbed,
+    injectHTML = "",
+    injectAfterHeadOpenHTML = "",
+    inlineCssManifest,
+    inlineCssScriptNonce,
+  } = options;
+  let inlineCssPrependCss = options.inlineCssPrependCss ?? "";
+  let inlineCssPrependFallbackHTML = options.inlineCssPrependFallbackHTML ?? "";
   const insertsPerFlush = typeof injectHTML === "function";
   let injected = false;
   let preHeadInjected = false;
   let suffixStripped = false;
   let buffered: string[] = [];
   let pendingHtml = "";
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   // Computed once at transform creation: every flush is a hot path, so we
   // avoid re-running Object.keys() on the manifest per chunk. Gates both the
   // split-link boundary buffering and the inline-css link rewrite below.
@@ -467,11 +488,10 @@ export function createTickBufferedTransform(
 
   /**
    * Strip the first occurrence of `</body></html>` from `chunk` so it can be
-   * re-emitted at the very end of the stream. Returns the rewritten chunk and
-   * a flag indicating whether a suffix was found. If `suffixStripped` is
-   * already true (i.e. an earlier chunk contained the suffix), this is a
-   * no-op — additional matches in later chunks shouldn't happen in practice,
-   * but we leave them alone to avoid corrupting unexpected output.
+   * re-emitted at the very end of the stream. Returns the rewritten chunk. If
+   * `suffixStripped` is already true, this is a no-op — additional matches in
+   * later chunks should not happen in practice, but leaving them alone avoids
+   * corrupting unexpected output.
    */
   const stripDocumentCloseSuffix = (chunk: string): string => {
     if (suffixStripped) return chunk;
@@ -491,10 +511,10 @@ export function createTickBufferedTransform(
     inlineCssPrependCss = "";
     return inlineCssPrependFallbackHTML;
   };
-  const emitInsertion = (controller: TransformStreamDefaultController<Uint8Array>): void => {
+  const pushInsertion = (output: string[]): void => {
     const insertion = readInlineCssPrependFallback() + readInsertion();
     if (insertion) {
-      controller.enqueue(encoder.encode(insertion));
+      output.push(insertion);
     }
   };
 
@@ -503,12 +523,6 @@ export function createTickBufferedTransform(
    * scripts) immediately after the `<head ...>` opening tag. Returns the
    * rewritten chunk and a flag indicating whether the splice happened, so the
    * caller can mark `preHeadInjected` and stop scanning further chunks.
-   *
-   * NOTE: This is called only when `<head ...>` lies fully inside the current
-   * tick-buffered batch. We deliberately avoid retaining arbitrary output until
-   * a future chunk completes `<head ...>`, which would delay TTFB and complicate
-   * the existing `</head>` injection path. In practice React Fizz emits the
-   * opening shell as a single batch.
    */
   const spliceAfterHeadOpen = (chunk: string): { chunk: string; spliced: boolean } => {
     if (preHeadInjected) return { chunk, spliced: false };
@@ -523,11 +537,9 @@ export function createTickBufferedTransform(
     };
   };
 
-  const flushBuffered = (
-    controller: TransformStreamDefaultController<Uint8Array>,
-    final = false,
-  ): void => {
-    if (buffered.length === 0 && !pendingHtml) return;
+  const flushBuffered = (final = false): string[] => {
+    const output: string[] = [];
+    if (buffered.length === 0 && !pendingHtml) return output;
     const rawHtml = pendingHtml + buffered.join("");
     buffered = [];
     pendingHtml = "";
@@ -539,12 +551,12 @@ export function createTickBufferedTransform(
     if (split.trailing) {
       pendingHtml = split.trailing;
     }
-    if (!split.complete) return;
+    if (!split.complete) return output;
 
     if (injected && insertsPerFlush) {
       // Emit newly collected server-inserted HTML before the next Fizz HTML
       // batch so CSS-in-JS styles precede the elements they style.
-      emitInsertion(controller);
+      pushInsertion(output);
     }
 
     const preparedHtml = fixPreloadAs(split.complete);
@@ -573,31 +585,80 @@ export function createTickBufferedTransform(
       if (headEnd !== -1) {
         const before = working.slice(0, headEnd);
         const after = stripDocumentCloseSuffix(working.slice(headEnd));
-        controller.enqueue(
-          encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
-        );
+        output.push(before + readInlineCssPrependFallback() + readInsertion() + after);
         injected = true;
-        return;
+        return output;
       }
     }
     working = stripDocumentCloseSuffix(working);
-    controller.enqueue(encoder.encode(working));
+    output.push(working);
+    return output;
+  };
+
+  return {
+    push(chunk: string): void {
+      buffered.push(chunk);
+    },
+
+    flushTick(): string[] {
+      const output = flushBuffered();
+      const rscScripts = rscEmbed.flush();
+      if (rscScripts) {
+        output.push(rscScripts);
+      }
+      return output;
+    },
+
+    async finish(): Promise<string[]> {
+      const output = flushBuffered(true);
+
+      if (!injected) {
+        pushInsertion(output);
+        injected = true;
+      } else if (insertsPerFlush) {
+        pushInsertion(output);
+      }
+
+      const finalScripts = await rscEmbed.finalize();
+      if (finalScripts) {
+        output.push(finalScripts);
+      }
+
+      // Emit `</body></html>` last so the document always terminates with a
+      // well-formed close, after any trailing flight chunks / preinit scripts.
+      // Mirrors Next.js's `createMoveSuffixStream` behaviour (#1532).
+      output.push(DOCUMENT_CLOSE_SUFFIX);
+      return output;
+    },
+  };
+}
+
+export function createTickBufferedTransform(
+  options: CreateAppHtmlInsertionStateOptions,
+): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const state = createAppHtmlInsertionState(options);
+
+  const enqueueStrings = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    chunks: string[],
+  ): void => {
+    for (const chunk of chunks) {
+      controller.enqueue(encoder.encode(chunk));
+    }
   };
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      buffered.push(decoder.decode(chunk, { stream: true }));
+      state.push(decoder.decode(chunk, { stream: true }));
 
       if (timeoutId !== null) return;
 
       timeoutId = setTimeout(() => {
         try {
-          flushBuffered(controller);
-
-          const rscScripts = rscEmbed.flush();
-          if (rscScripts) {
-            controller.enqueue(encoder.encode(rscScripts));
-          }
+          enqueueStrings(controller, state.flushTick());
         } catch {
           // Stream was cancelled between when the timeout was registered and
           // when it fired (e.g. client disconnected, health-check cancelled
@@ -615,27 +676,10 @@ export function createTickBufferedTransform(
       }
       const remainder = decoder.decode();
       if (remainder) {
-        buffered.push(remainder);
+        state.push(remainder);
       }
 
-      flushBuffered(controller, true);
-
-      if (!injected) {
-        emitInsertion(controller);
-        injected = true;
-      } else if (insertsPerFlush) {
-        emitInsertion(controller);
-      }
-
-      const finalScripts = await rscEmbed.finalize();
-      if (finalScripts) {
-        controller.enqueue(encoder.encode(finalScripts));
-      }
-
-      // Emit `</body></html>` last so the document always terminates with a
-      // well-formed close, after any trailing flight chunks / preinit scripts.
-      // Mirrors Next.js's `createMoveSuffixStream` behaviour (#1532).
-      controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
+      enqueueStrings(controller, await state.finish());
     },
   });
 }

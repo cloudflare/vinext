@@ -130,7 +130,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // Close RSC stream before second flush cycle completes
     setTimeout(() => rsc.close(), 5);
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // RSC scripts should be present in output
@@ -152,7 +152,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const htmlStream = createMockHtmlStream([["<html><head></head><body></body></html>"]]);
     rsc.close();
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     expect(output).toContain(`<script nonce="vinext-test-nonce">((self[${RSC_RUNTIME_KEY}]`);
@@ -181,7 +181,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     rsc.close();
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const chunks = await collectStreamChunks(htmlStream.pipeThrough(transform));
 
     // Reconstruct the full output
@@ -215,7 +215,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     rsc.close();
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const chunks = await collectStreamChunks(htmlStream.pipeThrough(transform));
     const output = chunks.join("");
 
@@ -266,7 +266,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       },
     });
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // All HTML should be present
@@ -304,7 +304,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       ["<html><head><title>Test</title></head><body>content</body></html>"],
     ]);
 
-    const transform = createTickBufferedTransform(rscEmbed, injectHTML);
+    const transform = createTickBufferedTransform({ rscEmbed, injectHTML });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // Injected content should appear before </head>
@@ -332,7 +332,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       ["</head><body>content</body></html>"],
     ]);
 
-    const transform = createTickBufferedTransform(rscEmbed, injectHTML);
+    const transform = createTickBufferedTransform({ rscEmbed, injectHTML });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // Injected content should appear before </head>
@@ -378,7 +378,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       },
     });
 
-    const transform = createTickBufferedTransform(rscEmbed, getServerInsertedHTML);
+    const transform = createTickBufferedTransform({ rscEmbed, injectHTML: getServerInsertedHTML });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     const shellStylePos = output.indexOf('data-styled="shell"');
@@ -415,7 +415,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       },
     });
 
-    const transform = createTickBufferedTransform(rscEmbed, getServerInsertedHTML);
+    const transform = createTickBufferedTransform({ rscEmbed, injectHTML: getServerInsertedHTML });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     const shellStylePos = output.indexOf('data-styled="shell"');
@@ -451,7 +451,10 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       },
     });
 
-    const transform = createTickBufferedTransform(rscEmbed, () => errorMetaRenderer.flush());
+    const transform = createTickBufferedTransform({
+      rscEmbed,
+      injectHTML: () => errorMetaRenderer.flush(),
+    });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     const shellPos = output.indexOf("<main>shell</main>");
@@ -477,7 +480,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // No </head> in the HTML at all (edge case)
     const htmlStream = createMockHtmlStream([["<body>content</body>"]]);
 
-    const transform = createTickBufferedTransform(rscEmbed, injectHTML);
+    const transform = createTickBufferedTransform({ rscEmbed, injectHTML });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // Should still inject the content (at the end, via flush handler fallback)
@@ -493,7 +496,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     const htmlStream = createMockHtmlStream([["<html><head></head><body>Hello</body></html>"]]);
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // Done signal must always be present so the browser knows streaming is complete
@@ -518,7 +521,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       rsc.close();
     }, 30);
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // HTML should be present
@@ -544,7 +547,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     const htmlStream = createMockHtmlStream([["<html><head></head><body>content</body></html>"]]);
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // Extract RSC script contents to verify ordering
@@ -597,7 +600,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       },
     });
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // All 5 boundaries should be in the HTML
@@ -634,7 +637,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     const htmlStream = createMockHtmlStream([["<html><head></head><body>content</body></html>"]]);
 
-    const transform = createTickBufferedTransform(rscEmbed);
+    const transform = createTickBufferedTransform({ rscEmbed });
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
     // The output should contain the RSC chunk

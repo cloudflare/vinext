@@ -34,6 +34,19 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+function readJavaScriptBundleText(dir: string): string {
+  let text = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      text += readJavaScriptBundleText(entryPath);
+    } else if (entry.name.endsWith(".js") || entry.name.endsWith(".mjs")) {
+      text += fs.readFileSync(entryPath, "utf-8");
+    }
+  }
+  return text;
+}
+
 function findRoute(
   results: PrerenderRouteResult[],
   route: string,
@@ -1635,9 +1648,11 @@ describe("assertNoFatalPrerenderRoutes (#1982)", () => {
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
   let outDir: string;
   let allResults: PrerenderRouteResult[];
+  let workerBundleText: string;
 
   beforeAll(async () => {
     const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
+    workerBundleText = readJavaScriptBundleText(path.join(root, "dist", "server"));
     outDir = path.join(root, "dist", "server", "prerendered-routes");
 
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
@@ -1647,6 +1662,14 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
   }, 180_000);
 
   // ── App Router ──────────────────────────────────────────────────────────────
+
+  it("does not emit Node renderer transport into the Worker bundle", () => {
+    expect(workerBundleText).not.toContain("node-fizz-stream");
+    expect(workerBundleText).not.toContain("app-ssr-stream-node");
+    expect(workerBundleText).not.toContain("renderToPipeableStream");
+    expect(workerBundleText).not.toContain("react-dom/server.node");
+    expect(workerBundleText).not.toContain("node:string_decoder");
+  });
 
   describe("prerenderApp — app router via prod server HTTP", () => {
     it("renders / speculatively", () => {

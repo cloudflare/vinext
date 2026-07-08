@@ -1,4 +1,5 @@
 import { resolveRuntimeEntryModule } from "./runtime-entry-module.js";
+import type { SsrRenderTransport } from "./ssr-render-transport.js";
 
 /**
  * Generate the virtual SSR entry module.
@@ -11,8 +12,11 @@ import { resolveRuntimeEntryModule } from "./runtime-entry-module.js";
  * `virtual:vinext-server-entry` so the RSC bundle can access Pages Router
  * route metadata and fallback dispatchers via `import("./ssr/index.js")`.
  */
-export function generateSsrEntry(hasPagesDir = false): string {
-  const entryPath = resolveRuntimeEntryModule("app-ssr-entry");
+export function generateSsrEntry(
+  hasPagesDir = false,
+  ssrRenderTransport: SsrRenderTransport = "web",
+): string {
+  const entryPath = resolveRuntimeEntryModule(`app-ssr-entry.${ssrRenderTransport}`);
 
   return `
 export * from ${JSON.stringify(entryPath)};

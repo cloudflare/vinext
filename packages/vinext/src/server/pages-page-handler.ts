@@ -54,6 +54,7 @@ import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
+import { readStreamAsText } from "../utils/text-stream.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,6 +167,8 @@ export type CreatePagesPageHandlerOptions = {
   getFontPreloads: () => Array<{ href: string; type: string }>;
   /** `renderToReadableStream` from `react-dom/server.edge`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
+  /** Render a React tree to a complete HTML string. */
+  renderToString?: (element: ReactNode) => Promise<string>;
   /** Render a second ISR pass to a string (wraps renderToReadableStream). */
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   /** `safeJsonStringify` from `vinext/html`. */
@@ -262,6 +265,7 @@ export function createPagesPageHandler(
     getFontStyles,
     getFontPreloads,
     renderToReadableStream,
+    renderToString,
     renderIsrPassToStringAsync,
     safeJsonStringify,
     sanitizeDestination,
@@ -272,7 +276,9 @@ export function createPagesPageHandler(
   } = opts;
 
   function renderToStringAsync(element: ReactNode): Promise<string> {
-    return renderToReadableStream(element).then((stream) => new Response(stream).text());
+    return renderToString
+      ? renderToString(element)
+      : renderToReadableStream(element).then((stream) => readStreamAsText(stream));
   }
 
   function findNotFoundRoute(): PageRoute | null {
@@ -800,6 +806,7 @@ export function createPagesPageHandler(
             return renderToStringAsync(element);
           },
           renderToReadableStream,
+          renderToString: renderToStringAsync,
           resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
           setDocumentInitialHead:
             typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
