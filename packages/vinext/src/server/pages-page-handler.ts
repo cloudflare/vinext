@@ -204,6 +204,7 @@ type RenderPageOptions = {
   initialMiddlewareMatchCanVaryByRequest?: boolean;
   initialMiddlewareRewriteUrl?: string;
   initialMiddlewareStatus?: number;
+  initialMiddlewareOverridesRequestHeaders?: boolean;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -603,7 +604,7 @@ export function createPagesPageHandler(
           ? new URL(options.initialMiddlewareRewriteUrl, originalRequestUrl)
           : null;
         const middlewareRouteIdentity = middlewareRewriteUrl
-          ? middlewareRewriteUrl.pathname + middlewareRewriteUrl.search
+          ? middlewareRewriteUrl.pathname
           : routePathname;
         const middlewareAffectsCacheIdentity =
           options?.initialMiddlewareMatched === true &&
@@ -617,9 +618,10 @@ export function createPagesPageHandler(
           middlewareAffectsCacheIdentity,
         });
         const middlewareOverridesRequestHeaders =
-          middlewareHeaders !== null &&
-          middlewareHeaders !== undefined &&
-          buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders) !== null;
+          options?.initialMiddlewareOverridesRequestHeaders === true ||
+          (middlewareHeaders !== null &&
+            middlewareHeaders !== undefined &&
+            buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders) !== null);
         const isrIdentityUrl = isolateMiddlewareIsr ? visiblePathname : routeUrl;
         if (isOnDemandRevalidate && isolateMiddlewareIsr) {
           await invalidateIsrTags(getPagesPathCacheTags(isrIdentityUrl));

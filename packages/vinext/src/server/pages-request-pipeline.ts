@@ -41,6 +41,7 @@ import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pa
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -49,6 +50,7 @@ export type PagesRenderOptions = {
   initialMiddlewareMatchCanVaryByRequest?: boolean;
   initialMiddlewareRewriteUrl?: string;
   initialMiddlewareStatus?: number;
+  initialMiddlewareOverridesRequestHeaders?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
@@ -419,6 +421,8 @@ export async function runPagesRequest(
   }
 
   // Step 6: Unpack middleware request headers
+  const initialMiddlewareOverridesRequestHeaders =
+    buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareHeaders) !== null;
   const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(
     middlewareHeaders,
     request,
@@ -682,7 +686,8 @@ export async function runPagesRequest(
       initialMiddlewareMatched ||
       initialMiddlewareMatchCanVaryByRequest ||
       initialMiddlewareRewriteUrl !== undefined ||
-      middlewareStatus !== undefined
+      middlewareStatus !== undefined ||
+      initialMiddlewareOverridesRequestHeaders
         ? {
             ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
             ...(isDataReq ? { isDataReq: true } : {}),
@@ -693,6 +698,9 @@ export async function runPagesRequest(
             ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
             ...(middlewareStatus !== undefined
               ? { initialMiddlewareStatus: middlewareStatus }
+              : {}),
+            ...(initialMiddlewareOverridesRequestHeaders
+              ? { initialMiddlewareOverridesRequestHeaders: true }
               : {}),
           }
         : undefined;
@@ -745,7 +753,8 @@ export async function runPagesRequest(
           initialMiddlewareMatched ||
             initialMiddlewareMatchCanVaryByRequest ||
             initialMiddlewareRewriteUrl !== undefined ||
-            middlewareStatus !== undefined
+            middlewareStatus !== undefined ||
+            initialMiddlewareOverridesRequestHeaders
             ? {
                 ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
                 ...(initialMiddlewareMatchCanVaryByRequest
@@ -754,6 +763,9 @@ export async function runPagesRequest(
                 ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
                 ...(middlewareStatus !== undefined
                   ? { initialMiddlewareStatus: middlewareStatus }
+                  : {}),
+                ...(initialMiddlewareOverridesRequestHeaders
+                  ? { initialMiddlewareOverridesRequestHeaders: true }
                   : {}),
               }
             : undefined,
@@ -772,7 +784,8 @@ export async function runPagesRequest(
         initialMiddlewareMatched ||
           initialMiddlewareMatchCanVaryByRequest ||
           initialMiddlewareRewriteUrl !== undefined ||
-          middlewareStatus !== undefined
+          middlewareStatus !== undefined ||
+          initialMiddlewareOverridesRequestHeaders
           ? {
               ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
               ...(initialMiddlewareMatchCanVaryByRequest
@@ -781,6 +794,9 @@ export async function runPagesRequest(
               ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
               ...(middlewareStatus !== undefined
                 ? { initialMiddlewareStatus: middlewareStatus }
+                : {}),
+              ...(initialMiddlewareOverridesRequestHeaders
+                ? { initialMiddlewareOverridesRequestHeaders: true }
                 : {}),
             }
           : undefined,
@@ -876,7 +892,8 @@ export async function runPagesRequest(
       initialMiddlewareMatched ||
       initialMiddlewareMatchCanVaryByRequest ||
       initialMiddlewareRewriteUrl !== undefined ||
-      middlewareStatus !== undefined
+      middlewareStatus !== undefined ||
+      initialMiddlewareOverridesRequestHeaders
         ? {
             ...(isDataReq ? { isDataReq: true } : {}),
             ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
@@ -886,6 +903,9 @@ export async function runPagesRequest(
             ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
             ...(middlewareStatus !== undefined
               ? { initialMiddlewareStatus: middlewareStatus }
+              : {}),
+            ...(initialMiddlewareOverridesRequestHeaders
+              ? { initialMiddlewareOverridesRequestHeaders: true }
               : {}),
           }
         : undefined,

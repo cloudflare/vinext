@@ -5283,6 +5283,7 @@ export const loadServerActionClient = ${
                   pipelineResult.renderOptions?.initialMiddlewareMatched === true,
                   pipelineResult.renderOptions?.initialMiddlewareMatchCanVaryByRequest === true,
                   pipelineResult.renderOptions?.initialMiddlewareRewriteUrl,
+                  pipelineResult.renderOptions?.initialMiddlewareOverridesRequestHeaders === true,
                 );
               }
             } catch (e) {

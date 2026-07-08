@@ -544,6 +544,34 @@ describe("middleware", () => {
     );
   });
 
+  it("propagates middleware request-header overrides to the renderer", async () => {
+    const renderPage = makeRenderPage();
+    await runPagesRequest(
+      makeRequest("/conditional"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: true,
+          matched: true,
+          responseHeaders: [
+            ["x-middleware-override-headers", "x-variant"],
+            ["x-middleware-request-x-variant", "one"],
+          ],
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: expect.objectContaining({}) }),
+      "/conditional",
+      {
+        initialMiddlewareMatched: true,
+        initialMiddlewareOverridesRequestHeaders: true,
+      },
+      expect.any(Headers),
+    );
+  });
+
   it.each([
     { i18nConfig: null, requestPath: "/ssr-page", rewritePath: "/ssr-page-2" },
     {

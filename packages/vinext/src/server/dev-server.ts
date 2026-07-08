@@ -642,6 +642,7 @@ export function createSSRHandler(
     initialMiddlewareMatched: boolean = false,
     initialMiddlewareMatchCanVaryByRequest: boolean = false,
     initialMiddlewareRewriteUrl?: string,
+    initialMiddlewareOverridesRequestHeaders: boolean = false,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -762,7 +763,15 @@ export function createSSRHandler(
     const isolateMiddlewareIsr =
       initialMiddlewareMatchCanVaryByRequest ||
       middlewareRewriteUrl !== null ||
-      statusCode !== undefined;
+      statusCode !== undefined ||
+      initialMiddlewareOverridesRequestHeaders;
+    const requestIsrCacheKey = pagesIsrCacheKey(
+      isolateMiddlewareIsr
+        ? `${visiblePathname}::route=${encodeURIComponent(
+            middlewareRewriteUrl?.pathname ?? url.split("?")[0],
+          )}`
+        : url.split("?")[0],
+    );
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -1183,16 +1192,9 @@ export function createSSRHandler(
 
         if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
-          const cacheKey = pagesIsrCacheKey(
-            isolateMiddlewareIsr
-              ? `${visiblePathname}::route=${encodeURIComponent(
-                  middlewareRewriteUrl
-                    ? middlewareRewriteUrl.pathname + middlewareRewriteUrl.search
-                    : url.split("?")[0],
-                )}`
-              : url.split("?")[0],
-          );
-          const cached = await isrGet(cacheKey);
+          const cached = initialMiddlewareOverridesRequestHeaders
+            ? null
+            : await isrGet(requestIsrCacheKey);
 
           // On-demand revalidation request (`res.revalidate()` from an API
           // route sets the `x-prerender-revalidate` header to the process
@@ -1237,7 +1239,7 @@ export function createSSRHandler(
               initialMiddlewareMatched,
             );
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
-            const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+            const revalidateSecs = getRevalidateDuration(requestIsrCacheKey) ?? 60;
             const { cacheControl: hitCacheControl } = decideIsr({
               cacheState: "HIT",
               kind: "dev",
@@ -1276,7 +1278,7 @@ export function createSSRHandler(
             // Trigger background regeneration: re-run getStaticProps,
             // re-render the page, and cache the fresh HTML.
             triggerBackgroundRegeneration(
-              cacheKey,
+              requestIsrCacheKey,
               async () => {
                 const regenContext = createRequestContext({
                   // Dev never has a Workers ExecutionContext. Set it
@@ -1478,11 +1480,11 @@ export function createSSRHandler(
 
                       const freshHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${freshBody}</div>${freshNextData}\n  ${hydrationScript}</body></html>`;
                       await isrSet(
-                        cacheKey,
+                        requestIsrCacheKey,
                         buildPagesCacheValue(freshHtml, freshRenderProps),
                         revalidate,
                       );
-                      setRevalidateDuration(cacheKey, revalidate);
+                      setRevalidateDuration(requestIsrCacheKey, revalidate);
                     }
                   }
                 });
@@ -1494,7 +1496,7 @@ export function createSSRHandler(
               },
             );
 
-            const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+            const revalidateSecs = getRevalidateDuration(requestIsrCacheKey) ?? 60;
             // Deliberate parity fix: dev STALE now emits s-maxage=0, stale-while-revalidate
             // matching prod Pages Router and the canonical buildCachedRevalidateCacheControl
             // helper. Previously emitted s-maxage=<secs> which was a dev/prod divergence.
@@ -1657,11 +1659,14 @@ export function createSSRHandler(
         // by getServerSideProps (cookies, status codes, etc.) are preserved
         // because we already let gSSP mutate `res` above.
         if (isDataReq) {
-          if (shouldPersistFallbackData && staticPropsPreviewData === false) {
-            const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
+          if (
+            shouldPersistFallbackData &&
+            staticPropsPreviewData === false &&
+            !initialMiddlewareOverridesRequestHeaders
+          ) {
             const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
             await isrSet(
-              cacheKey,
+              requestIsrCacheKey,
               {
                 kind: "PAGES",
                 html: "",
@@ -1672,7 +1677,7 @@ export function createSSRHandler(
               },
               revalidateSeconds,
             );
-            setRevalidateDuration(cacheKey, revalidateSeconds);
+            setRevalidateDuration(requestIsrCacheKey, revalidateSeconds);
           }
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
@@ -2077,7 +2082,12 @@ hydrate();
         // If ISR is enabled, we need the full HTML for caching.
         // For ISR, re-render synchronously to get the complete HTML string.
         // This runs after the stream is already sent, so it doesn't affect TTFB.
-        if (!scriptNonce && isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+        if (
+          !scriptNonce &&
+          isrRevalidateSeconds !== null &&
+          isrRevalidateSeconds > 0 &&
+          !initialMiddlewareOverridesRequestHeaders
+        ) {
           let isrElement = AppComponent
             ? createElement(AppComponent, {
                 ...renderProps,
@@ -2092,9 +2102,12 @@ hydrate();
             withScriptNonce(isrElement, scriptNonce),
           );
           const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${cachedAllScripts}</body></html>`;
-          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
-          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
-          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+          await isrSet(
+            requestIsrCacheKey,
+            buildPagesCacheValue(isrHtml, pageProps),
+            isrRevalidateSeconds,
+          );
+          setRevalidateDuration(requestIsrCacheKey, isrRevalidateSeconds);
         }
       } catch (e) {
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable

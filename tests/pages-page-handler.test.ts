@@ -518,6 +518,18 @@ describe("createPagesPageHandler — _next/data", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(new Set(cache.writes.slice(beforeSamePathQueries).map(({ key }) => key)).size).toBe(1);
 
+      const beforeRewriteQueries = cache.writes.length;
+      for (const rewriteUrl of ["/posts/001?variant=one", "/posts/001?variant=two"]) {
+        const response = await handler(makeRequest("/visible-rewrite"), "/posts/001", null, null, {
+          asPath: "/visible-rewrite",
+          initialMiddlewareRewriteUrl: rewriteUrl,
+          initialMiddlewareMatchCanVaryByRequest: true,
+        });
+        await response.text();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(new Set(cache.writes.slice(beforeRewriteQueries).map(({ key }) => key)).size).toBe(1);
+
       const sameSourceKeys: string[] = [];
       for (const [routeUrl, initialMiddlewareMatched] of [
         ["/posts/001", false],
