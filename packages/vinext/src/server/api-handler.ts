@@ -61,6 +61,7 @@ type NextApiResponse = {
     options?: { maxAge?: number; path?: string },
   ): NextApiResponse;
   clearPreviewData(options?: { path?: string }): NextApiResponse;
+  setDraftMode(options?: { enable?: boolean }): NextApiResponse;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {

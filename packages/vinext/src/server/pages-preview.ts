@@ -50,6 +50,10 @@ function getPagesPreviewCredentials(): PagesPreviewCredentials {
   return devCredentials;
 }
 
+export function getPagesPreviewModeId(): string {
+  return getPagesPreviewCredentials().bypassId;
+}
+
 function serializeCookie(
   name: "__prerender_bypass" | "__next_preview_data",
   value: string,
@@ -147,11 +151,22 @@ export function getPagesPreviewState(
   const bypass = cookies.__prerender_bypass;
   const payload = cookies.__next_preview_data;
   if (!bypass && !payload) return { data: false, shouldClear: false };
-  if (!bypass || !payload || bypass !== getPagesPreviewCredentials().bypassId) {
+  if (!bypass || bypass !== getPagesPreviewCredentials().bypassId) {
     return { data: false, shouldClear: true };
   }
+  if (!payload) return { data: {}, shouldClear: false };
   const data = decodePayload(payload);
   return { data, shouldClear: data === false };
+}
+
+export function setPagesDraftMode(response: PreviewResponse, enabled: boolean): void {
+  const cookie = enabled
+    ? serializeCookie("__prerender_bypass", getPagesPreviewModeId())
+    : serializeClearedCookie("__prerender_bypass");
+  response.setHeader("Set-Cookie", [
+    ...normalizeSetCookie(response.getHeader("Set-Cookie")),
+    cookie,
+  ]);
 }
 
 export function setPagesPreviewData(
@@ -167,7 +182,7 @@ export function setPagesPreviewData(
   }
   response.setHeader("Set-Cookie", [
     ...normalizeSetCookie(response.getHeader("Set-Cookie")),
-    serializeCookie("__prerender_bypass", getPagesPreviewCredentials().bypassId, options),
+    serializeCookie("__prerender_bypass", getPagesPreviewModeId(), options),
     serializeCookie("__next_preview_data", payload, options),
   ]);
 }

@@ -49,6 +49,36 @@ describe("Pages Node compat response", () => {
     expect(getPagesPreviewData(request, { isOnDemandRevalidate: true })).toBe(false);
   });
 
+  it("accepts a bypass-only draft mode cookie with empty preview data", () => {
+    const enabled = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/enable"),
+      url: "/api/enable",
+    });
+    enabled.res.setDraftMode({ enable: true });
+    const cookies = enabled.res.getHeader("Set-Cookie");
+    if (!Array.isArray(cookies)) throw new Error("expected Set-Cookie array");
+    expect(cookies).toHaveLength(1);
+    const cookieHeader = cookies[0].split(";", 1)[0];
+
+    const { req, res } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/read", {
+        headers: { cookie: cookieHeader },
+      }),
+      url: "/api/read",
+    });
+
+    expect(req.preview).toBe(true);
+    expect(req.previewData).toEqual({});
+    res.setDraftMode({ enable: false });
+    expect(res.getHeader("Set-Cookie")).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+    ]);
+  });
+
   it("rejects preview data when the bypass cookie secret is wrong", () => {
     const { res } = createPagesReqRes({
       body: undefined,

@@ -27,6 +27,12 @@ type VinextPlugin = {
   ) => { define?: Record<string, string> } | null | void;
 };
 
+const PREVIEW_ENV_NAMES = [
+  "__VINEXT_SHARED_PREVIEW_MODE_ID",
+  "__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY",
+  "__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY",
+] as const;
+
 async function setupTmpProject(nextConfigBody: string): Promise<string> {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-compiler-define-"));
   const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -436,6 +442,45 @@ describe("build-time preview credentials (security: separated and server-only)",
       "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY",
     ]) {
       expect(result?.define?.[key]).toBeUndefined();
+    }
+  }, 15000);
+
+  it("generates stable credentials for direct non-CLI production builds", async () => {
+    const saved = new Map(PREVIEW_ENV_NAMES.map((name) => [name, process.env[name]]));
+    for (const name of PREVIEW_ENV_NAMES) delete process.env[name];
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      const firstPlugins = vinext() as VinextPlugin[];
+      const firstConfig = firstPlugins.find(
+        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      await firstConfig!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      );
+      const firstValues = PREVIEW_ENV_NAMES.map((name) => process.env[name]);
+      expect(firstValues).toEqual([
+        expect.stringMatching(/^[0-9a-f]{32}$/),
+        expect.stringMatching(/^[0-9a-f]{64}$/),
+        expect.stringMatching(/^[0-9a-f]{64}$/),
+      ]);
+
+      const secondPlugins = vinext() as VinextPlugin[];
+      const secondConfig = secondPlugins.find(
+        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      await secondConfig!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      );
+      expect(PREVIEW_ENV_NAMES.map((name) => process.env[name])).toEqual(firstValues);
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
 });

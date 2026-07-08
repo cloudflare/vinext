@@ -8,6 +8,7 @@ import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-reval
 import {
   clearPagesPreviewData,
   getPagesPreviewState,
+  setPagesDraftMode,
   setPagesPreviewData,
   type PagesPreviewData,
 } from "./pages-preview.js";
@@ -54,6 +55,7 @@ export type PagesReqResResponse = Writable & {
     options?: { maxAge?: number; path?: string },
   ) => PagesReqResResponse;
   clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
+  setDraftMode: (options?: { enable?: boolean }) => PagesReqResResponse;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -178,7 +180,7 @@ function parsePagesRequestCookies(cookieHeader: string | string[] | null | undef
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
 }
 
-export function getPagesPreviewDataFromCookieHeader(
+function getPagesPreviewDataFromCookieHeader(
   cookieHeader: string | string[] | null | undefined,
   options: { isOnDemandRevalidate?: boolean } = {},
 ): PagesPreviewData | false {
@@ -231,6 +233,10 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
   };
   res.clearPreviewData = (options = {}) => {
     clearPagesPreviewData(res, options);
+    return res;
+  };
+  res.setDraftMode = (options = { enable: true }) => {
+    setPagesDraftMode(res, options.enable !== false);
     return res;
   };
   if (preview.shouldClear) clearPagesPreviewData(res);
@@ -356,6 +362,11 @@ class PagesResponseStream extends Writable {
 
   clearPreviewData(options: { path?: string } = {}): PagesReqResResponse {
     clearPagesPreviewData(this, options);
+    return this as PagesReqResResponse;
+  }
+
+  setDraftMode(options: { enable?: boolean } = { enable: true }): PagesReqResResponse {
+    setPagesDraftMode(this, options.enable !== false);
     return this as PagesReqResResponse;
   }
 

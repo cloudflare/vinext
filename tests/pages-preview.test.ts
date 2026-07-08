@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   clearPagesPreviewData,
   getPagesPreviewState,
+  setPagesDraftMode,
   setPagesPreviewData,
 } from "../packages/vinext/src/server/pages-preview.js";
 import { getRevalidateSecret } from "../packages/vinext/src/server/isr-cache.js";
+import { isDraftModeRequest } from "../packages/vinext/src/shims/headers.js";
 
 function createResponse() {
   const headers = new Map<string, string | string[]>();
@@ -72,5 +74,39 @@ describe("Pages preview tokens", () => {
       expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
       expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
     ]);
+  });
+
+  it("shares the bypass ID with App Router draft mode", () => {
+    const previousId = process.env.__VINEXT_PREVIEW_MODE_ID;
+    const previousSigningKey = process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY;
+    const previousEncryptionKey = process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY;
+    const previewModeId = "1".repeat(32);
+    process.env.__VINEXT_PREVIEW_MODE_ID = previewModeId;
+    process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY = "2".repeat(64);
+    process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY = "3".repeat(64);
+    try {
+      const response = createResponse();
+      setPagesDraftMode(response, true);
+      const cookie = cookieHeader(response);
+
+      expect(cookie).toBe(`__prerender_bypass=${previewModeId}`);
+      expect(
+        isDraftModeRequest(
+          new Request("https://example.test/app", { headers: { cookie } }),
+          previewModeId,
+        ),
+      ).toBe(true);
+      expect(getPagesPreviewState(cookie)).toEqual({ data: {}, shouldClear: false });
+    } finally {
+      if (previousId === undefined) delete process.env.__VINEXT_PREVIEW_MODE_ID;
+      else process.env.__VINEXT_PREVIEW_MODE_ID = previousId;
+      if (previousSigningKey === undefined) delete process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY;
+      else process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY = previousSigningKey;
+      if (previousEncryptionKey === undefined) {
+        delete process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY;
+      } else {
+        process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY = previousEncryptionKey;
+      }
+    }
   });
 });

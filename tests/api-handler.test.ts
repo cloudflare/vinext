@@ -198,6 +198,47 @@ describe("handleApiRoute", () => {
   });
 
   describe("preview mode", () => {
+    it("supports setDraftMode and bypass-only draft requests in dev API routes", async () => {
+      const enableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setDraftMode({ enable: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft"),
+        enableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+      const cookies = enableResponse._headers["set-cookie"];
+      if (!Array.isArray(cookies)) throw new Error("expected draft cookie");
+      expect(cookies).toHaveLength(1);
+
+      const observed: Record<string, unknown> = {};
+      const disableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.previewData = req.previewData;
+            res.setDraftMode({ enable: false });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft", undefined, { cookie: cookies[0].split(";", 1)[0] }),
+        disableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+
+      expect(observed).toEqual({ preview: true, previewData: {} });
+      expect(disableResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      ]);
+    });
+
     it("sets, reads, and clears preview data in dev API routes", async () => {
       const setResponse = mockRes();
       await handleApiRoute(
