@@ -1,0 +1,4 @@
+# Normalize line endings on commit; check out as LF on every platform.
+# Prevents Windows clones (with core.autocrlf=true) from converting LF→CRLF
+# and breaking oxfmt, which only accepts LF.
+* text=auto eol=lf

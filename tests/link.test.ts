@@ -21,7 +21,11 @@ import Link, {
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
-import { navigatePagesRouterLink } from "../packages/vinext/src/client/pages-router-link-navigation.js";
+import {
+  navigatePagesRouterLink,
+  navigatePagesRouterLinkWithFallback,
+  resolvePagesRouterQueryOnlyHref,
+} from "../packages/vinext/src/client/pages-router-link-navigation.js";
 
 // Internal helpers re-exported or accessible via the router shim
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -30,6 +34,7 @@ import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/ro
 // rendering occurs (same as dev-server.ts and pages-server-entry.ts do).
 import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
+import { addLocalePrefix } from "../packages/vinext/src/utils/domain-locale.js";
 
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -72,11 +77,16 @@ describe("Link rendering", () => {
     expect(html).toContain('href="/search?q=test"');
   });
 
-  it("renders object href with only query (defaults to /)", () => {
+  it("renders object href with only query as a relative query href", () => {
+    // An href object without a `pathname` must resolve as a query-only href
+    // (e.g. `?tab=settings`) so the browser/router applies it against the
+    // *current* path, mirroring Next.js's `formatUrl()` (`pathname || ''`).
+    // Collapsing onto the root (`/?tab=settings`) recorded the wrong history
+    // entry for shallow links and broke back/forward traversal (issue #1540).
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
-    expect(html).toContain('href="/?tab=settings"');
+    expect(html).toContain('href="?tab=settings"');
   });
 
   it("renders with as prop overriding href", () => {
@@ -138,6 +148,107 @@ describe("Link rendering", () => {
   });
 });
 
+// ─── Repeated-slash warning (parity with Next.js) ───────────────────────
+//
+// Ported from Next.js: test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+//
+// Next.js's `resolveHref` emits a `console.error` when an href contains
+// repeated forward-slashes (e.g. "/hello//world") or backslashes. Navigation
+// is not blocked; only a warning is surfaced.
+
+describe("Link repeated-slash warning", () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it("logs a console.error when href contains repeated forward slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/hello//world" }, "Hello"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/hello//world'");
+    expect(message).toContain(
+      "Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+    );
+  });
+
+  it("logs a console.error when href contains a backslash", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/foo\\bar" }, "Bad"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/foo\\bar'");
+  });
+
+  it("does not warn for absolute URLs whose only '//' is the protocol separator", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com/path" }, "Ext"),
+    );
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not warn for hrefs without repeated slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/normal/path" }, "Normal"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores repeated slashes inside the query string", () => {
+    // Next.js only checks the path portion (everything before '?'), so a
+    // query string containing '//' must not trigger the warning.
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/ok?next=//foo//bar" }, "Q"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("fires on every render (no dedup, matches Next.js behaviour)", () => {
+    // Next.js's resolve-href.ts does NOT dedupe these warnings — every call
+    // emits a console.error. Confirm we do the same so repeated renders
+    // surface every offending href.
+    const el = React.createElement(Link, { href: "/dup//slash" }, "Dup");
+    ReactDOMServer.renderToString(el);
+    ReactDOMServer.renderToString(el);
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalises repeated forward slashes in the rendered href", () => {
+    // Next.js mirrors Vercel's gateway behaviour: after warning, the href is
+    // collapsed so the browser navigates to the canonical path.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/hello//world" }, "Hello"),
+    );
+    expect(html).toContain('href="/hello/world"');
+    expect(html).not.toContain("//world");
+  });
+
+  it("normalises backslashes to forward slashes in the rendered href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/foo\\bar" }, "Bad"),
+    );
+    expect(html).toContain('href="/foo/bar"');
+    expect(html).not.toContain("\\");
+  });
+
+  it("preserves the query string when normalising repeated slashes", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/a//b?x=1&y=2" }, "Q"),
+    );
+    expect(html).toContain('href="/a/b?x=1&amp;y=2"');
+  });
+
+  it("preserves the protocol when normalising absolute URLs", () => {
+    // The "//" between scheme and authority must survive normalisation, but
+    // a duplicate slash in the *path* portion must still collapse.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com//foo//bar" }, "Ext"),
+    );
+    expect(html).toContain('href="https://example.com/foo/bar"');
+  });
+});
+
 // ─── useLinkStatus ──────────────────────────────────────────────────────
 
 describe("useLinkStatus", () => {
@@ -162,7 +273,7 @@ describe("Link App Router prefetch mode", () => {
     expect(resolveLinkPrefetchMode(true, true)).toBe("disabled");
   });
 
-  it("allows automatic full RSC prefetch only for known static App Router routes", () => {
+  it("allows automatic full RSC prefetch for routes that do not require fresh navigation", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -173,6 +284,14 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
+        { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
 
@@ -180,6 +299,9 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/about")).toBe(true);
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
+      expect(canAutoPrefetchFullAppRoute("/products/1")).toBe(true);
+      expect(canAutoPrefetchFullAppRoute("/teams/vercel/dashboard")).toBe(false);
+      expect(canAutoPrefetchFullAppRoute("/settings")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
     } finally {
       if (originalWindow === undefined) {
@@ -190,7 +312,7 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
-  it("allows automatic dynamic App Router prefetches only as loading-boundary learning requests", () => {
+  it("shell-prefetches dynamic routes that require fresh navigation and routes with loading boundaries", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -201,24 +323,54 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
+        { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
 
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
+        prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
+        cacheForNavigation: false,
+        prefetchShellFirst: true,
         shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
+        cacheForNavigation: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
+        cacheForNavigation: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
         cacheForNavigation: false,
-        shouldPrefetch: false,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
+        prefetchShellFirst: false,
         shouldPrefetch: false,
       });
     } finally {
@@ -307,6 +459,70 @@ describe("Link resolveHref", () => {
       React.createElement(Link, { href: { pathname: "/dashboard" } }, "x"),
     );
     expect(html).toContain('href="/dashboard"');
+  });
+
+  it("object href with only query resolves as a relative query href", () => {
+    // No `pathname` -> query-only href (not rooted at `/`), so the router
+    // resolves it against the current path. Mirrors Next.js's `formatUrl()`
+    // (`pathname = urlObj.pathname || ''`). Regression guard for issue #1540.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: { query: { page: "2", sort: "name" } } }, "x"),
+    );
+    expect(html).toMatch(/href="\?page=2&(?:amp;)?sort=name"/);
+  });
+
+  it("resolves query-only Pages Links against a rewritten path before locale application", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = {
+      location: {
+        pathname: "/docs/fr/rewrite-navigation/0",
+        search: "?existing=1",
+        hash: "",
+        href: "http://localhost/docs/fr/rewrite-navigation/0?existing=1",
+        origin: "http://localhost",
+        hostname: "localhost",
+      },
+      history: {
+        state: null,
+        pushState() {},
+        replaceState() {},
+      },
+      addEventListener() {},
+      next: { router: { asPath: "/rewrite-navigation/0?existing=1", reload() {} } },
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr", "de"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    };
+    try {
+      const resolvedHref = resolvePagesRouterQueryOnlyHref("?id=1", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "/docs",
+        fallbackHref: (globalThis as any).window.location.href,
+        locales: ["en", "fr", "de"],
+      });
+      const localizedHref = addLocalePrefix(resolvedHref, "de", "en");
+
+      expect(
+        toBrowserNavigationHref(localizedHref, (globalThis as any).window.location.href, "/docs"),
+      ).toBe("/docs/de/rewrite-navigation/0?id=1");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+    }
+  });
+
+  it("preserves a bare query delimiter when resolving Pages Links", () => {
+    expect(
+      resolvePagesRouterQueryOnlyHref("?", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "",
+        fallbackHref: "http://localhost/rewrite-navigation/0?existing=1",
+      }),
+    ).toBe("/rewrite-navigation/0?");
   });
 });
 
@@ -404,6 +620,61 @@ describe("Link locale handling", () => {
       });
       return ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
     });
+
+    expect(html).toContain('href="/id"');
+  });
+
+  it("locale=undefined renders a default-locale root fallback during SSR", async () => {
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "en",
+        locales: ["en", "id"],
+        defaultLocale: "en",
+      });
+      return ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+    });
+
+    expect(html).toContain('href="/en"');
+  });
+
+  it("locale=undefined keeps the active locale for a non-locale-prefixed browser path", () => {
+    // i18n sticky-locale (issue #1336): a default-locale path served under a
+    // non-default locale must keep reporting its active `__VINEXT_LOCALE__`
+    // for Link href resolution so the user stays in their current locale.
+    (globalThis as any).window = {
+      location: {
+        pathname: "/new",
+        hostname: "localhost",
+      },
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {},
+    };
+
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+
+    expect(html).toContain('href="/id"');
+  });
+
+  it("locale=undefined keeps the current locale for locale-prefixed browser paths", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    (globalThis as any).window = {
+      location: {
+        pathname: "/id/new",
+        hostname: "localhost",
+      },
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {},
+    };
+
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
 
     expect(html).toContain('href="/id"');
   });
@@ -566,6 +837,36 @@ describe("Link locale handling", () => {
 
     expect(push).toHaveBeenCalledWith("/fr/about", undefined, { scroll: true, locale: "fr" });
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("rethrows missing-required-param interpolation errors instead of using Link fallback", async () => {
+    const interpolationError = new Error(
+      "The provided `href` (/catalog/[category]/[item]?category=music) value is missing query values (item) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed",
+    );
+    const fallback = vi.fn();
+    const loadRouter = vi.fn();
+    const router = {
+      push: vi.fn(async () => {
+        throw interpolationError;
+      }),
+      replace: vi.fn(async () => true),
+    };
+
+    await expect(
+      navigatePagesRouterLinkWithFallback({
+        router,
+        loadRouter,
+        navigation: {
+          href: "/catalog/books/old?category=music",
+          replace: false,
+          scroll: true,
+          interpolateDynamicRoute: true,
+        },
+        fallback,
+      }),
+    ).rejects.toBe(interpolationError);
+    expect(loadRouter).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   // Regression for #1332 sub-problem 3: `<Link shallow>` must reach
@@ -968,6 +1269,28 @@ describe("toSameOriginAppPath", () => {
     }
   });
 
+  it("falls back to location.href when location.origin is unavailable", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+      expect(toSameOriginAppPath("//localhost:3000/base/about?tab=1#top", "/base")).toBe(
+        "/about?tab=1#top",
+      );
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
   it("treats same-origin URLs outside the configured basePath as external", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
@@ -1122,5 +1445,205 @@ describe("Link href trailing-slash (trailingSlash: false default)", () => {
       React.createElement(Link, { href: "https://nextjs.org/" }, "x"),
     );
     expect(trailing).toContain('href="https://nextjs.org/"');
+  });
+});
+
+// ─── legacyBehavior (parity with Next.js) ───────────────────────────────
+//
+// Ported from Next.js: test/e2e/legacy-link-behavior-pages/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/legacy-link-behavior-pages/index.test.ts
+//
+// In legacy behavior, <Link> must not wrap its child in an extra <a>.
+// Instead it forwards `href` (and click handlers) to the single child
+// element via React.cloneElement. Otherwise, a Link wrapping a custom
+// `<a id="custom-button">` produces nested anchors which are illegal HTML
+// and break onClick propagation.
+
+describe("Link legacyBehavior", () => {
+  it("does not wrap a child <a> in an extra anchor and forwards href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { id: "custom-button" }, "About"),
+      ),
+    );
+
+    // Exactly one anchor in the output (no nested <a><a></a></a>).
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+
+    // The child anchor must keep its id and visible text.
+    expect(html).toContain('id="custom-button"');
+    expect(html).toContain("About");
+
+    // The href is forwarded to the child anchor.
+    expect(html).toContain('href="/about"');
+
+    // No duplicated children text (e.g. "AboutAbout").
+    expect(html).not.toMatch(/About\s*About/);
+  });
+
+  it("wraps a string child in an <a> with the forwarded href", () => {
+    // Per Next.js: when the child is a string or number, Next wraps it in an
+    // <a> so the legacy behaviour still works. We mirror that here.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, "About"),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain("About");
+  });
+
+  it("wraps a numeric child in an <a> with the forwarded href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, 1000),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain("1000");
+  });
+
+  it("does not forward href when the child <a> already has one (no passHref)", () => {
+    // Next.js: when legacyBehavior is set, href is only forwarded if
+    // `passHref` is true OR the child is an <a> without a href.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { href: "/manual", id: "custom-button" }, "Manual"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/manual"');
+    expect(html).toContain('id="custom-button"');
+    expect(html).not.toContain('href="/about"');
+  });
+
+  it("forwards href to a custom component child when passHref is set", () => {
+    // Matches the Next.js passHref/legacyBehavior fixture: a custom anchor
+    // component should receive `href` via React.cloneElement.
+    function CustomAnchor(props: { href?: string; children?: React.ReactNode }) {
+      return React.createElement("a", { href: props.href, id: "custom-button" }, props.children);
+    }
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true, passHref: true } as any,
+        React.createElement(CustomAnchor, null, "About"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain('id="custom-button"');
+    expect(html).toContain("About");
+  });
+
+  it("does not call the onClick prop passed to <Link> (warns in dev)", () => {
+    // Next.js parity: in legacyBehavior, <Link>'s own onClick prop is ignored
+    // (the child's onClick is the canonical handler) and a dev console.warn
+    // is emitted. Asserting the warning here also implicitly confirms we are
+    // not silently dropping the user's intent.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      ReactDOMServer.renderToString(
+        React.createElement(
+          Link,
+          { href: "/about", legacyBehavior: true, onClick: () => {} } as any,
+          React.createElement("a", { id: "custom-button" }, "About"),
+        ),
+      );
+      const messages = consoleSpy.mock.calls.map((args) => String(args[0]));
+      expect(
+        messages.some(
+          (m) =>
+            m.includes(`"onClick" was passed to <Link>`) && m.includes(`"legacyBehavior" was set`),
+        ),
+      ).toBe(true);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("treats `href={undefined}` on the child <a> as the child owning its href", () => {
+    // Next.js uses `!('href' in child.props)` rather than `child.props.href !== undefined`.
+    // If the child explicitly passed `href={undefined}`, we must NOT forward
+    // Link's href onto it — the developer indicated they want to control it.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { href: undefined, id: "custom-button" }, "About"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    // The forwarded href should NOT be set, because the child's props
+    // include the key `href` (even if its value is undefined).
+    expect(html).not.toContain('href="/about"');
+  });
+
+  it("clones the child (does not wrap) when the href is a blocked dangerous scheme", () => {
+    // Even when Link blocks the href (javascript:, data:, vbscript:), the
+    // legacyBehavior contract still applies: we must clone the child rather
+    // than wrap it. Otherwise developers would see a hidden second anchor.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          Link,
+          { href: "javascript:alert(1)", legacyBehavior: true } as any,
+          React.createElement("a", { id: "custom-button" }, "Blocked"),
+        ),
+      );
+      const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+      expect(anchorOpens).toBe(1);
+      expect(html).toContain('id="custom-button"');
+      // The dangerous href is NOT propagated to the child.
+      expect(html).not.toContain("javascript:");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("preserves the child's onClick handler (parity-shape check via cloneElement props)", () => {
+    // We can't dispatch a real DOM click in this Node-only test environment.
+    // Instead, verify that React.cloneElement preserves the child's onClick
+    // by introspecting the rendered tree via a custom child that records its
+    // own props on render. If the legacyBehavior path were still wrapping the
+    // child in an extra <a>, the child's onClick would NOT be installed on
+    // the outer <a> the user actually clicks; the wrapper would swallow it.
+    let receivedProps: { href?: string; onClick?: unknown } | null = null;
+
+    function Probe(props: { href?: string; onClick?: () => void; children?: React.ReactNode }) {
+      receivedProps = props;
+      return React.createElement("a", props, props.children);
+    }
+
+    const childOnClick = (): void => {};
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true, passHref: true } as any,
+        React.createElement(Probe, { onClick: childOnClick }, "About"),
+      ),
+    );
+
+    // The legacy path must clone the child with Link's href.
+    expect(receivedProps).not.toBeNull();
+    expect(receivedProps!.href).toBe("/about");
+    // The child's own onClick is preserved (the Link wraps it inside its
+    // synthesized handler — verifying the prop exists on the child).
+    expect(typeof receivedProps!.onClick).toBe("function");
   });
 });

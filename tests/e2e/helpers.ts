@@ -1,5 +1,21 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import { expect } from "@playwright/test";
+
+export function isAppRouterRscRequestForPath(request: Request, pathname: string): boolean {
+  const url = new URL(request.url());
+  return (
+    url.pathname === pathname && url.searchParams.has("_rsc") && request.headers()["rsc"] === "1"
+  );
+}
+
+export function isAppRouterServerActionRequestForPath(request: Request, pathname: string): boolean {
+  const url = new URL(request.url());
+  return (
+    request.method() === "POST" &&
+    url.pathname === pathname &&
+    request.headers()["next-action"] !== undefined
+  );
+}
 
 /**
  * Wait for Pages Router hydration to complete.
@@ -18,7 +34,7 @@ export async function waitForHydration(page: Page): Promise<void> {
  */
 export async function waitForAppRouterHydration(page: Page): Promise<void> {
   await expect(async () => {
-    const ready = await page.evaluate(() => {
+    const ready = await page.evaluate(async () => {
       const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
       const hasNavigate =
         typeof runtime === "object" &&
@@ -28,20 +44,22 @@ export async function waitForAppRouterHydration(page: Page): Promise<void> {
         runtime.functions !== null &&
         "navigate" in runtime.functions &&
         typeof runtime.functions.navigate === "function";
-      return (
+      const hydrated =
         Boolean(window.__VINEXT_RSC_ROOT__) &&
         hasNavigate &&
-        typeof window.__VINEXT_HYDRATED_AT === "number"
-      );
+        typeof window.__VINEXT_HYDRATED_AT === "number";
+
+      if (!hydrated) {
+        return false;
+      }
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      return true;
     });
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      }),
-  );
 }
 
 /**

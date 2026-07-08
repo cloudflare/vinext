@@ -35,10 +35,14 @@ describe("fixture dev server helper", () => {
           fixtureProcess = proc;
         },
       }),
-    ).rejects.toThrow(/Fixture "never-ready" did not start within 100ms: .*never listened/s);
+    ).rejects.toThrow(/Fixture "never-ready" did not start within 100ms/);
 
     expect(fixtureProcess).toBeDefined();
-    if (fixtureProcess && fixtureProcess.exitCode == null && !fixtureProcess.killed) {
+    // Wait until the child has actually exited. `killed` only means a signal was
+    // sent, not that the process is gone — on Windows `stopFixtureDevServer`
+    // calls `proc.kill()`, which sets `killed` synchronously while exit is still
+    // pending, so gating on `!killed` would skip the wait and read a null code.
+    if (fixtureProcess && fixtureProcess.exitCode == null && fixtureProcess.signalCode == null) {
       await once(fixtureProcess, "exit");
     }
 

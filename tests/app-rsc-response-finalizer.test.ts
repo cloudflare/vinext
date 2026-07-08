@@ -24,6 +24,7 @@ describe("finalizeAppRscResponse — config header application", () => {
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [{ source: "/about", headers: [{ key: "x-added", value: "config" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -42,6 +43,7 @@ describe("finalizeAppRscResponse — config header application", () => {
     const result = finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -59,6 +61,7 @@ describe("finalizeAppRscResponse — config header application", () => {
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [{ source: "/about", headers: [{ key: "x-added", value: "config" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -76,6 +79,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -92,6 +96,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -105,6 +110,7 @@ describe("finalizeAppRscResponse — App Router RSC vary header", () => {
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -126,6 +132,7 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
       finalizeAppRscResponse(response, request, {
         basePath: "",
         configHeaders: [{ source: "/old", headers: [{ key: "x-added", value: "yes" }] }],
+        i18nConfig: null,
         requestContext: makeRequestContext(),
       }),
     ).not.toThrow();
@@ -140,6 +147,7 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     finalizeAppRscResponse(response, request, {
       basePath: "",
       configHeaders: [{ source: "/old", headers: [{ key: "x-added", value: "yes" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -159,6 +167,7 @@ describe("finalizeAppRscResponse — basePath stripping before pattern matching"
     finalizeAppRscResponse(response, request, {
       basePath: "/app",
       configHeaders: [{ source: "/about", headers: [{ key: "x-added", value: "config" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -176,6 +185,7 @@ describe("finalizeAppRscResponse — basePath stripping before pattern matching"
     finalizeAppRscResponse(response, request, {
       basePath: "/app",
       configHeaders: [{ source: "/2/page", headers: [{ key: "x-wrong-strip", value: "yes" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -191,6 +201,7 @@ describe("finalizeAppRscResponse — basePath stripping before pattern matching"
     finalizeAppRscResponse(response, request, {
       basePath: "/docs/v2",
       configHeaders: [{ source: "/guide", headers: [{ key: "x-added", value: "config" }] }],
+      i18nConfig: null,
       requestContext: makeRequestContext(),
     });
 
@@ -218,6 +229,7 @@ describe("finalizeAppRscResponse — has/missing conditions use original request
           headers: [{ key: "x-conditional", value: "yes" }],
         },
       ],
+      i18nConfig: null,
       requestContext: reqCtxWithFlag,
     });
 
@@ -239,9 +251,60 @@ describe("finalizeAppRscResponse — has/missing conditions use original request
           headers: [{ key: "x-conditional", value: "yes" }],
         },
       ],
+      i18nConfig: null,
       requestContext: makeRequestContext(), // no x-preview header
     });
 
     expect(response.headers.get("x-conditional")).toBeNull();
+  });
+});
+
+// ── default-locale path normalisation (issue #1336, item 4) ────────────
+
+describe("finalizeAppRscResponse — default-locale path normalisation", () => {
+  it("matches a config header rule with a :locale placeholder against an unprefixed request", () => {
+    // Behavior: a header rule sourced at "/:locale/about" must match a request to
+    // "/about" when the i18n default locale is "en", because Next.js splices the
+    // default locale into unprefixed paths before config header matching.
+    // Without normalisation this header would only fire for "/en/about".
+    const response = new Response("body", { status: 200 });
+    const request = new Request("http://example.com/about");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        { source: "/:locale/about", headers: [{ key: "x-localized", value: "yes" }] },
+      ],
+      i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-localized")).toBe("yes");
+  });
+
+  it("matches a domain-mapped default locale, not the global one, when the host matches", () => {
+    // Behavior: when the request host matches a domain entry, that domain's
+    // defaultLocale wins over the global default. A rule for "/:locale/about"
+    // on example.fr (defaultLocale "fr") must match "/about" by treating it
+    // as "/fr/about" rather than "/en/about".
+    const response = new Response("body", { status: 200 });
+    const request = new Request("http://example.fr/about");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        { source: "/fr/about", headers: [{ key: "x-fr", value: "yes" }] },
+        { source: "/en/about", headers: [{ key: "x-en", value: "yes" }] },
+      ],
+      i18nConfig: {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+        domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+      },
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-fr")).toBe("yes");
+    expect(response.headers.get("x-en")).toBeNull();
   });
 });

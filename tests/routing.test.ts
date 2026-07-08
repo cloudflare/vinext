@@ -17,6 +17,12 @@ import {
   invalidateAppRouteCache,
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
+import { toSlash } from "pathslash";
+
+/** Expected canonical (forward-slash) path for router-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
+}
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -59,6 +65,7 @@ function makeTestAppRoute(
     isDynamic: pattern.includes(":"),
     params: [],
     rootParamNames: [],
+    siblingIntercepts: [],
   };
 }
 
@@ -84,19 +91,15 @@ describe("pagesRouter - route discovery", () => {
     expect(dynamicRoute!.params).toEqual(["id"]);
   });
 
-  it("sorts static routes before dynamic routes", async () => {
+  it("sorts static routes before dynamic routes at the same depth", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
 
-    const staticRoutes = routes.filter((r) => !r.isDynamic);
-    const dynamicRoutes = routes.filter((r) => r.isDynamic);
+    const aboutIndex = routes.findIndex((route) => route.pattern === "/about");
+    const postIndex = routes.findIndex((route) => route.pattern === "/posts/:id");
 
-    // All static routes should come before dynamic routes
-    const lastStaticIndex = routes.findIndex((r) => r === staticRoutes[staticRoutes.length - 1]);
-    const firstDynamicIndex = routes.findIndex((r) => r === dynamicRoutes[0]);
-
-    if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
-      expect(lastStaticIndex).toBeLessThan(firstDynamicIndex);
-    }
+    expect(aboutIndex).not.toBe(-1);
+    expect(postIndex).not.toBe(-1);
+    expect(aboutIndex).toBeLessThan(postIndex);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {
@@ -106,6 +109,36 @@ describe("pagesRouter - route discovery", () => {
     expect(patterns).not.toContain("/_app");
     expect(patterns).not.toContain("/_document");
     expect(patterns).not.toContain("/_error");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/underscore-ignore-app-paths
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/underscore-ignore-app-paths/underscore-ignore-app-paths.test.ts
+  it("serves pages/_foo.tsx even when app/ also exists", async () => {
+    await withTempDir("vinext-pages-underscore-mixed-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(pagesDir, { recursive: true });
+      await mkdir(appDir, { recursive: true });
+      await writeFile(path.join(pagesDir, "_dashboard.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "_hidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "index.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Pages Router: underscore-prefixed pages SHOULD be discovered
+      expect(patterns).toContain("/_dashboard");
+      expect(patterns).toContain("/_hidden");
+      expect(patterns).toContain("/");
+
+      // App Router: underscore-prefixed folders should still be ignored
+      invalidateAppRouteCache();
+      const appRoutes = await appRouter(appDir);
+      const appPatterns = appRoutes.map((r) => r.pattern);
+      expect(appPatterns).toContain("/");
+    });
   });
 
   it("rejects non-terminal catch-all routes during discovery", async () => {
@@ -307,6 +340,58 @@ describe("apiRouter - route discovery", () => {
       const routes = await apiRouter(pagesDir);
 
       expect(routes).toEqual([]);
+    });
+  });
+
+  // Regression for #1542: pages whose path *starts with* `/api-…` (e.g.
+  // `/api-docs/[...slug]`, `/api-info`) must be classified as PAGE routes,
+  // not API routes. Next.js only treats files under `pages/api/` (with the
+  // trailing slash) as API routes — substring matches against `api-` are a
+  // false positive. The upstream Next.js fixture at
+  // `.nextjs-ref/test/e2e/prerender/pages/api-docs/[...slug].js` is the
+  // canonical case.
+  it("does not treat pages/api-docs/* as API routes (issue #1542)", async () => {
+    await withTempDir("vinext-issue-1542-api-docs-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "api-docs"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-docs", "[...slug].tsx"), EMPTY_PAGE);
+      await mkdir(path.join(pagesDir, "api-info"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-info", "index.tsx"), EMPTY_PAGE);
+      // A real API route co-exists so we also verify the positive case.
+      await mkdir(path.join(pagesDir, "api"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api", "hello.ts"), EMPTY_ROUTE);
+
+      invalidateRouteCache(pagesDir);
+
+      const pages = await pagesRouter(pagesDir);
+      const apis = await apiRouter(pagesDir);
+
+      const pagePatterns = pages.map((r) => r.pattern);
+      const apiPatterns = apis.map((r) => r.pattern);
+
+      // `/api-docs/[...slug]` and `/api-info` are pages, not API routes.
+      expect(pagePatterns).toContain("/api-docs/:slug+");
+      expect(pagePatterns).toContain("/api-info");
+      expect(apiPatterns).not.toContain("/api-docs/:slug+");
+      expect(apiPatterns).not.toContain("/api-info");
+
+      // The real API route is still discovered correctly.
+      expect(apiPatterns).toContain("/api/hello");
+      expect(pagePatterns).not.toContain("/api/hello");
+
+      // matchRoute against the page table resolves the `/api-…` URLs to
+      // their page files. A regression would either yield null (no match)
+      // or match against the API trie instead.
+      const matchedDocs = matchRoute("/api-docs/first", pages);
+      expect(matchedDocs).not.toBeNull();
+      expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
+      expect(matchedDocs!.route.filePath).toBe(
+        canonical(path.join(pagesDir, "api-docs", "[...slug].tsx")),
+      );
+
+      const matchedInfo = matchRoute("/api-info", pages);
+      expect(matchedInfo).not.toBeNull();
+      expect(matchedInfo!.route.pattern).toBe("/api-info");
     });
   });
 });
@@ -616,6 +701,39 @@ describe("appRouter - route discovery", () => {
       expect(patterns).toContain("/inbox");
       expect(patterns).not.toContain("/inbox/profile");
       expect(matchAppRoute("/inbox/profile", routes)).toBeNull();
+    });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  it("discovers a nested-only slot route for a layout-only parent", async () => {
+    await withTempDir("vinext-app-slot-nested-layout-only-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "inbox", "layout.tsx"),
+        "export default function Layout({ children, modal }) { return children ?? modal }",
+      );
+      await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const match = matchAppRoute("/inbox/profile", routes);
+
+      expect(match).toMatchObject({
+        route: {
+          pagePath: canonical(path.join(appDir, "inbox", "default.tsx")),
+          parallelSlots: [
+            expect.objectContaining({
+              name: "modal",
+              pagePath: canonical(path.join(appDir, "inbox", "@modal", "profile", "page.tsx")),
+            }),
+          ],
+        },
+        params: {},
+      });
     });
   });
 
@@ -1287,7 +1405,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot!.interceptingRoutes[0]).toMatchObject({
         convention: ".",
         targetPattern: "/explicit-layout/deeper",
-        layoutPaths: [path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx")],
+        layoutPaths: [canonical(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"))],
       });
     });
   });
@@ -1323,8 +1441,8 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot).toBeDefined();
       expect(modalSlot!.interceptingRoutes).toHaveLength(1);
       expect(modalSlot!.interceptingRoutes[0]?.layoutPaths).toEqual([
-        path.join(appDir, "@modal", "(.)foo", "layout.tsx"),
-        path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"),
+        canonical(path.join(appDir, "@modal", "(.)foo", "layout.tsx")),
+        canonical(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx")),
       ]);
     });
   });
@@ -1501,7 +1619,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(route!.pagePath).toBeNull();
       expect(route!.parallelSlots.map((slot) => slot.name).sort()).toEqual(["feed", "modal"]);
       expect(route!.parallelSlots.find((slot) => slot.name === "feed")!.pagePath).toContain(
-        path.join("@feed", "page.tsx"),
+        canonical(path.join("@feed", "page.tsx")),
       );
     });
   });
@@ -1543,7 +1661,9 @@ describe("matchAppRoute - URL matching", () => {
       const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
       expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
       const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
-      expect(parallelBSlot.pagePath).toContain(path.join("@parallelB", "nested", "page.tsx"));
+      expect(parallelBSlot.pagePath).toContain(
+        canonical(path.join("@parallelB", "nested", "page.tsx")),
+      );
     });
   });
 
@@ -1628,7 +1748,7 @@ describe("matchAppRoute - URL matching", () => {
       const homeRoute = routes.find((route) => route.pattern === "/");
 
       expect(homeRoute).toBeDefined();
-      expect(homeRoute!.layouts).toEqual([path.join(appDir, "(group)", "layout.tsx")]);
+      expect(homeRoute!.layouts).toEqual([canonical(path.join(appDir, "(group)", "layout.tsx"))]);
       expect(homeRoute!.parallelSlots.find((slot) => slot.name === "modal")).toBeUndefined();
     });
   });
@@ -1649,9 +1769,11 @@ describe("matchAppRoute - URL matching", () => {
       expect(homeRoute).toBeDefined();
       const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
       expect(modalSlot).toBeDefined();
-      expect(modalSlot!.ownerDir).toBe(path.join(appDir, "(group)", "@modal"));
+      expect(modalSlot!.ownerDir).toBe(canonical(path.join(appDir, "(group)", "@modal")));
       expect(modalSlot!.layoutIndex).toBe(0);
-      expect(modalSlot!.defaultPath).toBe(path.join(appDir, "(group)", "@modal", "default.tsx"));
+      expect(modalSlot!.defaultPath).toBe(
+        canonical(path.join(appDir, "(group)", "@modal", "default.tsx")),
+      );
     });
   });
 
@@ -1684,10 +1806,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(sidebarSlots).toHaveLength(2);
 
       const sidebarByOwner = new Map(
-        sidebarSlots.map((slot) => [
-          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
-          slot,
-        ]),
+        sidebarSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);

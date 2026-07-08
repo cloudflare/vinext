@@ -4,8 +4,11 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -14,6 +17,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 
 export type AppPageMiddlewareContext = {
@@ -31,6 +35,11 @@ export type AppPageResponseTiming = {
 type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
+};
+
+type AppPagePrerenderCacheLife = {
+  expire?: number;
+  revalidate?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -58,18 +67,25 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  dynamicStaleTimeSeconds?: number;
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
+  renderedPathAndSearch?: string | null;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
 type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
-  fontLinkHeader?: string;
+  /** Combined preload `Link` header value (React hints + font preloads), already capped. */
+  linkHeader?: string;
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
@@ -89,6 +105,35 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
       : -1;
 
   headers.set(VINEXT_TIMING_HEADER, `${handlerStart},${compileMs},${renderMs}`);
+}
+
+function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?: number): void {
+  if (
+    dynamicStaleTimeSeconds !== undefined &&
+    Number.isInteger(dynamicStaleTimeSeconds) &&
+    dynamicStaleTimeSeconds >= 0
+  ) {
+    headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
+  }
+}
+
+function applyPrerenderCacheLifeHeader(
+  headers: Headers,
+  requestCacheLife: AppPagePrerenderCacheLife | null | undefined,
+): void {
+  if (!requestCacheLife) return;
+  const payload: AppPagePrerenderCacheLife = {};
+  if (
+    typeof requestCacheLife.revalidate === "number" &&
+    Number.isFinite(requestCacheLife.revalidate)
+  ) {
+    payload.revalidate = requestCacheLife.revalidate;
+  }
+  if (typeof requestCacheLife.expire === "number" && Number.isFinite(requestCacheLife.expire)) {
+    payload.expire = requestCacheLife.expire;
+  }
+  if (payload.revalidate === undefined && payload.expire === undefined) return;
+  headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
 }
 
 export function resolveAppPageRscResponsePolicy(
@@ -179,8 +224,8 @@ export function resolveAppPageHtmlResponsePolicy(
   if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: "STATIC",
-      shouldWriteToCache: false,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 
@@ -204,10 +249,16 @@ export function resolveAppPageHtmlResponsePolicy(
   }
 
   if (options.revalidateSeconds === Infinity) {
+    // `revalidate = false` / `revalidate = Infinity` ask for indefinite caching.
+    // The downstream Cache-Control header remains STATIC (1y s-maxage), but we
+    // also write to the ISR cache so repeated requests inside the same vinext
+    // process return identical bytes instead of re-rendering on every hit.
+    // This matches Next.js: indefinite-revalidate pages cache their rendered
+    // output and only re-render when their tags are explicitly invalidated.
     return {
       cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: "STATIC",
-      shouldWriteToCache: false,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 
@@ -215,6 +266,19 @@ export function resolveAppPageHtmlResponsePolicy(
 }
 
 export { mergeMiddlewareResponseHeaders };
+
+/**
+ * Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+ * whose resolved segment config is `runtime = "edge"` should advertise it —
+ * nodejs-runtime routes must not, otherwise downstream consumers can't tell
+ * the configured runtime from the response. Centralized so every response
+ * construction site can opt in without re-deriving the header name.
+ */
+export function applyEdgeRuntimeHeader(headers: Headers, isEdgeRuntime: boolean | undefined): void {
+  if (isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
+}
 
 export function buildAppPageRscResponse(
   body: ReadableStream,
@@ -225,6 +289,8 @@ export function buildAppPageRscResponse(
     Vary: VINEXT_RSC_VARY_HEADER,
   });
 
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+
   if (options.params && Object.keys(options.params).length > 0) {
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
     // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
@@ -233,6 +299,7 @@ export function buildAppPageRscResponse(
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
+  applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }
@@ -240,7 +307,15 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.renderedPathAndSearch) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(options.renderedPathAndSearch),
+    );
+  }
   applyRscCompatibilityIdHeader(headers);
+  applyRscDeploymentIdHeader(headers);
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
 
   applyTimingHeader(headers, options.timing);
 
@@ -259,6 +334,8 @@ export function buildAppPageHtmlResponse(
     Vary: VINEXT_RSC_VARY_HEADER,
   });
 
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }
@@ -268,11 +345,12 @@ export function buildAppPageHtmlResponse(
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);
   }
-  if (options.fontLinkHeader) {
-    headers.set("Link", options.fontLinkHeader);
+  if (options.linkHeader) {
+    headers.set("Link", options.linkHeader);
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
 
   applyTimingHeader(headers, options.timing);
 

@@ -7,6 +7,7 @@ type HydrateRootChildren = Parameters<HydrateRoot>[1];
 type HydrateRootReturn = ReturnType<HydrateRoot>;
 type HydrateRootCaughtErrorHandler = NonNullable<HydrateRootOptions["onCaughtError"]>;
 type HydrateRootUncaughtErrorHandler = NonNullable<HydrateRootOptions["onUncaughtError"]>;
+type HydrateRootRecoverableErrorHandler = NonNullable<HydrateRootOptions["onRecoverableError"]>;
 type StartTransition = (action: () => void) => void;
 
 export const RSC_FORM_STATE_GLOBAL = "__VINEXT_RSC_FORM_STATE__";
@@ -24,10 +25,12 @@ export function consumeInitialFormState(global: FormStateGlobal): ReactFormState
 export function createVinextHydrateRootOptions(options: {
   formState: ReactFormState | null;
   onCaughtError?: HydrateRootCaughtErrorHandler;
+  onRecoverableError?: HydrateRootRecoverableErrorHandler;
   onUncaughtError: HydrateRootUncaughtErrorHandler;
 }): HydrateRootOptions {
   const hydrateOptions = {
     formState: options.formState,
+    ...(options.onRecoverableError ? { onRecoverableError: options.onRecoverableError } : {}),
     onUncaughtError: options.onUncaughtError,
   };
 

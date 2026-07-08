@@ -1,9 +1,6 @@
-import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
-import {
-  buildCachedRevalidateCacheControl,
-  NEVER_CACHE_CONTROL,
-  STATIC_CACHE_CONTROL,
-} from "./cache-control.js";
+import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache-handler";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr, buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -14,6 +11,7 @@ import {
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { getSetCookieName } from "./cookie-utils.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -44,28 +42,6 @@ function hasMiddlewareHeader(headers: Headers): boolean {
     if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) return true;
   }
   return false;
-}
-
-function buildRouteHandlerCacheControl(
-  cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],
-  revalidateSeconds: number,
-  expireSeconds?: number,
-): string {
-  if (revalidateSeconds === 0) {
-    // A cached response is never produced for revalidate = 0 (the ISR write
-    // path skips it), so only the HIT/STALE->fresh rewrite can arrive here
-    // with a 0 value, via applyRouteHandlerRevalidateHeader. In all such
-    // cases the author opted out of caching entirely.
-    return NEVER_CACHE_CONTROL;
-  }
-
-  if (revalidateSeconds === Infinity) {
-    // revalidate = false / Infinity means "cache indefinitely" — emit the
-    // same static Cache-Control used by pages, not a dynamic SWR value.
-    return STATIC_CACHE_CONTROL;
-  }
-
-  return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);
 }
 
 export function applyRouteHandlerMiddlewareContext(
@@ -113,15 +89,17 @@ export function buildRouteHandlerCachedResponse(
     }
   }
   setCacheStateHeaders(headers, options.cacheState);
-  const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds =
-    options.cacheControl === undefined
-      ? undefined
-      : (options.cacheControl.expire ?? options.expireSeconds);
-  headers.set(
-    "Cache-Control",
-    buildRouteHandlerCacheControl(options.cacheState, revalidateSeconds, expireSeconds),
-  );
+  // HIT/STALE served from the origin store: route the cache header through the
+  // CDN adapter (default: identical single Cache-Control). Edge adapters never
+  // reach this path because their get() returns null.
+  const { cacheControl } = decideIsr({
+    cacheState: options.cacheState,
+    kind: "app-route",
+    revalidateSeconds: options.revalidateSeconds,
+    expireSeconds: options.expireSeconds,
+    cacheControlMeta: options.cacheControl,
+  });
+  applyCdnResponseHeaders(headers, { cacheControl });
 
   return new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
@@ -133,23 +111,68 @@ export function applyRouteHandlerRevalidateHeader(
   response: Response,
   revalidateSeconds: number,
   expireSeconds?: number,
+  tags?: readonly string[],
 ): void {
-  response.headers.set(
-    "cache-control",
-    buildRouteHandlerCacheControl("HIT", revalidateSeconds, expireSeconds),
-  );
+  // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
+  // CDN-Cache-Control + Cache-Tag while the default emits a single Cache-Control.
+  // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and
+  // Infinity→STATIC gates apply, and expireSeconds is used as the direct route
+  // config ceiling (not a per-entry metadata fallback).
+  applyCdnResponseHeaders(response.headers, {
+    cacheControl: buildAppRouteMissIsrCacheControl(revalidateSeconds, expireSeconds),
+    tags,
+  });
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {
   setCacheStateHeaders(response.headers, "MISS");
 }
 
-function getSetCookieName(cookie: string): string | null {
-  const equalsIndex = cookie.indexOf("=");
-  if (equalsIndex <= 0) {
-    return null;
+/**
+ * Returns true when the given Set-Cookie string already declares any of the
+ * attributes that follow the first `;` (case-insensitively). Used to detect
+ * whether a user-emitted Set-Cookie line already carries an explicit `Path=`,
+ * matching Next.js's `appendMutableCookies` which re-runs every cookie through
+ * `ResponseCookies.set` (and therefore picks up the `Path=/` default for any
+ * cookie that didn't supply one).
+ */
+function hasCookieAttribute(cookie: string, attributeName: string): boolean {
+  const target = attributeName.toLowerCase();
+  // Skip past the first '=' (the cookie value separator) so we don't match
+  // `attributeName=` inside the cookie value itself.
+  let i = cookie.indexOf(";");
+  while (i !== -1) {
+    // Trim leading whitespace after the ';'
+    let start = i + 1;
+    while (start < cookie.length && cookie[start] === " ") start++;
+    const next = cookie.indexOf(";", start);
+    const end = next === -1 ? cookie.length : next;
+    const eq = cookie.indexOf("=", start);
+    const attrEnd = eq === -1 || eq > end ? end : eq;
+    const attr = cookie.slice(start, attrEnd).trim().toLowerCase();
+    if (attr === target) {
+      return true;
+    }
+    i = next;
   }
-  return cookie.slice(0, equalsIndex);
+  return false;
+}
+
+/**
+ * Ensure each Set-Cookie line carries `Path=/` by default — Next.js's
+ * `appendMutableCookies` re-runs every returned cookie through
+ * `ResponseCookies.set`, which normalises a missing `path` to `/`. Without
+ * this, a raw `new Response(..., { headers: [['Set-Cookie', 'bar=bar2']] })`
+ * lands without `Path=/` and tests that assert on the full attribute set
+ * (e.g. Next.js's `app-action.test.ts` route-handler-overrides case, see
+ * issue #1484) break.
+ */
+function normalizeReturnedCookie(cookie: string): string {
+  if (hasCookieAttribute(cookie, "Path")) {
+    return cookie;
+  }
+  const trimmed = cookie.replace(/;\s*$/, "");
+  return `${trimmed}; Path=/`;
 }
 
 function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[]): void {
@@ -188,7 +211,7 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
     headers.append("Set-Cookie", cookie);
   }
   for (const cookie of returnedCookies) {
-    headers.append("Set-Cookie", cookie);
+    headers.append("Set-Cookie", normalizeReturnedCookie(cookie));
   }
 }
 

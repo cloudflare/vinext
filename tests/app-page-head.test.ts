@@ -1,11 +1,39 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   collectAppPageSearchParams,
+  resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 
 describe("app page head resolution", () => {
+  it("reports whether the matched route has generated metadata", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const staticResult = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: { metadata: { title: "static page" } },
+      params: {},
+      routePath: "/static",
+    });
+
+    const generatedResult = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: {
+        async generateMetadata() {
+          return { title: "generated page" };
+        },
+      },
+      params: {},
+      routePath: "/generated",
+    });
+
+    expect(staticResult.hasDynamicMetadata).toBe(false);
+    expect(generatedResult.hasDynamicMetadata).toBe(true);
+  });
+
   it("collects repeated search params into a null-prototype object", () => {
     const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(
       new URLSearchParams("__proto__=safe&tag=a&tag=b"),
@@ -241,6 +269,41 @@ describe("app page head resolution", () => {
     });
   });
 
+  it("passes observed searchParams to primary and parallel page viewports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-search-params/
+    // app/search-params-used-generate-viewport/page.tsx
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-search-params/app/search-params-used-generate-viewport/page.tsx
+    const observeParamAccess = vi.fn();
+    const viewportColors: string[] = [];
+    const createPageModule = () => ({
+      async generateViewport({
+        searchParams,
+      }: {
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) {
+        const query = await searchParams;
+        viewportColors.push(typeof query.color === "string" ? query.color : "missing");
+        return { themeColor: typeof query.color === "string" ? query.color : "black" };
+      },
+    });
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: createPageModule(),
+      parallelRoutes: [{ pageModule: createPageModule(), routeSegments: ["dashboard"] }],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+      searchParams: new URLSearchParams("color=red"),
+      searchParamsObserver: { observeParamAccess },
+    });
+
+    expect(viewportColors).toEqual(["red", "red"]);
+    expect(observeParamAccess).toHaveBeenCalled();
+    expect(result.viewport.themeColor).toBe("red");
+  });
+
   it("bubbles layout metadata errors", async () => {
     await expect(
       resolveAppPageHead<Record<string, unknown>>({
@@ -332,6 +395,182 @@ describe("app page head resolution", () => {
         title: "Slot OG title",
       },
     });
+  });
+
+  it("includes nested active parallel route layout metadata", async () => {
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [
+            { metadata: { description: "slot root" } },
+            { metadata: { title: "nested slot layout" } },
+          ],
+          pageModule: { metadata: { openGraph: { title: "slot page" } } },
+          routeSegments: ["dashboard"],
+        },
+      ],
+      params: {},
+      routePath: "/dashboard",
+      routeSegments: ["dashboard"],
+    });
+
+    expect(result.metadata).toMatchObject({
+      description: "slot root",
+      title: "nested slot layout",
+      openGraph: { title: "slot page" },
+    });
+  });
+
+  it("uses mirrored slot params for parallel route metadata", () => {
+    const slotPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        params: { primary: "value" },
+        routeSegments: ["dashboard"],
+        slotParams: { sidebar: { member: "alice" } },
+        slots: { sidebar: { page: slotPage, routeSegments: ["[member]"] } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [],
+        layoutParams: [],
+        layoutTreePositions: [],
+        pageModule: slotPage,
+        params: { member: "alice" },
+        routeSegments: ["[member]"],
+      },
+    ]);
+  });
+
+  it("keeps slot-root layout head inputs for intercepted slots", () => {
+    const slotLayout = { metadata: { description: "slot root" } };
+    const interceptLayout = { metadata: { title: "intercept" } };
+    const interceptPage = {};
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptLayouts: [interceptLayout],
+        interceptBranchSegments: ["[photo]", "[comment]"],
+        interceptLayoutSegments: [["[photo]"]],
+        interceptPage,
+        interceptParams: { locale: "en", photo: "42", comment: "7" },
+        interceptSlotKey: "modal",
+        layoutTreePositions: [1],
+        params: { locale: "en" },
+        routeSegments: ["[locale]", "photos"],
+        slots: { modal: { layout: slotLayout, layoutIndex: 0 } },
+      }),
+    ).toEqual([
+      {
+        layoutModules: [slotLayout, interceptLayout],
+        layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+        layoutTreePositions: [0, 2],
+        pageModule: interceptPage,
+        params: { locale: "en", photo: "42", comment: "7" },
+        routeSegments: ["[locale]", "photos"],
+      },
+    ]);
+  });
+
+  it("scopes parallel layout metadata params by tree position", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const makeLayout = () => ({
+      async generateMetadata({ params }: { params: Promise<Record<string, unknown>> }) {
+        seen.push(await params);
+        return null;
+      },
+    });
+
+    await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      parallelRoutes: [
+        {
+          layoutModules: [makeLayout(), makeLayout()],
+          layoutTreePositions: [0, 1],
+          params: { owner: "root", team: "alpha", member: "bob" },
+          routeSegments: ["[team]", "[member]"],
+        },
+      ],
+      params: {},
+      routePath: "/alpha/bob",
+      routeSegments: [],
+    });
+
+    expect(seen).toEqual([{ owner: "root" }, { owner: "root", team: "alpha" }]);
+  });
+
+  // Regression: a `generateMetadata` that does not declare the `parent`
+  // argument must NOT receive it. Matches Next.js, which omits the parent
+  // argument for cached `generateMetadata` functions that don't use it
+  // (resolve-metadata.ts `getResult` / `useCacheFunctionInfo.usedArgs[1]`).
+  // Passing the parent into a `'use cache'` function feeds it to the cache-key
+  // encoder (encodeReply), which throws on non-serializable values such as a
+  // `URL` `metadataBase` ("URL objects are not supported").
+  it("omits the parent argument for generateMetadata that does not declare it", async () => {
+    const receivedArgCounts: number[] = [];
+    const rootLayout = {
+      metadata: {
+        metadataBase: new URL("https://example.com"),
+        title: "Root",
+      },
+    };
+    const page = {
+      // Arity 0 — declares no `parent` parameter.
+      generateMetadata: async function () {
+        receivedArgCounts.push(arguments.length);
+        return { title: "Page" };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    // Only `props` was passed (no parent).
+    expect(receivedArgCounts).toEqual([1]);
+    // metadataBase from the root layout still flows into the resolved metadata.
+    expect(result.metadata?.metadataBase).toBeInstanceOf(URL);
+    expect(String(result.metadata?.metadataBase)).toBe("https://example.com/");
+    expect(result.metadata?.title).toBe("Page");
+  });
+
+  it("still passes the parent argument to generateMetadata that declares it", async () => {
+    const receivedArgCounts: number[] = [];
+    const rootLayout = {
+      metadata: {
+        metadataBase: new URL("https://example.com"),
+        description: "Root description",
+      },
+    };
+    const page = {
+      // Arity 2 — declares `parent`, so it must receive it.
+      generateMetadata: async function (_props: unknown, parent: Promise<Record<string, unknown>>) {
+        receivedArgCounts.push(arguments.length);
+        const parentMetadata = await parent;
+        return { title: String(parentMetadata.description) };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    expect(receivedArgCounts).toEqual([2]);
+    expect(result.metadata?.title).toBe("Root description");
   });
 
   it("keeps primary page title handling independent from active parallel route metadata", async () => {

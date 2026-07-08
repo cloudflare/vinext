@@ -10,6 +10,10 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function createBody(text: string): ReadableStream {
@@ -193,6 +197,23 @@ describe("app page response helpers", () => {
       }),
     ).toEqual({
       cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: false,
+        revalidateSeconds: Infinity,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
       cacheState: "STATIC",
       shouldWriteToCache: false,
     });
@@ -214,6 +235,42 @@ describe("app page response helpers", () => {
       cacheControl: "s-maxage=60, stale-while-revalidate",
       cacheState: "MISS",
       shouldWriteToCache: true,
+    });
+  });
+
+  it("writes force-static HTML responses to cache in production", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: false,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "STATIC",
+      shouldWriteToCache: false,
     });
   });
 
@@ -388,6 +445,28 @@ describe("app page response helpers", () => {
     await expect(response.text()).resolves.toBe("flight");
   });
 
+  it("emits the `x-edge-runtime: 1` marker on RSC responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC responses for nodejs-runtime routes", () => {
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
+
   it("builds RSC responses with the current compatibility ID header", () => {
     const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a", () =>
       buildAppPageRscResponse(createBody("flight"), {
@@ -397,6 +476,35 @@ describe("app page response helpers", () => {
     );
 
     expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+  });
+
+  it("emits per-page dynamic stale time metadata on RSC responses", () => {
+    // Next.js sends the per-page dynamic stale time in the Flight response `d`
+    // field; vinext carries the same response-level contract through an RSC
+    // response header that the client cache can snapshot.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      dynamicStaleTimeSeconds: 60,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+  });
+
+  it("keeps the framework rendered path when middleware sets the internal alias header", () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/spoofed?searchParam=wrong"),
+    });
+
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      policy: {},
+      renderedPathAndSearch: "/search-params/target-page?searchParam=rewrittenSearchParam",
+    });
+
+    expect(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+      encodeURIComponent("/search-params/target-page?searchParam=rewrittenSearchParam"),
+    );
   });
 
   it("keeps the framework compatibility ID when middleware sets the internal header", () => {
@@ -444,7 +552,7 @@ describe("app page response helpers", () => {
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
-      fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       middlewareContext: {
         headers: middlewareHeaders,
         status: 203,
@@ -477,6 +585,28 @@ describe("app page response helpers", () => {
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");
     expect(setCookies).toContain("mw=1; Path=/");
     await expect(response.text()).resolves.toBe("<h1>page</h1>");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on HTML responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on HTML responses for nodejs-runtime routes", () => {
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
   });
 });
 

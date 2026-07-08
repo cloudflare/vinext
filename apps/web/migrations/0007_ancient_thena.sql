@@ -1,0 +1,1 @@
+ALTER TABLE `performance_measurements` ADD `profile_rounds` integer;

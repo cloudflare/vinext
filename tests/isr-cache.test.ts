@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import {
   isrCacheKey,
+  appIsrCacheKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -23,10 +24,8 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
-import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -45,6 +44,11 @@ import {
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
 describe("isrCacheKey", () => {
+  it("fnv1a64 uses fixed-width unambiguous output", () => {
+    const hash = fnv1a64("/" + "a".repeat(250));
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it("generates pages: prefix for Pages Router", () => {
     expect(isrCacheKey("pages", "/about")).toBe("pages:/about");
   });
@@ -145,6 +149,10 @@ describe("App Router ISR cache key primitives", () => {
     expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
   });
 
+  it("supports explicit build ids when deriving suffixed app keys", () => {
+    expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe("app:build-42:/dashboard:html");
+  });
+
   it("hashes long pathname keys while preserving the cache entry suffix", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
@@ -156,22 +164,76 @@ describe("App Router ISR cache key primitives", () => {
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const first = appIsrRscKey("/feed", "modal sidebar");
-    const second = appIsrRscKey("/feed", "sidebar modal");
+    const first = appIsrRscKey("/feed", "slot:modal:/ slot:sidebar:/");
+    const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
     expect(first).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+$/);
   });
 
-  it("keys RSC refresh variants separately from normal navigation variants", () => {
+  it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
+    // SECURITY-AUDIT-2026-05 F-PROD-1: an attacker who forges
+    // X-Vinext-Mounted-Slots: <unique-value> must not be able to fan out
+    // unbounded distinct cache keys (per-write KV billing / wallet attack).
     delete process.env.__VINEXT_BUILD_ID;
 
-    expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toBe(
-      "app:/feed:rsc:preserve-ui",
-    );
-    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toMatch(
-      /^app:\/feed:rsc:slots:[a-z0-9]+:preserve-ui$/,
-    );
+    const keys = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      // Each of these violates the legitimate slot:<name>:<treePath> wire
+      // shape and must be dropped by normalization.
+      keys.add(appIsrRscKey("/feed", `attacker-${i}`));
+    }
+    // All 1000 distinct attacker values collapse to the same "no slots" key.
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
+  });
+
+  it("caps cache-key cardinality when an attacker pads the mounted-slots header", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    // Even when every token has the legitimate wire shape, the raw header
+    // length is capped (4096 bytes). When attacker payloads exceed the cap
+    // they are dropped to null, collapsing into the no-slots cache key.
+    const keys = new Set<string>();
+    for (let batch = 0; batch < 100; batch++) {
+      // 1000 legitimate tokens per batch easily exceeds the 4 KiB length cap.
+      const tokens = Array.from({ length: 1000 }, (_, i) => `slot:b${batch}_s${i}:/`).join(" ");
+      keys.add(appIsrRscKey("/feed", tokens));
+    }
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
+  });
+
+  it("keys intercepted RSC variants by source context", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const fromFeed = appIsrRscKey("/photos/42", "slot:modal:/", undefined, "/feed");
+    const fromGallery = appIsrRscKey("/photos/42", "slot:modal:/", undefined, "/gallery");
+    const direct = appIsrRscKey("/photos/42", "slot:modal:/");
+
+    expect(fromFeed).not.toBe(fromGallery);
+    expect(fromFeed).not.toBe(direct);
+    expect(fromFeed).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+  });
+
+  it("normalizes source context before keying intercepted RSC variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
+    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
+    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+
+    expect(encoded).toBe(decoded);
+    expect(duplicateSlash).toBe(decoded);
+  });
+
+  it("ignores invalid source context before keying intercepted RSC variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const invalidSource = appIsrRscKey("/photos/42", "modal", undefined, "/feed?tab=popular");
+    const direct = appIsrRscKey("/photos/42", "modal");
+
+    expect(invalidSource).toBe(direct);
   });
 
   it("keys RSC loading-shell prefetch variants separately from normal navigation variants", () => {
@@ -180,37 +242,9 @@ describe("App Router ISR cache key primitives", () => {
     expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toBe(
       "app:/feed:rsc:prefetch-loading-shell",
     );
-    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toMatch(
-      /^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/,
-    );
-  });
-
-  it("round-trips normal and preserve-current-UI RSC payloads under separate keys", async () => {
-    delete process.env.__VINEXT_BUILD_ID;
-    setCacheHandler(new MemoryCacheHandler());
-
-    const normalKey = appIsrRscKey("/feed");
-    const preserveUiKey = appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
-    const normalPayload = new TextEncoder().encode("normal-rsc").buffer;
-    const preserveUiPayload = new TextEncoder().encode("preserve-ui-rsc").buffer;
-
-    await isrSet(normalKey, buildAppPageCacheValue("", normalPayload), 60, []);
-    await isrSet(preserveUiKey, buildAppPageCacheValue("", preserveUiPayload), 60, []);
-
-    const normalEntry = await isrGet(normalKey);
-    const preserveUiEntry = await isrGet(preserveUiKey);
-
-    expect(normalEntry?.value.value?.kind).toBe("APP_PAGE");
-    expect(preserveUiEntry?.value.value?.kind).toBe("APP_PAGE");
-    if (
-      normalEntry?.value.value?.kind !== "APP_PAGE" ||
-      preserveUiEntry?.value.value?.kind !== "APP_PAGE"
-    ) {
-      throw new Error("Expected App Router page cache entries");
-    }
-
-    expect(new TextDecoder().decode(normalEntry.value.value.rscData)).toBe("normal-rsc");
-    expect(new TextDecoder().decode(preserveUiEntry.value.value.rscData)).toBe("preserve-ui-rsc");
+    expect(
+      appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
+    ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
   });
 });
 
@@ -221,9 +255,9 @@ describe("normalizeMountedSlotsHeader", () => {
   });
 
   it("deduplicates and sorts whitespace-separated slot ids", () => {
-    expect(normalizeMountedSlotsHeader(" sidebar  modal sidebar\tcart ")).toBe(
-      "cart modal sidebar",
-    );
+    expect(
+      normalizeMountedSlotsHeader(" slot:sidebar:/  slot:modal:/ slot:sidebar:/\tslot:cart:/ "),
+    ).toBe("slot:cart:/ slot:modal:/ slot:sidebar:/");
   });
 });
 

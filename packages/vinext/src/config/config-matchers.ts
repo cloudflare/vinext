@@ -13,11 +13,14 @@ import type {
   HasCondition,
 } from "./next-config.js";
 import {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
-} from "../server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+} from "../utils/protocol-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
+import { parseCookieHeader } from "../utils/parse-cookie.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -187,7 +190,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
       // alternation. Using anchored match to avoid partial matches.
       // The alternation comes from user config; run it through safeRegExp to
       // guard against ReDoS in pathological configs.
-      const altRe = safeRegExp("^(?:" + alternation + ")$");
+      const altRe = safeRegExp("^(?:" + alternation + ")$", "i");
       if (!altRe) {
         // Unsafe alternation — fall back to linear scan for this rule.
         linear.push([i, redirect]);
@@ -200,11 +203,12 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         redirect,
         originalIndex: i,
       };
-      const bucket = localeStatic.get(suffix);
+      const bucketKey = suffix.toLowerCase();
+      const bucket = localeStatic.get(bucketKey);
       if (bucket) {
         bucket.push(entry);
       } else {
-        localeStatic.set(suffix, [entry]);
+        localeStatic.set(bucketKey, [entry]);
       }
     } else {
       linear.push([i, redirect]);
@@ -381,7 +385,7 @@ export function isSafeRegex(pattern: string): boolean {
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   if (!isSafeRegex(pattern)) {
     console.warn(
-      `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
+      `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
         `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
         `  Simplify the pattern to avoid nested repetition.`,
     );
@@ -472,10 +476,10 @@ export function escapeHeaderSource(source: string): string {
  * Callers extract the relevant parts from the incoming Request.
  */
 export type RequestContext = {
-  headers: Headers;
-  cookies: Record<string, string>;
-  query: URLSearchParams;
-  host: string;
+  readonly headers: Headers;
+  readonly cookies: Record<string, string>;
+  readonly query: URLSearchParams;
+  readonly host: string;
 };
 
 /**
@@ -525,27 +529,31 @@ function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatc
  * Parse a Cookie header string into a key-value record.
  */
 export function parseCookies(cookieHeader: string | null): Record<string, string> {
-  if (!cookieHeader) return {};
-  const cookies: Record<string, string> = {};
-  for (const part of cookieHeader.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    const key = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (key) cookies[key] = value;
-  }
-  return cookies;
+  return parseCookieHeader(cookieHeader);
 }
 
 /**
  * Build a RequestContext from a Web Request object.
+ *
+ * `cookies` and `query` are lazy memoized getters: they are consumed only by
+ * `has`/`missing` condition evaluation (`checkHasConditions` /
+ * `matchesRuleConditions`), and most apps configure no such conditions. The
+ * cookie split and `searchParams` access are therefore deferred until first
+ * read and computed at most once. Mirrors `headersContextFromRequest` in
+ * `shims/headers.ts`.
  */
 export function requestContextFromRequest(request: Request): RequestContext {
   const url = new URL(request.url);
+  let cookies: Record<string, string> | undefined;
+  let query: URLSearchParams | undefined;
   return {
     headers: request.headers,
-    cookies: parseCookies(request.headers.get("cookie")),
-    query: url.searchParams,
+    get cookies() {
+      return (cookies ??= parseCookies(request.headers.get("cookie")));
+    },
+    get query() {
+      return (query ??= url.searchParams);
+    },
     host: normalizeHost(request.headers.get("host"), url.hostname),
   };
 }
@@ -584,7 +592,7 @@ export function applyMiddlewareRequestHeaders(
   );
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       delete middlewareHeaders[key];
     }
   }
@@ -645,8 +653,8 @@ function matchSingleCondition(
       return _matchConditionValue(headerValue, condition.value);
     }
     case "cookie": {
+      if (!Object.hasOwn(ctx.cookies, condition.key)) return null;
       const cookieValue = ctx.cookies[condition.key];
-      if (cookieValue === undefined) return null;
       return _matchConditionValue(cookieValue, condition.value);
     }
     case "query": {
@@ -764,19 +772,25 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *
  * The root path `"/"` is preserved as-is.
  */
-function stripTrailingSlashForConfigMatch(pathname: string): string {
-  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+function stripTrailingSlashForConfigMatch(value: string): string {
+  return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function configPathEquals(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function configPathStartsWith(pathname: string, prefix: string): boolean {
+  return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
 }
 
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  // See `stripTrailingSlashForConfigMatch` — the source pattern itself is left
-  // unchanged because catch-all patterns (`:param*` / `:param+`) and the root
-  // `/` already consume any trailing slash; stripping the pattern would change
-  // those semantics.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
+  if (pathnameHadTrailingSlash) pattern = stripTrailingSlashForConfigMatch(pattern);
 
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is
@@ -792,6 +806,8 @@ export function matchConfigPattern(
   //     the simple catch-all branch cannot express,
   //   - a named param is followed by a dot (the simple branch would treat
   //     "slug.md" as the whole param name),
+  //   - a named param is embedded after a literal prefix in the same path
+  //     segment (e.g. `/blog-:slug`),
   //   - the pattern has multiple named params and any of them is a catch-all
   //     (e.g. `/:locale/files/:path*`). The simple catch-all branch only
   //     handles trailing-catch-all-with-static-prefix; mixed cases need regex.
@@ -802,6 +818,7 @@ export function matchConfigPattern(
     pattern.includes("\\") ||
     /:[\w-]+[*+][^/]/.test(pattern) ||
     /:[\w-]+\./.test(pattern) ||
+    /[^/]:[\w-]+/.test(pattern) ||
     (catchAllAnchor && namedParamCount > 1)
   ) {
     try {
@@ -847,7 +864,7 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$");
+        const re = safeRegExp("^" + regexStr + "$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;
@@ -872,7 +889,7 @@ export function matchConfigPattern(
     const isPlus = catchAllMatch[2] === "+";
 
     const prefixNoSlash = prefix.replace(/\/$/, "");
-    if (!pathname.startsWith(prefixNoSlash)) return null;
+    if (!configPathStartsWith(pathname, prefixNoSlash)) return null;
     const charAfter = pathname[prefixNoSlash.length];
     if (charAfter !== undefined && charAfter !== "/") return null;
 
@@ -894,7 +911,7 @@ export function matchConfigPattern(
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) {
       params[parts[i].slice(1)] = pathParts[i];
-    } else if (parts[i] !== pathParts[i]) {
+    } else if (!configPathEquals(parts[i], pathParts[i])) {
       return null;
     }
   }
@@ -944,11 +961,11 @@ export function matchRedirect(
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
-  // Strip trailing slash so the locale-static fast path (Map.get on the
+  // Strip trailing slash for the locale-static fast path (Map.get on the
   // pathname) matches keys derived from slash-free source patterns. The
-  // linear fallback also passes through `matchConfigPattern` which strips
-  // again, but normalizing once here keeps both paths consistent.
-  pathname = stripTrailingSlashForConfigMatch(pathname);
+  // linear fallback receives the original pathname so matchConfigPattern can
+  // apply the same optional-slash behavior to slash-ending source patterns.
+  const normalizedPathname = stripTrailingSlashForConfigMatch(pathname);
 
   const index = _getRedirectIndex(redirects);
 
@@ -974,7 +991,7 @@ export function matchRedirect(
     // (the locale segment was optional). Mandatory-locale entries — emitted
     // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
     // not match here because they require the locale segment to be present.
-    const noLocaleBucket = index.localeStatic.get(pathname);
+    const noLocaleBucket = index.localeStatic.get(normalizedPathname.toLowerCase());
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
@@ -1000,11 +1017,11 @@ export function matchRedirect(
     // Case 2: locale prefix present — first path segment is the locale.
     // Find the second slash: pathname = "/locale/rest/of/path"
     //                                         ^--- slashTwo
-    const slashTwo = pathname.indexOf("/", 1);
+    const slashTwo = normalizedPathname.indexOf("/", 1);
     if (slashTwo !== -1) {
-      const suffix = pathname.slice(slashTwo); // e.g. "/security"
-      const localePart = pathname.slice(1, slashTwo); // e.g. "en"
-      const localeBucket = index.localeStatic.get(suffix);
+      const suffix = normalizedPathname.slice(slashTwo); // e.g. "/security"
+      const localePart = normalizedPathname.slice(1, slashTwo); // e.g. "en"
+      const localeBucket = index.localeStatic.get(suffix.toLowerCase());
       if (localeBucket) {
         for (const entry of localeBucket) {
           if (entry.originalIndex >= localeMatchIndex) continue;
@@ -1083,14 +1100,35 @@ export function matchRewrite(
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
           : _emptyParams();
       if (!conditionParams) continue;
-      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeDestination(rewrite.destination, {
+      const rewriteParams = {
         ...params,
         ...conditionParams,
-      });
+      };
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
     }
   }
   return null;
+}
+
+/**
+ * Check whether a rewrite source can match a pathname without evaluating its
+ * request-dependent `has` / `missing` conditions.
+ *
+ * Dev uses this only as a conservative preflight before middleware runs. The
+ * conditions may become true after middleware overrides request headers, so
+ * evaluating them against the original request would incorrectly skip the
+ * Pages request pipeline for file-looking paths.
+ */
+export function matchesRewriteSource(
+  pathname: string,
+  rewrite: NextRewrite,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return (
+    shouldEvaluateRule(rewrite.basePath, basePathState) &&
+    matchConfigPattern(pathname, rewrite.source) !== null
+  );
 }
 
 /**
@@ -1119,7 +1157,30 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  return destination.replace(paramRe, (_token, key: string) => params[key]);
+  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
+    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
+
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+
+  if (queryIndex !== -1) {
+    const beforeQuery = beforeHash.slice(0, queryIndex);
+    const query = beforeHash.slice(queryIndex + 1);
+    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
+      query,
+      encodeDestinationQueryParamValue,
+    )}${replaceParams(hash, (value) => value)}`;
+  }
+
+  return replaceParams(destination, (value) => value);
+}
+
+function encodeDestinationQueryParamValue(value: string): string {
+  const params = new URLSearchParams();
+  params.set("", value);
+  return params.toString().slice(1);
 }
 
 /**
@@ -1133,6 +1194,94 @@ function substituteAndSanitizeDestination(
   params: Record<string, string>,
 ): string {
   return sanitizeDestination(substituteDestinationParams(destination, params));
+}
+
+/**
+ * Match Next.js's rewrite-specific prepareDestination behavior: source params
+ * that are not consumed by the destination path/host are exposed to the target
+ * page through query.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function substituteAndSanitizeRewriteDestination(
+  destination: string,
+  params: Record<string, string>,
+): string {
+  const rewritten = substituteAndSanitizeDestination(destination, params);
+  if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
+
+  const existingQueryKeys = getDestinationQueryKeys(destination);
+  const paramsToAppend: [string, string][] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (key === "nextInternalLocale" || existingQueryKeys.has(key)) continue;
+    paramsToAppend.push([key, value]);
+  }
+
+  if (paramsToAppend.length === 0) return rewritten;
+  return appendQueryParams(rewritten, paramsToAppend);
+}
+
+function shouldAppendRewriteParamsToQuery(
+  destination: string,
+  params: Record<string, string>,
+): boolean {
+  const keys = Object.keys(params).filter((key) => key !== "nextInternalLocale");
+  if (keys.length === 0) return false;
+  return !destinationPathOrHostUsesParam(destination, keys);
+}
+
+function destinationPathOrHostUsesParam(destination: string, keys: string[]): boolean {
+  const pathAndHost = getDestinationPathAndHost(destination);
+  if (!pathAndHost) return false;
+  for (const key of keys) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`:${escapedKey}([+*])?(?![A-Za-z0-9_])`).test(pathAndHost)) return true;
+  }
+  return false;
+}
+
+function getDestinationPathAndHost(destination: string): string {
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const beforeQuery = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+
+  const schemeMatch = /^[a-z][a-z0-9+.-]*:\/\//i.exec(beforeQuery);
+  if (!schemeMatch) return `${beforeQuery}${hash}`;
+
+  const withoutScheme = beforeQuery.slice(schemeMatch[0].length);
+  const slashIndex = withoutScheme.indexOf("/");
+  if (slashIndex === -1) return `${withoutScheme}${hash}`;
+  return `${withoutScheme.slice(0, slashIndex)}${withoutScheme.slice(slashIndex)}${hash}`;
+}
+
+function getDestinationQueryKeys(destination: string): Set<string> {
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  if (queryIndex === -1) return new Set();
+
+  const query = beforeHash.slice(queryIndex + 1);
+  return new Set(new URLSearchParams(query).keys());
+}
+
+function appendQueryParams(url: string, params: Iterable<[string, string]>): string {
+  const hashIndex = url.indexOf("#");
+  const beforeHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : url.slice(hashIndex);
+
+  const queryIndex = beforeHash.indexOf("?");
+  const base = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
+
+  const merged = new URLSearchParams(query);
+  for (const [key, value] of params) {
+    merged.append(key, value);
+  }
+
+  const search = merged.toString();
+  return `${base}${search ? `?${search}` : ""}${hash}`;
 }
 
 /**
@@ -1166,6 +1315,55 @@ export function sanitizeDestination(dest: string): string {
  */
 export function isExternalUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
+}
+
+/**
+ * Merge the original request's query params into a config-redirect
+ * destination, preserving them on the resulting `Location`.
+ *
+ * Next.js carries the original request query across config redirects
+ * (`prepareDestination({ query: parsedUrl.query })` →
+ * `stringifyQuery(...)` in resolve-routes.ts). This matters for App Router
+ * RSC client navigations: the cache-busting `_rsc` query must survive the
+ * redirect so the browser's auto-followed request to the destination is
+ * still treated as an RSC fetch. Dropping it breaks RSC fetch semantics
+ * (issue #1529).
+ *
+ * Destination query params win — a request param is only carried over when
+ * the destination does not already specify that key. Mirrors the merge
+ * semantics in `proxyExternalRequest`. External destinations are returned
+ * untouched (a config redirect to another origin should not leak the
+ * original request's query).
+ */
+export function preserveRedirectDestinationQuery(
+  destination: string,
+  requestSearch: string,
+): string {
+  if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
+    return destination;
+  }
+
+  const requestParams = new URLSearchParams(requestSearch);
+  if ([...requestParams.keys()].length === 0) return destination;
+
+  const hashIndex = destination.indexOf("#");
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+
+  const queryIndex = beforeHash.indexOf("?");
+  const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
+
+  const merged = new URLSearchParams(destQuery);
+  const destKeys = new Set(merged.keys());
+  for (const [key, value] of requestParams) {
+    if (!destKeys.has(key)) {
+      merged.append(key, value);
+    }
+  }
+
+  const mergedQuery = merged.toString();
+  return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
 /**
@@ -1219,6 +1417,7 @@ export async function proxyExternalRequest(
   // external rewrite destinations. It authorizes hidden production endpoints
   // used only by vinext's own prerender pipeline.
   headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
+  headers.delete(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
   // Internal App Router dev middleware context must never leave the dev server.
   headers.delete(VINEXT_MW_CTX_HEADER);
 
@@ -1292,9 +1491,7 @@ export function matchHeaders(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): Array<{ key: string; value: string }> {
-  // Header source regexes are compiled without a trailing-slash tolerance,
-  // so the incoming pathname must be normalized the same way config rewrites
-  // and redirects are. See `stripTrailingSlashForConfigMatch`.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
 
   const result: Array<{ key: string; value: string }> = [];
@@ -1302,8 +1499,11 @@ export function matchHeaders(
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
     // pure functions of rule.source and the result never changes between requests.
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
-      safeRegExp("^" + escapeHeaderSource(rule.source) + "$"),
+    const source = pathnameHadTrailingSlash
+      ? stripTrailingSlashForConfigMatch(rule.source)
+      : rule.source;
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
+      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
     );
     if (sourceRegex && sourceRegex.test(pathname)) {
       if (rule.has || rule.missing) {

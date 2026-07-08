@@ -7,6 +7,7 @@
  * Tests: ON-12, ON-15 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -117,6 +118,46 @@ test.describe("Config Rewrites (OpenNext compat)", () => {
     // Content should be from / (home page)
     const el = page.getByText("Welcome to App Router", { exact: true });
     await expect(el).toBeVisible();
+  });
+
+  // Soft (client-side) navigation to an afterFiles-rewritten route must commit
+  // the CANONICAL (pre-rewrite) URL — both in the address bar and in
+  // usePathname(). The rewrite /rewritten-use-pathname → /nextjs-compat/hooks-search
+  // serves the search page's content, but the committed pathname stays canonical.
+  //
+  // This guards the cross-cutting `displayPathname = canonicalPathname` change in
+  // app-rsc-handler.ts: displayPathname feeds the RSC payload identity the client
+  // planner uses to commit a navigation, so a regression here would mis-commit the
+  // internal rewrite target for *every* rewritten route, not just interceptions.
+  // The existing nextjs-compat/hooks.test.ts only covers the hard-nav (SSR) path.
+  // Ref: Next.js test/e2e/app-dir/hooks — "should have the canonical url pathname on rewrite"
+  test("soft-nav to a config-rewritten route commits the canonical URL and usePathname", async ({
+    page,
+  }) => {
+    await page.goto(BASE);
+    await waitForAppRouterHydration(page);
+
+    // Marker survives a soft navigation but is wiped by a full page reload.
+    await page.evaluate(() => {
+      (window as { __REWRITE_SOFT_NAV_MARKER__?: string }).__REWRITE_SOFT_NAV_MARKER__ = "alive";
+    });
+
+    await page.click('[data-testid="config-rewrite-pathname-link"]');
+
+    // Address bar shows the canonical (pre-rewrite) URL, not the internal target.
+    await page.waitForURL(/\/rewritten-use-pathname$/);
+
+    // The rewrite target's content rendered (from /nextjs-compat/hooks-search).
+    await expect(page.locator("#search-test-page")).toBeVisible();
+
+    // usePathname() reflects the canonical URL, not the internal rewrite target.
+    await expect(page.locator("#current-pathname")).toHaveText("/rewritten-use-pathname");
+
+    // No full page reload occurred — this was a genuine client-side commit.
+    const marker = await page.evaluate(
+      () => (window as { __REWRITE_SOFT_NAV_MARKER__?: string }).__REWRITE_SOFT_NAV_MARKER__,
+    );
+    expect(marker).toBe("alive");
   });
 });
 

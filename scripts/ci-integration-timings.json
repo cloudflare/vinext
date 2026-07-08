@@ -1,0 +1,425 @@
+{
+  "version": 2,
+  "suite": "integration",
+  "shardTotal": 10,
+  "generatedAt": "2026-06-15T17:00:58.450Z",
+  "generatedFrom": {
+    "runs": [
+      {
+        "id": "27538344211",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27538344211"
+      },
+      {
+        "id": "27537711845",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27537711845"
+      },
+      {
+        "id": "27515334055",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27515334055"
+      },
+      {
+        "id": "27514784406",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27514784406"
+      },
+      {
+        "id": "27514191266",
+        "url": "https://github.com/cloudflare/vinext/actions/runs/27514191266"
+      }
+    ]
+  },
+  "estimator": {
+    "metric": "p75"
+  },
+  "files": {
+    "tests/api-handler.test.ts": {
+      "estimateMs": 88,
+      "medianMs": 87,
+      "p75Ms": 88,
+      "samples": 5
+    },
+    "tests/app-router-client-preloading.test.ts": {
+      "estimateMs": 14,
+      "medianMs": 14,
+      "p75Ms": 14,
+      "samples": 5
+    },
+    "tests/app-router-dev-server.test.ts": {
+      "estimateMs": 14006,
+      "medianMs": 13818,
+      "p75Ms": 14006,
+      "samples": 5
+    },
+    "tests/app-router-external-rewrite.test.ts": {
+      "estimateMs": 1159,
+      "medianMs": 1086,
+      "p75Ms": 1159,
+      "samples": 5
+    },
+    "tests/app-router-font-google-prod.test.ts": {
+      "estimateMs": 3188,
+      "medianMs": 3159,
+      "p75Ms": 3188,
+      "samples": 5
+    },
+    "tests/app-router-isr-codegen.test.ts": {
+      "estimateMs": 32,
+      "medianMs": 31,
+      "p75Ms": 32,
+      "samples": 5
+    },
+    "tests/app-router-malformed-url.test.ts": {
+      "estimateMs": 6215,
+      "medianMs": 5855,
+      "p75Ms": 6215,
+      "samples": 5
+    },
+    "tests/app-router-metadata-routes.test.ts": {
+      "estimateMs": 8502,
+      "medianMs": 8274,
+      "p75Ms": 8502,
+      "samples": 5
+    },
+    "tests/app-router-middleware-next-request.test.ts": {
+      "estimateMs": 7292,
+      "medianMs": 7172,
+      "p75Ms": 7292,
+      "samples": 5
+    },
+    "tests/app-router-next-config-codegen.test.ts": {
+      "estimateMs": 162,
+      "medianMs": 158,
+      "p75Ms": 162,
+      "samples": 5
+    },
+    "tests/app-router-next-config-dev.test.ts": {
+      "estimateMs": 7045,
+      "medianMs": 6761,
+      "p75Ms": 7045,
+      "samples": 5
+    },
+    "tests/app-router-origin-check.test.ts": {
+      "estimateMs": 6096,
+      "medianMs": 5886,
+      "p75Ms": 6096,
+      "samples": 5
+    },
+    "tests/app-router-production-build.test.ts": {
+      "estimateMs": 45042,
+      "medianMs": 44956,
+      "p75Ms": 45042,
+      "samples": 5
+    },
+    "tests/app-router-production-server.test.ts": {
+      "estimateMs": 73786,
+      "medianMs": 73610,
+      "p75Ms": 73786,
+      "samples": 5
+    },
+    "tests/app-router-rsc-flight-hint.test.ts": {
+      "estimateMs": 6,
+      "medianMs": 5,
+      "p75Ms": 6,
+      "samples": 5
+    },
+    "tests/app-router-rsc-plugin.test.ts": {
+      "estimateMs": 14605,
+      "medianMs": 14585,
+      "p75Ms": 14605,
+      "samples": 5
+    },
+    "tests/app-router-static-export.test.ts": {
+      "estimateMs": 17843,
+      "medianMs": 17812,
+      "p75Ms": 17843,
+      "samples": 5
+    },
+    "tests/app-router-worker-entry.test.ts": {
+      "estimateMs": 308,
+      "medianMs": 307,
+      "p75Ms": 308,
+      "samples": 5
+    },
+    "tests/cjs.test.ts": {
+      "estimateMs": 6446,
+      "medianMs": 6398,
+      "p75Ms": 6446,
+      "samples": 5
+    },
+    "tests/ecosystem.test.ts": {
+      "estimateMs": 40289,
+      "medianMs": 39349,
+      "p75Ms": 40289,
+      "samples": 5
+    },
+    "tests/entry-templates.test.ts": {
+      "estimateMs": 57,
+      "medianMs": 54,
+      "p75Ms": 57,
+      "samples": 5
+    },
+    "tests/favicon-short-circuit.test.ts": {
+      "estimateMs": 44411,
+      "medianMs": 43838,
+      "p75Ms": 44411,
+      "samples": 5
+    },
+    "tests/features.test.ts": {
+      "estimateMs": 24169,
+      "medianMs": 23310,
+      "p75Ms": 24169,
+      "samples": 5
+    },
+    "tests/image-optimization-parity.test.ts": {
+      "estimateMs": 8236,
+      "medianMs": 8203,
+      "p75Ms": 8236,
+      "samples": 5
+    },
+    "tests/kv-cache-handler.test.ts": {
+      "estimateMs": 2546,
+      "medianMs": 2459,
+      "p75Ms": 2546,
+      "samples": 5
+    },
+    "tests/nextjs-compat/action-headers.test.ts": {
+      "estimateMs": 6649,
+      "medianMs": 6600,
+      "p75Ms": 6649,
+      "samples": 5
+    },
+    "tests/nextjs-compat/action-node-middleware.test.ts": {
+      "estimateMs": 6061,
+      "medianMs": 6046,
+      "p75Ms": 6061,
+      "samples": 5
+    },
+    "tests/nextjs-compat/als-isolation.test.ts": {
+      "estimateMs": 228,
+      "medianMs": 221,
+      "p75Ms": 228,
+      "samples": 5
+    },
+    "tests/nextjs-compat/app-css.test.ts": {
+      "estimateMs": 6157,
+      "medianMs": 6100,
+      "p75Ms": 6157,
+      "samples": 5
+    },
+    "tests/nextjs-compat/app-rendering.test.ts": {
+      "estimateMs": 8422,
+      "medianMs": 8407,
+      "p75Ms": 8422,
+      "samples": 5
+    },
+    "tests/nextjs-compat/app-routes.test.ts": {
+      "estimateMs": 6144,
+      "medianMs": 6032,
+      "p75Ms": 6144,
+      "samples": 5
+    },
+    "tests/nextjs-compat/basepath.test.ts": {
+      "estimateMs": 834,
+      "medianMs": 792,
+      "p75Ms": 834,
+      "samples": 5
+    },
+    "tests/nextjs-compat/draft-mode.test.ts": {
+      "estimateMs": 6315,
+      "medianMs": 6281,
+      "p75Ms": 6315,
+      "samples": 5
+    },
+    "tests/nextjs-compat/dynamic.test.ts": {
+      "estimateMs": 7344,
+      "medianMs": 7271,
+      "p75Ms": 7344,
+      "samples": 5
+    },
+    "tests/nextjs-compat/global-error.test.ts": {
+      "estimateMs": 16265,
+      "medianMs": 16226,
+      "p75Ms": 16265,
+      "samples": 5
+    },
+    "tests/nextjs-compat/global-not-found.test.ts": {
+      "estimateMs": 3790,
+      "medianMs": 3762,
+      "p75Ms": 3790,
+      "samples": 5
+    },
+    "tests/nextjs-compat/hooks.test.ts": {
+      "estimateMs": 6306,
+      "medianMs": 6217,
+      "p75Ms": 6306,
+      "samples": 5
+    },
+    "tests/nextjs-compat/hybrid-pages-api.test.ts": {
+      "estimateMs": 4860,
+      "medianMs": 4787,
+      "p75Ms": 4860,
+      "samples": 5
+    },
+    "tests/nextjs-compat/layout-segments.test.ts": {
+      "estimateMs": 6449,
+      "medianMs": 6232,
+      "p75Ms": 6449,
+      "samples": 5
+    },
+    "tests/nextjs-compat/metadata-suspense.test.ts": {
+      "estimateMs": 6410,
+      "medianMs": 6322,
+      "p75Ms": 6410,
+      "samples": 5
+    },
+    "tests/nextjs-compat/metadata.test.ts": {
+      "estimateMs": 7696,
+      "medianMs": 7584,
+      "p75Ms": 7696,
+      "samples": 5
+    },
+    "tests/nextjs-compat/navigation.test.ts": {
+      "estimateMs": 6476,
+      "medianMs": 6356,
+      "p75Ms": 6476,
+      "samples": 5
+    },
+    "tests/nextjs-compat/not-found.test.ts": {
+      "estimateMs": 7447,
+      "medianMs": 7150,
+      "p75Ms": 7447,
+      "samples": 5
+    },
+    "tests/nextjs-compat/prefetch.test.ts": {
+      "estimateMs": 6448,
+      "medianMs": 6357,
+      "p75Ms": 6448,
+      "samples": 5
+    },
+    "tests/nextjs-compat/react-max-headers-length.test.ts": {
+      "estimateMs": 26065,
+      "medianMs": 25778,
+      "p75Ms": 26065,
+      "samples": 5
+    },
+    "tests/nextjs-compat/repeated-forward-slashes-error.test.ts": {
+      "estimateMs": 7689,
+      "medianMs": 7656,
+      "p75Ms": 7689,
+      "samples": 5
+    },
+    "tests/nextjs-compat/request-apis.test.ts": {
+      "estimateMs": 6194,
+      "medianMs": 6092,
+      "p75Ms": 6194,
+      "samples": 5
+    },
+    "tests/nextjs-compat/require-context.test.ts": {
+      "estimateMs": 6269,
+      "medianMs": 6226,
+      "p75Ms": 6269,
+      "samples": 5
+    },
+    "tests/nextjs-compat/revalidate-reason.test.ts": {
+      "estimateMs": 1183,
+      "medianMs": 1150,
+      "p75Ms": 1183,
+      "samples": 5
+    },
+    "tests/nextjs-compat/revalidate.test.ts": {
+      "estimateMs": 6471,
+      "medianMs": 6198,
+      "p75Ms": 6471,
+      "samples": 5
+    },
+    "tests/nextjs-compat/rsc-basic.test.ts": {
+      "estimateMs": 7002,
+      "medianMs": 6984,
+      "p75Ms": 7002,
+      "samples": 5
+    },
+    "tests/nextjs-compat/rsc-context-lazy-stream.test.ts": {
+      "estimateMs": 7042,
+      "medianMs": 7017,
+      "p75Ms": 7042,
+      "samples": 5
+    },
+    "tests/nextjs-compat/script-nonce.test.ts": {
+      "estimateMs": 6858,
+      "medianMs": 6693,
+      "p75Ms": 6858,
+      "samples": 5
+    },
+    "tests/nextjs-compat/script-preload.test.ts": {
+      "estimateMs": 6265,
+      "medianMs": 6120,
+      "p75Ms": 6265,
+      "samples": 5
+    },
+    "tests/nextjs-compat/set-cookies.test.ts": {
+      "estimateMs": 6079,
+      "medianMs": 5974,
+      "p75Ms": 6079,
+      "samples": 5
+    },
+    "tests/nextjs-compat/streaming.test.ts": {
+      "estimateMs": 11086,
+      "medianMs": 10752,
+      "p75Ms": 11086,
+      "samples": 5
+    },
+    "tests/nextjs-compat/use-client-page-pathname.test.ts": {
+      "estimateMs": 7315,
+      "medianMs": 6963,
+      "p75Ms": 7315,
+      "samples": 5
+    },
+    "tests/node-modules-css.test.ts": {
+      "estimateMs": 6956,
+      "medianMs": 6922,
+      "p75Ms": 6956,
+      "samples": 5
+    },
+    "tests/pages-i18n-prod.test.ts": {
+      "estimateMs": 2434,
+      "medianMs": 2395,
+      "p75Ms": 2434,
+      "samples": 5
+    },
+    "tests/pages-router-concurrency.test.ts": {
+      "estimateMs": 4043,
+      "medianMs": 3935,
+      "p75Ms": 4043,
+      "samples": 5
+    },
+    "tests/pages-router.test.ts": {
+      "estimateMs": 42026,
+      "medianMs": 41308,
+      "p75Ms": 42026,
+      "samples": 5
+    },
+    "tests/postcss-resolve.test.ts": {
+      "estimateMs": 16377,
+      "medianMs": 15863,
+      "p75Ms": 16377,
+      "samples": 5
+    },
+    "tests/prerender.test.ts": {
+      "estimateMs": 30992,
+      "medianMs": 30864,
+      "p75Ms": 30992,
+      "samples": 5
+    },
+    "tests/static-export.test.ts": {
+      "estimateMs": 20648,
+      "medianMs": 19773,
+      "p75Ms": 20648,
+      "samples": 5
+    },
+    "tests/vite-hmr-websocket.test.ts": {
+      "estimateMs": 761,
+      "medianMs": 758,
+      "p75Ms": 761,
+      "samples": 5
+    }
+  }
+}

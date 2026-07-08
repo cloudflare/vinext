@@ -1,0 +1,77 @@
+name: Playwright cache
+description: >-
+  Resolve the Playwright version from a pnpm lockfile and restore (and
+  optionally save) the browsers cache under ~/.cache/ms-playwright. Keeps the
+  cache key format consistent across workflows so they share entries.
+
+inputs:
+  browser:
+    description: Browser variant — used as a cache-key segment (chromium, webkit, ...).
+    required: false
+    default: chromium
+  lockfile:
+    description: Path to the pnpm-lock.yaml that pins `playwright`, relative to $GITHUB_WORKSPACE.
+    required: false
+    default: pnpm-lock.yaml
+  mode:
+    description: >-
+      'cache' for restore + save (default — the workflow owns the cache).
+      'restore' for read-only restore (another workflow owns saving; pairs well
+      with a workflow that runs less often than the owner).
+    required: false
+    default: cache
+  restore-keys:
+    description: Optional restore-keys for partial cache fallback.
+    required: false
+    default: ""
+
+outputs:
+  cache-hit:
+    description: Set to 'true' when the cache was restored from an exact-key match.
+    value: ${{ steps.restore.outputs.cache-hit || steps.cache.outputs.cache-hit }}
+  version:
+    description: The Playwright version parsed from the lockfile.
+    value: ${{ steps.version.outputs.version }}
+  key:
+    description: The full cache key used (useful for diagnostics).
+    value: playwright-${{ inputs.browser }}-${{ runner.os }}-v${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Playwright version
+      id: version
+      shell: bash
+      env:
+        LOCKFILE: ${{ inputs.lockfile }}
+      run: |
+        set -euo pipefail
+        if [ ! -f "$LOCKFILE" ]; then
+          echo "Lockfile not found: $LOCKFILE" >&2
+          exit 1
+        fi
+        version=$(grep -E "^\s+playwright:\s+[0-9]" "$LOCKFILE" | head -n1 | awk '{print $2}' || true)
+        if [ -z "$version" ]; then
+          version="unknown-$(sha256sum "$LOCKFILE" | cut -c1-12)"
+          echo "Warning: could not parse playwright version from $LOCKFILE; using lockfile hash fallback ($version)" >&2
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Resolved Playwright version: $version (from $LOCKFILE)"
+
+    - name: Restore Playwright browsers (restore-only)
+      if: inputs.mode == 'restore'
+      id: restore
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ inputs.browser }}-${{ runner.os }}-v${{ steps.version.outputs.version }}
+        restore-keys: ${{ inputs.restore-keys }}
+
+    - name: Cache Playwright browsers
+      if: inputs.mode == 'cache'
+      id: cache
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ inputs.browser }}-${{ runner.os }}-v${{ steps.version.outputs.version }}
+        restore-keys: ${{ inputs.restore-keys }}

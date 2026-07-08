@@ -1,0 +1,11 @@
+/*
+ * Ported from Next.js test/e2e/app-dir/scss/url-global (styles/global1.scss).
+ * Two CSS url() dependencies whose source files (dark.svg, dark2.svg) have
+ * byte-identical contents. Vite/Rolldown dedupe assets by content, so without
+ * vinext's CSS url() asset handling the second reference would collapse onto
+ * dark.*.svg and dark2.*.svg would never be emitted.
+ */
+.redText {
+  color: red;
+  background-image: url("./dark.svg"), url(dark2.svg);
+}

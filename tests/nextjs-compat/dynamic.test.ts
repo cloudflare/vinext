@@ -128,6 +128,17 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).toContain('id="css-text-dynamic-rsc"');
   });
 
+  // Ported from Next.js: test/e2e/app-dir/dynamic-import/dynamic-import.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-import/dynamic-import.test.ts
+  it("RSC: resolves extensionless variable dynamic imports", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/extensionless-import");
+    expect(html).toContain("<button>submit</button>");
+    expect(html).toContain("<p>file import</p>");
+    expect(html).toContain("<p>json import</p>");
+    expect(html).toContain("<p>prefixed import</p>");
+    expect(html).toContain("<p>suffixless import</p>");
+  });
+
   // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
   it("SSR: adds nonce attributes to preload links when next/dynamic runs under CSP", async () => {

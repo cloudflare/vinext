@@ -2,49 +2,38 @@ import type { LayoutFlags } from "./app-elements.js";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
   createRscRedirectLocation,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
-import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
+import { VINEXT_RSC_REDIRECT_HEADER, VINEXT_RSC_REDIRECT_TYPE_HEADER } from "./headers.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
-import { addBasePathToPathname } from "../utils/base-path.js";
-
-/**
- * Builds the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest that
- * Next.js encodes on `redirect()` / `permanentRedirect()` throws. Used when
- * we synthesize a flight payload for an RSC navigation: the digest must
- * round-trip through the client's `RedirectErrorBoundary` so the same
- * `getURLFromRedirectError` / `getRedirectTypeFromError` helpers decode it.
- *
- * The URL is included verbatim, not encoded — Next.js's `getRedirectError`
- * sets `digest = ${CODE};${type};${url};${status};` with the raw URL, and the
- * client decodes via `error.digest.split(';').slice(2, -2).join(';')`. We
- * default `type=replace` because `redirect()` is replace-style outside of
- * server actions, matching Next.js's `getRedirectError` default.
- *
- * Reference:
- *   `.nextjs-ref/packages/next/src/client/components/redirect.ts:20-23`
- *   `.nextjs-ref/packages/next/src/client/components/redirect-error.ts`
- */
-function formatNextRedirectDigest(options: { url: string; statusCode: number }): string {
-  return `NEXT_REDIRECT;replace;${options.url};${options.statusCode};`;
-}
+import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
+import { isPromiseLike } from "../utils/promise.js";
+import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
+import { runWithConnectionProbe } from "vinext/shims/headers";
 
 export type { LayoutFlags };
-export type { ClassificationReason };
 
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from
  * `generateMetadata()` (vs. a server component itself). Metadata resolution is
- * suspended/streamed in Next.js, so a redirect from metadata never becomes an
- * HTTP-level 307 — it rides inside the flight payload with a 200 status,
- * regardless of whether the request is RSC or a full document SSR. Page-level
- * redirect()s, by contrast, still produce a 307 for SSR document requests.
+ * suspended/streamed in Next.js, so a redirect from metadata is not emitted as
+ * a plain HTTP-level 307. Instead the transport depends on the request:
+ *   - RSC navigation requests (`Rsc: 1`) ride inside the flight payload with a
+ *     200 status; the client router decodes the redirect digest.
+ *   - Streaming-capable document requests get a 200 HTML response carrying a
+ *     refresh meta tag (the streamed document can't switch to a 307 after the
+ *     head has flushed).
+ *   - html-limited bots (which Next.js serves a blocking, non-streamed
+ *     response) get the HTTP-level 307.
+ * Page-level redirect()s, by contrast, still produce a 307 for SSR document
+ * requests.
  *
  * See Next.js test:
- *   test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
- *   ("should support redirect in generateMetadata")
+ *   test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
  */
 const APP_PAGE_METADATA_ERROR_MARKER = Symbol.for("vinext.appPage.metadataError");
 
@@ -67,7 +56,13 @@ export function tagAppPageMetadataError<T>(error: T): T {
 }
 
 export type AppPageSpecialError =
-  | { kind: "redirect"; location: string; statusCode: number; fromMetadata?: boolean }
+  | {
+      kind: "redirect";
+      location: string;
+      statusCode: number;
+      type?: "push" | "replace";
+      fromMetadata?: boolean;
+    }
   | { kind: "http-access-fallback"; statusCode: number; fromMetadata?: boolean };
 
 export type AppPageFontPreload = {
@@ -126,10 +121,12 @@ type BuildAppPageSpecialErrorResponseOptions = {
    * the http-access-fallback path leaves cookies to the rendered boundary.
    */
   getAndClearPendingCookies?: () => string[];
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
   request: Request;
+  serveStreamingMetadata?: boolean;
   specialError: AppPageSpecialError;
 };
 
@@ -159,8 +156,15 @@ export type LayoutClassificationOptions = {
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
+  /**
+   * Returns whether the completed per-layout observation makes static reuse
+   * unsafe even if the older dynamic scope did not report dynamic usage.
+   */
+  isLayoutObservationDynamic?: (layoutId: string) => boolean;
   /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
+  runWithIsolatedDynamicScope: <T>(
+    fn: () => T | Promise<T>,
+  ) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
 
 type ProbeAppPageLayoutsOptions = {
@@ -179,14 +183,10 @@ type ProbeAppPageComponentOptions = {
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
 };
 
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
+type ProbeAppPageThrownErrorOptions = {
+  probePage: () => unknown;
+  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
+};
 
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
@@ -212,7 +212,7 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
   }
 
   const digest = String(error.digest);
-  const fromMetadata = (error as Record<symbol, unknown>)[APP_PAGE_METADATA_ERROR_MARKER] === true;
+  const fromMetadata = Reflect.get(error, APP_PAGE_METADATA_ERROR_MARKER) === true;
 
   const redirect = parseNextRedirectDigest(digest);
   if (redirect) {
@@ -220,6 +220,7 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
       kind: "redirect",
       location: redirect.url,
       statusCode: redirect.status,
+      type: redirect.type === "push" ? "push" : "replace",
       ...(fromMetadata ? { fromMetadata: true } : {}),
     };
   }
@@ -244,23 +245,19 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * in `app-render.tsx`: a `redirect("/about")` call from a page mounted at
  * `/blog` (basePath) produces `Location: /blog/about`.
  *
- * Skips prefixing when:
- *  - basePath is unset / empty
- *  - the target is a full URL pointing at a different origin (external redirect)
- *  - the target already starts with the basePath (caller did the work themselves)
+ * Skips prefixing only when basePath is unset or the raw target does not start
+ * with `/`, matching Next.js's literal `addPathPrefix()` contract.
  */
-function applyAppPageRedirectBasePath(
-  location: string,
-  requestUrl: string,
-  basePath: string | undefined,
-): string {
-  const resolved = new URL(location, requestUrl);
-  const requestOrigin = new URL(requestUrl).origin;
-  if (!basePath || resolved.origin !== requestOrigin) {
-    return resolved.toString();
-  }
-  resolved.pathname = addBasePathToPathname(resolved.pathname, basePath);
-  return resolved.toString();
+function applyAppPageRedirectBasePath(location: string, basePath: string | undefined): string {
+  if (!basePath || !location.startsWith("/")) return location;
+
+  const queryIndex = location.indexOf("?");
+  const hashIndex = location.indexOf("#");
+  const suffixIndex =
+    queryIndex === -1 ? hashIndex : hashIndex === -1 ? queryIndex : Math.min(queryIndex, hashIndex);
+  const pathname = suffixIndex === -1 ? location : location.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? "" : location.slice(suffixIndex);
+  return `${basePath}${pathname}${suffix}`;
 }
 
 /**
@@ -283,6 +280,35 @@ function sameOriginPathOrAbsolute(location: string, requestUrl: string): string 
   }
 }
 
+function buildMetadataRedirectHtmlResponse(options: {
+  digest: string;
+  getAndClearPendingCookies?: () => string[];
+  isEdgeRuntime?: boolean;
+  middlewareContext?: { headers: Headers | null };
+}): Response {
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=utf-8",
+  });
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+
+  const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
+  for (const cookie of pendingCookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+
+  const errorMetaTags = renderSsrErrorMetaTags([{ digest: options.digest }]);
+  // Intentional divergence from Next.js: Next.js inserts the redirect meta tag
+  // into the otherwise fully-rendered streamed document, whereas we emit a
+  // minimal stub (refresh meta tag, empty body). For a redirect this is
+  // functionally equivalent — the browser follows the refresh regardless of
+  // body content — and avoids re-rendering page content we're about to discard.
+  return new Response(`<!DOCTYPE html><html><head>${errorMetaTags}</head><body></body></html>`, {
+    headers,
+    status: 200,
+  });
+}
+
 export async function buildAppPageSpecialErrorResponse(
   options: BuildAppPageSpecialErrorResponseOptions,
 ): Promise<Response> {
@@ -292,23 +318,40 @@ export async function buildAppPageSpecialErrorResponse(
     // /<basePath>/<target> before the RSC cache-busting transform sees them.
     const prefixedLocation = applyAppPageRedirectBasePath(
       options.specialError.location,
-      options.request.url,
       options.basePath,
     );
+    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    const digest = formatNextRedirectDigest({
+      type: options.specialError.type ?? "replace",
+      url: digestUrl,
+      statusCode: options.specialError.statusCode,
+    });
+
+    if (
+      options.specialError.fromMetadata === true &&
+      !options.isRscRequest &&
+      options.serveStreamingMetadata !== false
+    ) {
+      return buildMetadataRedirectHtmlResponse({
+        digest,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+        isEdgeRuntime: options.isEdgeRuntime,
+        middlewareContext: options.middlewareContext,
+      });
+    }
 
     // Two cases need a 200 + flight-payload encoding instead of an HTTP 307:
     //   1. RSC navigation requests (`Rsc: 1` header) — the client router
     //      decodes the redirect digest from the flight stream. A raw 307
     //      bypasses that path and breaks cache-busting validation.
-    //   2. `generateMetadata()` redirects — metadata is suspended in Next.js,
-    //      so the redirect rides inside the streamed flight payload even for
-    //      full document SSR. The status line stays 200.
+    // Document requests that redirect from `generateMetadata()` are HTML
+    // responses instead: streaming-capable user agents get a refresh meta tag
+    // and html-limited bots get the blocking 307 above.
     // Mirrors Next.js's `generateDynamicFlightRenderResult` path in
     // `app-render.tsx`, where the redirect error propagates through
     // `renderToFlightStream` and is serialized with its digest.
     const shouldEmbedRedirectInFlight =
-      Boolean(options.buildRscRedirectFlightStream) &&
-      (options.isRscRequest || options.specialError.fromMetadata === true);
+      Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
       // Reduce the resolved (absolute) URL back to a path-only form for
@@ -316,27 +359,25 @@ export async function buildAppPageSpecialErrorResponse(
       // `redirect()` (typically a path like "/about"), and the client router's
       // `router.push(url)` happily accepts paths. Cross-origin targets keep
       // their absolute form, matching Next.js's external-redirect handling.
-      const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
-      const digest = formatNextRedirectDigest({
-        url: digestUrl,
-        statusCode: options.specialError.statusCode,
-      });
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
-        // Side-channel signal so vinext's client loop can detect the redirect
-        // without having to decode the flight body first. See
-        // `VINEXT_RSC_REDIRECT_HEADER` in server/headers.ts for the rationale.
-        [VINEXT_RSC_REDIRECT_HEADER]: digestUrl,
       });
+      applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
       // Mirror the regular RSC response by stamping the build-time compatibility
       // ID. Without it, the client treats the response as cross-build and hard-
       // navigates instead of following the redirect through the soft-nav loop.
       applyRscCompatibilityIdHeader(headers);
+      applyRscDeploymentIdHeader(headers);
       // Preserve middleware response headers (Set-Cookie, custom headers, etc.)
       // exactly like the 307 path does — the client will still see them.
       mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+      // Framework-owned redirect semantics must win over middleware headers.
+      // The Flight digest remains authoritative; these headers are only the
+      // early client side-channel for following it without decoding first.
+      headers.set(VINEXT_RSC_REDIRECT_HEADER, digestUrl);
+      headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, options.specialError.type ?? "replace");
       const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
       for (const cookie of pendingCookies) {
         headers.append("Set-Cookie", cookie);
@@ -374,14 +415,47 @@ export async function buildAppPageSpecialErrorResponse(
   if (options.renderFallbackPage) {
     const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
     if (fallbackResponse) {
-      return mergeAppPageSpecialErrorHeaders(fallbackResponse, options.middlewareContext);
+      // When notFound() / forbidden() / unauthorized() is thrown from
+      // generateMetadata(), Next.js treats the error as a suspended metadata
+      // result — the not-found UI is rendered through the React boundary
+      // client-side while the HTTP response itself stays 200. Mirror that
+      // behavior by overriding the rendered boundary response status to 200.
+      // Mirrors the redirect-from-metadata path above, which also returns 200.
+      // Reference: test/e2e/app-dir/metadata-navigation
+      //   "should support notFound in generateMetadata"
+      //
+      // Exception: when serveStreamingMetadata === false (html-limited bots),
+      // metadata blocks the render synchronously. Next.js sets the real HTTP
+      // error status in this case (app-render.tsx ~2845). Mirror by not
+      // overriding the status, symmetrically with the redirect-from-metadata
+      // path which is already gated on serveStreamingMetadata !== false.
+      const responseToMerge =
+        options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+          ? new Response(fallbackResponse.body, {
+              headers: fallbackResponse.headers,
+              status: 200,
+              statusText: fallbackResponse.statusText,
+            })
+          : fallbackResponse;
+      return mergeAppPageSpecialErrorHeaders(responseToMerge, options.middlewareContext);
     }
   }
 
   options.clearRequestContext();
+  // When notFound() is thrown from generateMetadata() with no fallback page
+  // available, keep the 200 status to stay consistent with the streamed
+  // metadata contract (the error is surfaced in the page UI, not the status).
+  // Exception: when serveStreamingMetadata === false (html-limited bots),
+  // metadata blocks the render synchronously — Next.js sets the real HTTP
+  // error status in this case (app-render.tsx ~2845), symmetric with the
+  // redirect-from-metadata path that is already gated on the same flag.
+  const responseStatus =
+    options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+      ? 200
+      : options.specialError.statusCode;
   return mergeAppPageSpecialErrorHeaders(
     new Response(getAppPageStatusText(options.specialError.statusCode), {
-      status: options.specialError.statusCode,
+      status: responseStatus,
     }),
     options.middlewareContext,
   );
@@ -399,44 +473,65 @@ export async function probeAppPageLayouts(
       const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
 
       if (cls && buildTimeResult) {
+        const layoutId = cls.getLayoutId(layoutIndex);
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
-        // but still probe for special errors (redirects, not-found).
-        layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
-        if (cls.debugClassification) {
-          // `no-classifier` is the documented fallback for a layout that was
-          // build-time classified but whose reason payload is absent — either
-          // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
-          // because no Layer 1/2 classifier attached a reason. This is the sole
-          // producer of the variant; see `layout-classification-types.ts`.
-          cls.debugClassification(
-            cls.getLayoutId(layoutIndex),
-            cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
-          );
-        }
+        // but still probe for special errors (redirects, not-found). Record the
+        // build-time flag up front so it survives a short-circuit if the error
+        // probe returns a special-error response below.
+        layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
+        // Compute the final flag before reporting so the emitted debug reason
+        // always agrees with `layoutFlags[layoutId]`. A runtime observation can
+        // override a build-time `static` decision to dynamic; in that case we
+        // report a `runtime-probe` reason rather than the stale build-time one.
+        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
+        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
+        if (cls.debugClassification) {
+          if (observationDynamic && buildTimeResult === "static") {
+            cls.debugClassification(layoutId, {
+              layer: "runtime-probe",
+              outcome: "dynamic",
+            });
+          } else {
+            // `no-classifier` is the documented fallback for a layout that was
+            // build-time classified but whose reason payload is absent — either
+            // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
+            // because no Layer 1/2 classifier attached a reason. This is the sole
+            // producer of the variant; see `layout-classification-types.ts`.
+            cls.debugClassification(
+              layoutId,
+              cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
+            );
+          }
+        }
         continue;
       }
 
       if (cls) {
+        const layoutId = cls.getLayoutId(layoutIndex);
         // Layer 3: probe with isolated dynamic scope to detect per-layout
         // dynamic API usage (headers(), cookies(), connection(), etc.)
         try {
-          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(() =>
-            options.probeLayoutAt(layoutIndex),
-          );
-          layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
+          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
+            const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
+            return outcome.completed ? outcome.result : null;
+          });
+          const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+          const layoutDynamic = dynamicDetected || observationDynamic;
+          layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
           if (cls.debugClassification) {
-            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+            cls.debugClassification(layoutId, {
               layer: "runtime-probe",
-              outcome: dynamicDetected ? "dynamic" : "static",
+              outcome: layoutDynamic ? "dynamic" : "static",
             });
           }
         } catch (error) {
           // Probe failed — conservatively treat as dynamic.
-          layoutFlags[cls.getLayoutId(layoutIndex)] = "d";
+          layoutFlags[layoutId] = "d";
           if (cls.debugClassification) {
-            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+            cls.debugClassification(layoutId, {
               layer: "runtime-probe",
               outcome: "dynamic",
               error: error instanceof Error ? error.message : String(error),
@@ -463,35 +558,64 @@ async function probeLayoutForErrors(
   options: ProbeAppPageLayoutsOptions,
   layoutIndex: number,
 ): Promise<Response | null> {
-  try {
-    const layoutResult = options.probeLayoutAt(layoutIndex);
-    if (isPromiseLike(layoutResult)) {
-      await layoutResult;
+  const outcome = await runWithConnectionProbe(async () => {
+    try {
+      const layoutResult = options.probeLayoutAt(layoutIndex);
+      if (isPromiseLike(layoutResult)) {
+        await layoutResult;
+      }
+    } catch (error) {
+      return options.onLayoutError(error, layoutIndex);
     }
-  } catch (error) {
-    return options.onLayoutError(error, layoutIndex);
-  }
-  return null;
+    return null;
+  });
+
+  return outcome.completed ? outcome.result : null;
 }
 
 export async function probeAppPageComponent(
   options: ProbeAppPageComponentOptions,
 ): Promise<Response | null> {
   return options.runWithSuppressedHookWarning(async () => {
-    try {
-      const pageResult = options.probePage();
-      if (isPromiseLike(pageResult)) {
-        if (options.awaitAsyncResult) {
-          await pageResult;
-        } else {
-          void Promise.resolve(pageResult).catch(() => {});
+    const outcome = await runWithConnectionProbe(async () => {
+      try {
+        const pageResult = options.probePage();
+        if (isPromiseLike(pageResult)) {
+          if (options.awaitAsyncResult) {
+            await pageResult;
+          } else {
+            void Promise.resolve(pageResult).catch(() => {});
+          }
         }
+      } catch (error) {
+        return options.onError(error);
       }
-    } catch (error) {
-      return options.onError(error);
-    }
 
-    return null;
+      return null;
+    });
+
+    return outcome.completed ? outcome.result : null;
+  });
+}
+
+export async function probeAppPageThrownError(
+  options: ProbeAppPageThrownErrorOptions,
+): Promise<unknown> {
+  return options.runWithSuppressedHookWarning(async () => {
+    const outcome = await runWithConnectionProbe(async () => {
+      try {
+        const pageResult = options.probePage();
+        if (isPromiseLike(pageResult)) {
+          await pageResult;
+        }
+      } catch (error) {
+        return { error, thrown: true } as const;
+      }
+
+      return { error: null, thrown: false } as const;
+    });
+
+    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
   });
 }
 
@@ -519,6 +643,26 @@ export async function readAppPageBinaryStream(
   }
 
   return buffer.buffer;
+}
+
+export async function bufferAppPageBinaryStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<ReadableStream<Uint8Array>> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
 }
 
 export function teeAppPageRscStreamForCapture(

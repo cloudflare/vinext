@@ -3,6 +3,20 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
+const VINEXT_SRC = path.resolve(import.meta.dirname, "packages/vinext/src");
+const CLOUDFLARE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src");
+const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
+
+// Resolve own-workspace sources directly in tests so the vinext <->
+// @vinext/cloudflare dependency edge points at source (single module instance,
+// no prior build required). Shared by both test projects below.
+const WORKSPACE_SRC_ALIAS = {
+  "vinext/shims": SHIMS_SRC,
+  "vinext/internal": VINEXT_SRC,
+  "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
+  "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
+  "@vinext/cloudflare/images": path.resolve(import.meta.dirname, "packages/cloudflare/src/images"),
+};
 
 export default defineConfig({
   staged: {
@@ -30,7 +44,10 @@ export default defineConfig({
       denyWarnings: true,
     },
     plugins: ["typescript", "unicorn", "import", "react"],
-    jsPlugins: ["./oxlint-plugins/prefer-import-alias.js"],
+    jsPlugins: [
+      "./oxlint-plugins/prefer-import-alias.js",
+      "./oxlint-plugins/prefer-shared-utils.js",
+    ],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
       "typescript/consistent-type-definitions": ["error", "type"],
@@ -52,6 +69,7 @@ export default defineConfig({
       "react/no-array-index-key": "error",
       "react/rules-of-hooks": "error",
       "react/self-closing-comp": "error",
+      "vinext-utils/prefer-shared-utils": "error",
     },
     overrides: [
       {
@@ -75,6 +93,25 @@ export default defineConfig({
           "import/no-self-import": "error",
           "unicorn/throw-new-error": "error",
           "unicorn/error-message": "error",
+          // Source path handling goes through pathslash so every join/resolve/
+          // relative emits canonical forward-slash output on Windows. Files
+          // that genuinely work in native-separator space (build/standalone.ts)
+          // disable this inline with a reason.
+          "no-restricted-imports": [
+            "error",
+            {
+              paths: [
+                {
+                  name: "node:path",
+                  message: 'Import path from "pathslash" instead (canonical forward-slash output).',
+                },
+                {
+                  name: "path",
+                  message: 'Import path from "pathslash" instead (canonical forward-slash output).',
+                },
+              ],
+            },
+          ],
         },
       },
       {
@@ -124,11 +161,15 @@ export default defineConfig({
     projects: [
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "unit",
-          include: ["tests/**/*.test.ts"],
+          setupFiles: [MSW_SETUP],
+          // `scripts/**` covers the release-tooling unit tests
+          // (scripts/create-changeset.test.ts, scripts/version.test.ts), which
+          // are pure-logic and have no fixture/server dependencies.
+          include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
             // Integration tests: spin up Vite dev servers against shared fixture
@@ -136,12 +177,32 @@ export default defineConfig({
             // (node_modules/.vite/*) that produce "outdated pre-bundle" 500s.
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
-            "tests/app-router.test.ts",
+            "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-deployment-id.test.ts",
+            "tests/app-router-dev-server.test.ts",
+            "tests/app-router-external-rewrite.test.ts",
+            "tests/app-router-font-google-prod.test.ts",
+            "tests/app-router-isr-codegen.test.ts",
+            "tests/app-router-malformed-url.test.ts",
+            "tests/app-router-metadata-routes.test.ts",
+            "tests/app-router-middleware-next-request.test.ts",
+            "tests/app-router-next-config-codegen.test.ts",
+            "tests/app-router-next-config-dev.test.ts",
+            "tests/app-router-origin-check.test.ts",
+            "tests/app-router-proxy-conventions.test.ts",
+            "tests/app-router-production-build.test.ts",
+            "tests/app-router-production-server.test.ts",
+            "tests/app-router-rsc-flight-hint.test.ts",
+            "tests/app-router-rsc-plugin.test.ts",
+            "tests/app-router-static-export.test.ts",
+            "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
+            "tests/client-global-define.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/features.test.ts",
+            "tests/favicon-short-circuit.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/pages-i18n-prod.test.ts",
@@ -159,16 +220,48 @@ export default defineConfig({
       },
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "integration",
+          // MSW is intentionally NOT installed in the integration project.
+          // Integration tests spin up in-process HTTP servers and fixture
+          // dev servers and exercise them via `fetch("http://127.0.0.1:<port>/...")`.
+          // The @mswjs/interceptors layer interferes with that loopback
+          // traffic in subtle ways even when handlers `passthrough()`
+          // (e.g. 5xx response bodies stall, fixture-startup readiness
+          // probes time out). MSW's value here is mocking external HTTP
+          // for unit tests of fetch wrappers — integration tests already
+          // talk to real local servers, not to the network, so the
+          // unhandled-request guard buys little. If a future integration
+          // test needs to mock an external fetch, wire MSW per-file with
+          // `setupServer` rather than reverting this exclusion.
           include: [
-            "tests/app-router.test.ts",
+            "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-deployment-id.test.ts",
+            "tests/app-router-dev-server.test.ts",
+            "tests/app-router-external-rewrite.test.ts",
+            "tests/app-router-font-google-prod.test.ts",
+            "tests/app-router-isr-codegen.test.ts",
+            "tests/app-router-malformed-url.test.ts",
+            "tests/app-router-metadata-routes.test.ts",
+            "tests/app-router-middleware-next-request.test.ts",
+            "tests/app-router-next-config-codegen.test.ts",
+            "tests/app-router-next-config-dev.test.ts",
+            "tests/app-router-origin-check.test.ts",
+            "tests/app-router-proxy-conventions.test.ts",
+            "tests/app-router-production-build.test.ts",
+            "tests/app-router-production-server.test.ts",
+            "tests/app-router-rsc-flight-hint.test.ts",
+            "tests/app-router-rsc-plugin.test.ts",
+            "tests/app-router-static-export.test.ts",
+            "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
+            "tests/client-global-define.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
+            "tests/favicon-short-circuit.test.ts",
             "tests/features.test.ts",
             "tests/image-optimization-parity.test.ts",
             "tests/kv-cache-handler.test.ts",

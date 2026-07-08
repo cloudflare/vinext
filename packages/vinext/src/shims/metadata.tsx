@@ -5,7 +5,7 @@
  * Resolves metadata from layouts and pages (pages override layouts).
  */
 import React from "react";
-import { makeThenableParams } from "./thenable-params.js";
+import { makeThenableParams, type ThenableParamsObserver } from "./thenable-params.js";
 import { isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -38,10 +38,19 @@ export type Viewport = {
 export async function resolveModuleViewport(
   mod: Record<string, unknown>,
   params: Record<string, string | string[]>,
+  searchParams?: Record<string, string | string[]>,
+  searchParamsObserver?: ThenableParamsObserver,
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
     const asyncParams = makeThenableParams(params);
-    return await mod.generateViewport({ params: asyncParams });
+    const props =
+      searchParams === undefined
+        ? { params: asyncParams }
+        : {
+            params: asyncParams,
+            searchParams: makeThenableParams(searchParams, searchParamsObserver),
+          };
+    return await mod.generateViewport(props);
   }
   if (mod.viewport && typeof mod.viewport === "object") {
     return mod.viewport as Viewport;
@@ -275,11 +284,16 @@ type AppleIconDescriptor = {
 type IconInput = string | URL | IconDescriptor;
 type AppleIconInput = string | URL | AppleIconDescriptor;
 
+type OtherIconDescriptor = { rel: string; url: string | URL; sizes?: string; type?: string };
+
 type IconsMap = {
   icon?: IconInput | IconInput[];
   shortcut?: string | URL | Array<string | URL>;
   apple?: AppleIconInput | AppleIconInput[];
-  other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
+  // Next.js accepts a single descriptor or an array (see resolveIcons in
+  // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts —
+  // values pass through resolveAsArrayOrUndefined before iteration).
+  other?: OtherIconDescriptor | OtherIconDescriptor[];
 };
 
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
@@ -531,6 +545,7 @@ export async function resolveModuleMetadata(
   params: Record<string, string | string[]> = {},
   searchParams?: Record<string, string | string[]>,
   parent: Promise<Metadata> = Promise.resolve({}),
+  searchParamsObserver?: ThenableParamsObserver,
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {
     // Next.js 16 passes params/searchParams as Promises (async pattern).
@@ -539,8 +554,24 @@ export async function resolveModuleMetadata(
     const props =
       searchParams === undefined
         ? { params: asyncParams }
-        : { params: asyncParams, searchParams: makeThenableParams(searchParams) };
-    return await mod.generateMetadata(props, parent);
+        : {
+            params: asyncParams,
+            searchParams: makeThenableParams(searchParams, searchParamsObserver),
+          };
+    // Only pass the `parent` metadata when `generateMetadata` actually declares
+    // it (arity >= 2). Next.js omits the parent argument for `generateMetadata`
+    // functions that don't use it, which matters for `'use cache'` functions:
+    // the cache-key encoder (encodeReply) would otherwise try to serialize the
+    // resolved parent metadata, which can contain a non-serializable `URL`
+    // `metadataBase` and throws "URL objects are not supported".
+    // See Next.js resolve-metadata.ts (getResult / useCacheFunctionInfo.usedArgs[1]).
+    //
+    // Note: `fn.length` approximates Next.js's static usage analysis. It can
+    // diverge on default-parameter signatures — e.g. `(props, parent = x)`
+    // reports length 1, and `(props = {}, parent)` reports length 0 — but a
+    // default value on `generateMetadata`'s `parent` is unusual in practice.
+    const usesParent = mod.generateMetadata.length >= 2;
+    return await (usesParent ? mod.generateMetadata(props, parent) : mod.generateMetadata(props));
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;
@@ -666,16 +697,48 @@ function formatResolvedMetadataUrl(url: URL): string {
   return url.href;
 }
 
-function resolveMetadataUrl(url: string | URL, metadataBase: URL | null | undefined): string {
+// Next.js's exact file-extension regex for trailingSlash canonical rule.
+// Matches paths like /foo.xml, /bar/baz.json but NOT /.well-known/... paths.
+const TRAILING_SLASH_FILE_REGEX =
+  /^(?:\/((?!\.well-known(?:\/.*)?)((?:[^/]+\/)*)([^/]+\.\w+)))(\/?|$)/i;
+
+function resolveMetadataUrl(
+  url: string | URL,
+  metadataBase: URL | null | undefined,
+  trailingSlash?: boolean,
+): string {
   const value = stringifyUrl(url);
-  if (isAbsoluteOrProtocolRelativeUrl(value) || !metadataBase) {
+  if (!metadataBase) {
     return value;
   }
 
   try {
-    return formatResolvedMetadataUrl(
-      new URL(joinMetadataPath(metadataBase.pathname, value), metadataBase),
-    );
+    const isAbsolute = isAbsoluteOrProtocolRelativeUrl(value);
+    const composed = isAbsolute
+      ? new URL(value, metadataBase)
+      : new URL(joinMetadataPath(metadataBase.pathname, value), metadataBase);
+    if (isAbsolute && composed.origin !== metadataBase.origin) {
+      return value;
+    }
+    // Match Next.js's resolveAbsoluteUrlWithPathname: only ADD a trailing slash
+    // when trailingSlash is true; never strip when false. See
+    // packages/next/src/lib/metadata/resolvers/resolve-url.ts.
+    if (trailingSlash === true && composed.search === "") {
+      if (
+        composed.pathname !== "/" &&
+        !composed.pathname.endsWith("/") &&
+        !TRAILING_SLASH_FILE_REGEX.test(composed.pathname)
+      ) {
+        composed.pathname += "/";
+      }
+    }
+    const result = formatResolvedMetadataUrl(composed);
+    // formatResolvedMetadataUrl collapses pathname '/' with no query to bare
+    // origin (no trailing slash). For trailingSlash:true restore the slash.
+    if (trailingSlash === true && result === metadataBase.origin) {
+      return `${metadataBase.origin}/`;
+    }
+    return result;
   } catch {
     return value;
   }
@@ -685,11 +748,26 @@ function resolveCanonicalUrl(
   url: string | URL,
   metadataBase: URL | null | undefined,
   pathname: string,
+  trailingSlash?: boolean,
 ): string {
   if (url instanceof URL) {
-    return resolveMetadataUrl(url, metadataBase);
+    return resolveMetadataUrl(url, metadataBase, trailingSlash);
   }
-  return resolveMetadataUrl(resolveRelativeMetadataUrl(url, pathname), metadataBase);
+  return resolveMetadataUrl(resolveRelativeMetadataUrl(url, pathname), metadataBase, trailingSlash);
+}
+
+function resolveAlternateUrl(
+  url: string | URL,
+  metadataBase: URL | null | undefined,
+  pathname: string,
+  trailingSlash?: boolean,
+): string {
+  if (url instanceof URL) {
+    const resolvedUrl = new URL(pathname, url);
+    url.searchParams.forEach((value, key) => resolvedUrl.searchParams.set(key, value));
+    return resolveMetadataUrl(resolvedUrl, metadataBase, trailingSlash);
+  }
+  return resolveCanonicalUrl(url, metadataBase, pathname, trailingSlash);
 }
 
 function isSocialImageDescriptor(
@@ -721,9 +799,78 @@ function resolveSocialImageUrl(
 type MetadataHeadProps = {
   metadata: Metadata;
   pathname?: string;
+  trailingSlash?: boolean;
 };
 
-export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
+function escapeHtmlText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replaceAll('"', "&quot;");
+}
+
+function renderMetadataText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(renderMetadataText).join("");
+  if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
+    return escapeHtmlText(String(node));
+  }
+  return "";
+}
+
+function renderMetadataAttributes(props: object, names: readonly string[]): string {
+  const attributes: string[] = [];
+  for (const name of names) {
+    const value = Reflect.get(props, name);
+    if (value === null || value === undefined || typeof value === "boolean") continue;
+    const htmlName = name === "hrefLang" ? "hreflang" : name;
+    attributes.push(`${htmlName}="${escapeHtmlAttribute(String(value))}"`);
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+
+function renderMetadataElementToHtml(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(renderMetadataElementToHtml).join("");
+  if (!React.isValidElement(node)) return renderMetadataText(node);
+
+  const props = typeof node.props === "object" && node.props !== null ? node.props : {};
+  if (node.type === React.Fragment) {
+    return renderMetadataElementToHtml(Reflect.get(props, "children"));
+  }
+  if (typeof node.type !== "string") return "";
+
+  switch (node.type) {
+    case "title":
+      return `<title>${renderMetadataText(Reflect.get(props, "children"))}</title>`;
+    case "meta":
+      return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
+    case "link":
+      return `<link${renderMetadataAttributes(props, [
+        "rel",
+        "href",
+        "hrefLang",
+        "media",
+        "type",
+        "sizes",
+      ])}>`;
+    default:
+      return "";
+  }
+}
+
+export function renderMetadataToHtml(
+  metadata: Metadata,
+  pathname = "/",
+  options?: { trailingSlash?: boolean },
+): string {
+  return renderMetadataElementToHtml(
+    MetadataHead({ metadata, pathname, trailingSlash: options?.trailingSlash }),
+  );
+}
+
+export function MetadataHead({ metadata, pathname = "/", trailingSlash }: MetadataHeadProps) {
   const elements: React.ReactElement[] = [];
   let key = 0;
 
@@ -852,7 +999,15 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
     if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
-    if (og.url) elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
+    if (og.url) {
+      elements.push(
+        <meta
+          key={key++}
+          property="og:url"
+          content={resolveCanonicalUrl(og.url, base, pathname, trailingSlash)}
+        />,
+      );
+    }
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
@@ -961,7 +1116,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
       }
     }
     // Twitter player cards
-    if (tw.players) {
+    if (tw.card === "player" && tw.players) {
       const players = Array.isArray(tw.players) ? tw.players : [tw.players];
       for (const player of players) {
         const playerUrl = player.playerUrl.toString();
@@ -979,7 +1134,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
       }
     }
     // Twitter app cards
-    if (tw.app) {
+    if (tw.card === "app" && tw.app) {
       const { app } = tw;
       for (const platform of ["iphone", "ipad", "googleplay"] as const) {
         if (app.name) {
@@ -987,7 +1142,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
             <meta key={key++} name={`twitter:app:name:${platform}`} content={app.name} />,
           );
         }
-        if (app.id[platform] !== undefined) {
+        if (app.id[platform]) {
           elements.push(
             <meta
               key={key++}
@@ -996,7 +1151,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
             />,
           );
         }
-        if (app.url?.[platform] !== undefined) {
+        if (app.url?.[platform]) {
           const appUrl = app.url[platform]!.toString();
           elements.push(
             <meta key={key++} name={`twitter:app:url:${platform}`} content={resolveUrl(appUrl)} />,
@@ -1018,7 +1173,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
         ? metadata.icons.shortcut
         : [metadata.icons.shortcut];
       for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s)} />);
+        elements.push(<link key={key++} rel="shortcut icon" href={stringifyUrl(s)} />);
       }
     }
     // Icon
@@ -1028,7 +1183,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
           <link
             key={key++}
             rel="icon"
-            href={resolveUrl(i.url)}
+            href={stringifyUrl(i.url)}
             {...(i.sizes ? { sizes: i.sizes } : {})}
             {...(i.type ? { type: i.type } : {})}
             {...(i.media ? { media: i.media } : {})}
@@ -1046,22 +1201,27 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
           <link
             key={key++}
             rel="apple-touch-icon"
-            href={resolveUrl(a.url)}
+            href={stringifyUrl(a.url)}
             {...(a.sizes ? { sizes: a.sizes } : {})}
             {...(a.type ? { type: a.type } : {})}
           />,
         );
       }
     }
-    // Other custom icon relations
+    // Other custom icon relations. Next.js accepts a single descriptor or an
+    // array; normalize before iterating.
     if (isIconsMap(metadata.icons) && metadata.icons.other) {
-      for (const o of metadata.icons.other) {
+      const others = Array.isArray(metadata.icons.other)
+        ? metadata.icons.other
+        : [metadata.icons.other];
+      for (const o of others) {
         elements.push(
           <link
             key={key++}
             rel={o.rel}
-            href={resolveUrl(o.url)}
+            href={stringifyUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}
+            {...(o.type ? { type: o.type } : {})}
           />,
         );
       }
@@ -1081,23 +1241,44 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
         <link
           key={key++}
           rel="canonical"
-          href={resolveCanonicalUrl(alt.canonical, base, pathname)}
+          href={resolveCanonicalUrl(alt.canonical, base, pathname, trailingSlash)}
         />,
       );
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(<link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            hrefLang={lang}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(<link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            media={media}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(<link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            type={type}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
   }

@@ -109,6 +109,86 @@ describe("app page request helpers", () => {
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
+  it("enforces generateStaticParams from a parallel page", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams: () => [{ slug: "static-123" }] },
+            paramNames: ["locale", "slug"],
+            patternParts: [":locale", "gsp", "stories", ":slug"],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routePatternParts: [":locale", "gsp", "stories", ":slug"],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }),
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "dynamic-123" },
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("remaps parallel page params before validating generateStaticParams", async () => {
+    const generateStaticParams = vi.fn(() => [{ name: "post" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams },
+            paramNames: ["name"],
+            patternParts: [":name"],
+            routeSegments: ["[name]"],
+          },
+        ],
+        routePatternParts: [":id"],
+        routeSegments: ["[id]"],
+      }),
+      isDynamicRoute: true,
+      params: { id: "post" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("collects generateStaticParams from active parallel layouts", async () => {
+    const rootLayoutGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const nestedLayoutGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      parallelBranches: [
+        {
+          layout: { generateStaticParams: rootLayoutGenerateStaticParams },
+          configLayouts: [null, { generateStaticParams: nestedLayoutGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("static-123")).resolves.toBeNull();
+    await expect(validate("dynamic-123")).resolves.toMatchObject({ status: 404 });
+    expect(rootLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(nestedLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+  });
+
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.test.ts
   it("throws when generateStaticParams throws", async () => {
@@ -189,7 +269,7 @@ describe("app page request helpers", () => {
     const buildPageElementMock = vi.fn(async () => ({ type: "intercept-element" }));
     const renderInterceptResponse = vi.fn(async () => new Response("intercepted"));
     const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
-    const sourceRoute = { params: [], pattern: "/feed" };
+    const sourceRoute = { params: ["locale", "tab"], pattern: "/[locale]/feed/[tab]" };
 
     const result = await resolveAppPageIntercept({
       buildPageElement: buildPageElementMock,
@@ -197,7 +277,8 @@ describe("app page request helpers", () => {
       currentRoute,
       findIntercept() {
         return {
-          matchedParams: { id: "123" },
+          matchedParams: { locale: "en", id: "123" },
+          sourceMatchedParams: { locale: "en", tab: "recent" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
@@ -210,6 +291,9 @@ describe("app page request helpers", () => {
         return sourceRoute;
       },
       isRscRequest: true,
+      resolveNavigationParams(_route, params) {
+        return { ...params, catchAll: ["photos", "123"] };
+      },
       renderInterceptResponse,
       searchParams: new URLSearchParams("from=feed"),
       setNavigationContext,
@@ -225,19 +309,25 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toBeUndefined();
     expect(result.response).toBeInstanceOf(Response);
     expect(setNavigationContext).toHaveBeenCalledWith({
-      params: { id: "123" },
+      params: {
+        locale: "en",
+        tab: "recent",
+        id: "123",
+        catchAll: ["photos", "123"],
+      },
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
     expect(buildPageElementMock).toHaveBeenCalledWith(
       sourceRoute,
-      {},
+      { locale: "en", tab: "recent" },
       {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
+      undefined,
     );
     expect(renderInterceptResponse).toHaveBeenCalledTimes(1);
   });
@@ -266,6 +356,9 @@ describe("app page request helpers", () => {
         return currentRoute;
       },
       isRscRequest: true,
+      resolveNavigationParams(_route, params) {
+        return params;
+      },
       async renderInterceptResponse() {
         throw new Error("should not render a separate intercept response");
       },
@@ -326,6 +419,41 @@ describe("app page request helpers", () => {
     expect(result.element).toBeNull();
     expect(result.response).toBe(boundaryResponse);
   });
+
+  it("prefers an already-thrown page notFound over a later metadata notFound", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-thrown/metadata-thrown.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-thrown/metadata-thrown.test.ts
+    const pageError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const metadataError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404", fromMetadata: true };
+    const result = await buildAppPageElement({
+      async buildPageElement() {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        throw metadataError;
+      },
+      async probePageSpecialError() {
+        return resolveAppPageSpecialError(pageError);
+      },
+      async renderErrorBoundaryPage() {
+        throw new Error("should not render boundary for special errors");
+      },
+      async renderSpecialError(specialError) {
+        return new Response(specialError.fromMetadata ? "metadata" : "page", {
+          status: specialError.statusCode,
+        });
+      },
+      resolveSpecialError(error) {
+        const specialError = resolveAppPageSpecialError(error);
+        if (specialError && error === metadataError) {
+          specialError.fromMetadata = true;
+        }
+        return specialError;
+      },
+    });
+
+    expect(result.element).toBeNull();
+    expect(result.response?.status).toBe(404);
+    await expect(result.response?.text()).resolves.toBe("page");
+  });
 });
 
 describe("resolveAppPageInterceptMatch", () => {
@@ -342,8 +470,8 @@ describe("resolveAppPageInterceptMatch", () => {
     interceptSlotKey: intercept.slotKey,
   });
 
-  it("returns null on non-RSC requests", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null on non-RSC requests", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept() {
@@ -358,8 +486,8 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when findIntercept returns nothing", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null when findIntercept returns nothing", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => null,
@@ -372,8 +500,8 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when the source route is the current route", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null when the source route is the current route", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => ({
@@ -391,7 +519,7 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns sourceRoute, sourceParams, matchedParams, and interceptOpts when an intercept applies", () => {
+  it("returns sourceRoute, sourceParams, matchedParams, and interceptOpts when an intercept applies", async () => {
     const matchedParams = { id: "123" };
     const intercept = {
       matchedParams,
@@ -400,7 +528,7 @@ describe("resolveAppPageInterceptMatch", () => {
       sourceRouteIndex: 0,
     };
 
-    const result = resolveAppPageInterceptMatch({
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => intercept,
@@ -419,15 +547,57 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result?.interceptOpts).toEqual(toInterceptOpts(intercept));
   });
 
-  it("slices source params down to the source route's declared params", () => {
+  it("deduplicates concurrent intercept page and layout loads", async () => {
+    const interceptPage = { default: "modal-page" };
+    const interceptLayout = { default: "modal-layout" };
+    const __pageLoader = vi.fn(async () => interceptPage);
+    const __loadInterceptLayout = vi.fn(async () => interceptLayout);
+    const sharedLoadState = {
+      page: null as unknown,
+      pageLoading: null as Promise<unknown> | null,
+      interceptLayoutsLoading: null as Promise<readonly unknown[]> | null,
+    };
+    const intercept = {
+      interceptLayouts: [null],
+      __loadInterceptLayouts: [__loadInterceptLayout],
+      matchedParams: { id: "123" },
+      page: null,
+      __pageLoader,
+      __loadState: sharedLoadState,
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    };
+    const options = {
+      cleanPathname: "/photos/123",
+      currentRoute,
+      findIntercept: () => ({ ...intercept, page: sharedLoadState.page }),
+      getRouteParamNames: (route: { params: string[] }) => route.params,
+      getSourceRoute: () => sourceRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    };
+
+    await Promise.all([
+      resolveAppPageInterceptMatch(options),
+      resolveAppPageInterceptMatch(options),
+    ]);
+
+    expect(__pageLoader).toHaveBeenCalledTimes(1);
+    expect(__loadInterceptLayout).toHaveBeenCalledTimes(1);
+    expect(sharedLoadState.page).toBe(interceptPage);
+    expect(intercept.interceptLayouts).toEqual([interceptLayout]);
+  });
+
+  it("slices source params down to the source route's declared params", async () => {
     const categorySourceRoute = { params: ["category"], pattern: "/feed/[category]" };
     const matchedParams = { category: "nature", id: "123" };
 
-    const result = resolveAppPageInterceptMatch({
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => ({
         matchedParams,
+        sourceMatchedParams: { category: "nature", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/[category]/@modal",
         sourceRouteIndex: 0,
@@ -457,8 +627,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     interceptSlotKey: intercept.slotKey,
   });
 
-  it("falls through to the current route on non-RSC requests", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("falls through to the current route on non-RSC requests", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -479,8 +649,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("falls through to the current route when no intercept matches", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("falls through to the current route when no intercept matches", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -499,7 +669,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("looks up the intercept once when the source route is the current route", () => {
+  it("looks up the intercept once when the source route is the current route", async () => {
     const findIntercept = vi.fn(() => ({
       matchedParams: { id: "123" },
       page: { default: "modal-page" },
@@ -507,7 +677,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
       sourceRouteIndex: 0,
     }));
 
-    const result = resolveAppPageActionRerenderTarget({
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -531,8 +701,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     expect(findIntercept).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves current-route intercept opts when action rerender stays on the direct route", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("preserves current-route intercept opts when action rerender stays on the direct route", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -560,19 +730,24 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("rerenders the intercepted source route when an intercept match applies", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("rerenders the intercepted source route when an intercept match applies", async () => {
+    const descendantSourceRoute = {
+      params: ["locale", "tab"],
+      pattern: "/[locale]/feed/[tab]",
+    };
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
       findIntercept: () => ({
-        matchedParams: { id: "123" },
+        matchedParams: { locale: "en", id: "123" },
+        sourceMatchedParams: { locale: "en", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/@modal",
         sourceRouteIndex: 0,
       }),
       getRouteParamNames: (route) => route.params,
-      getSourceRoute: () => sourceRoute,
+      getSourceRoute: () => descendantSourceRoute,
       isRscRequest: true,
       toInterceptOpts,
     });
@@ -580,12 +755,12 @@ describe("resolveAppPageActionRerenderTarget", () => {
     expect(result).toEqual({
       interceptOpts: {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
-      navigationParams: { id: "123" },
-      params: {},
-      route: sourceRoute,
+      navigationParams: { locale: "en", tab: "recent", id: "123" },
+      params: { locale: "en", tab: "recent" },
+      route: descendantSourceRoute,
     });
   });
 });

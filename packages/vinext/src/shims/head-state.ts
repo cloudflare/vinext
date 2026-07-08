@@ -23,6 +23,7 @@ import {
 
 export type HeadState = {
   ssrHeadChildren: React.ReactNode[];
+  documentInitialHead: React.ReactNode[];
 };
 
 const _FALLBACK_KEY = Symbol.for("vinext.head.fallback");
@@ -31,6 +32,7 @@ const _als = getOrCreateAls<HeadState>("vinext.head.als");
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrHeadChildren: [],
+  documentInitialHead: [],
 } satisfies HeadState) as HeadState;
 
 function _getState(): HeadState {
@@ -51,11 +53,13 @@ export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.ssrHeadChildren = [];
+      uCtx.documentInitialHead = [];
     }, fn);
   }
 
   const state: HeadState = {
     ssrHeadChildren: [],
+    documentInitialHead: [],
   };
   return _als.run(state, fn);
 }
@@ -70,6 +74,16 @@ _registerHeadStateAccessors({
   },
 
   resetSSRHead(): void {
-    _getState().ssrHeadChildren = [];
+    const s = _getState();
+    s.ssrHeadChildren = [];
+    s.documentInitialHead = [];
+  },
+
+  getDocumentInitialHead(): React.ReactNode[] {
+    return _getState().documentInitialHead;
+  },
+
+  setDocumentInitialHead(head: React.ReactNode[]): void {
+    _getState().documentInitialHead = head;
   },
 });

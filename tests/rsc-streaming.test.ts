@@ -280,10 +280,15 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // Done signal at the end
     expect(output).toContain(RSC_RUNTIME_DONE);
 
-    // The done signal should come AFTER all HTML content
-    const lastHtmlPos = output.indexOf("</html>");
+    // The done signal should appear after the body content but BEFORE the
+    // document-close suffix. See #1532 — `</body></html>` is now suffix-moved
+    // to the very end of the stream so the document terminates with a
+    // well-formed close (mirrors Next.js's `createMoveSuffixStream`).
+    const bodyContentEnd = output.indexOf("<div>Boundary 2</div>") + "<div>Boundary 2</div>".length;
     const donePos = output.indexOf(RSC_RUNTIME_DONE);
-    expect(donePos).toBeGreaterThan(lastHtmlPos);
+    const lastHtmlPos = output.indexOf("</html>");
+    expect(donePos).toBeGreaterThan(bodyContentEnd);
+    expect(lastHtmlPos).toBeGreaterThan(donePos);
   });
 
   it("injects head content before </head>", async () => {
@@ -451,7 +456,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     const shellPos = output.indexOf("<main>shell</main>");
     const redirectMetaPos = output.indexOf(
-      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirect/result" />',
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirect/result"/>',
     );
     const boundaryPos = output.indexOf("<template>resolved boundary</template>");
 

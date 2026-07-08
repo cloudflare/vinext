@@ -1,9 +1,11 @@
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 
@@ -11,6 +13,16 @@ export type AppPageParams = Record<string, string | string[]>;
 
 type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
   getDefaultExport: (module: TModule | null | undefined) => TComponent | null | undefined;
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  routeForbiddenModule?: TModule | null;
+  routeNotFoundModule?: TModule | null;
+  routeUnauthorizedModule?: TModule | null;
+  statusCode: number;
+};
+
+type ResolveAppPageHttpAccessBoundaryModuleOptions<TModule> = {
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
@@ -87,6 +99,7 @@ type RenderAppPageBoundaryResponseOptions<TElement> = {
   createHtmlResponse: (rscStream: ReadableStream<Uint8Array>, status: number) => Promise<Response>;
   createRscOnErrorHandler: () => AppPageBoundaryOnError;
   element: TElement;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   renderToReadableStream: (
@@ -99,6 +112,24 @@ type RenderAppPageBoundaryResponseOptions<TElement> = {
 export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
   options: ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent>,
 ): TComponent | null {
+  return (
+    options.getDefaultExport(
+      resolveAppPageHttpAccessBoundaryModule({
+        rootForbiddenModule: options.rootForbiddenModule,
+        rootNotFoundModule: options.rootNotFoundModule,
+        rootUnauthorizedModule: options.rootUnauthorizedModule,
+        routeForbiddenModule: options.routeForbiddenModule,
+        routeNotFoundModule: options.routeNotFoundModule,
+        routeUnauthorizedModule: options.routeUnauthorizedModule,
+        statusCode: options.statusCode,
+      }),
+    ) ?? null
+  );
+}
+
+export function resolveAppPageHttpAccessBoundaryModule<TModule>(
+  options: ResolveAppPageHttpAccessBoundaryModuleOptions<TModule>,
+): TModule | null {
   let boundaryModule: TModule | null | undefined;
 
   if (options.statusCode === 403) {
@@ -109,12 +140,34 @@ export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
     boundaryModule = options.routeNotFoundModule ?? options.rootNotFoundModule;
   }
 
-  return options.getDefaultExport(boundaryModule) ?? null;
+  return boundaryModule ?? null;
 }
 
 export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
   options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
 ): TModule | null {
+  return resolveAppPageParentHttpAccessBoundary(options).module;
+}
+
+/**
+ * Like {@link resolveAppPageParentHttpAccessBoundaryModule}, but also returns
+ * the layout index that owns the resolved boundary so callers can slice the
+ * layouts array to skip rendering layouts below the boundary owner.
+ *
+ * `layoutIndex` is the per-layout index where the boundary lives, or `null` if
+ * the resolved boundary is the root module (which conceptually sits above all
+ * layouts when no layout-level boundary is present).
+ *
+ * Used by the page-error fast path to make `forbidden()` / `unauthorized()` /
+ * `notFound()` escalate past intermediate layouts that lack a boundary file,
+ * matching Next.js's `create-component-tree.tsx` behavior where the nearest
+ * ancestor boundary owns the fallback subtree.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function resolveAppPageParentHttpAccessBoundary<TModule>(
+  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
+): { module: TModule | null; layoutIndex: number | null } {
   let routeModules = options.routeNotFoundModules;
   let rootModule = options.rootNotFoundModule;
 
@@ -130,12 +183,12 @@ export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
     for (let index = options.layoutIndex - 1; index >= 0; index--) {
       const module = routeModules[index];
       if (module) {
-        return module;
+        return { module, layoutIndex: index };
       }
     }
   }
 
-  return rootModule ?? null;
+  return { module: rootModule ?? null, layoutIndex: null };
 }
 
 export function resolveAppPageErrorBoundary<TModule, TComponent>(
@@ -242,8 +295,10 @@ export async function renderAppPageBoundaryResponse<TElement>(
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
+    applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
     applyRscCompatibilityIdHeader(headers);
+    applyRscDeploymentIdHeader(headers);
 
     return new Response(rscStream, {
       status: options.status,

@@ -2,7 +2,10 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import {
   getCollectedFetchTags,
   ensureFetchPatch,
+  setCurrentFetchCacheMode,
   setCurrentFetchSoftTags,
+  setCurrentForceDynamicFetchDefault,
+  type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
 import {
   consumeDynamicUsage,
@@ -35,6 +38,7 @@ import {
   applyRouteHandlerMiddlewareContext,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
+import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
@@ -62,6 +66,7 @@ type DispatchAppRouteHandlerOptions = {
   basePath?: string;
   cleanPathname: string;
   clearRequestContext: () => void;
+  draftModeSecret: string;
   expireSeconds?: number;
   i18n?: NextI18nConfig | null;
   isDevelopment?: boolean;
@@ -70,6 +75,7 @@ type DispatchAppRouteHandlerOptions = {
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
+  trailingSlash?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -99,13 +105,17 @@ function buildRouteHandlerPageCacheTags(
 async function runInRouteHandlerRevalidationContext(
   options: {
     cleanPathname: string;
+    draftModeSecret: string;
     dynamicConfig?: string;
+    fetchCacheMode: FetchCacheMode | null;
     routePattern: string;
     routeSegments: string[];
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeEnabled: false,
+    draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "route",
     routePattern: options.routePattern,
@@ -121,6 +131,10 @@ async function runInRouteHandlerRevalidationContext(
     setCurrentFetchSoftTags(
       buildRouteHandlerPageCacheTags(options.cleanPathname, [], options.routeSegments),
     );
+    // The revalidation render runs in a fresh request context, so the fetch
+    // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
+    setCurrentFetchCacheMode(options.fetchCacheMode);
+    setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     await renderFn();
   });
 }
@@ -170,6 +184,17 @@ export async function dispatchAppRouteHandler(
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
 
+  // Route handler fetches observe the handler's segment config the same way
+  // page fetches do: upstream's app-route module copies `userland.fetchCache`
+  // into the work store and sets `forceDynamic` for `dynamic = "force-dynamic"`,
+  // which patch-fetch turns into a no-store default for fetches without
+  // explicit cache config. Both setters are new wiring for the route-handler
+  // path (dispatch previously only set fetch soft tags), closing the gap
+  // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
+  const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
+  setCurrentFetchCacheMode(fetchCacheMode);
+  setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
+
   if (
     revalidateSeconds !== null &&
     shouldReadAppRouteHandlerCache({
@@ -195,6 +220,7 @@ export async function dispatchAppRouteHandler(
       getCollectedFetchTags,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
+      trailingSlash: options.trailingSlash,
       isAutoHead,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
@@ -212,7 +238,9 @@ export async function dispatchAppRouteHandler(
         return runInRouteHandlerRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
+            draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
+            fetchCacheMode,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
           },
@@ -243,6 +271,7 @@ export async function dispatchAppRouteHandler(
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
       consumeDynamicUsage,
+      draftModeSecret: options.draftModeSecret,
       executionContext: getRequestExecutionContext(),
       getAndClearPendingCookies,
       getCollectedFetchTags,
@@ -250,6 +279,7 @@ export async function dispatchAppRouteHandler(
       handler,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
+      trailingSlash: options.trailingSlash,
       isAutoHead,
       isProduction,
       isrDebug: options.isrDebug,

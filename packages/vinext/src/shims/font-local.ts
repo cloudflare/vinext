@@ -18,6 +18,7 @@
 import {
   escapeCSSString,
   formatFontClassRule,
+  getFontMimeType,
   resolveSingleFaceStyle,
   sanitizeCSSVarName,
   sanitizeFallback,
@@ -34,6 +35,12 @@ import {
  */
 function sanitizeCSSProperty(prop: string): string | undefined {
   if (/^(--)?[a-zA-Z][a-zA-Z0-9-]*$/.test(prop)) return prop;
+  return undefined;
+}
+
+function sanitizeInternalFontFamily(name: unknown): string | undefined {
+  if (typeof name !== "string" || name.length === 0) return undefined;
+  if (/^[$_a-zA-Z][$_a-zA-Z0-9]*$/.test(name)) return name;
   return undefined;
 }
 
@@ -56,6 +63,11 @@ type LocalFontOptions = {
   variable?: string;
   adjustFontFallback?: boolean | string;
   declarations?: Array<{ prop: string; value: string }>;
+  _vinext?: {
+    font?: {
+      family?: unknown;
+    };
+  };
 };
 
 type FontResult = {
@@ -242,19 +254,6 @@ function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
 }
 
 /**
- * Determine the MIME type for a font file based on its extension.
- * Uses endsWith() only — matching the approach in generateFontFaceCSS —
- * to avoid false positives from substring matches (e.g. ".woff" matching ".woff2").
- */
-function getFontMimeType(pathOrUrl: string): string {
-  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
-  if (pathOrUrl.endsWith(".woff")) return "font/woff";
-  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
-  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
-  return "font/woff2";
-}
-
-/**
  * Collect font source URLs for preload link generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
@@ -277,7 +276,7 @@ export default function localFont(options: LocalFontOptions): FontResult {
   const id = classCounter++;
   const sources = normalizeSources(options);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
-  const family = `__local_font_${id}`;
+  const family = sanitizeInternalFontFamily(options._vinext?.font?.family) ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values
@@ -300,7 +299,9 @@ export default function localFont(options: LocalFontOptions): FontResult {
 
   // Inject @font-face declarations
   const css = generateFontFaceCSS(family, options, sources);
-  injectFontFaceCSS(css, family);
+  // The exposed family can repeat across modules; the generated class stays
+  // unique for each localFont call and is the correct injection identity.
+  injectFontFaceCSS(css, className);
 
   // Inject the className -> font-family CSS rule
   injectClassNameRule(className, style);

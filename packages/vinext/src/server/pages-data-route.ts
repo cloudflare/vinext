@@ -18,6 +18,10 @@
  *   - `packages/next/src/server/render.tsx` — JSON envelope emission (`isNextDataRequest`).
  */
 
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
+
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
 
@@ -75,7 +79,19 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   if (rest === "index") return { pagePathname: "/" };
   if (rest.endsWith("/index")) return { pagePathname: `/${rest.slice(0, -"/index".length)}` };
 
+  // The encoder (`getAssetPathFromRoute` in Next.js / `buildPagesDataPath` in
+  // vinext) prefixes any path beginning with `index` with an extra `index/`
+  // segment so an explicit `pages/index/foo.tsx` page (route `/index/foo`)
+  // round-trips through the data URL without colliding with `/foo`. Strip
+  // that prefix here.
+  if (rest.startsWith("index/")) return { pagePathname: `/${rest.slice("index/".length)}` };
+
   return { pagePathname: `/${rest}` };
+}
+
+export function normalizeNextDataPagePathname(pagePathname: string, trailingSlash = false): string {
+  if (!trailingSlash || pagePathname === "/" || pagePathname.endsWith("/")) return pagePathname;
+  return `${pagePathname}/`;
 }
 
 /**
@@ -91,7 +107,21 @@ export function buildNextDataJsonResponse(
   safeJsonStringify: (value: unknown) => string,
   init?: ResponseInit,
 ): Response {
-  const body = safeJsonStringify({ pageProps });
+  return buildNextDataPropsJsonResponse({ pageProps }, safeJsonStringify, init);
+}
+
+/**
+ * Build a `_next/data` JSON response from the full Pages props object returned
+ * through `_app.getInitialProps`. Next.js serializes the same outer props
+ * object that would be passed to `<App />`, so custom app-level props remain
+ * siblings of `pageProps` in the data envelope.
+ */
+export function buildNextDataPropsJsonResponse(
+  props: Record<string, unknown>,
+  safeJsonStringify: (value: unknown) => string,
+  init?: ResponseInit,
+): Response {
+  const body = safeJsonStringify(props);
   return new Response(body, {
     status: init?.status ?? 200,
     statusText: init?.statusText,
@@ -114,8 +144,112 @@ export function buildNextDataJsonResponse(
  * before checking the status code.
  */
 export function buildNextDataNotFoundResponse(): Response {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Mirror Next.js pages-handler.ts: always include x-nextjs-deployment-id so
+  // the client router can detect a new deployment and trigger a hard navigation
+  // instead of silently rendering stale data (deployment-skew protection).
+  // Fixes #1829.
+  const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+  if (deploymentId) {
+    headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+  }
+  return new Response("{}", { status: 404, headers });
+}
+
+export function buildMiddlewarePrefetchSkipResponse(matchedPathname: string): Response {
   return new Response("{}", {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-matched-path": matchedPathname,
+      [MIDDLEWARE_SKIP_HEADER]: "1",
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+    },
   });
+}
+
+// ---------------------------------------------------------------------------
+// normalizePagesDataRequest
+// ---------------------------------------------------------------------------
+
+type NormalizePagesDataRequestResult =
+  | {
+      isDataReq: false;
+      request: Request;
+      normalizedPathname: null;
+      search: "";
+      notFoundResponse: null;
+    }
+  | {
+      isDataReq: false;
+      request: Request;
+      normalizedPathname: null;
+      search: "";
+      notFoundResponse: Response;
+    }
+  | {
+      isDataReq: true;
+      request: Request;
+      normalizedPathname: string;
+      search: string;
+      notFoundResponse: null;
+    };
+
+/**
+ * Detect and normalize `/_next/data/<buildId>/<page>.json` requests in one
+ * place so the Pages Router pipeline and middleware shim do not need to know
+ * about the data-endpoint protocol.
+ *
+ * Returns:
+ * - `isDataReq: false, notFoundResponse: null` — not a data request.
+ * - `isDataReq: false, notFoundResponse: Response` — looks like a data URL but
+ *   the buildId does not match; callers should return `notFoundResponse`
+ *   immediately so stale clients fall back to a hard navigation.
+ * - `isDataReq: true` — valid data request; `request` is re-pointed at the
+ *   normalized page path, `normalizedPathname` carries the bare page path, and
+ *   `search` carries the original query string for callers that need to
+ *   preserve it.
+ *
+ * Extracted from `entries/pages-server-entry.ts` so both `renderPage` and
+ * `runMiddleware` share a single implementation.
+ */
+export function normalizePagesDataRequest(
+  request: Request,
+  buildId: string | null,
+  basePath = "",
+  trailingSlash = false,
+): NormalizePagesDataRequestResult {
+  const reqUrl = new URL(request.url);
+  const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
+  const dataPathname = basePath ? stripBasePath(reqUrl.pathname, basePath) : reqUrl.pathname;
+  if (!isNextDataPathname(dataPathname)) {
+    return {
+      isDataReq: false,
+      request,
+      normalizedPathname: null,
+      search: "",
+      notFoundResponse: null,
+    };
+  }
+  const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
+  if (!dataMatch) {
+    return {
+      isDataReq: false,
+      request,
+      normalizedPathname: null,
+      search: "",
+      notFoundResponse: buildNextDataNotFoundResponse(),
+    };
+  }
+  const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
+  const normalizedUrl = new URL(reqUrl);
+  normalizedUrl.pathname = hadBasePath
+    ? addBasePathToPathname(pagePathname, basePath)
+    : pagePathname;
+  return {
+    isDataReq: true,
+    request: new Request(normalizedUrl, request),
+    normalizedPathname: pagePathname,
+    search: reqUrl.search,
+    notFoundResponse: null,
+  };
 }

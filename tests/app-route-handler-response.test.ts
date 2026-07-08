@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, afterEach } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -9,6 +9,8 @@ import {
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
+import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 function buildCachedRouteValue(
   body: string,
@@ -276,6 +278,37 @@ describe("app route handler response helpers", () => {
     await expect(result.text()).resolves.toBe("body");
   });
 
+  it("normalizes returned response cookies when they override mutable cookie fallbacks", async () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    const response = new Response("body", {
+      headers: [
+        ["Set-Cookie", "bar=bar2"],
+        ["Set-Cookie", "baz=baz2"],
+      ],
+    });
+
+    const result = finalizeRouteHandlerResponse(response, {
+      pendingCookies: [
+        "foo=foo1; Path=/",
+        "bar=bar1; Path=/",
+        "test1=value1; Path=/; Secure",
+        "test2=value2; Path=/handler; HttpOnly",
+      ],
+      draftCookie: null,
+      isHead: false,
+    });
+
+    expect(result.headers.getSetCookie()).toEqual([
+      "foo=foo1; Path=/",
+      "test1=value1; Path=/; Secure",
+      "test2=value2; Path=/handler; HttpOnly",
+      "bar=bar2; Path=/",
+      "baz=baz2; Path=/",
+    ]);
+    await expect(result.text()).resolves.toBe("body");
+  });
+
   it("strips internal middleware headers from finalized route handler responses", async () => {
     const response = new Response("body", {
       headers: [
@@ -343,5 +376,37 @@ describe("app route handler response helpers", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+  });
+});
+
+describe("route handler responses route through the CDN cache adapter", () => {
+  const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
+  afterEach(() => {
+    delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+  });
+
+  it("emits CDN-Cache-Control + Cache-Tag on a fresh response when an edge adapter is active", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = new Response("fresh");
+
+    applyRouteHandlerRevalidateHeader(response, 60, 600, ["_N_T_/api/feed", "posts"]);
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=540",
+    );
+    expect(response.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+  });
+
+  it("does not promote a revalidate=0 (non-cacheable) response to the edge", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = new Response("dynamic");
+
+    applyRouteHandlerRevalidateHeader(response, 0);
+
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 });

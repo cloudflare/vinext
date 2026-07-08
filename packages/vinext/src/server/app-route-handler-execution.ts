@@ -1,8 +1,13 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
+import {
+  isDraftModeRequest,
+  setHeadersContext,
+  type HeadersAccessPhase,
+} from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
-import type { CachedRouteValue } from "vinext/shims/cache";
+import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
+import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -63,9 +68,11 @@ export type AppRouteDebugLogger = (event: string, detail: string) => void;
 type RunAppRouteHandlerOptions = {
   basePath?: string;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
+  draftModeSecret?: string;
   dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -110,6 +117,10 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled:
+          options.draftModeSecret !== undefined &&
+          isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "route",
         routePattern: options.routePattern,
@@ -127,6 +138,7 @@ export async function runAppRouteHandler(
   const trackedRequest = createTrackedAppRouteRequest(options.request, {
     basePath: options.basePath,
     i18n: options.i18n,
+    trailingSlash: options.trailingSlash,
     middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
@@ -139,9 +151,16 @@ export async function runAppRouteHandler(
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },
   });
-  const response = await options.handlerFn(trackedRequest.request, {
-    params: options.params,
-  });
+  const response = await runWithRootParamsUsage(
+    {
+      kind: "route-handler",
+      routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+    },
+    () =>
+      options.handlerFn(trackedRequest.request, {
+        params: options.params,
+      }),
+  );
 
   return {
     dynamicUsedInHandler: options.consumeDynamicUsage(),
@@ -166,6 +185,13 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
+    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
+    const routeTags = options.buildPageCacheTags(
+      options.cleanPathname,
+      options.getCollectedFetchTags(),
+    );
+
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
         dynamicUsedInHandler,
@@ -179,7 +205,12 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler revalidate seconds");
       }
-      applyRouteHandlerRevalidateHeader(response, revalidateSeconds, options.expireSeconds);
+      applyRouteHandlerRevalidateHeader(
+        response,
+        revalidateSeconds,
+        options.expireSeconds,
+        routeTags,
+      );
     }
 
     if (
@@ -200,10 +231,6 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler cache revalidate seconds");
       }
-      const routeTags = options.buildPageCacheTags(
-        options.cleanPathname,
-        options.getCollectedFetchTags(),
-      );
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);

@@ -1,9 +1,11 @@
 import fs from "node:fs/promises";
-import path from "node:path";
+import path from "pathslash";
 import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
+import { compareStrings } from "./utils/compare.js";
+import { findDir } from "./utils/project.js";
 
 type GenerateRouteTypesOptions = {
   root: string;
@@ -23,7 +25,7 @@ import "./.next/types/routes.d.ts";
 
 export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
   const root = path.resolve(options.root);
-  const appDir = options.appDir ? path.resolve(options.appDir) : await findAppDir(root);
+  const appDir = options.appDir ? path.resolve(options.appDir) : findDir(root, "app", "src/app");
   const outPath = path.join(root, ".next", "types", "routes.d.ts");
 
   const content = appDir
@@ -135,19 +137,6 @@ async function collectRouteTypeModel(
   for (const slotNames of model.layoutSlots.values()) slotNames.sort(compareStrings);
 
   return model;
-}
-
-async function findAppDir(root: string): Promise<string | null> {
-  for (const rel of ["app", path.join("src", "app")]) {
-    const candidate = path.join(root, rel);
-    try {
-      const stat = await fs.stat(candidate);
-      if (stat.isDirectory()) return candidate;
-    } catch {
-      // Try the next conventional app directory.
-    }
-  }
-  return null;
 }
 
 function renderRouteTypes(model: RouteTypeModel): string {
@@ -363,10 +352,4 @@ function propertyName(name: string): string {
 
 function quote(value: string): string {
   return JSON.stringify(value);
-}
-
-function compareStrings(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
 }

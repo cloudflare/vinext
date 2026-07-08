@@ -44,6 +44,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -96,6 +97,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -132,6 +134,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -174,6 +177,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         didClearRequestContext = true;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,
@@ -235,6 +239,7 @@ describe("app route handler dispatch", () => {
     await dispatchAppRouteHandler({
       cleanPathname: "/api/static",
       clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,
@@ -270,6 +275,7 @@ describe("app route handler dispatch", () => {
     const response = await dispatchAppRouteHandler({
       cleanPathname: "/api/stale",
       clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,
@@ -309,5 +315,176 @@ describe("app route handler dispatch", () => {
       routePath: "/api/stale",
       routeType: "route",
     });
+  });
+
+  // Parity with upstream's app-route module: `dynamic = "force-dynamic"` sets
+  // `workStore.forceDynamic`, which patch-fetch turns into a no-store default
+  // for fetches without explicit cache config — for route handlers as well as
+  // pages.
+  it("applies the force-dynamic fetch default before invoking the route handler", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    let forceDynamicDefaultAtHandlerTime: boolean | undefined;
+    let fetchCacheModeAtHandlerTime: unknown = "unset";
+
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/force-dynamic",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        throw new Error("force-dynamic handler should not read route cache");
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {
+        throw new Error("force-dynamic handler should not write route cache");
+      },
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: {},
+      request: new Request("https://example.com/api/force-dynamic"),
+      route: {
+        pattern: "/api/force-dynamic",
+        routeHandler: {
+          dynamic: "force-dynamic",
+          GET() {
+            forceDynamicDefaultAtHandlerTime = forceDynamicSpy.mock.calls.at(-1)?.[0];
+            fetchCacheModeAtHandlerTime = modeSpy.mock.calls.at(-1)?.[0];
+            return new Response("dynamic");
+          },
+        },
+        routeSegments: ["api", "force-dynamic"],
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("force-dynamic handler should not schedule regeneration");
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(forceDynamicDefaultAtHandlerTime).toBe(true);
+    expect(fetchCacheModeAtHandlerTime).toBeNull();
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
+
+  it("applies the handler's explicit fetchCache export without the force-dynamic default", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    let forceDynamicDefaultAtHandlerTime: boolean | undefined;
+    let fetchCacheModeAtHandlerTime: unknown = "unset";
+
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/segment-fetch-cache",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: false,
+      async isrGet() {
+        return null;
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: {},
+      request: new Request("https://example.com/api/segment-fetch-cache"),
+      route: {
+        pattern: "/api/segment-fetch-cache",
+        routeHandler: {
+          fetchCache: "force-cache",
+          GET() {
+            forceDynamicDefaultAtHandlerTime = forceDynamicSpy.mock.calls.at(-1)?.[0];
+            fetchCacheModeAtHandlerTime = modeSpy.mock.calls.at(-1)?.[0];
+            return new Response("cached-fetches");
+          },
+        },
+        routeSegments: ["api", "segment-fetch-cache"],
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("uncached handler should not schedule regeneration");
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(forceDynamicDefaultAtHandlerTime).toBe(false);
+    expect(fetchCacheModeAtHandlerTime).toBe("force-cache");
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
+
+  it("re-applies the handler's fetch cache mode inside the background regeneration context", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    let scheduledRender: (() => Promise<void>) | undefined;
+    let forceDynamicDefaultAtRegenTime: boolean | undefined;
+    let fetchCacheModeAtRegenTime: unknown = "unset";
+
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/stale-fetch-cache",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: {},
+      request: new Request("https://example.com/api/stale-fetch-cache"),
+      route: {
+        pattern: "/api/stale-fetch-cache",
+        routeHandler: {
+          fetchCache: "force-cache",
+          revalidate: 60,
+          GET() {
+            forceDynamicDefaultAtRegenTime = forceDynamicSpy.mock.calls.at(-1)?.[0];
+            fetchCacheModeAtRegenTime = modeSpy.mock.calls.at(-1)?.[0];
+            return new Response("regenerated");
+          },
+        },
+        routeSegments: ["api", "stale-fetch-cache"],
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale route handler cache to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(forceDynamicDefaultAtRegenTime).toBe(false);
+    expect(fetchCacheModeAtRegenTime).toBe("force-cache");
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
   });
 });

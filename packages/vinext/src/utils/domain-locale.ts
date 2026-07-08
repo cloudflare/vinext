@@ -1,6 +1,9 @@
-import type { NextI18nConfig } from "../config/next-config.js";
-
-export type DomainLocale = NonNullable<NextI18nConfig["domains"]>[number];
+export type DomainLocale = {
+  domain: string;
+  defaultLocale: string;
+  locales?: string[];
+  http?: boolean;
+};
 
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {
   if (!hostname) return undefined;
@@ -69,7 +72,7 @@ export function getLocalePathPrefix(
   return locales.find((locale) => locale.toLowerCase() === normalizedSegment);
 }
 
-function withBasePath(path: string, basePath = ""): string {
+function prefixBasePath(path: string, basePath = ""): string {
   if (!basePath) return path;
   return basePath + path;
 }
@@ -106,5 +109,5 @@ export function getDomainLocaleUrl(
   }
 
   const scheme = `http${targetDomain.http ? "" : "s"}://`;
-  return `${scheme}${targetDomain.domain}${withBasePath(localizedPath, basePath)}`;
+  return `${scheme}${targetDomain.domain}${prefixBasePath(localizedPath, basePath)}`;
 }

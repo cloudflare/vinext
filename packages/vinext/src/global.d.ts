@@ -18,7 +18,9 @@
 
 import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
+import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
 import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
+import type { NextRedirect, NextRewrite } from "./config/next-config";
 
 // `window.next` is declared inline in `./client/window-next.ts` (mirroring
 // Next.js's own pattern in `packages/next/src/client/next.ts`), not here, so
@@ -41,9 +43,21 @@ declare global {
     __VINEXT_ROOT__: Root | undefined;
 
     /**
+     * Whether `reactStrictMode: true` is set in next.config for the Pages
+     * Router. Set by the generated client entry and the dev hydration script
+     * before `hydrateRoot()`. Read by `wrapWithRouterContext` in
+     * `shims/router.ts` so the StrictMode wrap is applied on the initial
+     * hydration AND every client-side navigation render — mirroring Next.js's
+     * `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`, which runs
+     * for both the initial hydrate and subsequent `reactRoot.render()` calls.
+     */
+    __VINEXT_REACT_STRICT_MODE__: boolean | undefined;
+
+    /**
      * High-resolution timestamp recorded after client hydration is usable.
-     * Pages Router writes after hydrateRoot() returns; App Router writes after
-     * the first committed tree attaches browser router state.
+     * Pages Router writes from the stable router provider after passive
+     * effects can attach; App Router writes after the first committed tree
+     * attaches browser router state.
      */
     __VINEXT_HYDRATED_AT: number | undefined;
 
@@ -53,6 +67,7 @@ declare global {
     __NEXT_HYDRATED: boolean | undefined;
     __NEXT_HYDRATED_AT: number | undefined;
     __NEXT_HYDRATED_CB: (() => void) | undefined;
+    __VINEXT_INITIAL_DEV_ERRORS__: InitialDevServerErrorPayload[] | undefined;
 
     /**
      * The cached `_app` component for Pages Router.
@@ -60,7 +75,74 @@ declare global {
      * client-side navigation.
      */
     __VINEXT_APP__:
-      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | React.ComponentType<{
+          Component: React.ComponentType<Record<string, unknown>>;
+          pageProps: unknown;
+          router?: unknown;
+          [key: string]: unknown;
+        }>
+      | undefined;
+
+    /**
+     * Pages Router code-split loader map. Keys are route patterns in Next.js
+     * bracket format (e.g. `/blog/[slug]`), values are dynamic `import()`
+     * thunks that resolve to the page module. Vite code-splits each thunk
+     * into its own chunk, so this is the manifest the client uses to load
+     * the right page chunk on a client-side `_next/data` navigation.
+     *
+     * Set by the generated client entry (`entries/pages-client-entry.ts`)
+     * before `hydrate()`. Read by `shims/router.ts` `navigateClient` after a
+     * successful `/_next/data/<buildId>/<page>.json` fetch.
+     *
+     * `undefined` during SSR and on the very first hydration tick.
+     */
+    __VINEXT_PAGE_LOADERS__:
+      | Record<string, () => Promise<{ default?: unknown; [key: string]: unknown }>>
+      | undefined;
+
+    /**
+     * Pages Router pattern list. The route patterns (Next.js bracket format)
+     * keyed in `__VINEXT_PAGE_LOADERS__`, in priority order (longest specific
+     * pattern first, catch-alls last). Used by `shims/router.ts` to match an
+     * incoming URL pathname to a registered loader.
+     */
+    __VINEXT_PAGE_PATTERNS__: string[] | undefined;
+
+    /** Pages Router patterns whose modules export `getStaticProps`. */
+    __VINEXT_PAGES_SSG_PATTERNS__: string[] | undefined;
+
+    /** Pages Router patterns whose modules export `getServerSideProps`. */
+    __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
+
+    /** Resolved client-safe Pages Router redirects from next.config.js. */
+    __VINEXT_CLIENT_REDIRECTS__: NextRedirect[] | undefined;
+
+    /** Resolved client-safe rewrites from next.config.js. */
+    __VINEXT_CLIENT_REWRITES__:
+      | {
+          beforeFiles: NextRewrite[];
+          afterFiles: NextRewrite[];
+          fallback: NextRewrite[];
+        }
+      | undefined;
+
+    /**
+     * Static `middleware/proxy` matcher config embedded for client-side Pages
+     * Router middleware-effect probes. `undefined` means "match all", matching
+     * Next.js's default when middleware has no matcher or the config was too
+     * dynamic to statically serialize.
+     */
+    __VINEXT_MIDDLEWARE_MATCHER__: unknown;
+
+    /**
+     * Pages Router `_app` loader. Dynamic `import()` thunk for the user's
+     * `pages/_app.tsx` module, or `undefined` when the app has no `_app`.
+     * Set by the generated client entry; read by `shims/router.ts`
+     * `navigateClient` to lazy-load `_app` on the first client-side
+     * navigation.
+     */
+    __VINEXT_APP_LOADER__:
+      | (() => Promise<{ default?: unknown; [key: string]: unknown }>)
       | undefined;
 
     /**
@@ -89,6 +171,15 @@ declare global {
      * Used by E2E tests as a sentinel to detect that hydration has completed.
      */
     __VINEXT_RSC_ROOT__: Root | undefined;
+
+    /**
+     * App Router browser bootstrap ownership marker.
+     * Shared on `window` because the same browser entry can be evaluated under
+     * distinct ESM URLs when deployment-id cache busting meets split chunks.
+     * Only the first module instance may consume the inlined RSC payload and
+     * hydrate the document.
+     */
+    __VINEXT_RSC_BOOTSTRAP_STATE__: "starting" | "hydrated" | undefined;
 
     /**
      * A Promise that resolves when the current in-flight popstate RSC navigation
@@ -170,42 +261,13 @@ declare global {
   // oxlint-disable-next-line no-var
   var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
 
-  // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
-  //
-  // These are injected into the Worker entry at build time by
-  // `vinext:cloudflare-build`, or set at Node.js server startup by
-  // `server/prod-server.ts`.  They are read during SSR by `collectAssetTags()`
-  // in `index.ts`.
-
   /**
-   * Vite SSR manifest injected into the Cloudflare Worker entry at build time.
-   * Maps module file paths (relative to the project root) to the list of
-   * associated JS / CSS asset filenames.
-   * Read by `collectAssetTags()` to inject `<link rel="modulepreload">` and
-   * `<link rel="stylesheet">` tags into the SSR HTML.
+   * Maps emitted CSS asset hrefs to file contents when next.config enables
+   * `experimental.inlineCss`. Injected into edge bundles at build time and
+   * populated by the Node.js production server at startup.
    */
   // oxlint-disable-next-line no-var
-  var __VINEXT_SSR_MANIFEST__: Record<string, string[]> | undefined;
-
-  /**
-   * Array of chunk filenames that are only reachable via dynamic `import()`.
-   * These chunks must NOT receive `<link rel="modulepreload">` tags because
-   * they are fetched on demand (e.g. behind `React.lazy` / `next/dynamic`).
-   * Injected into the Worker entry at build time; also set at Node.js server
-   * startup by `server/prod-server.ts`.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_LAZY_CHUNKS__: string[] | undefined;
-
-  /**
-   * The client entry JS filename (e.g. `"_next/static/entry-abc123.js"`) for Pages
-   * Router builds.
-   * Injected into the Worker entry at build time for Pages Router only.
-   * App Router uses the RSC plugin's `loadBootstrapScriptContent` mechanism
-   * instead.
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_CLIENT_ENTRY__: string | undefined;
+  var __VINEXT_INLINE_CSS__: Record<string, string> | undefined;
 
   /**
    * Current active locale, set on `globalThis` for server-side SSR rendering
@@ -298,17 +360,20 @@ declare global {
   namespace NodeJS {
     interface ProcessEnv {
       /**
-       * UUID secret used to sign/validate the Next.js draft-mode cookie.
-       * Generated once at build time and injected via Vite `define`.
-       */
-      __VINEXT_DRAFT_SECRET?: string;
-
-      /**
        * Build ID string injected via Vite `define` at production build time.
        * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
        * `undefined` in dev mode.
        */
       __VINEXT_BUILD_ID?: string;
+
+      /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build (App Router buildApp +
+       * the separate hybrid Pages Router vite.build) resolves the same build ID.
+       * Distinct from `__VINEXT_BUILD_ID` (the runtime value baked via `define`)
+       * so it never leaks into dev or standalone resolveBuildId() semantics.
+       */
+      __VINEXT_SHARED_BUILD_ID?: string;
 
       /**
        * Public App Router RSC compatibility identity injected via Vite
@@ -318,10 +383,47 @@ declare global {
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
       /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build resolves the same RSC
+       * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
+       * by dev or standalone createRscCompatibilityId() resolution.
+       */
+      __VINEXT_SHARED_RSC_COMPATIBILITY_ID?: string;
+
+      /**
+       * Build-time secret that authenticates on-demand ISR revalidation
+       * requests (the vinext analog of Next.js's prerender-manifest
+       * `previewModeId`). Injected via a SERVER-ONLY Vite `define` so it is
+       * baked identically into every server bundle — and therefore shared by
+       * every Workers isolate — without ever reaching the client bundle. A
+       * per-process random secret would mismatch across isolates because
+       * `res.revalidate()`'s loopback `fetch()` can land on a different isolate;
+       * a build-baked constant is the same in all of them.
+       * `undefined` unless set during `vinext build` (so dev, and any non-CLI
+       * build, omit it — see `getRevalidateSecret`'s single-process fallback).
+       */
+      __VINEXT_REVALIDATE_SECRET?: string;
+
+      /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build (App Router buildApp +
+       * the separate hybrid Pages Router vite.build) bakes the same revalidate
+       * secret. Companion to `__VINEXT_SHARED_BUILD_ID`; never read by dev or
+       * standalone code paths.
+       */
+      __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+
+      /**
        * Deployment ID string injected via Vite `define` when
        * `NEXT_DEPLOYMENT_ID` is present at build time.
        */
       __VINEXT_DEPLOYMENT_ID?: string;
+
+      /**
+       * `"true"` when `next.config.js` enables
+       * `experimental.prefetchInlining`.
+       */
+      __VINEXT_PREFETCH_INLINING?: string;
 
       /**
        * JSON-encoded array of `RemotePattern` objects from
@@ -385,6 +487,38 @@ declare module "node:http" {
      */
     __vinextMiddlewareStatus?: number;
   }
+}
+
+// ---------------------------------------------------------------------------
+// virtual:vinext-cache-adapters — generated cache-adapter registration module
+// ---------------------------------------------------------------------------
+//
+// Generated by vinext at build time from the `cache` option in the vinext()
+// plugin config. `registerConfiguredCacheAdapters(env)` registers the configured
+// data / CDN cache adapters on first call and is a no-op when nothing is
+// configured. See `cache/cache-adapters-virtual.ts` for the generator.
+
+declare module "virtual:vinext-cache-adapters" {
+  export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
+}
+
+declare module "virtual:vinext-pages-client-assets" {
+  import type { PagesClientAssets } from "vinext/server/pages-client-assets";
+  const assets: PagesClientAssets;
+  export default assets;
+}
+
+// ---------------------------------------------------------------------------
+// virtual:vinext-image-adapters — generated image-optimizer registration module
+// ---------------------------------------------------------------------------
+//
+// Generated by vinext at build time from the `images` option in the vinext()
+// plugin config. `registerConfiguredImageOptimizer(env)` registers the configured
+// image optimizer (transform backend) on first call and is a no-op when nothing
+// is configured. See `image/image-adapters-virtual.ts` for the generator.
+
+declare module "virtual:vinext-image-adapters" {
+  export function registerConfiguredImageOptimizer(env?: Record<string, unknown>): void;
 }
 
 // The `import type { Root }` at the top of this file makes it a TypeScript

@@ -33,13 +33,18 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal ExecutionContext interface matching the Cloudflare Workers runtime.
- * Using a structural interface so this file has no runtime dependency on
- * Cloudflare types packages.
+ * Minimal structural ExecutionContext interface, kept free of any host-runtime
+ * dependency.
  */
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /**
+   * Optional host-provided cache handle that some runtimes expose on the
+   * execution context. Typed as `unknown` to keep this module runtime-agnostic;
+   * CDN cache adapters that know the concrete shape narrow it themselves.
+   */
+  cache?: unknown;
 };
 
 // ---------------------------------------------------------------------------
@@ -48,6 +53,31 @@ export type ExecutionContextLike = {
 // ---------------------------------------------------------------------------
 
 const _als = getOrCreateAls<ExecutionContextLike | null>("vinext.requestContext.als");
+const OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL = Symbol.for("__cloudflare-context__");
+let openNextCloudflareContextFallback: unknown;
+
+function installOpenNextCloudflareContextBridge(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL,
+  );
+  if (descriptor && !descriptor.configurable) return;
+  openNextCloudflareContextFallback =
+    descriptor && "value" in descriptor ? descriptor.value : descriptor?.get?.call(globalThis);
+
+  Object.defineProperty(globalThis, OPEN_NEXT_CLOUDFLARE_CONTEXT_SYMBOL, {
+    configurable: true,
+    get() {
+      const ctx = getRequestExecutionContext();
+      return ctx ? { ctx } : openNextCloudflareContextFallback;
+    },
+    set(value: unknown) {
+      openNextCloudflareContextFallback = value;
+    },
+  });
+}
+
+installOpenNextCloudflareContextBridge();
 
 // ---------------------------------------------------------------------------
 // Public API

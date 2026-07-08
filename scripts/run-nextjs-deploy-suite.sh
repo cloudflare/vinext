@@ -50,6 +50,18 @@ run_pnpm() {
   corepack pnpm "$@"
 }
 
+detach_symlinked_node_modules() {
+  if [ ! -L "node_modules" ]; then
+    return
+  fi
+
+  local target
+  target="$(readlink "node_modules" || true)"
+  echo ">>> $(date -Iseconds) Detaching symlinked node_modules${target:+ -> ${target}} before prepare install"
+  echo ">>> This preserves the shared target; pnpm will create a local node_modules for this disposable checkout."
+  rm -f "node_modules"
+}
+
 if [ "${VINEXT_BUILD:-1}" = "1" ]; then
   (
     cd "${REPO_DIR}"
@@ -60,14 +72,16 @@ fi
 if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
   (
     cd "${NEXTJS_DIR}"
+    echo ">>> $(date -Iseconds) pnpm install"
+    detach_symlinked_node_modules
     run_pnpm install
+    echo ">>> $(date -Iseconds) bump playwright to 1.60.0"
+    run_pnpm add -w playwright@1.60.0 playwright-chromium@1.60.0
+    echo ">>> $(date -Iseconds) pnpm build"
     run_pnpm build
-    run_pnpm install
-    if [ "${CI:-0}" = "1" ] || [ "${CI:-}" = "true" ]; then
-      run_pnpm playwright install --with-deps chromium chromium-headless-shell
-    else
-      run_pnpm playwright install chromium chromium-headless-shell
-    fi
+    echo ">>> $(date -Iseconds) pnpm playwright install"
+    run_pnpm playwright install chromium chromium-headless-shell
+    echo ">>> $(date -Iseconds) prepare done"
   )
 fi
 

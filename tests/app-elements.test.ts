@@ -6,6 +6,7 @@ import { UNMATCHED_SLOT } from "../packages/vinext/src/shims/slot.js";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
+  APP_DYNAMIC_STALE_TIME_KEY,
   AppElementsWire,
   APP_INTERCEPTION_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
@@ -14,6 +15,8 @@ import {
   APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
+  APP_SOURCE_PAGE_KEY,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
   buildOutgoingAppPayload,
@@ -80,8 +83,20 @@ describe("AppElementsWire", () => {
       layoutFlags: {},
       rootLayoutTreePath: "/",
       routeId: "route:/photos/42\0/feed",
+      skippedLayoutIds: [],
       slotBindings: [],
+      sourcePage: null,
     });
+  });
+
+  it("degrades malformed optional source-page metadata to null", () => {
+    const decoded = AppElementsWire.decode({
+      [APP_ROOT_LAYOUT_KEY]: "/",
+      [APP_ROUTE_KEY]: AppElementsWire.encodeRouteId("/dashboard", null),
+      [APP_SOURCE_PAGE_KEY]: "dashboard/page",
+    });
+
+    expect(AppElementsWire.readMetadata(decoded).sourcePage).toBeNull();
   });
 
   it("creates the canonical metadata entries for outgoing AppElements records", () => {
@@ -90,6 +105,7 @@ describe("AppElementsWire", () => {
       layoutIds: ["layout:/(dashboard)"],
       rootLayoutTreePath: "/(dashboard)",
       routeId: AppElementsWire.encodeRouteId("/dashboard", null),
+      sourcePage: "/(dashboard)/page",
     });
 
     expect(metadata).toEqual({
@@ -97,6 +113,7 @@ describe("AppElementsWire", () => {
       [APP_LAYOUT_IDS_KEY]: ["layout:/(dashboard)"],
       [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
       [APP_ROUTE_KEY]: "route:/dashboard",
+      [APP_SOURCE_PAGE_KEY]: "/(dashboard)/page",
     });
   });
 
@@ -297,8 +314,31 @@ describe("AppElementsWire", () => {
       layoutFlags: { [AppElementsWire.encodeLayoutId("/")]: "s" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard",
+      skippedLayoutIds: [],
       slotBindings: [],
+      sourcePage: null,
     });
+  });
+
+  it("round-trips per-page dynamic stale time through payload metadata", () => {
+    const payload = AppElementsWire.encodeOutgoingPayload({
+      dynamicStaleTimeSeconds: 30,
+      element: {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          rootLayoutTreePath: "/",
+          routeId: AppElementsWire.encodeRouteId("/dashboard", null),
+        }),
+        [AppElementsWire.encodePageId("/dashboard", null)]: "page",
+      },
+      layoutFlags: {},
+    });
+
+    expect(isAppElementsRecord(payload)).toBe(true);
+    if (!isAppElementsRecord(payload)) return;
+
+    expect(payload[APP_DYNAMIC_STALE_TIME_KEY]).toBe(30);
+    expect(AppElementsWire.readMetadata(payload).dynamicStaleTimeSeconds).toBe(30);
   });
 
   it("keeps legacy unmatched-slot markers compatible while parsing slot keys", () => {
@@ -550,6 +590,36 @@ describe("app elements payload helpers", () => {
         [APP_LAYOUT_IDS_KEY]: ["layout:/", 1],
       }),
     ).toThrow("[vinext] Invalid __layoutIds in App Router payload: expected layout id string[]");
+  });
+
+  it.each([
+    {
+      label: "non-array",
+      value: "layout:/dashboard",
+      message:
+        "[vinext] Invalid __skippedLayoutIds in App Router payload: expected layout id string[]",
+    },
+    {
+      label: "non-string",
+      value: ["layout:/", 1],
+      message:
+        "[vinext] Invalid __skippedLayoutIds in App Router payload: expected layout id string[]",
+    },
+    {
+      label: "non-layout id",
+      value: ["page:/dashboard"],
+      message: "[vinext] Invalid __skippedLayoutIds in App Router payload: expected layout ids",
+    },
+  ])("rejects invalid skipped layout metadata: $label", ({ message, value }) => {
+    expect(() =>
+      readAppElementsMetadata({
+        ...normalizeAppElements({
+          [APP_ROOT_LAYOUT_KEY]: "/",
+          [APP_ROUTE_KEY]: "route:/dashboard",
+        }),
+        [APP_SKIPPED_LAYOUT_IDS_KEY]: value,
+      }),
+    ).toThrow(message);
   });
 
   it.each([
@@ -900,7 +970,7 @@ describe("buildOutgoingAppPayload", () => {
     }
   });
 
-  it("returns canonical record keys regardless of any upstream skip intent", () => {
+  it("returns canonical record keys when no skip disposition is supplied", () => {
     const result = buildOutgoingAppPayload({
       element: { "layout:/": "root-layout", "page:/": "page" },
       layoutFlags: { "layout:/": "s" },
@@ -909,6 +979,40 @@ describe("buildOutgoingAppPayload", () => {
     if (isAppElementsRecord(result)) {
       expect(result["layout:/"]).toBe("root-layout");
       expect(result["page:/"]).toBe("page");
+    }
+  });
+
+  it("omits only proven layout entries when static-layout skip transport is enabled", () => {
+    const result = buildOutgoingAppPayload({
+      element: {
+        [APP_ROUTE_KEY]: "route:/dashboard",
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        "layout:/dashboard": "dashboard-layout",
+        "page:/dashboard": "dashboard-page",
+      },
+      layoutFlags: { "layout:/": "s", "layout:/dashboard": "s" },
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/dashboard", "page:/dashboard"],
+      },
+    });
+
+    expect(isAppElementsRecord(result)).toBe(true);
+    if (isAppElementsRecord(result)) {
+      expect(result["layout:/"]).toBe("root-layout");
+      expect(Object.hasOwn(result, "layout:/dashboard")).toBe(false);
+      expect(result["page:/dashboard"]).toBe("dashboard-page");
+      expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({
+        "layout:/": "s",
+        "layout:/dashboard": "s",
+      });
+      expect(result[APP_ROUTE_KEY]).toBe("route:/dashboard");
+      expect(result[APP_ROOT_LAYOUT_KEY]).toBe("/");
+      expect(result[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/dashboard"]);
+      expect(AppElementsWire.readMetadata(result).skippedLayoutIds).toEqual(["layout:/dashboard"]);
     }
   });
 

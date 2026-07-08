@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
+import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 // Tests for the redirect protocol implemented in `executeMiddleware`. These
 // fixtures mirror the behaviour Next.js's edge adapter applies after a
@@ -11,6 +12,44 @@ import { executeMiddleware } from "../packages/vinext/src/server/middleware-runt
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("exposes trusted data-request state to middleware", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBe(true);
+    expect(Object.keys(capturedRequest ?? {})).not.toContain("__isData");
+  });
+
+  it("does not expose data-request state for ordinary requests", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBeUndefined();
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {
@@ -103,6 +142,35 @@ describe("middleware redirect protocol", () => {
     expect(result.redirectStatus).toBeUndefined();
   });
 
+  it("preserves middleware cache opt-out when shaping data-request redirects", async () => {
+    const module = {
+      default: (req: Request) =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            Location: new URL("/new-home", req.url).toString(),
+            "x-middleware-cache": "no-cache",
+            "x-middleware-rewrite": "/internal",
+          },
+        }),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      isDataRequest: true,
+      request: new Request("http://localhost:3000/old-home"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(200);
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe("/new-home");
+    expect(result.response?.headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.response?.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(result.response?.headers.get("Location")).toBeNull();
+    expect(result.redirectUrl).toBeUndefined();
+  });
+
   it("translates external redirects to x-nextjs-redirect for data requests", async () => {
     const module = {
       default: () => Response.redirect("https://example.vercel.sh/", 307),
@@ -160,5 +228,103 @@ describe("middleware redirect protocol", () => {
     expect(result.redirectUrl).toBe("/new-home");
     expect(result.response?.status).toBe(307);
     expect(result.response?.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+});
+
+// basePath handling. Mirrors Next.js getNextPathnameInfo semantics: the
+// middleware adapter receives the original URL, NextURL strips the prefix for
+// nextUrl.pathname, and nextUrl.basePath reflects whether the URL actually
+// carried the configured prefix. Reference:
+// test/e2e/middleware-base-path/test/index.test.ts (canary) — including the
+// "should execute from absolute paths" case for out-of-basePath requests.
+describe("middleware nextUrl basePath", () => {
+  function captureModule() {
+    const captured: { request?: NextRequest } = {};
+    const module = {
+      default: (req: NextRequest) => {
+        captured.request = req;
+        return undefined;
+      },
+    };
+    return { captured, module };
+  }
+
+  it("re-adds basePath for App Router calls that pass a stripped pathname (hadBasePath: true)", async () => {
+    const { captured, module } = captureModule();
+
+    // Mirrors applyAppMiddleware: the request URL and cleanPathname are both
+    // already basePath-stripped, and hadBasePath is asserted explicitly.
+    const result = await executeMiddleware({
+      basePath: "/app",
+      hadBasePath: true,
+      isProxy: false,
+      module,
+      normalizedPathname: "/dashboard",
+      request: new Request("http://localhost:3000/dashboard?q=1"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/app");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+    // req.url mirrors the un-stripped URL Next.js middleware receives.
+    expect(new URL(captured.request!.url).pathname).toBe("/app/dashboard");
+    expect(new URL(captured.request!.url).search).toBe("?q=1");
+  });
+
+  it("keeps basePath active for Pages flow requests whose URL carries the prefix", async () => {
+    const { captured, module } = captureModule();
+
+    // Mirrors the prod-server/deploy adapters: the runMiddleware closure
+    // passes the original prefixed URL and no normalizedPathname/hadBasePath.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/root/dashboard"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/root");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+    expect(new URL(captured.request!.url).pathname).toBe("/root/dashboard");
+  });
+
+  it("clears nextUrl.basePath for absolute paths outside the configured basePath", async () => {
+    const { captured, module } = captureModule();
+
+    // Out-of-basePath request (issue #1830): the adapter passes the bare URL,
+    // and the middleware must see basePath === "" so it can redirect the
+    // request into the basePath.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/about"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("");
+    expect(captured.request?.nextUrl.pathname).toBe("/about");
+    // The prefix must NOT be re-added for out-of-basePath requests.
+    expect(new URL(captured.request!.url).pathname).toBe("/about");
+  });
+
+  it("evaluates matchers against the basePath-stripped pathname", async () => {
+    const { captured, module } = captureModule();
+    const moduleWithMatcher = { ...module, config: { matcher: "/dashboard" } };
+
+    // The matcher is written against the stripped path ("/dashboard"), but the
+    // Pages adapters pass the prefixed URL — the runtime must strip before
+    // matching, like Next.js does.
+    const result = await executeMiddleware({
+      basePath: "/root",
+      isProxy: false,
+      module: moduleWithMatcher,
+      request: new Request("http://localhost:3000/root/dashboard"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(captured.request?.nextUrl.basePath).toBe("/root");
+    expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
   });
 });

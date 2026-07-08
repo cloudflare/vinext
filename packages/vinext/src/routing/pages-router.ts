@@ -1,5 +1,5 @@
-import path from "node:path";
-import { compareRoutes, decodeRouteSegment } from "./utils.js";
+import path from "pathslash";
+import { decodeRouteSegment, sortRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -20,6 +20,9 @@ export type Route = {
   /** Parameter names for dynamic segments */
   params: string[];
 };
+
+/** Next.js special pages that should not produce routes. */
+const RESERVED_PAGE_NAMES = new Set(["_app", "_document", "_error"]);
 
 // Route cache — invalidated when pages directory changes
 const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
@@ -45,7 +48,7 @@ export function invalidateRouteCache(pagesDir: string): void {
  * - pages/about.tsx -> /about
  * - pages/posts/[id].tsx -> /posts/:id
  * - pages/[...slug].tsx -> /:slug+
- * - Ignores _app.tsx, _document.tsx, _error.tsx, files starting with _
+ * - Ignores _app.tsx, _document.tsx, _error.tsx (Next.js special files)
  * - Ignores pages/api/ (handled separately later)
  */
 export async function pagesRouter(
@@ -68,12 +71,15 @@ export async function pagesRouter(
 async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const routes: Route[] = [];
 
-  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14).
+  // The `RESERVED_PAGE_NAMES` check here is a directory-traversal optimization only — glob's
+  // exclude callback fires on directory names, not file names, so root-level files like
+  // `_app.tsx` still get yielded and are filtered by the guard in `fileToRoute()` below.
   for await (const file of scanWithExtensions(
     "**/*",
     pagesDir,
     matcher.extensions,
-    (name: string) => name === "api" || name.startsWith("_"),
+    (name: string) => name === "api" || RESERVED_PAGE_NAMES.has(name),
   )) {
     const route = fileToRoute(file, pagesDir, matcher);
     if (route) routes.push(route);
@@ -82,7 +88,7 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }
@@ -95,8 +101,9 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   const withoutExt = matcher.stripExtension(file);
   if (withoutExt === file) return null;
 
-  // Convert to URL segments
-  const segments = withoutExt.split(path.sep);
+  // Convert to URL segments. `file` comes from `scanWithExtensions`, which
+  // yields forward-slash paths on every platform, so split on "/".
+  const segments = withoutExt.split("/");
 
   // Handle index files: pages/index.tsx -> /
   const lastSegment = segments[segments.length - 1];
@@ -153,6 +160,14 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 
   const pattern = "/" + urlSegments.join("/");
 
+  // Skip Next.js special pages (_app, _document, _error) at the root level only.
+  // Subdirectory files like admin/_app.tsx are not reserved and should be served.
+  // Read segments[0] after the index pop so this is correct for both `_app.tsx`
+  // and `_app/index.tsx` shapes, independent of the glob-level exclude.
+  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(segments[0])) {
+    return null;
+  }
+
   return {
     pattern: pattern === "/" ? "/" : pattern,
     patternParts: urlSegments.filter(Boolean),
@@ -206,12 +221,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   let files: string[];
   try {
     files = [];
-    for await (const file of scanWithExtensions(
-      "**/*",
-      apiDir,
-      matcher.extensions,
-      (name: string) => name.startsWith("_"),
-    )) {
+    for await (const file of scanWithExtensions("**/*", apiDir, matcher.extensions)) {
       files.push(file);
     }
   } catch {
@@ -221,7 +231,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   const routes: Route[] = [];
 
   for (const file of files) {
-    // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix
+    // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix.
     const route = fileToRoute(path.join("api", file), pagesDir, matcher);
     if (route) {
       routes.push(route);
@@ -231,7 +241,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort same as page routes
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }

@@ -20,6 +20,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
+import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 
 type DynamicLoadingProps = {
   error?: Error | null;
@@ -36,6 +37,10 @@ type LoaderFn<P> = () => LoaderComponent<P>;
 type DynamicOptions<P> = {
   loading?: ComponentType<DynamicLoadingProps>;
   loader?: Loader<P>;
+  loadableGenerated?: {
+    modules?: readonly string[];
+  };
+  modules?: readonly string[];
   ssr?: boolean;
 };
 
@@ -194,10 +199,13 @@ function dynamic<P extends object = object>(
 ): ComponentType<P> {
   const {
     loader: dynamicLoader,
+    loadableGenerated,
     loading: LoadingComponent,
+    modules,
     ssr = true,
   } = normalizeDynamicOptions(dynamicInput, options);
   const loader = dynamicLoader ? normalizeLoader(dynamicLoader) : () => Promise.resolve(() => null);
+  const preloadModuleIds = loadableGenerated?.modules ?? modules;
 
   // ssr: false — render nothing on the server, lazy-load on client
   if (!ssr) {
@@ -205,7 +213,13 @@ function dynamic<P extends object = object>(
       // On the server (SSR or RSC), just render the loading state or nothing
       const SSRFalse = (_props: P) =>
         LoadingComponent
-          ? React.createElement(LoadingComponent, createDynamicLoadingProps({ pastDelay: false }))
+          ? // pastDelay must be true here to match (a) the client's first/pre-mount
+            // render (ClientSSRFalse uses createDynamicLoadingProps, which defaults
+            // pastDelay to true) and (b) Next.js App Router, which always renders the
+            // loading fallback with pastDelay=true on both server and client. Hardcoding
+            // false produced a hydration mismatch for loading components that branch on
+            // pastDelay, e.g. `if (!pastDelay) return null` (issue 1967).
+            React.createElement(LoadingComponent, createDynamicLoadingProps())
           : null;
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
@@ -296,7 +310,12 @@ function dynamic<P extends object = object>(
           );
         }
       }
-      return React.createElement(React.Suspense, { fallback }, content);
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(DynamicPreloadChunks, { moduleIds: preloadModuleIds }),
+        React.createElement(React.Suspense, { fallback }, content),
+      );
     };
 
     ServerDynamic.displayName = "DynamicServer";

@@ -5,17 +5,17 @@ import {
 } from "../packages/vinext/src/server/navigation-trace.js";
 import {
   navigationPlanner,
-  type FlightResultV0,
-  type MountedParallelSlotSnapshotV0,
-  type NavigationDecisionV0,
+  type FlightResult,
+  type MountedParallelSlotSnapshot,
+  type NavigationDecision,
   type NavigationEvent,
   type NavigationPlannerInput,
-  type NavigationPlannerStateV0,
+  type NavigationPlannerState,
   type OperationToken,
-  type ParallelSlotBindingSnapshotV0,
+  type ParallelSlotBindingSnapshot,
   type RefreshScope,
-  type RouteSnapshotV0,
-  type InterceptionSnapshotV0,
+  type RouteSnapshot,
+  type InterceptionSnapshot,
   type RootBoundaryTransition,
 } from "../packages/vinext/src/server/navigation-planner.js";
 import type {
@@ -39,7 +39,7 @@ type TestManifestRoute = {
   pattern: string;
   patternParts?: readonly string[];
   rootBoundaryId: string | null;
-  slotBindings?: readonly ParallelSlotBindingSnapshotV0[];
+  slotBindings?: readonly ParallelSlotBindingSnapshot[];
   interceptions?: readonly TestManifestInterception[];
 };
 
@@ -53,9 +53,9 @@ type TestManifestInterception = {
 function createRouteSnapshot(
   rootBoundaryId: string | null,
   layoutIds: readonly string[] = rootBoundaryId === null ? [] : [`layout:${rootBoundaryId}`],
-  mountedParallelSlots: readonly MountedParallelSlotSnapshotV0[] = [],
-  slotBindings: readonly ParallelSlotBindingSnapshotV0[] = [],
-): RouteSnapshotV0 {
+  mountedParallelSlots: readonly MountedParallelSlotSnapshot[] = [],
+  slotBindings: readonly ParallelSlotBindingSnapshot[] = [],
+): RouteSnapshot {
   return {
     displayUrl: "https://example.com/dashboard",
     interception: null,
@@ -70,8 +70,8 @@ function createRouteSnapshot(
 }
 
 function createInterceptionSnapshot(
-  overrides: Partial<InterceptionSnapshotV0> = {},
-): InterceptionSnapshotV0 {
+  overrides: Partial<InterceptionSnapshot> = {},
+): InterceptionSnapshot {
   return {
     sourceMatchedUrl: "/feed",
     sourceRouteId: "route:/feed",
@@ -97,8 +97,8 @@ function createAcceptedStaticLayoutCacheEntryReuseProof(): CacheEntryReuseProof 
 function createSlotBinding(
   slotId: string,
   ownerLayoutId: string,
-  state: ParallelSlotBindingSnapshotV0["state"] = "active",
-): ParallelSlotBindingSnapshotV0 {
+  state: ParallelSlotBindingSnapshot["state"] = "active",
+): ParallelSlotBindingSnapshot {
   return { ownerLayoutId, slotId, state };
 }
 
@@ -212,8 +212,8 @@ function rootBoundaryIdForManifest(rootBoundaryId: string | null): string | null
 }
 
 function createRouteManifestForSnapshots(
-  currentSnapshot: RouteSnapshotV0,
-  targetSnapshot: RouteSnapshotV0,
+  currentSnapshot: RouteSnapshot,
+  targetSnapshot: RouteSnapshot,
 ): RouteManifest {
   if (targetSnapshot.interception !== null) {
     const proof = targetSnapshot.interception;
@@ -288,6 +288,7 @@ function createOperationToken(overrides: Partial<OperationToken> = {}): Operatio
     deploymentVersion: null,
     graphVersion: null,
     lane: "navigation",
+    navigationId: 1,
     operationId: 7,
     targetSnapshotFingerprint: "route:/dashboard|root:/",
     ...overrides,
@@ -309,7 +310,7 @@ function createRejectedCacheEntryReuseProof(
   };
 }
 
-function planFlightResponse(rootBoundaryId: string | null): NavigationDecisionV0 {
+function planFlightResponse(rootBoundaryId: string | null): NavigationDecision {
   const token = createOperationToken({
     targetSnapshotFingerprint: `route:/dashboard|root:${rootBoundaryId ?? "unknown"}`,
   });
@@ -325,7 +326,7 @@ function planFlightResponse(rootBoundaryId: string | null): NavigationDecisionV0
       rootBoundaryId: rootBoundaryId === null ? null : `root-boundary:${rootBoundaryId}`,
     },
   ]);
-  const result: FlightResultV0 = {
+  const result: FlightResult = {
     href: "https://example.com/dashboard",
     targetSnapshot: {
       ...createRouteSnapshot(rootBoundaryId),
@@ -333,7 +334,7 @@ function planFlightResponse(rootBoundaryId: string | null): NavigationDecisionV0
       routeId: "route:/dashboard",
     },
   };
-  const state: NavigationPlannerStateV0 = {
+  const state: NavigationPlannerState = {
     nextOperationToken: token,
     traceFields: {
       currentRootLayoutTreePath: "/",
@@ -366,7 +367,7 @@ function planFlightResponse(rootBoundaryId: string | null): NavigationDecisionV0
 function planFlightResponseFromRootBoundaries(options: {
   currentRootBoundaryId: string | null;
   nextRootBoundaryId: string | null;
-}): NavigationDecisionV0 {
+}): NavigationDecision {
   const token = createOperationToken({
     targetSnapshotFingerprint: `route:/dashboard|root:${options.nextRootBoundaryId ?? "unknown"}`,
   });
@@ -425,14 +426,17 @@ function planFlightResponseFromRootBoundaries(options: {
 
 function planFlightResponseFromSnapshots(options: {
   cacheEntryReuseProof?: CacheEntryReuseProof;
-  currentSnapshot: RouteSnapshotV0;
+  currentSnapshot: RouteSnapshot;
   lane?: OperationToken["lane"];
+  restoredHistorySnapshot?: boolean;
   routeManifest?: RouteManifest | null;
-  targetSnapshot: RouteSnapshotV0;
-  traceFields?: NavigationPlannerStateV0["traceFields"];
-}): NavigationDecisionV0 {
+  targetSnapshot: RouteSnapshot;
+  tokenGraphVersion?: string | null;
+  traceFields?: NavigationPlannerState["traceFields"];
+}): NavigationDecision {
   const token = createOperationToken({
     lane: options.lane ?? "navigation",
+    ...(options.tokenGraphVersion !== undefined ? { graphVersion: options.tokenGraphVersion } : {}),
     targetSnapshotFingerprint: `${options.targetSnapshot.routeId}|root:${
       options.targetSnapshot.rootBoundaryId ?? "unknown"
     }`,
@@ -446,6 +450,7 @@ function planFlightResponseFromSnapshots(options: {
           ? { cacheEntryReuseProof: options.cacheEntryReuseProof }
           : {}),
         href: options.targetSnapshot.displayUrl,
+        ...(options.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
         targetSnapshot: options.targetSnapshot,
       },
       token,
@@ -495,13 +500,13 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("rejects runtime cache entries when the cache proof is missing", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/profile",
       matchedUrl: "/dashboard/profile",
       routeId: "route:/dashboard/profile",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -535,13 +540,13 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("rejects incompatible runtime cache entries before route-topology commit approval", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/profile",
       matchedUrl: "/dashboard/profile",
       routeId: "route:/dashboard/profile",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -576,13 +581,13 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("keeps accepted runtime cache proof visible on the commit proposal", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/profile",
       matchedUrl: "/dashboard/profile",
       routeId: "route:/dashboard/profile",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -614,6 +619,76 @@ describe("navigationPlanner root-boundary decisions", () => {
     });
   });
 
+  it("hard navigates a proven cache entry whose token graph version no longer matches the route graph", () => {
+    // Commits and cache reuse share the OperationToken authority: a proven cache
+    // entry may only be reused under the graph version it was produced for. A
+    // token minted under a stale graph version must not reuse a cache entry
+    // against a newer route graph — it hard navigates and refetches.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      // The test manifest declares graphVersion "graph:test".
+      tokenGraphVersion: "graph:stale",
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected a stale-graph cache reuse to hard navigate");
+    }
+    expect(decision.reason).toBe("cacheReuseTokenRejected");
+    expect(decision.url).toBe("https://example.com/dashboard/settings");
+    expect(decision.trace.entries[0]).toEqual({
+      code: NavigationTraceReasonCodes.cacheReuseTokenRejected,
+      fields: {
+        cacheReuseTokenReason: "graphVersionMismatch",
+        currentRootLayoutTreePath: "/",
+        currentVisibleCommitVersion: 2,
+        nextRootLayoutTreePath: "/",
+        startedVisibleCommitVersion: 2,
+      },
+    });
+  });
+
+  it("commits a proven cache entry when its token graph version still matches the route graph", () => {
+    // The cache-reuse token gate must not disturb the normal proven-reuse path:
+    // a token minted under the installed graph version commits as before.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      tokenGraphVersion: "graph:test",
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+  });
+
   it("hard-navigates cross-root flight responses", () => {
     const transition: RootBoundaryTransition = navigationPlanner.classifyRootBoundaryTransition(
       "/",
@@ -642,13 +717,13 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("keeps accepted runtime cache proof fields on later root-boundary rejections", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/"),
       displayUrl: "https://example.com/current",
       matchedUrl: "/current",
       routeId: "route:/current",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/(dashboard)"),
       displayUrl: "https://example.com/dashboard",
       matchedUrl: "/dashboard",
@@ -777,7 +852,7 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("does not approve mounted parallel slot preservation for traverse commits", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -787,7 +862,7 @@ describe("navigationPlanner root-boundary decisions", () => {
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed", "layout:/feed/comments"]),
       displayUrl: "https://example.com/feed/comments",
       matchedUrl: "/feed/comments",
@@ -853,7 +928,7 @@ describe("navigationPlanner root-boundary decisions", () => {
         createSlotBinding("slot:reports:/dashboard", "layout:/dashboard", "active"),
       ],
     );
-    const targetSettingsSnapshot: RouteSnapshotV0 = {
+    const targetSettingsSnapshot: RouteSnapshot = {
       ...targetSnapshot,
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -913,7 +988,7 @@ describe("navigationPlanner root-boundary decisions", () => {
         createSlotBinding("slot:analytics:/dashboard", "layout:/dashboard", "unmatched"),
       ],
     );
-    const targetSettingsSnapshot: RouteSnapshotV0 = {
+    const targetSettingsSnapshot: RouteSnapshot = {
       ...targetSnapshot,
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -948,7 +1023,7 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("does not preserve default target slots when their owner layout is not retained", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1035,12 +1110,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/marketing",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/stale-app"]),
       matchedUrl: "/app",
       routeId: "route:/app",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/stale-app", "layout:/stale-marketing"]),
       displayUrl: "https://example.com/marketing",
       matchedUrl: "/marketing",
@@ -1081,12 +1156,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       matchedUrl: "/dashboard",
       routeId: "route:/dashboard",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -1108,6 +1183,64 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/dashboard"]);
   });
 
+  it("uses concrete route ids when middleware rewrites hide dynamic source params", () => {
+    const slotId = "slot:modal:/interception-mw/:locale";
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+        interceptions: [
+          {
+            sourcePattern: "/interception-mw/:locale",
+            targetPattern: "/interception-mw/:locale/:username/p/:id",
+            slotId,
+            ownerLayoutId: "layout:/interception-mw/:locale",
+          },
+        ],
+      },
+      {
+        layoutIds: ["layout:/", "layout:/interception-mw/:locale"],
+        pattern: "/interception-mw/:locale/:username/p/:id",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "root-boundary:/",
+        ["layout:/", "layout:/interception-mw/:locale"],
+        [{ ownerLayoutId: "layout:/interception-mw/:locale", slotId }],
+        [createSlotBinding(slotId, "layout:/interception-mw/:locale", "active")],
+      ),
+      displayUrl: "https://example.com/interception-mw",
+      matchedUrl: "/interception-mw",
+      routeId: "route:/interception-mw/en",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...currentSnapshot,
+      displayUrl: "https://example.com/interception-mw/foo/p/1",
+      interception: {
+        sourceMatchedUrl: "/interception-mw/en",
+        sourceRouteId: "route:/interception-mw/en",
+        slotId,
+        targetMatchedUrl: "/interception-mw/en/foo/p/1",
+        targetRouteId: "route:/interception-mw/en/foo/p/1",
+      },
+      interceptionContext: "/interception-mw/en",
+      matchedUrl: "/interception-mw/en/foo/p/1",
+      routeId: "route:/interception-mw/en",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+  });
+
   it("does not let stale manifest route IDs override the matched URL", () => {
     const routeManifest = createTestRouteManifest([
       {
@@ -1121,13 +1254,13 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/marketing",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       displayUrl: "https://example.com/app",
       matchedUrl: "/app",
       routeId: "route:/app",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       displayUrl: "https://example.com/app",
       matchedUrl: "/app",
@@ -1156,13 +1289,13 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       displayUrl: "https://example.com/blog/hello",
       matchedUrl: "/blog/hello",
       routeId: "route:/blog/hello",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       displayUrl: "https://example.com/blog/world",
       matchedUrl: "/blog/world",
@@ -1199,7 +1332,7 @@ describe("navigationPlanner root-boundary decisions", () => {
         slotBindings: [createSlotBinding(modalSlot, "layout:/dashboard", "default")],
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1212,7 +1345,7 @@ describe("navigationPlanner root-boundary decisions", () => {
       matchedUrl: "/dashboard",
       routeId: "route:/dashboard",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1253,12 +1386,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         slotBindings: [createSlotBinding(modalSlot, "layout:/dashboard", "default")],
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, [], [], []),
       matchedUrl: "/dashboard",
       routeId: "route:/dashboard",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, [], [], []),
       displayUrl: "https://example.com/dashboard/settings",
       matchedUrl: "/dashboard/settings",
@@ -1299,12 +1432,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/photos",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1353,12 +1486,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       matchedUrl: "/en/feed",
       routeId: "route:/en/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1409,12 +1542,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1470,12 +1603,12 @@ describe("navigationPlanner root-boundary decisions", () => {
         rootBoundaryId: "root-boundary:/",
       },
     ]);
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(null, []),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         null,
         [],
@@ -1509,7 +1642,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     // Core-15 oracle, porting the visible behavior from Next.js:
     // test/e2e/app-dir/parallel-routes-and-interception-catchall/parallel-routes-and-interception-catchall.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception-catchall/parallel-routes-and-interception-catchall.test.ts
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1523,7 +1656,7 @@ describe("navigationPlanner root-boundary decisions", () => {
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1556,12 +1689,12 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("does not treat legacy context-only payloads as intercepted preservation proof", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
       displayUrl: "https://example.com/photos/42",
       interceptionContext: "/feed",
@@ -1582,12 +1715,12 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("rejects intercepted preservation when the visible source route is stale", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/gallery"]),
       matchedUrl: "/gallery",
       routeId: "route:/gallery",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1614,12 +1747,12 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("rejects intercepted preservation when proof target does not match the rendered route", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1646,12 +1779,12 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("does not use intercepted snapshot root topology as preservation authority", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/marketing",
         ["layout:/marketing"],
@@ -1678,12 +1811,12 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("rejects intercepted preservation when the target slot is not proven active", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1710,7 +1843,7 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("allows traverse to restore an intercepted visible world only with proof", () => {
-    const currentSnapshot: RouteSnapshotV0 = {
+    const currentSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1721,7 +1854,7 @@ describe("navigationPlanner root-boundary decisions", () => {
       matchedUrl: "/feed",
       routeId: "route:/feed",
     };
-    const targetSnapshot: RouteSnapshotV0 = {
+    const targetSnapshot: RouteSnapshot = {
       ...createRouteSnapshot(
         "/",
         ["layout:/", "layout:/feed"],
@@ -1741,6 +1874,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     const decision = planFlightResponseFromSnapshots({
       currentSnapshot,
       lane: "traverse",
+      restoredHistorySnapshot: true,
       targetSnapshot,
     });
 
@@ -1750,6 +1884,83 @@ describe("navigationPlanner root-boundary decisions", () => {
     }
     expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
     expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:activity:/feed"]);
+  });
+
+  it("allows traverse to restore an intercepted world from a catch-all sibling", () => {
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/profile",
+      matchedUrl: "/profile",
+      routeId: "route:/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "traverse",
+      restoredHistorySnapshot: true,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+  });
+
+  it("rejects a fresh traverse response from an unrelated interception source", () => {
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+      displayUrl: "https://example.com/profile",
+      matchedUrl: "/profile",
+      routeId: "route:/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/feed"],
+        [],
+        [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+      ),
+      displayUrl: "https://example.com/photos/42",
+      interception: createInterceptionSnapshot(),
+      interceptionContext: "/feed",
+      matchedUrl: "/photos/42",
+      routeId: "route:/photos/42\u0000/feed",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "traverse",
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    );
   });
 
   it("does not preserve layouts across root-boundary uncertainty", () => {

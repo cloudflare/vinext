@@ -3,8 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_SOURCE_PAGE_KEY,
+  AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
+  buildOutgoingAppPayload,
+  isAppElementsRecord,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -13,12 +17,18 @@ import {
   type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
+  probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+  createRequestContext,
+  getRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { buildPageElements as buildResolvedPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
 
 function readNode(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -227,6 +237,10 @@ function SlotLayout(props: Record<string, unknown>) {
   return createElement("div", { "data-slot-layout": "sidebar" }, readChildren(props.children));
 }
 
+function NestedSlotLayout(props: Record<string, unknown>) {
+  return createElement("div", { "data-slot-layout": "nested" }, readChildren(props.children));
+}
+
 function InterceptOuterLayout(props: Record<string, unknown>) {
   return createElement("div", { "data-intercept-layout": "outer" }, readChildren(props.children));
 }
@@ -261,13 +275,59 @@ function RootTemplate(props: Record<string, unknown>) {
   return createElement("div", { "data-template": "root" }, readChildren(props.children));
 }
 
+let lastGroupTemplateProps: Record<string, unknown> | null = null;
+
 function GroupTemplate(props: Record<string, unknown>) {
+  lastGroupTemplateProps = props;
   return createElement("div", { "data-template": "group" }, readChildren(props.children));
 }
 
 function PageProbe() {
   const segments = useSelectedLayoutSegments();
   return createElement("main", { "data-page-segments": segments.join("|") }, "Page");
+}
+
+async function buildGeneratedMetadataRouteHtml(
+  userAgent: string,
+  htmlLimitedBots?: string,
+): Promise<string> {
+  const elements = await buildResolvedPageElements({
+    route: {
+      error: null,
+      errors: [null],
+      layoutTreePositions: [0],
+      layouts: [{ default: RootLayout }],
+      loading: null,
+      notFound: null,
+      notFounds: [null],
+      page: {
+        default: PageProbe,
+        async generateMetadata() {
+          return { title: "generated page" };
+        },
+      },
+      params: [],
+      pattern: "/generated",
+      routeSegments: ["generated"],
+      slots: {},
+      templateTreePositions: [],
+      templates: [],
+    },
+    params: {},
+    routePath: "/generated",
+    pageRequest: {
+      isRscRequest: false,
+      mountedSlotsHeader: null,
+      request: new Request("http://localhost/generated", {
+        headers: { "user-agent": userAgent },
+      }),
+      searchParams: null,
+    },
+    metadataRoutes: [],
+    htmlLimitedBots,
+  });
+
+  return renderRouteEntry(elements, "route:/generated");
 }
 
 function RouteLoadingProbe() {
@@ -283,13 +343,124 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  it("probes returned layout children with param and revalidate tracking", async () => {
+    const calls: string[] = [];
+    const layoutParamAccess = createAppLayoutParamAccessTracker();
+
+    function Child() {
+      calls.push("child");
+      return null;
+    }
+
+    function Layout() {
+      calls.push("layout");
+      return createElement("section", null, createElement(Child));
+    }
+
+    await probeAppPageLayoutWithTracking({
+      layoutIndex: 0,
+      layoutParamAccess,
+      makeThenableParams,
+      matchedParams: {},
+      route: {
+        layoutTreePositions: [0],
+        layouts: [{ default: Layout, revalidate: 60 }],
+        routeSegments: ["dashboard"],
+      },
+    });
+
+    expect(calls).toEqual(["layout", "child"]);
+    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
+      completeness: "complete",
+      finiteRevalidateSeconds: 60,
+    });
+  });
+
+  it("probes layout branches that render only when children are present", async () => {
+    const calls: string[] = [];
+    const layoutParamAccess = createAppLayoutParamAccessTracker();
+
+    function ChromeThatUsesTaggedData() {
+      calls.push("chrome");
+      getRequestContext().currentRequestTags.push("tag:dashboard-chrome");
+      return null;
+    }
+
+    function Layout(props: { children?: ReactNode }) {
+      calls.push("layout");
+      if (!props.children) return null;
+      return createElement(
+        "section",
+        null,
+        createElement(ChromeThatUsesTaggedData),
+        props.children,
+      );
+    }
+
+    await runWithRequestContext(createRequestContext(), () =>
+      probeAppPageLayoutWithTracking({
+        layoutIndex: 0,
+        layoutParamAccess,
+        makeThenableParams,
+        matchedParams: {},
+        route: {
+          layoutTreePositions: [0],
+          layouts: [{ default: Layout }],
+          routeSegments: ["dashboard"],
+        },
+      }),
+    );
+
+    expect(calls).toEqual(["layout", "chrome"]);
+    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
+      cacheTags: ["tag:dashboard-chrome"],
+      completeness: "complete",
+    });
+  });
+
+  it("renders generated metadata in a hidden body outlet for streaming-capable requests", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome");
+
+    expect(html).not.toContain("<title>generated page</title><div");
+    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("renders generated metadata in the head for configured html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("Minibot", "Minibot");
+
+    expect(html).toContain("<title>generated page</title>");
+    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("renders generated metadata in the head for default html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("Twitterbot");
+
+    expect(html).toContain("<title>generated page</title>");
+    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("falls back to the default html-limited bot list for an empty config string", async () => {
+    // Next.js normalizes a falsy htmlLimitedBots config to the default bot regex.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/streaming-metadata.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", "");
+
+    expect(html).not.toContain("<title>generated page</title><div");
+    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
   it("resolves child segments from tree positions and preserves route groups", () => {
     expect(
       resolveAppPageChildSegments(["(marketing)", "blog", "[slug]", "[...parts]"], 1, {
         parts: ["a", "b"],
         slug: "post",
       }),
-    ).toEqual(["blog", "post", "a/b"]);
+    ).toEqual(["blog", "post", "a/b", "__PAGE__"]);
   });
 
   it("builds layout entries from tree paths instead of visible URL segments", () => {
@@ -342,7 +513,64 @@ describe("app page route wiring helpers", () => {
     ]);
   });
 
+  it("encodes the active app source page from route segments", () => {
+    // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+    const cases: Array<{
+      routePath: string;
+      routeSegments: readonly string[];
+      sourcePage: string;
+    }> = [
+      {
+        routePath: "/dashboard",
+        routeSegments: ["dashboard"],
+        sourcePage: "/dashboard/page",
+      },
+      {
+        routePath: "/dynamic/category-1/id-2",
+        routeSegments: ["dynamic", "[category]", "[id]"],
+        sourcePage: "/dynamic/[category]/[id]/page",
+      },
+      {
+        routePath: "/dashboard/another",
+        routeSegments: ["(newroot)", "dashboard", "another"],
+        sourcePage: "/(newroot)/dashboard/another/page",
+      },
+    ];
+
+    for (const { routePath, routeSegments, sourcePage } of cases) {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          notFound: null,
+          notFounds: [],
+          routeSegments,
+          slots: null,
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath,
+        rootNotFoundModule: null,
+      });
+
+      expect(elements[APP_SOURCE_PAGE_KEY]).toBe(sourcePage);
+      expect(AppElementsWire.readMetadata(elements).sourcePage).toBe(sourcePage);
+    }
+  });
+
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
+    lastGroupTemplateProps = null;
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -387,6 +615,7 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements.__route).toBe("route:/blog/post");
+    expect(elements.__sourcePage).toBe("/(marketing)/blog/[slug]/page");
     expect(elements.__layoutIds).toEqual(["layout:/", "layout:/(marketing)"]);
     expect(elements.__rootLayout).toBe("/");
     expect(elements["layout:/"]).toBeDefined();
@@ -398,6 +627,7 @@ describe("app page route wiring helpers", () => {
 
     const html = await renderRouteEntry(elements, "route:/blog/post");
 
+    expect(lastGroupTemplateProps).not.toHaveProperty("params");
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-layout="group"');
     expect(html).toContain('data-template="group"');
@@ -411,7 +641,192 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain('data-segments="blog|post"');
   });
 
-  it("suppresses route and slot loading boundaries for refresh payloads", () => {
+  it("keeps default children segments at the parent for synthetic named-slot routes", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        childrenRouteSegments: ["dashboard"],
+        error: null,
+        errors: [null],
+        layoutTreePositions: [1],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "members"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/members",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard/members");
+
+    expect(html).toContain('data-segments=""');
+    expect(html).toContain('data-sidebar-segments="members"');
+  });
+
+  it("omits mounted default-only named-slot state from soft-navigation providers", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      isRscRequest: true,
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "settings"],
+        slots: {
+          sidebar: {
+            default: { default: SlotPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/dashboard/settings"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+    expect(provider?.props.providerId).toBe("layout:/");
+  });
+
+  it("omits mounted unmatched named-slot state without default.tsx from providers", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      isRscRequest: true,
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard", "settings"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard/settings",
+      rootNotFoundModule: null,
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/dashboard/settings"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: ["dashboard", "settings"] });
+    expect(provider?.props.providerId).toBe("layout:/");
+  });
+
+  it("renders nested active slot layouts inside the slot root layout", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            configLayouts: [{ default: NestedSlotLayout }],
+            default: null,
+            error: null,
+            layout: { default: SlotLayout },
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            page: { default: SlotPage },
+            routeSegments: ["members"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html.indexOf('data-slot-layout="sidebar"')).toBeLessThan(
+      html.indexOf('data-slot-layout="nested"'),
+    );
+    expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
+  });
+
+  it("keeps route loading boundaries in the rendered tree", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -429,16 +844,45 @@ describe("app page route wiring helpers", () => {
         notFound: null,
         notFounds: [null],
         routeSegments: ["dashboard"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+    });
+
+    expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(true);
+  });
+
+  it("keeps slot loading boundaries in the rendered tree", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [],
+        routeSegments: ["dashboard"],
         slots: {
           sidebar: {
             default: null,
             error: null,
             layout: null,
-            layoutIndex: 0,
+            layoutIndex: -1,
             loading: { default: SlotLoadingProbe },
             name: "sidebar",
             page: { default: SlotPage },
-            routeSegments: [],
+            routeSegments: ["members"],
           },
         },
         templateTreePositions: [],
@@ -446,11 +890,9 @@ describe("app page route wiring helpers", () => {
       },
       routePath: "/dashboard",
       rootNotFoundModule: null,
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
     });
 
-    expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(false);
-    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(false);
+    expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(true);
   });
 
   it("serializes route loading UI instead of page content for loading-shell prefetches", async () => {
@@ -568,6 +1010,123 @@ describe("app page route wiring helpers", () => {
 
     expect(html).toContain('data-slot-page="override"');
     expect(html).toContain('data-sidebar-segments="members|42"');
+  });
+
+  it("uses override route segments for intercepted named slots", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          modal: {
+            default: { default: SlotPage },
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "modal",
+            page: null,
+            routeSegments: null,
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/interception-dyn-seg",
+      rootNotFoundModule: null,
+      slotOverrides: {
+        modal: {
+          pageModule: { default: SlotPage },
+          params: { username: "foo", id: "1" },
+          routeSegments: ["[username]", "[id]"],
+        },
+      },
+    });
+
+    const provider = findElementByTypeName(
+      elements["route:/interception-dyn-seg"],
+      "LayoutSegmentProvider",
+    );
+
+    expect(provider?.props.segmentMap).toEqual({ children: [], modal: ["foo", "1"] });
+    expect(provider?.props.providerId).toBe("layout:/");
+  });
+
+  it("uses intercepted override segments for named slot reset boundaries", async () => {
+    function SlotError() {
+      return createElement("div", null, "slot error");
+    }
+
+    const buildInterceptedElements = (params: { username: string; id: string }) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(value) {
+          return Promise.resolve(value);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [],
+          layouts: [],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: [],
+          slots: {
+            modal: {
+              default: null,
+              error: { default: SlotError },
+              layout: null,
+              layoutIndex: -1,
+              loading: null,
+              name: "modal",
+              page: null,
+              routeSegments: null,
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/interception-dyn-seg",
+        rootNotFoundModule: null,
+        slotOverrides: {
+          modal: {
+            pageModule: { default: SlotPage },
+            params,
+            routeSegments: ["(group)", "[username]", "(nested)", "[id]"],
+          },
+        },
+      });
+
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/");
+    const fooBoundary = findElementByTypeName(
+      buildInterceptedElements({ username: "foo", id: "1" })[modalSlotId],
+      "ErrorBoundary",
+    );
+    const barBoundary = findElementByTypeName(
+      buildInterceptedElements({ username: "bar", id: "2" })[modalSlotId],
+      "ErrorBoundary",
+    );
+
+    expect(fooBoundary?.props.resetKey).toBe(JSON.stringify(["username|foo|d", "id|1|d"]));
+    expect(barBoundary?.props.resetKey).toBe(JSON.stringify(["username|bar|d", "id|2|d"]));
+    expect(barBoundary?.props.resetKey).not.toBe(fooBoundary?.props.resetKey);
   });
 
   it("wraps intercepted slot overrides with intercept layout modules inside the slot layout", async () => {
@@ -852,7 +1411,7 @@ describe("app page route wiring helpers", () => {
     expect(elements["slot:team:/"]).toBeDefined();
   });
 
-  it("renders slot default.tsx on hard navigation when slot has no page", () => {
+  it("renders slot default.tsx without its slot layout on hard navigation", async () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: false,
@@ -873,13 +1432,13 @@ describe("app page route wiring helpers", () => {
         notFounds: [null],
         routeSegments: [],
         slots: {
-          team: {
+          sidebar: {
             default: { default: DefaultPage },
             error: null,
-            layout: null,
+            layout: { default: SlotLayout },
             layoutIndex: 0,
             loading: null,
-            name: "team",
+            name: "sidebar",
             page: null,
             routeSegments: [],
           },
@@ -892,8 +1451,12 @@ describe("app page route wiring helpers", () => {
     });
 
     // On hard navigation the default.tsx must render so the initial HTML is
-    // fully populated.
-    expect(elements["slot:team:/"]).toBeDefined();
+    // fully populated, but Next.js does not wrap the fallback in the slot's
+    // own layout because default.tsx sits beside that layout in the loader tree.
+    expect(elements["slot:sidebar:/"]).toBeDefined();
+    const html = await renderRouteEntry(elements, "route:/");
+    expect(html).toContain("default-slot");
+    expect(html).not.toContain('data-slot-layout="sidebar"');
   });
 
   it.each([
@@ -1065,6 +1628,64 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
+  });
+
+  it("releases skipped layout dependencies before serializing retained child entries", async () => {
+    let activeLocale = "en";
+
+    async function StaticLayout(props: Record<string, unknown>) {
+      await Promise.resolve();
+      activeLocale = "de";
+      return createElement("div", { "data-layout": "static" }, readChildren(props.children));
+    }
+
+    function LocalePage() {
+      return createElement("main", null, `page:${activeLocale}`);
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(LocalePage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: StaticLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["skip-layout"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/skip-layout",
+      rootNotFoundModule: null,
+    });
+
+    const payload = buildOutgoingAppPayload({
+      element: elements,
+      layoutFlags: { "layout:/": "s" },
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/"],
+      },
+    });
+
+    expect(isAppElementsRecord(payload)).toBe(true);
+    if (!isAppElementsRecord(payload)) return;
+    expect(Object.hasOwn(payload, "layout:/")).toBe(false);
+
+    const body = await withTimeout(renderHtml(readChildren(payload["page:/skip-layout"])), 1_000);
+
+    expect(body).toContain("page:en");
   });
 
   it("renders template-only segments in the route entry even without a matching layout", async () => {
@@ -1419,6 +2040,73 @@ describe("app page route wiring helpers", () => {
     const errorBoundary = findElementByTypeName(elements["route:/docs/intro"], "ErrorBoundary");
 
     expect(errorBoundary?.props.resetKey).toBe("slug|intro|d");
+  });
+
+  it("nests user global errors inside the default global error fallback", () => {
+    function UserGlobalError() {
+      return createElement("p", null, "User global error");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      globalErrorModule: { default: UserGlobalError },
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/",
+      rootNotFoundModule: null,
+    });
+
+    const routeEntry = elements["route:/"];
+    const outerBoundary = findElementByTypeName(routeEntry, "GlobalErrorBoundary");
+    const userBoundary = findElementByTypeName(outerBoundary?.props.children, "ErrorBoundary");
+
+    expect(getElementTypeName(outerBoundary?.props.fallback)).toBe("DefaultGlobalError");
+    expect(userBoundary?.props.fallback).toBe(UserGlobalError);
+  });
+
+  it("installs the default global error boundary without a user global error", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams: (params) => Promise.resolve(params),
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/",
+      rootNotFoundModule: null,
+    });
+
+    const outerBoundary = findElementByTypeName(elements["route:/"], "GlobalErrorBoundary");
+    expect(getElementTypeName(outerBoundary?.props.fallback)).toBe("DefaultGlobalError");
   });
 
   it("interleaves templates with their corresponding layouts", async () => {

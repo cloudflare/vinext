@@ -18,6 +18,7 @@ import type {
   GraphVersion,
   RouteManifest,
   RouteManifestRoute,
+  RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
 function route(input: {
@@ -26,6 +27,7 @@ function route(input: {
   paramNames?: readonly string[];
   pattern: string;
   patternParts: readonly string[];
+  slotIds?: readonly string[];
 }): RouteManifestRoute {
   return {
     id: input.id,
@@ -38,12 +40,15 @@ function route(input: {
     rootBoundaryId: null,
     rootParamNames: [],
     routeHandlerId: null,
-    slotIds: [],
+    slotIds: [...(input.slotIds ?? [])],
     templateIds: [],
   };
 }
 
-function manifest(routes: readonly RouteManifestRoute[]): RouteManifest {
+function manifest(
+  routes: readonly RouteManifestRoute[],
+  slotBindings: readonly RouteManifestSlotBinding[] = [],
+): RouteManifest {
   return {
     graphVersion: "graph:test" as GraphVersion,
     segmentGraph: {
@@ -56,7 +61,7 @@ function manifest(routes: readonly RouteManifestRoute[]): RouteManifest {
       rootBoundaries: new Map(),
       routeHandlers: new Map(),
       routes: new Map(routes.map((entry) => [entry.id, entry])),
-      slotBindings: new Map(),
+      slotBindings: new Map(slotBindings.map((entry) => [entry.id, entry])),
       slots: new Map(),
       templates: new Map(),
     },
@@ -134,6 +139,33 @@ function createBlogLoadingShellElements(): AppElements {
   };
 }
 
+function staticSettingsManifest(): RouteManifest {
+  return manifest([
+    route({
+      id: "route:/settings",
+      isDynamic: false,
+      pattern: "/settings",
+      patternParts: ["settings"],
+    }),
+  ]);
+}
+
+function createSettingsLoadingShellElements(): AppElements {
+  const routeId = AppElementsWire.encodeRouteId("/settings", null);
+  const pageId = AppElementsWire.encodePageId("/settings", null);
+  return {
+    ...AppElementsWire.createMetadataEntries({
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId,
+    }),
+    [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+    [pageId]: null,
+    [routeId]: createElement("p", { id: "loading-message" }, "Loading settings..."),
+  };
+}
+
 describe("App Router optimistic routing", () => {
   it("matches dynamic route params while keeping static siblings authoritative", () => {
     const routes = blogManifest();
@@ -156,6 +188,44 @@ describe("App Router optimistic routing", () => {
         routeManifest: routes,
       })?.route.id,
     ).toBe("route:/blog/featured");
+  });
+
+  it("preserves dynamic route param key order", () => {
+    const twoSegment = manifest([
+      route({
+        id: "route:/:category/:id",
+        isDynamic: true,
+        paramNames: ["category", "id"],
+        pattern: "/:category/:id",
+        patternParts: [":category", ":id"],
+      }),
+    ]);
+
+    const twoMatch = matchOptimisticRouteManifestRoute({
+      basePath: "",
+      href: "/electronics/123",
+      routeManifest: twoSegment,
+    });
+    expect(twoMatch).not.toBeNull();
+    expect(Object.keys(twoMatch!.params)).toEqual(["category", "id"]);
+
+    const threeSegment = manifest([
+      route({
+        id: "route:/:a/:b/:c",
+        isDynamic: true,
+        paramNames: ["a", "b", "c"],
+        pattern: "/:a/:b/:c",
+        patternParts: [":a", ":b", ":c"],
+      }),
+    ]);
+
+    const threeMatch = matchOptimisticRouteManifestRoute({
+      basePath: "",
+      href: "/x/y/z",
+      routeManifest: threeSegment,
+    });
+    expect(threeMatch).not.toBeNull();
+    expect(Object.keys(threeMatch!.params)).toEqual(["a", "b", "c"]);
   });
 
   it("does not fall through from a known static subtree to a catch-all sibling", () => {
@@ -211,6 +281,119 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("includes active parallel slot params in optimistic navigation payloads", () => {
+    // Mirrors the immediate pre-dynamic-render assertion in Next.js:
+    // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    const slotId = "slot:/[teamID]/@slot";
+    const routeManifest = manifest(
+      [
+        route({
+          id: "route:/:teamID/sub/:folder",
+          isDynamic: true,
+          paramNames: ["teamID", "folder"],
+          pattern: "/:teamID/sub/:folder",
+          patternParts: [":teamID", "sub", ":folder"],
+          slotIds: [slotId],
+        }),
+      ],
+      [
+        {
+          defaultId: null,
+          id: "route:/:teamID/sub/:folder::slot:/[teamID]/@slot",
+          ownerLayoutId: "layout:/[teamID]",
+          routeId: "route:/:teamID/sub/:folder",
+          routeSegments: ["[...catchAll]"],
+          slotId,
+          slotParamNames: ["teamID", "catchAll"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          state: "active",
+        },
+      ],
+    );
+    const elements = createBlogLoadingShellElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/vercel/sub/folder.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const navigationPayload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/vercel/sub/other-folder",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+
+    expect(navigationPayload?.params).toEqual({
+      teamID: "vercel",
+      folder: "other-folder",
+      catchAll: ["sub", "other-folder"],
+    });
+  });
+
+  it("learns optimistic templates from an implicit children slot", () => {
+    const childrenSlotId = "slot:children:/blog";
+    const routeManifest = manifest([
+      route({
+        id: "route:/blog/:slug",
+        isDynamic: true,
+        paramNames: ["slug"],
+        pattern: "/blog/:slug",
+        patternParts: ["blog", ":slug"],
+        slotIds: [childrenSlotId],
+      }),
+    ]);
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/blog"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [childrenSlotId]: createElement("article", null, "Post 1"),
+      [routeId]: createElement(
+        Suspense,
+        { fallback: createElement("p", null, "Loading") },
+        createElement("main", null, "Route"),
+      ),
+    };
+
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template?.pageElementIds).toEqual([childrenSlotId]);
+    expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
+      elements[childrenSlotId],
+    );
   });
 
   it("does not learn routes without a loading boundary", () => {
@@ -291,6 +474,48 @@ describe("App Router optimistic routing", () => {
       pageElementIds: [AppElementsWire.encodePageId("/blog/post-1", null)],
       routeId: "route:/blog/:slug",
     });
+  });
+
+  it("learns static route templates from loading-shell prefetch payloads", () => {
+    const routeManifest = staticSettingsManifest();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: createSettingsLoadingShellElements(),
+      href: "/settings.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    expect(template).toMatchObject<Partial<OptimisticRouteTemplate>>({
+      pageElementIds: [AppElementsWire.encodePageId("/settings", null)],
+      routeId: "route:/settings",
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const navigationPayload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/settings?tab=billing",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+
+    expect(navigationPayload?.params).toEqual({});
+    expect(navigationPayload?.template).toBe(template);
   });
 
   it("keeps learned templates distinct across mounted slot headers", () => {

@@ -53,6 +53,7 @@ export type TestServerResult = {
 export async function startFixtureServer(
   fixtureDir: string,
   opts?: {
+    appDir?: string | null;
     appRouter?: boolean;
     listen?: boolean;
     server?: {
@@ -67,7 +68,19 @@ export async function startFixtureServer(
   // Pass appDir explicitly since tests run with configFile: false and
   // cwd may not be the fixture directory.
   // Note: opts.appRouter is accepted but unused — vinext auto-detects.
-  const plugins = [vinext({ appDir: fixtureDir })];
+  let plugin: ReturnType<typeof vinext>;
+  if (opts?.appDir === null) {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(fixtureDir);
+      plugin = vinext();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  } else {
+    plugin = vinext({ appDir: opts?.appDir ?? fixtureDir });
+  }
+  const plugins = [plugin];
 
   const server = await createServer({
     root: fixtureDir,
@@ -98,6 +111,25 @@ export async function startFixtureServer(
   }
 
   return { server, baseUrl };
+}
+
+// ── Config helpers ────────────────────────────────────────────
+
+/**
+ * Normalize a config-hook `resolve.alias` value to a find→replacement record.
+ * vinext emits alias entry arrays (so tsconfig-derived entries can carry a
+ * customResolver); tests assert on the object view.
+ */
+export function aliasEntriesToRecord(alias: unknown): Record<string, string> {
+  if (Array.isArray(alias)) {
+    return Object.fromEntries(
+      alias.map((entry: { find: string | RegExp; replacement: string }) => [
+        String(entry.find),
+        entry.replacement,
+      ]),
+    );
+  }
+  return (alias ?? {}) as Record<string, string>;
 }
 
 // ── Fetch helpers ─────────────────────────────────────────────
@@ -152,7 +184,21 @@ export async function createIsolatedFixture(
 
   const resolvedNodeModules =
     nodeModulesDir ?? path.resolve(import.meta.dirname, "../node_modules");
-  await fs.symlink(resolvedNodeModules, path.join(tmpDir, "node_modules"), "junction");
+  const nodeModulesLink = path.join(tmpDir, "node_modules");
+  // Prefer a directory symlink over a junction. When the source node_modules
+  // contains pnpm's relative symlinks that climb out of it (e.g. a nested
+  // package's `react` → `../../../../node_modules/.pnpm/...`), Windows resolves
+  // those escaping `..` segments against a junction's mount path — landing
+  // outside the real tree so resolution fails — but against a dir symlink's real
+  // target, which resolves correctly. Fall back to a junction where creating a
+  // symlink isn't permitted (Windows without the privilege); there the escaping
+  // case is unsupported, but the common non-escaping node_modules still works.
+  // On POSIX the type argument is ignored, so this is always a plain symlink.
+  try {
+    await fs.symlink(resolvedNodeModules, nodeModulesLink, "dir");
+  } catch {
+    await fs.symlink(resolvedNodeModules, nodeModulesLink, "junction");
+  }
 
   return tmpDir;
 }
@@ -215,7 +261,7 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
       outDir: serverOutDir,
       emptyOutDir: true,
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: {
+      rolldownOptions: {
         output: { entryFileNames: "entry.js" },
       },
     },

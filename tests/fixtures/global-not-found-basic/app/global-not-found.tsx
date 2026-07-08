@@ -4,6 +4,13 @@
 // `global-not-found.tsx` owns its own <html>/<body>. When present, vinext
 // renders this module standalone for route-miss 404s, replacing the root
 // layout (see createAppFallbackRenderer in app-fallback-renderer.ts).
+//
+// red.css is imported here so we can assert global-not-found CSS overrides
+// the root layout's CSS — the global-not-found document fully replaces the
+// layout, so its CSS link must appear after any layout CSS that may still
+// be served (or, ideally, instead of it). Mirrors:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/initial-css-order/app/global-not-found.tsx
+import "./red.css";
 
 export default function GlobalNotFound() {
   return (

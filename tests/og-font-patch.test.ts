@@ -48,9 +48,9 @@ let fakeOgDistDir: string;
 
 beforeAll(async () => {
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "og-font-patch-test-"));
-  fakeOgDistDir = path.join(tmpDir, "node_modules/@vercel/og/dist");
+  fakeOgDistDir = path.posix.join(tmpDir, "node_modules/@vercel/og/dist");
   await fsp.mkdir(fakeOgDistDir, { recursive: true });
-  await fsp.writeFile(path.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
+  await fsp.writeFile(path.posix.join(fakeOgDistDir, "resvg.wasm"), Buffer.from("fake-resvg-wasm"));
 });
 
 afterAll(async () => {
@@ -91,7 +91,7 @@ describe("vinext:og-font-patch plugin", () => {
       const result = transform.call(
         plugin,
         fakeEdgeEntry(FAKE_YOGA_B64),
-        path.join(fakeOgDistDir, "index.edge.js"),
+        path.posix.join(fakeOgDistDir, "index.edge.js"),
       );
       if (!result) throw new Error("Expected transform to produce output, got null");
       code = result.code;
@@ -105,11 +105,21 @@ describe("vinext:og-font-patch plugin", () => {
         expect(code).toContain(".catch(");
       });
 
-      it("inlines the yoga WASM bytes as a base64 Node.js fallback", () => {
-        // The base64 must be embedded so Node.js (where ?module imports fail)
-        // can WebAssembly.instantiate from the inlined bytes.
-        expect(code).toContain(FAKE_YOGA_B64);
+      it("reads yoga.wasm from disk on the Node.js fallback (no base64 inline)", () => {
+        // The Node.js fallback (where ?module imports fail) must read the .wasm
+        // file from disk and instantiate it — NOT inline a ~95 KiB base64 blob.
+        // This keeps exactly one physical copy of the WASM in the output.
+        expect(code).not.toContain(FAKE_YOGA_B64);
+        expect(code).toContain('new URL("./yoga.wasm", import.meta.url)');
+        expect(code).toContain("node:fs");
         expect(code).toContain("WebAssembly.instantiate");
+      });
+
+      it("does not reference new URL(yoga.wasm) at top level (workerd compat)", () => {
+        // In workerd, import.meta.url is "worker" — a top-level new URL(...) would
+        // throw TypeError at module load. The reference must live in the Node.js
+        // fallback branch only.
+        expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/yoga\.wasm"/m);
       });
 
       it("clears the inlined emscripten data URL (avoids loading bytes twice)", () => {
@@ -153,14 +163,18 @@ describe("vinext:og-font-patch plugin", () => {
   // conflicting with the shared transform above.
 
   it("writes yoga.wasm to disk at transform time", () => {
-    const writeDistDir = path.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
+    const writeDistDir = path.posix.join(tmpDir, "write-test/node_modules/@vercel/og/dist");
     fs.mkdirSync(writeDistDir, { recursive: true });
 
     const plugin = createOgFontPatchPlugin();
     const transform = unwrapHook(plugin.transform);
-    transform.call(plugin, fakeEdgeEntry(FAKE_YOGA_B64), path.join(writeDistDir, "index.edge.js"));
+    transform.call(
+      plugin,
+      fakeEdgeEntry(FAKE_YOGA_B64),
+      path.posix.join(writeDistDir, "index.edge.js"),
+    );
 
-    const yogaPath = path.join(writeDistDir, "yoga.wasm");
+    const yogaPath = path.posix.join(writeDistDir, "yoga.wasm");
     expect(fs.existsSync(yogaPath)).toBe(true);
     expect(fs.readFileSync(yogaPath)).toEqual(Buffer.from(FAKE_YOGA_B64, "base64"));
   });

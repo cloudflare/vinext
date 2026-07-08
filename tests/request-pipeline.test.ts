@@ -3,6 +3,7 @@ import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   createStaticFileSignal,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
@@ -14,10 +15,15 @@ import {
   resolvePublicFileRoute,
   validateCsrfOrigin,
   validateServerActionPayload,
-  validateImageUrl,
   processMiddlewareHeaders,
+  VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/server/middleware-request-headers.js";
+import {
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 
@@ -438,6 +444,56 @@ describe("normalizeTrailingSlash", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(404);
   });
+
+  // Regression coverage for issue #1979 — the Location is built from the
+  // already percent-decoded pathname. A character above U+00FF (e.g. a CJK
+  // slug) makes `new Response(..., { headers: { Location } })` throw
+  // TypeError 'Cannot convert argument to a ByteString' in Workers/undici,
+  // which surfaces as a 500 instead of a 308. Latin-1 chars like spaces do
+  // not throw but emit a malformed, un-percent-encoded Location.
+  // Refs cloudflare/vinext#1979
+  it("percent-encodes non-Latin-1 pathnames in the Location instead of throwing", () => {
+    const res = normalizeTrailingSlash("/日本", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%E6%97%A5%E6%9C%AC/");
+  });
+
+  it("percent-encodes spaces in the redirect Location", () => {
+    const res = normalizeTrailingSlash("/about us", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/about%20us/");
+  });
+
+  // The pathname reaches us with path delimiters already re-encoded
+  // (encodePathDelimiters in routing/utils.ts turns `# ? / \` into
+  // `%23 %3F %2F %5C`). The redirect encoder must NOT re-encode the `%`
+  // of those sequences, otherwise `/foo%23bar` becomes `/foo%2523bar`.
+  it("does not double-encode already-encoded delimiters in the Location", () => {
+    const res = normalizeTrailingSlash("/foo%23bar", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/foo%23bar/");
+  });
+
+  // Astral characters (emoji) are surrogate pairs in UTF-16; the encoder
+  // must treat them as whole code points, not encode each surrogate half.
+  it("percent-encodes astral characters (emoji) without mangling surrogates", () => {
+    const res = normalizeTrailingSlash("/😀", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%F0%9F%98%80/");
+  });
+
+  // Printable-ASCII characters that RFC 3986 forbids raw in a path (e.g. `<>"`)
+  // must be percent-encoded in the Location, not echoed verbatim.
+  it("percent-encodes reserved ASCII characters that are invalid raw in a path", () => {
+    const res = normalizeTrailingSlash('/a<b>"c', "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/a%3Cb%3E%22c/");
+  });
 });
 
 // ── validateCsrfOrigin ──────────────────────────────────────────────────
@@ -587,45 +643,57 @@ describe("validateServerActionPayload", () => {
     expect(res!.status).toBe(400);
     await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
-});
 
-// ── validateImageUrl ────────────────────────────────────────────────────
+  it("validates the first hex chunk id in container references with path suffixes", async () => {
+    for (const reference of ["$Q1:x", "$W1:0:name", "$i1:value"]) {
+      const body = new FormData();
+      body.set("0", JSON.stringify([reference]));
 
-describe("validateImageUrl", () => {
-  const requestUrl = "http://localhost:3000/page";
-
-  it("returns the normalized image URL for valid relative paths", () => {
-    expect(validateImageUrl("/images/photo.png", requestUrl)).toBe("/images/photo.png");
+      const res = await validateServerActionPayload(body);
+      expect(res?.status).toBe(400);
+      await expect(res?.text()).resolves.toBe("Invalid server action payload");
+    }
   });
 
-  it("returns 400 for missing url parameter", () => {
-    const res = validateImageUrl(null, requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("validates the first duplicate numeric field instead of overwriting it", async () => {
+    const body = new FormData();
+    body.append("0", '["$Q1"]');
+    body.append("0", "[]");
+
+    const res = await validateServerActionPayload(body);
+    expect(res?.status).toBe(400);
+    await expect(res?.text()).resolves.toBe("Invalid server action payload");
   });
 
-  it("returns 400 for empty string", () => {
-    const res = validateImageUrl("", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("allows duplicate numeric user fields when the first value has no container reference", async () => {
+    const body = new FormData();
+    body.append("0", "first checkbox");
+    body.append("0", "second checkbox");
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
   });
 
-  it("returns 400 for absolute URLs", () => {
-    const res = validateImageUrl("http://evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+  it("rejects deeply nested acyclic graphs without overflowing the call stack", async () => {
+    const body = new FormData();
+    const fieldCount = 10_000;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
 
-  it("returns 400 for protocol-relative URLs", () => {
-    const res = validateImageUrl("//evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
-  });
+  it("allows valid container graphs below the depth limit", async () => {
+    const body = new FormData();
+    const fieldCount = 128;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
 
-  it("normalizes backslashes and blocks protocol-relative variants", () => {
-    const res = validateImageUrl("/\\evil.com/image.png", requestUrl);
-    expect(res).toBeInstanceOf(Response);
-    expect((res as Response).status).toBe(400);
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
   });
 });
 
@@ -652,6 +720,16 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.has("x-middleware-request-x-custom")).toBe(false);
     expect(headers.has("x-middleware-rewrite")).toBe(false);
     expect(headers.get("content-type")).toBe("text/html");
+  });
+
+  it("preserves x-middleware-cache response opt-outs", () => {
+    const headers = new Headers({
+      "x-middleware-cache": "no-cache",
+      "x-middleware-next": "1",
+    });
+    processMiddlewareHeaders(headers);
+    expect(headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(headers.has("x-middleware-next")).toBe(false);
   });
 
   it("is a no-op when no x-middleware-* headers are present", () => {
@@ -716,6 +794,33 @@ describe("filterInternalHeaders", () => {
     }
     expect(result.get("user-agent")).toBe("test");
     expect(result.get("cookie")).toBe("session=abc");
+  });
+
+  it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
+    const headers = new Headers({
+      [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
+      [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
+      [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      "user-agent": "test",
+    });
+
+    const result = filterInternalHeaders(headers);
+
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+    expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+      VINEXT_PRERENDER_SPECULATIVE_HEADER,
+      VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+    ]);
+    for (const name of VINEXT_INTERNAL_HEADERS) {
+      expect(name).toBe(name.toLowerCase());
+    }
+    expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
+    expect(result.get("user-agent")).toBe("test");
   });
 
   it("strips headers case-insensitively", () => {
@@ -910,5 +1015,59 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.method).toBe("GET");
     expect(cloned.body).toBeNull();
     expect(cloned.headers.get("accept")).toBe("text/html");
+  });
+});
+
+// ── cloneRequestWithUrl ──────────────────────────────────────────────────
+//
+// Used to hide the internal `_rsc` cache-busting query from userland middleware
+// without dropping Workers `cf` metadata or throwing on bodied requests (which a
+// bare `new Request(url, request)` would do on Node/undici without `duplex`).
+
+describe("cloneRequestWithUrl", () => {
+  it("overrides the URL", () => {
+    const original = new Request("http://localhost/path?_rsc=abc&keep=1");
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path?keep=1");
+    expect(cloned.url).toBe("http://localhost/path?keep=1");
+  });
+
+  it("preserves method and headers", () => {
+    const original = new Request("http://localhost/path?_rsc=abc", {
+      method: "GET",
+      headers: new Headers({ "x-keep": "yes" }),
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.method).toBe("GET");
+    expect(cloned.headers.get("x-keep")).toBe("yes");
+  });
+
+  it("preserves cf property when defined via Object.defineProperty", () => {
+    const original = new Request("http://localhost/path?_rsc=abc");
+    Object.defineProperty(original, "cf", {
+      value: { country: "US" },
+      enumerable: true,
+      configurable: true,
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("preserves body readability for streaming requests", async () => {
+    const bodyText = "hello world";
+    const original = new Request("http://localhost/path?_rsc=abc", {
+      method: "POST",
+      body: bodyText,
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.method).toBe("POST");
+    expect(cloned.url).toBe("http://localhost/path");
+    const text = await cloned.text();
+    expect(text).toBe(bodyText);
+  });
+
+  it("preserves redirect mode", () => {
+    const original = new Request("http://localhost/path?_rsc=abc", { redirect: "manual" });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.redirect).toBe("manual");
   });
 });

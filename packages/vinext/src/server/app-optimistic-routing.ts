@@ -1,8 +1,9 @@
 import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
@@ -136,15 +137,16 @@ function matchNode(
   node: OptimisticRouteTrieNode,
   urlParts: readonly string[],
   index: number,
+  entries: Array<[string, string | string[]]>,
 ): OptimisticRouteMatch | null {
   if (index === urlParts.length) {
     if (node.route !== null) {
-      return { route: node.route, params: Object.create(null) };
+      return { route: node.route, params: buildParams(entries) };
     }
     if (node.optionalCatchAllChild !== null) {
       return {
         route: node.optionalCatchAllChild.route,
-        params: Object.create(null),
+        params: buildParams(entries),
       };
     }
     return null;
@@ -156,32 +158,27 @@ function matchNode(
     // Static children are authoritative for optimistic routing. If a known
     // static subtree does not contain the remaining URL, do not fall through to
     // a catch-all sibling and render the wrong loading boundary.
-    return matchNode(staticChild, urlParts, index + 1);
+    return matchNode(staticChild, urlParts, index + 1, entries);
   }
 
   if (node.dynamicChild !== null) {
-    const match = matchNode(node.dynamicChild.node, urlParts, index + 1);
-    if (match === null) return null;
-    match.params[node.dynamicChild.paramName] = segment;
-    return match;
+    entries.push([node.dynamicChild.paramName, segment]);
+    const match = matchNode(node.dynamicChild.node, urlParts, index + 1, entries);
+    if (match !== null) return match;
+    entries.pop();
   }
 
   if (node.catchAllChild !== null) {
-    return {
-      route: node.catchAllChild.route,
-      params: {
-        [node.catchAllChild.paramName]: urlParts.slice(index),
-      },
-    };
+    const params = buildParams(entries);
+    params[node.catchAllChild.paramName] = urlParts.slice(index);
+    return { route: node.catchAllChild.route, params };
   }
 
+  // At this point index < urlParts.length, so remaining always has ≥1 segment.
   if (node.optionalCatchAllChild !== null) {
-    return {
-      route: node.optionalCatchAllChild.route,
-      params: {
-        [node.optionalCatchAllChild.paramName]: urlParts.slice(index),
-      },
-    };
+    const params = buildParams(entries);
+    params[node.optionalCatchAllChild.paramName] = urlParts.slice(index);
+    return { route: node.optionalCatchAllChild.route, params };
   }
 
   return null;
@@ -209,11 +206,55 @@ export function matchOptimisticRouteManifestRoute(options: {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
 
-  const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0);
+  const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0, []);
   if (match === null) return null;
 
   decodeMatchedParams(match.params);
   return match;
+}
+
+function mergeParams(
+  target: Record<string, string | string[]>,
+  source: Record<string, string | string[]>,
+): void {
+  for (const [key, value] of Object.entries(source)) {
+    target[key] = value;
+  }
+}
+
+function resolveOptimisticNavigationParams(options: {
+  match: OptimisticRouteMatch;
+  routeManifest: RouteManifest;
+  urlParts: readonly string[];
+}): Record<string, string | string[]> {
+  const navigationParams: Record<string, string | string[]> = { ...options.match.params };
+
+  for (const binding of options.routeManifest.segmentGraph.slotBindings.values()) {
+    // Unlike the server-side resolveSlotParamOverrides, this loop doesn't skip
+    // slots whose slotParamNames are all already route params. That's a no-op
+    // merge in practice (identical values) but keeps client-side logic simpler.
+    if (binding.routeId !== options.match.route.id || binding.state !== "active") {
+      continue;
+    }
+
+    const patternParts = binding.slotPatternParts;
+    if (!patternParts) {
+      continue;
+    }
+
+    // Slot params are decoded once (from urlParts via splitPathnameForRouteMatch),
+    // matching the server-side resolveSlotParamOverrides decode pass. Route params
+    // are decoded a second time via decodeMatchedParams(match.params) above — a
+    // pre-existing asymmetry that has no practical effect for normal segments but
+    // means an encoded catch-all (%25/%2F) could differ between route and slot
+    // params in the same payload. TODO: converge the decode passes.
+    const matched = matchRoutePattern(options.urlParts, patternParts);
+    if (matched) {
+      mergeParams(navigationParams, matched);
+    }
+  }
+
+  return navigationParams;
 }
 
 function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
@@ -233,10 +274,26 @@ function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
   return elementHasSuspenseFallback(Reflect.get(props, "children"), depth + 1);
 }
 
-function getPageElementIds(elements: AppElements): string[] {
-  return Object.keys(elements)
-    .filter((key) => AppElementsWire.parseElementKey(key)?.kind === "page")
-    .sort();
+function getPageElementIds(
+  elements: AppElements,
+  route: Pick<RouteManifestRoute, "pageId" | "slotIds">,
+): string[] {
+  const pageElementIds = new Set<string>();
+  if (route.pageId && Object.hasOwn(elements, route.pageId)) {
+    pageElementIds.add(route.pageId);
+  }
+  for (const slotId of route.slotIds) {
+    const parsed = AppElementsWire.parseElementKey(slotId);
+    if (parsed?.kind === "slot" && parsed.name === "children" && Object.hasOwn(elements, slotId)) {
+      pageElementIds.add(slotId);
+    }
+  }
+  for (const key of Object.keys(elements)) {
+    if (AppElementsWire.parseElementKey(key)?.kind === "page") {
+      pageElementIds.add(key);
+    }
+  }
+  return Array.from(pageElementIds).sort();
 }
 
 function OptimisticRouteSegment(): null {
@@ -257,7 +314,7 @@ export function createOptimisticRouteTemplate(options: {
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || !match.route.isDynamic) return null;
+  if (match === null || (!options.allowLoadingShell && !match.route.isDynamic)) return null;
   if (options.interceptionContext !== null) return null;
 
   const metadata = AppElementsWire.readMetadata(options.elements);
@@ -280,7 +337,7 @@ export function createOptimisticRouteTemplate(options: {
   if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
     return null;
 
-  const pageElementIds = getPageElementIds(options.elements);
+  const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
 
   return {
@@ -309,12 +366,15 @@ export function resolveOptimisticNavigationPayload(options: {
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;
 
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
+
   const match = matchOptimisticRouteManifestRoute({
     basePath: options.basePath,
     href: options.href,
     routeManifest: options.routeManifest,
   });
-  if (match === null || !match.route.isDynamic) return null;
+  if (match === null) return null;
 
   const template = options.templates.get(
     getOptimisticRouteTemplateKey({
@@ -328,7 +388,11 @@ export function resolveOptimisticNavigationPayload(options: {
 
   return {
     elements: createOptimisticRouteElements(template),
-    params: match.params,
+    params: resolveOptimisticNavigationParams({
+      match,
+      routeManifest: options.routeManifest,
+      urlParts,
+    }),
     template,
   };
 }

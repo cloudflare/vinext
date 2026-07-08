@@ -13,7 +13,10 @@ import Head, {
   getSSRHeadHTML,
   escapeAttr,
   reduceHeadChildren,
+  setDocumentInitialHead,
   _applyHeadPropsToElement,
+  _syncClientHead,
+  _clientHeadChildren,
 } from "../packages/vinext/src/shims/head.js";
 
 // ─── SSR rendering (mirrors Next.js test/unit/next-head-rendering.test.ts) ──
@@ -61,7 +64,7 @@ describe("Head SSR collection", () => {
     expect(headHtml).toContain("<title");
     expect(headHtml).toContain("My Page Title");
     expect(headHtml).toContain("</title>");
-    expect(headHtml).toContain('data-vinext-head="true"');
+    expect(headHtml).toContain('data-next-head=""');
   });
 
   it("collects meta elements as self-closing", () => {
@@ -173,9 +176,15 @@ describe("Head SSR collection", () => {
     expect(headHtml).not.toContain("Page 1");
   });
 
-  it("returns empty string when no head elements", () => {
+  it("returns only default charset/viewport when no user head elements", () => {
+    // Even without any user `<Head>`, vinext emits next/head's defaultHead()
+    // (charset + viewport) to match Next.js's canonical head ordering.
     const headHtml = getSSRHeadHTML();
-    expect(headHtml).toBe("");
+    expect(headHtml).toContain('<meta charset="utf-8"');
+    expect(headHtml).toContain('<meta name="viewport"');
+    // No other tags.
+    expect(headHtml).not.toContain("<title");
+    expect(headHtml).not.toContain("<link");
   });
 
   it("dedupes keyed tags across multiple Head instances and keeps the last one", () => {
@@ -305,7 +314,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).not.toContain("<div");
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain("bad");
     warn.mockRestore();
   });
 
@@ -316,7 +325,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).not.toContain("<iframe");
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain("evil.com");
     warn.mockRestore();
   });
 
@@ -329,7 +338,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     // Component elements are ignored because child.type is not a string
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain('name="custom"');
   });
 
   it("keeps allowed tags while ignoring disallowed ones", () => {
@@ -531,6 +540,29 @@ describe("Head client sync", () => {
     expect(element.textContent).toBe("abc");
     expect(element.innerHTML).toBe("");
   });
+
+  it("maps JSX attribute names to HTML form when applying to DOM", () => {
+    // The SSR path emits `<meta http-equiv="..." />` (hyphenated). The client
+    // path must use the same mapping or hydration will mismatch. setAttribute
+    // is case-insensitive for HTML elements, so `charSet` would lowercase to
+    // `charset` by coincidence — but `httpEquiv` would become `httpequiv`
+    // (no hyphen), not `http-equiv`.
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, {
+      httpEquiv: "X-UA-Compatible",
+      content: "IE=edge",
+    });
+    expect(element.attributes.get("http-equiv")).toBe("X-UA-Compatible");
+    expect(element.attributes.get("httpEquiv")).toBeUndefined();
+    expect(element.attributes.get("content")).toBe("IE=edge");
+  });
+
+  it("maps JSX charSet attribute to HTML charset when applying to DOM", () => {
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, { charSet: "utf-8" });
+    expect(element.attributes.get("charset")).toBe("utf-8");
+    expect(element.attributes.get("charSet")).toBeUndefined();
+  });
 });
 
 // ─── escapeAttr utility ─────────────────────────────────────────────────
@@ -554,5 +586,400 @@ describe("escapeAttr", () => {
 
   it("escapes all special chars together", () => {
     expect(escapeAttr('&"<>')).toBe("&amp;&quot;&lt;&gt;");
+  });
+});
+
+// ─── charset / viewport ordering (issue #1569) ─────────────────────────────
+//
+// Mirrors Next.js's test/e2e/next-head/index.test.ts assertion that
+// `<meta charset>` is emitted first, then `<meta viewport>`, then user tags,
+// all carrying `data-next-head=""`. Next.js's `defaultHead()` in
+// shared/lib/head.tsx is what seeds those defaults — vinext must include the
+// same defaults via getSSRHeadHTML().
+
+describe("Head default tags (charset/viewport ordering, issue #1569)", () => {
+  beforeEach(() => {
+    resetSSRHead();
+    setDocumentInitialHead([]);
+  });
+
+  it("emits charset first, then viewport, before user tags", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "test-head-1", content: "hello" }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    const charsetIdx = html.indexOf('charset="utf-8"');
+    const viewportIdx = html.indexOf('name="viewport"');
+    const userIdx = html.indexOf('name="test-head-1"');
+
+    expect(charsetIdx).toBeGreaterThanOrEqual(0);
+    expect(viewportIdx).toBeGreaterThan(charsetIdx);
+    expect(userIdx).toBeGreaterThan(viewportIdx);
+  });
+
+  it("default tags carry data-next-head attribute", () => {
+    const html = getSSRHeadHTML();
+    // Match the segment from the charset tag through the next "/>"
+    const charsetMatch = html.match(/<meta charset="utf-8"[^/]*\/>/);
+    expect(charsetMatch).not.toBeNull();
+    expect(charsetMatch?.[0]).toContain('data-next-head=""');
+
+    const viewportMatch = html.match(/<meta name="viewport"[^/]*\/>/);
+    expect(viewportMatch).not.toBeNull();
+    expect(viewportMatch?.[0]).toContain('data-next-head=""');
+  });
+
+  it("user-supplied charset overrides the default (charSet meta-type dedupe)", () => {
+    // charSet is special: META_TYPES dedupe always treats it as unique-only,
+    // so any user-supplied charset replaces the default regardless of key.
+    ReactDOMServer.renderToString(
+      React.createElement(Head, null, React.createElement("meta", { charSet: "utf-16" })),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('charset="utf-16"');
+    expect(html).not.toContain('charset="utf-8"');
+  });
+
+  it("user-supplied viewport with key='viewport' overrides the default", () => {
+    // The default viewport carries `key="viewport"`. User tags must use the
+    // same key to dedupe — matches Next.js's `key`-based merge semantics.
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=500",
+          key: "viewport",
+        }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('content="width=500"');
+    expect(html).not.toContain('content="width=device-width"');
+  });
+
+  it("emits defaults even when no user <Head> is mounted", () => {
+    const html = getSSRHeadHTML();
+    expect(html).toContain('<meta charset="utf-8"');
+    expect(html).toContain('<meta name="viewport"');
+  });
+});
+
+// ─── _document.getInitialProps() head merge (issue #1569) ──────────────────
+//
+// Mirrors Next.js's test/e2e/next-head/index.test.ts assertion that head tags
+// returned from a user `_document.getInitialProps()` appear in the rendered
+// `<head>`. vinext's SSR pipeline forwards them to the head shim via
+// setDocumentInitialHead() so they flow through the same dedupe pipeline.
+
+describe("Head _document.getInitialProps() merge (issue #1569)", () => {
+  beforeEach(() => {
+    resetSSRHead();
+    setDocumentInitialHead([]);
+  });
+
+  it("includes meta tags returned by setDocumentInitialHead in the output", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "test-head-1", content: "hello" }),
+      ),
+    );
+    setDocumentInitialHead([
+      React.createElement("meta", { name: "test-head-initial-props", content: "hello" }),
+    ]);
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('name="test-head-initial-props"');
+    expect(html).toContain('content="hello"');
+    // The user's next/head tag still appears.
+    expect(html).toContain('name="test-head-1"');
+  });
+
+  it("resets between renders so initial-props head does not leak", () => {
+    setDocumentInitialHead([
+      React.createElement("meta", { name: "leaked", content: "should-be-gone" }),
+    ]);
+    expect(getSSRHeadHTML()).toContain('name="leaked"');
+
+    resetSSRHead();
+
+    expect(getSSRHeadHTML()).not.toContain('name="leaked"');
+  });
+});
+
+// ─── client hydration sync keeps defaults & order (issue #1569 / #1677) ─────
+//
+// Underlying issue #1569 was fixed for SSR by #1677; this exercises the client
+// path, which regressed: on the client, the first <Head> mount runs
+// _syncClientHead(). It must:
+//   1. keep the server-rendered charset / viewport defaults (which carry
+//      data-next-head="") — they must not vanish after hydration, and
+//   2. reconcile in place (diff via isEqualNode) rather than wipe-and-rebuild,
+//      so SSR head ordering is preserved and <meta charset> stays first.
+// This mirrors Next.js's reduceComponents() (always seeds defaultHead()) and
+// head-manager.ts updateElements() (in-place reconciliation).
+
+describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
+  // Minimal DOM double — the repo has no jsdom/happy-dom. Only the surface
+  // _syncClientHead() touches is implemented.
+  class FakeElement {
+    attributes = new Map<string, string>();
+    innerHTML = "";
+    textContent = "";
+    parentNode: FakeHead | null = null;
+    constructor(public readonly tagName: string) {}
+    setAttribute(name: string, value: string): void {
+      this.attributes.set(name, value);
+    }
+    getAttribute(name: string): string | null {
+      return this.attributes.has(name) ? this.attributes.get(name)! : null;
+    }
+    hasAttribute(name: string): boolean {
+      return this.attributes.has(name);
+    }
+    isEqualNode(other: unknown): boolean {
+      if (!(other instanceof FakeElement)) return false;
+      if (this.tagName.toLowerCase() !== other.tagName.toLowerCase()) return false;
+      if (this.attributes.size !== other.attributes.size) return false;
+      for (const [k, v] of this.attributes) {
+        if (other.attributes.get(k) !== v) return false;
+      }
+      return this.textContent === other.textContent && this.innerHTML === other.innerHTML;
+    }
+  }
+
+  class FakeHead {
+    children: FakeElement[] = [];
+    appendChild(el: FakeElement): void {
+      el.parentNode?.removeChild(el);
+      el.parentNode = this;
+      this.children.push(el);
+    }
+    prepend(el: FakeElement): void {
+      el.parentNode?.removeChild(el);
+      el.parentNode = this;
+      this.children.unshift(el);
+    }
+    removeChild(el: FakeElement): void {
+      const idx = this.children.indexOf(el);
+      if (idx >= 0) this.children.splice(idx, 1);
+      el.parentNode = null;
+    }
+    querySelectorAll(selector: string): FakeElement[] {
+      if (selector !== "[data-next-head]") return [];
+      return this.children.filter((el) => el.hasAttribute("data-next-head"));
+    }
+    querySelector(selector: string): FakeElement | null {
+      if (selector !== "meta[charset]") return null;
+      return (
+        this.children.find(
+          (el) => el.tagName.toLowerCase() === "meta" && el.hasAttribute("charset"),
+        ) ?? null
+      );
+    }
+  }
+
+  function installFakeDocument(): {
+    restore: () => void;
+    head: FakeHead;
+    createElement: (tag: string) => FakeElement;
+  } {
+    const head = new FakeHead();
+    const createElement = (tag: string) => new FakeElement(tag);
+    const fakeDocument = { createElement, head };
+    const prevDocument = (globalThis as Record<string, unknown>).document;
+    (globalThis as Record<string, unknown>).document = fakeDocument;
+    return {
+      head,
+      createElement,
+      restore: () => {
+        (globalThis as Record<string, unknown>).document = prevDocument;
+      },
+    };
+  }
+
+  // Build a server-rendered <head> matching what SSR emits for the example:
+  // charset, viewport, title (all data-next-head), followed by a modulepreload
+  // link that is NOT vinext-managed.
+  function seedServerHead(head: FakeHead, createElement: (tag: string) => FakeElement) {
+    const charset = createElement("meta");
+    charset.setAttribute("charset", "utf-8");
+    charset.setAttribute("data-next-head", "");
+    const viewport = createElement("meta");
+    viewport.setAttribute("name", "viewport");
+    viewport.setAttribute("content", "width=device-width");
+    viewport.setAttribute("data-next-head", "");
+    const title = createElement("title");
+    title.textContent = "Cloudflare Pages Router";
+    title.setAttribute("data-next-head", "");
+    const modulepreload = createElement("link");
+    modulepreload.setAttribute("rel", "modulepreload");
+    modulepreload.setAttribute("href", "/_next/static/index.js");
+    head.children.push(charset, viewport, title, modulepreload);
+    for (const el of head.children) el.parentNode = head;
+    return { charset, viewport, title, modulepreload };
+  }
+
+  beforeEach(() => {
+    _clientHeadChildren.clear();
+  });
+
+  it("preserves SSR order and reuses matching nodes (no reorder, no churn)", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      const server = seedServerHead(head, createElement);
+
+      // The page's <Head> re-declares the same title on the client.
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("title", null, "Cloudflare Pages Router"),
+      );
+      _syncClientHead();
+
+      // Order is unchanged and the exact same node instances are reused.
+      expect(head.children).toEqual([
+        server.charset,
+        server.viewport,
+        server.title,
+        server.modulepreload,
+      ]);
+      // No duplicate charset/viewport.
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.filter((el) => el.getAttribute("charset") === "utf-8")).toHaveLength(1);
+      expect(metas.filter((el) => el.getAttribute("name") === "viewport")).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("appends genuinely new tags without disturbing existing order", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      const server = seedServerHead(head, createElement);
+
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement("title", null, "Cloudflare Pages Router"),
+          React.createElement("meta", { name: "description", content: "hi" }),
+        ),
+      );
+      _syncClientHead();
+
+      // Defaults + title kept in place; the new description meta is appended.
+      const description = head.children.find((el) => el.getAttribute("name") === "description");
+      expect(description).toBeDefined();
+      expect(head.children.indexOf(server.charset)).toBe(0);
+      expect(head.children.indexOf(server.viewport)).toBe(1);
+      expect(head.children.indexOf(server.title)).toBe(2);
+      // The new tag lands after the previously-existing children.
+      expect(head.children.indexOf(description!)).toBeGreaterThan(
+        head.children.indexOf(server.modulepreload),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("removes stale vinext-managed tags that are no longer desired", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      seedServerHead(head, createElement);
+      const stale = createElement("meta");
+      stale.setAttribute("name", "stale");
+      stale.setAttribute("data-next-head", "");
+      head.appendChild(stale);
+
+      // Client <Head> declares only the title (defaults come from defaultHead()).
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("title", null, "Cloudflare Pages Router"),
+      );
+      _syncClientHead();
+
+      expect(head.children.includes(stale)).toBe(false);
+      // Defaults remain.
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.some((el) => el.getAttribute("charset") === "utf-8")).toBe(true);
+      expect(metas.some((el) => el.getAttribute("name") === "viewport")).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("prepends a newly-created <meta charset> so it stays first", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      // <head> has a non-managed script first and no charset yet.
+      const script = createElement("script");
+      script.setAttribute("src", "/a.js");
+      head.appendChild(script);
+
+      _clientHeadChildren.set(Symbol("test"), null);
+      _syncClientHead();
+
+      // defaultHead()'s charset must be prepended ahead of the script.
+      expect(head.children[0]?.tagName).toBe("meta");
+      expect(head.children[0]?.getAttribute("charset")).toBe("utf-8");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets a user key='viewport' override the default viewport on the client", () => {
+    // Mirrors the SSR override test (head.test.ts) on the client path: the
+    // default viewport carries key="viewport", so a user tag with the same key
+    // wins the dedupe in reduceHeadChildren — same precedence as Next.js.
+    const { head, restore } = installFakeDocument();
+    try {
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=500",
+          key: "viewport",
+        }),
+      );
+      _syncClientHead();
+
+      const viewports = head.children.filter(
+        (el) => el.tagName === "meta" && el.getAttribute("name") === "viewport",
+      );
+      // Exactly one viewport, and it is the user's override.
+      expect(viewports).toHaveLength(1);
+      expect(viewports[0]?.getAttribute("content")).toBe("width=500");
+      // The default charset is still emitted alongside the override.
+      expect(
+        head.children.some((el) => el.tagName === "meta" && el.getAttribute("charset") === "utf-8"),
+      ).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("emits defaults even when the client <Head> has no children", () => {
+    const { head, restore } = installFakeDocument();
+    try {
+      _clientHeadChildren.set(Symbol("test"), null);
+      _syncClientHead();
+
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.some((el) => el.getAttribute("charset") === "utf-8")).toBe(true);
+      expect(metas.some((el) => el.getAttribute("name") === "viewport")).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });

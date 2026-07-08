@@ -35,8 +35,13 @@ function createRenderer(overrides?: {
   ) => (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
   sanitizeErrorForClient?: (error: Error) => Error;
   globalNotFoundModule?: { default: React.ComponentType<any> } | null;
+  globalNotFoundEnabled?: boolean;
   rootLayoutModules?: readonly ({ default: React.ComponentType<any> } | null | undefined)[];
   rootNotFoundModule?: { default: React.ComponentType<any> } | null;
+  rscRenderer?: (
+    element: React.ReactNode | AppElements,
+    options: { onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown },
+  ) => ReadableStream<Uint8Array>;
 }) {
   const clearRequestContext = vi.fn();
   const ssrLoader = vi.fn(async () => ({
@@ -68,10 +73,14 @@ function createRenderer(overrides?: {
         },
       },
       getNavigationContext() {
-        return { pathname: "/posts/missing" };
+        return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
       },
       globalErrorModule: null,
-      globalNotFoundModule: overrides?.globalNotFoundModule ?? null,
+      globalNotFoundEnabled:
+        overrides?.globalNotFoundEnabled ?? overrides?.globalNotFoundModule != null,
+      loadGlobalNotFoundModule: overrides?.globalNotFoundModule
+        ? async () => overrides.globalNotFoundModule ?? null
+        : null,
       makeThenableParams<T>(params: T) {
         return params;
       },
@@ -85,7 +94,7 @@ function createRenderer(overrides?: {
         rootNotFoundModule: overrides?.rootNotFoundModule ?? null,
         rootUnauthorizedModule: null,
       },
-      rscRenderer: renderElementToStream,
+      rscRenderer: overrides?.rscRenderer ?? renderElementToStream,
       sanitizer: overrides?.sanitizeErrorForClient ?? ((error: Error) => error),
       ssrLoader,
     }),
@@ -218,6 +227,33 @@ describe("app fallback renderer factory", () => {
     expect(html).toContain("route:safe:secret");
   });
 
+  it("preserves sibling-intercept source pages in error boundary RSC payloads", async () => {
+    const { renderer } = createRenderer({
+      rscRenderer(element) {
+        return createStreamFromMarkup(JSON.stringify(element));
+      },
+    });
+    const response = await renderer.renderErrorBoundary(
+      {
+        error: routeErrorModule,
+        layouts: [],
+        params: {},
+        pattern: "/foo/bar",
+        routeSegments: ["foo", "bar"],
+      },
+      new Error("secret"),
+      true,
+      new Request("https://example.com/hoge"),
+      {},
+      undefined,
+      { headers: null, status: null },
+      { sourcePageSegments: ["foo", "bar", "(..)(..)hoge"] },
+    );
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+  });
+
   it("passes request to createRscOnErrorHandler at call time", async () => {
     const createRscOnErrorHandler = vi.fn(
       (_request: Request, _pathname: string, _routePath: string) => () => null,
@@ -293,6 +329,33 @@ describe("app fallback renderer factory", () => {
     expect(html).toContain('data-boundary="not-found"');
   });
 
+  it("preserves sibling-intercept source pages in HTTP fallback RSC payloads", async () => {
+    const { renderer } = createRenderer({
+      rscRenderer(element) {
+        return createStreamFromMarkup(JSON.stringify(element));
+      },
+    });
+    const response = await renderer.renderHttpAccessFallback(
+      {
+        layouts: [],
+        notFound: notFoundModule,
+        params: {},
+        pattern: "/foo/bar",
+        routeSegments: ["foo", "bar"],
+      },
+      404,
+      true,
+      new Request("https://example.com/hoge"),
+      { matchedParams: {} },
+      undefined,
+      { headers: null, status: null },
+      { sourcePageSegments: ["foo", "bar", "(..)(..)hoge"] },
+    );
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+  });
+
   it("uses opts.layouts override instead of route.layouts", async () => {
     const { renderer } = createRenderer();
     const request = new Request("https://example.com/posts/missing");
@@ -353,7 +416,10 @@ describe("app fallback renderer default global error UI", () => {
       { headers: null, status: null },
     );
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     const html = await response?.text();
 
     // 32x32 SVG warning icon (matches the test's `expect width/height === 32`).
@@ -395,7 +461,10 @@ describe("app fallback renderer default global error UI", () => {
       { headers: null, status: null },
     );
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     const html = await response?.text();
     // Server errors still render the same heading.
     expect(html).toContain("This page couldn’t load");
@@ -445,9 +514,13 @@ describe("app fallback renderer default global error UI", () => {
         getFontPreloads: () => [],
         getFontStyles: () => [],
       },
-      getNavigationContext: () => ({ pathname: "/server-error" }),
+      getNavigationContext: () => ({
+        pathname: "/server-error",
+        searchParams: new URLSearchParams(),
+        params: {},
+      }),
       globalErrorModule: userGlobalErrorModule,
-      globalNotFoundModule: null,
+      loadGlobalNotFoundModule: null,
       makeThenableParams: (p) => p,
       metadataRoutes: [],
       resolveChildSegments: () => [],
@@ -488,6 +561,48 @@ describe("app fallback renderer default global error UI", () => {
     expect(html).toContain("user-global-error:from-user");
     // The default UI must NOT leak through.
     expect(html).not.toContain("This page couldn’t load");
+  });
+});
+
+// Regression for #1454 — default App Router 404 must match Next.js's built-in
+// not-found component ("This page could not be found." with trailing period).
+describe("app fallback renderer default not-found UI", () => {
+  it("renders the canonical 'This page could not be found.' body when no not-found.tsx exists", async () => {
+    const { renderer } = createRenderer();
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    // Canonical message must contain the trailing period to match Next.js
+    // (see .nextjs-ref/packages/next/src/client/components/builtin/not-found.tsx).
+    expect(html).toContain("This page could not be found.");
+    // Status code is surfaced as the <h1>.
+    expect(html).toContain("404");
+    // Old vinext default ("404 - Page not found") must NOT leak through.
+    expect(html).not.toContain("404 - Page not found");
+  });
+
+  it("prefers a user-defined root not-found.tsx over the default", async () => {
+    const { renderer } = createRenderer({ rootNotFoundModule: notFoundModule });
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    // The user-defined boundary wins.
+    expect(html).toContain('data-boundary="not-found"');
+    expect(html).toContain("Missing page");
+    // The default not-found body must NOT leak through.
+    expect(html).not.toContain("This page could not be found.");
   });
 });
 
@@ -580,12 +695,13 @@ describe("app fallback renderer with globalNotFoundModule", () => {
   it("falls back to default not-found when global-not-found is absent and route is null", async () => {
     // Mirrors test/e2e/app-dir/global-not-found/not-present: when the user
     // opted into experimental.globalNotFound but never created the file,
-    // route-miss 404s should still serve the default 404 response. With no
-    // root notFoundModule either, the renderer returns null and the caller
-    // falls back to the framework's 404 Response.
+    // route-miss 404s should still serve the default 404 response, even when
+    // the app defines a root not-found.tsx for explicit notFound() calls.
     const { renderer } = createRenderer({
       globalNotFoundModule: null,
+      globalNotFoundEnabled: true,
       rootLayoutModules: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
     });
     const request = new Request("https://example.com/does-not-exist");
 
@@ -594,8 +710,41 @@ describe("app fallback renderer with globalNotFoundModule", () => {
       status: null,
     });
 
-    // No boundary component to render -> renderer returns null.
-    expect(response).toBeNull();
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain('data-boundary="not-found"');
+    expect(html).not.toContain('lang="en"');
+    expect((html?.match(/<html/gi) ?? []).length).toBe(1);
+    expect((html?.match(/<body/gi) ?? []).length).toBe(1);
+  });
+
+  it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {
+    const { renderer } = createRenderer({
+      globalNotFoundEnabled: true,
+      rootLayoutModules: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+    });
+    const request = new Request("https://example.com/call-not-found");
+
+    const response = await renderer.renderNotFound(
+      {
+        layouts: [rootLayoutModule],
+        notFound: notFoundModule,
+        params: {},
+        pattern: "/call-not-found",
+      },
+      false,
+      request,
+      undefined,
+      undefined,
+      { headers: null, status: null },
+    );
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain('data-boundary="not-found"');
+    expect(html).toContain('lang="en"');
   });
 
   it("does not use global-not-found for non-404 access fallbacks (403, 401)", async () => {

@@ -6,7 +6,6 @@
  *   vinext dev     Start development server (Vite)
  *   vinext build   Build for production
  *   vinext start   Start production server
- *   vinext deploy  Deploy to Cloudflare Workers
  *   vinext typegen Generate App Router route helper types
  *   vinext lint    Run linter (delegates to eslint/oxlint)
  *
@@ -16,18 +15,35 @@
 
 import vinext from "./index.js";
 import { runPrerender } from "./build/run-prerender.js";
-import path from "node:path";
+import { emitPrerenderPathManifest } from "./build/prerender-paths.js";
+import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
-import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
+import { randomBytes } from "node:crypto";
+import {
+  detectPackageManager,
+  ensureViteConfigCompatibility,
+  hasAppDir,
+  hasViteConfig,
+} from "./utils/project.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
+import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import {
+  createRscCompatibilityId,
+  findVinextNextConfigInPlugins,
+  loadNextConfig,
+  resolveNextConfig,
+  resolveNextConfigInput,
+  PHASE_PRODUCTION_BUILD,
+  type NextConfigInput,
+} from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
+import { cleanBuildOutput } from "./build/clean-output.js";
+import { clearPagesClientAssetsBuildMetadata } from "./build/pages-client-assets-module.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -36,6 +52,15 @@ import {
   tryAcquireLockfile,
 } from "./server/dev-lockfile.js";
 import { generateRouteTypes } from "./typegen.js";
+import { createDevServerConfigPlugin, normalizeDevServerHostname } from "./cli-dev-config.js";
+import {
+  findVinextRouteRootConfigInPlugins,
+  findVinextPrerenderConfigInPlugins,
+  formatVinextPrerenderLabel,
+  resolveVinextPrerenderDecision,
+  type ResolvedVinextPrerenderConfig,
+  type VinextRouteRootConfig,
+} from "./config/prerender.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -196,13 +221,6 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
 
 // ─── Auto-configuration ───────────────────────────────────────────────────────
 
-function hasAppDir(): boolean {
-  return (
-    fs.existsSync(path.join(process.cwd(), "app")) ||
-    fs.existsSync(path.join(process.cwd(), "src", "app"))
-  );
-}
-
 function hasPagesDir(): boolean {
   return (
     fs.existsSync(path.join(process.cwd(), "pages")) ||
@@ -210,12 +228,35 @@ function hasPagesDir(): boolean {
   );
 }
 
-function hasViteConfig(): boolean {
-  return (
-    fs.existsSync(path.join(process.cwd(), "vite.config.ts")) ||
-    fs.existsSync(path.join(process.cwd(), "vite.config.js")) ||
-    fs.existsSync(path.join(process.cwd(), "vite.config.mjs"))
+type BuildViteConfigMetadata = {
+  emptyOutDir?: boolean;
+  nextConfig: NextConfigInput | null;
+  prerenderConfig: ResolvedVinextPrerenderConfig | null;
+  routeRootConfig: VinextRouteRootConfig | null;
+};
+
+async function loadBuildViteConfigMetadata(
+  vite: ViteModule,
+  root: string,
+): Promise<BuildViteConfigMetadata> {
+  if (!hasViteConfig(root)) {
+    return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+  }
+
+  // Read the raw user config before the multi-environment build so
+  // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
   );
+  const emptyOutDir = loaded?.config.build?.emptyOutDir;
+  return {
+    emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
+    nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
+    prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
+    routeRootConfig: await findVinextRouteRootConfigInPlugins(loaded?.config.plugins),
+  };
 }
 
 /**
@@ -224,7 +265,7 @@ function hasViteConfig(): boolean {
  * If there's no vite.config, this provides everything needed.
  */
 function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
-  const hasConfig = hasViteConfig();
+  const hasConfig = hasViteConfig(process.cwd());
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
   // The user's config already has vinext() + rsc() plugins configured.
@@ -302,8 +343,8 @@ async function dev() {
 
   const vite = await loadVite();
 
-  const port = parsed.port ?? 3000;
-  const host = parsed.hostname ?? "localhost";
+  const initialPort = parsed.port ?? 3000;
+  const initialHost = parsed.hostname ?? "localhost";
 
   // Acquire the dev lock file. If another live `vinext dev` is running in this
   // directory, print an actionable error (PID + URL) and exit. This is
@@ -321,14 +362,14 @@ async function dev() {
     // Substitute "localhost" for wildcard binds so the URL is actually
     // clickable when surfaced in the lock file before server.listen() has
     // had a chance to resolve the real URL.
-    const initialDisplayHost = host === "0.0.0.0" ? "localhost" : host;
+    const initialDisplayHost = initialHost === "0.0.0.0" ? "localhost" : initialHost;
     const acquired = tryAcquireLockfile({
       root,
       info: {
         pid: process.pid,
-        port,
-        hostname: host,
-        appUrl: `http://${initialDisplayHost}:${port}`,
+        port: initialPort,
+        hostname: initialHost,
+        appUrl: `http://${initialDisplayHost}:${initialPort}`,
         startedAt,
         cwd: root,
       },
@@ -350,9 +391,9 @@ async function dev() {
 
   console.log(`\n  vinext dev  (Vite ${getViteVersion()})\n`);
 
-  const config = buildViteConfig({
-    server: { port, host },
-  });
+  const config = buildViteConfig();
+  const plugins = (config.plugins ??= []) as import("vite").PluginOption[];
+  plugins.push(createDevServerConfigPlugin(parsed));
 
   // If anything between here and the first successful listen() throws (e.g.
   // strictPort and the port is taken), release the lock immediately so we
@@ -362,6 +403,18 @@ async function dev() {
   let server;
   try {
     server = await vite.createServer(config);
+    const port = server.config.server.port ?? 3000;
+    const host = normalizeDevServerHostname(server.config.server.host);
+
+    lockfile?.update({
+      pid: process.pid,
+      port,
+      hostname: host,
+      appUrl: `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`,
+      startedAt,
+      cwd: process.cwd(),
+    });
+
     await server.listen();
   } catch (err) {
     lockfile?.release();
@@ -378,8 +431,10 @@ async function dev() {
   // actually clickable. Fall back to httpServer.address() if Vite didn't
   // populate resolvedUrls for some reason.
   if (lockfile) {
+    const configuredPort = server.config.server.port ?? 3000;
+    const configuredHost = normalizeDevServerHostname(server.config.server.host);
     const resolved = server.resolvedUrls?.local[0];
-    let actualPort = port;
+    let actualPort = configuredPort;
     let appUrl: string;
     if (resolved) {
       appUrl = resolved.replace(/\/$/, "");
@@ -391,13 +446,13 @@ async function dev() {
       }
     } else {
       const address = server.httpServer?.address();
-      actualPort = typeof address === "object" && address ? address.port : port;
-      appUrl = `http://${host === "0.0.0.0" ? "localhost" : host}:${actualPort}`;
+      actualPort = typeof address === "object" && address ? address.port : configuredPort;
+      appUrl = `http://${configuredHost === "0.0.0.0" ? "localhost" : configuredHost}:${actualPort}`;
     }
     lockfile.update({
       pid: process.pid,
       port: actualPort,
-      hostname: host,
+      hostname: configuredHost,
       appUrl,
       // Preserve the original acquire-time startedAt rather than resetting
       // to "now". startedAt represents when the process started.
@@ -426,20 +481,59 @@ async function buildApp() {
   applyViteConfigCompatibility(process.cwd());
 
   const vite = await loadVite();
-  const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
 
-  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
-    viteMajorVersion >= 8 ? { rolldownOptions: bundlerOptions } : { rollupOptions: bundlerOptions };
+  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) => ({
+    rolldownOptions: bundlerOptions,
+  });
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
-  const isApp = hasAppDir();
-  const resolvedNextConfig = await resolveNextConfig(
-    await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
-    process.cwd(),
-  );
+  const root = toSlash(process.cwd());
+  const isApp = hasAppDir(root);
+  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
+  const rawNextConfig = buildConfigMetadata.nextConfig
+    ? await resolveNextConfigInput(buildConfigMetadata.nextConfig, PHASE_PRODUCTION_BUILD)
+    : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  const resolvedNextConfig = await resolveNextConfig(rawNextConfig, root);
+
+  // Coordinate a single build ID across every vinext() plugin instance in this
+  // build. A hybrid app+pages build runs the App Router multi-environment build
+  // (buildApp) and a separate Pages Router SSR build (vite.build) as distinct
+  // plugin instances; without this, each resolves its own (potentially random)
+  // ID and the runtime, prerender manifest, and dist/server/BUILD_ID disagree.
+  // We resolve it once here — resolveNextConfig() already ran resolveBuildId()
+  // honoring the user's generateBuildId (including the null→UUID fallback) — and
+  // share that authoritative value via env so every plugin instance adopts it.
+  //
+  // Not cleaned up intentionally: `vinext build` runs once and the process
+  // exits, so there is no in-process reuse to leak into. The var is namespaced
+  // to vinext's build flow and is never read by dev or standalone resolveBuildId.
+  process.env.__VINEXT_SHARED_BUILD_ID = resolvedNextConfig.buildId;
+
+  // Same coordination for the App Router RSC compatibility token. Without a
+  // pinned deploymentId, createRscCompatibilityId() mints a random UUID per
+  // plugin instance, so a hybrid app+pages build would bake two different
+  // compatibility tokens. Resolve it once and share it (see the plugin's
+  // adoption site). Reuses deploymentId when set (already stable across
+  // instances).
+  process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
+
+  // On-demand ISR revalidation secret — the vinext analog of Next.js's
+  // prerender-manifest `previewModeId`. `res.revalidate()` loops back into the
+  // server via an internal `fetch()`; on Cloudflare Workers that loopback can
+  // land on a *different* isolate than the sender, so a per-process random
+  // secret would mismatch and false-reject legitimate revalidations. We instead
+  // generate one 256-bit secret here, once per build, and bake it (server-only)
+  // into every server bundle via Vite `define` so all isolates share the exact
+  // same value. Resolved once and shared across plugin instances exactly like
+  // __VINEXT_SHARED_BUILD_ID so a hybrid app+pages build bakes a single secret.
+  // A fresh secret per build means it rotates with every deployment.
+  if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
+    process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
+  }
+
   const outputMode = resolvedNextConfig.output;
-  const distDir = path.resolve(process.cwd(), "dist");
+  const distDir = path.resolve(root, "dist");
 
   // Pre-flight check: verify vinext's own dist/ exists before starting the build.
   // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
@@ -476,24 +570,35 @@ async function buildApp() {
     }
   }
 
+  cleanBuildOutput({
+    root,
+    outDir: distDir,
+    emptyOutDir: buildConfigMetadata.emptyOutDir,
+  });
+
   // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
   // use createBuilder + buildApp(). vinext() defines the appropriate environments
   // in its config() hook for each case, so cloudflare() and the plain Node SSR
   // build both work correctly.
-  const config = buildViteConfig({}, logger);
-  const builder = await vite.createBuilder(config);
-  await builder.buildApp();
+  const isHybrid = isApp && hasPagesDir();
+  const pagesClientAssetsBuildSession = isHybrid ? randomBytes(16).toString("hex") : null;
+  if (pagesClientAssetsBuildSession) {
+    process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
+  }
+  try {
+    const config = buildViteConfig({}, logger);
+    const builder = await vite.createBuilder(config);
+    await builder.buildApp();
 
-  if (isApp) {
-    // Hybrid app (both app/ and pages/ directories): also build the Pages Router
-    // SSR bundle so the prerender phase can render Pages Router routes.
-    // The App Router multi-env build (buildApp) doesn't include the Pages Router
-    // SSR entry, so we run it as a separate step here.
-    // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
-    // loading the user's vite.config (which has vinext() without disableAppRouter)
-    // and to prevent the multi-env environments config from overriding our SSR
-    // input and entryFileNames.
-    if (hasPagesDir()) {
+    if (isHybrid) {
+      // Hybrid app (both app/ and pages/ directories): also build the Pages Router
+      // SSR bundle so the prerender phase can render Pages Router routes.
+      // The App Router multi-env build (buildApp) doesn't include the Pages Router
+      // SSR entry, so we run it as a separate step here.
+      // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
+      // loading the user's vite.config (which has vinext() without disableAppRouter)
+      // and to prevent the multi-env environments config from overriding our SSR
+      // input and entryFileNames.
       console.log("  Building Pages Router server (hybrid)...");
       // Inherit transform plugins from the user's vite.config (e.g. SVG loaders,
       // CSS-in-JS) that vinext doesn't auto-register. We load the raw config via
@@ -503,7 +608,7 @@ async function buildApp() {
       // will re-register itself, and cloudflare() which must not run here.
       const root = process.cwd();
       let userTransformPlugins: import("vite").PluginOption[] = [];
-      if (hasViteConfig()) {
+      if (hasViteConfig(process.cwd())) {
         const loaded = await vite.loadConfigFromFile(
           { command: "build", mode: "production", isSsrBuild: true },
           undefined,
@@ -524,8 +629,6 @@ async function buildApp() {
               // @vitejs/plugin-rsc and its sub-plugins — App Router only
               !p.name.startsWith("rsc:") &&
               p.name !== "vite-rsc-load-module-dev-proxy" &&
-              // vite-tsconfig-paths — auto-registered by vinext
-              p.name !== "vite-tsconfig-paths" &&
               // cloudflare() — injects multi-env environments block which
               // conflicts with the plain SSR build config below
               !p.name.startsWith("vite-plugin-cloudflare"),
@@ -552,6 +655,15 @@ async function buildApp() {
         },
       });
     }
+  } finally {
+    if (pagesClientAssetsBuildSession) {
+      clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
+      if (
+        process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === pagesClientAssetsBuildSession
+      ) {
+        delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+      }
+    }
   }
 
   if (outputMode === "standalone") {
@@ -567,9 +679,13 @@ async function buildApp() {
   }
 
   let prerenderResult;
-  const shouldPrerender = parsed.prerenderAll || resolvedNextConfig.output === "export";
+  const prerenderDecision = resolveVinextPrerenderDecision({
+    prerenderAllFlag: parsed.prerenderAll,
+    vinextPrerenderConfig: buildConfigMetadata.prerenderConfig,
+    nextOutput: resolvedNextConfig.output,
+  });
 
-  if (shouldPrerender) {
+  if (prerenderDecision) {
     // Enable Node.js built-in sourcemap support so prerender error stack
     // traces resolve through the server bundle's sourcemaps to show original
     // source files. Matches Next.js's enablePrerenderSourceMaps default.
@@ -577,14 +693,17 @@ async function buildApp() {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    const label = parsed.prerenderAll
-      ? "Pre-rendering all routes..."
-      : "Pre-rendering all routes (output: 'export')...";
     process.stdout.write("\x1b[0m");
-    console.log(`  ${label}`);
+    console.log(`  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     prerenderResult = await runPrerender({
-      root: process.cwd(),
+      root,
       concurrency: parsed.prerenderConcurrency,
+      nextConfig: resolvedNextConfig,
+    });
+    await emitPrerenderPathManifest({
+      root,
+      nextConfig: resolvedNextConfig,
+      routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }
 
@@ -594,7 +713,7 @@ async function buildApp() {
   process.stdout.write("\x1b[0m");
   const { printBuildReport } = await import("./build/report.js");
   await printBuildReport({
-    root: process.cwd(),
+    root,
     pageExtensions: resolvedNextConfig.pageExtensions,
     prerenderResult: prerenderResult ?? undefined,
   });
@@ -688,38 +807,22 @@ async function lint() {
   }
 }
 
-async function deployCommand() {
-  const parsed = parseDeployArgs(rawArgs);
-  if (parsed.help) return printHelp("deploy");
-
-  await loadVite();
-  console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
-
-  await runDeploy({
-    root: process.cwd(),
-    preview: parsed.preview,
-    env: parsed.env,
-    skipBuild: parsed.skipBuild,
-    dryRun: parsed.dryRun,
-    name: parsed.name,
-    prerenderAll: parsed.prerenderAll,
-    prerenderConcurrency: parsed.prerenderConcurrency,
-    experimentalTPR: parsed.experimentalTPR,
-    tprCoverage: parsed.tprCoverage,
-    tprLimit: parsed.tprLimit,
-    tprWindow: parsed.tprWindow,
-  });
+function failRemovedDeployCommand(): never {
+  console.error(
+    "\n  Error: `vinext deploy` has moved to the `@vinext/cloudflare` package.\n\n" +
+      "  Run `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy` instead.\n",
+  );
+  process.exit(1);
 }
 
 async function check() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("check");
 
-  const root = process.cwd();
   console.log(`\n  vinext check\n`);
   console.log("  Scanning project...\n");
 
-  const result = runCheck(root);
+  const result = runCheck(toSlash(process.cwd()));
   console.log(formatReport(result));
 }
 
@@ -753,12 +856,14 @@ async function initCommand() {
   const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const initOptions = await resolveInitOptions(rawArgs);
 
   await runInit({
     root: process.cwd(),
     port,
     skipCheck,
     force,
+    ...initOptions,
   });
 }
 
@@ -792,8 +897,8 @@ function printHelp(cmd?: string) {
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
-    --prerender-all      Pre-render discovered routes after building (future releases
-                         will serve these files in vinext start)
+    --prerender-all      Pre-render discovered routes after building. Equivalent
+                         to vinext({ prerender: true }) and takes priority.
     --prerender-concurrency <count>
                          Maximum number of routes to pre-render in parallel
     --precompress        Precompress static assets at build time (.br, .gz, .zst)
@@ -821,53 +926,7 @@ function printHelp(cmd?: string) {
   }
 
   if (cmd === "deploy") {
-    console.log(`
-  vinext deploy - Deploy to Cloudflare Workers
-
-  Usage: vinext deploy [options]
-
-  One-command deployment to Cloudflare Workers. Automatically:
-    - Detects App Router or Pages Router
-    - Generates wrangler.jsonc, worker/index.ts, vite.config.ts if missing
-    - Installs @cloudflare/vite-plugin and wrangler if needed
-    - Builds the project with Vite
-    - Deploys via wrangler
-
-  Options:
-    --preview                Deploy to preview environment (same as --env preview)
-    --env <name>             Deploy using wrangler env.<name>
-    --name <name>            Custom Worker name (default: from package.json)
-    --skip-build             Skip the build step (use existing dist/)
-    --dry-run                Generate config files without building or deploying
-    --prerender-all          Pre-render discovered routes after building (future
-                             releases will auto-populate the remote cache)
-    --prerender-concurrency <count>
-                             Maximum number of routes to pre-render in parallel
-    -h, --help               Show this help
-
-  Experimental:
-    --experimental-tpr               Enable Traffic-aware Pre-Rendering
-    --tpr-coverage <pct>             Traffic coverage target, 0–100 (default: 90)
-    --tpr-limit <count>              Hard cap on pages to pre-render (default: 1000)
-    --tpr-window <hours>             Analytics lookback window in hours (default: 24)
-
-  TPR (Traffic-aware Pre-Rendering) uses Cloudflare zone analytics to determine
-  which pages get the most traffic and pre-renders them into KV cache during
-  deploy. This feature is experimental and must be explicitly enabled. Requires
-  a custom domain (zone analytics are unavailable on *.workers.dev) and the
-  CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
-
-  Examples:
-    vinext deploy                              Build and deploy to production
-    vinext deploy --preview                    Deploy to a preview URL
-    vinext deploy --env staging                Deploy using wrangler env.staging
-    vinext deploy --dry-run                    See what files would be generated
-    vinext deploy --name my-app                Deploy with a custom Worker name
-    vinext deploy --experimental-tpr           Enable TPR during deploy
-    vinext deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic
-    vinext deploy --experimental-tpr --tpr-limit 500     Cap at 500 pages
-`);
-    return;
+    failRemovedDeployCommand();
   }
 
   if (cmd === "check") {
@@ -900,10 +959,32 @@ function printHelp(cmd?: string) {
     -p, --port <port>    Dev server port for the vinext script (default: 3001)
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
+    --platform <target>  Deployment target: cloudflare or node
+    --prerender          Configure vinext build to pre-render all static routes
+                         (default: prompt, with No selected by default)
+    --experimental-warm-cdn-cache
+                         Add experimental CDN pre-warming to the Cloudflare deploy script
+                         (Workers Cache CDN only, default: prompt with No)
+    --cdn-cache <type>   Cloudflare CDN cache: workers-cache or data-cache
+                         (default: workers-cache)
+    --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
+    --image-optimization <type>
+                         Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help
 
   Examples:
-    vinext init                   Migrate with defaults
+    vinext init                   Prompt for a deployment platform
+    vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=cloudflare --cdn-cache=data-cache
+                                Fall through CDN caching to the data cache
+    vinext init --platform=cloudflare --data-cache=kv
+                                Configure the default Cloudflare cache handlers
+    vinext init --platform=cloudflare --image-optimization=none
+                                Do not configure Cloudflare Images
+    vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
+    vinext init --experimental-warm-cdn-cache
+                                Add experimental CDN pre-warming to deploy:vinext
+    vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
     vinext init --skip-check      Skip the compatibility report
@@ -951,7 +1032,6 @@ function printHelp(cmd?: string) {
     dev      Start development server
     build    Build for production
     start    Start production server
-    deploy   Deploy to Cloudflare Workers
     typegen  Generate App Router route helper types
     init     Migrate a Next.js project to vinext
     check    Scan Next.js app for compatibility
@@ -962,15 +1042,16 @@ function printHelp(cmd?: string) {
     --version      Show version
 
   Examples:
-    vinext dev                  Start dev server on port 3000
-    vinext dev -p 4000          Start dev server on port 4000
-    vinext build                Build for production
-    vinext typegen              Generate route helper types
-    vinext start                Start production server
-    vinext deploy               Deploy to Cloudflare Workers
-    vinext init                 Migrate a Next.js project
-    vinext check                Check compatibility
-    vinext lint                 Run linter
+    vinext dev                         Start dev server on port 3000
+    vinext dev -p 4000                 Start dev server on port 4000
+    vinext build                       Build for production
+    vinext typegen                     Generate route helper types
+    vinext start                       Start production server
+    vinext init                        Migrate a Next.js project
+    vinext check                       Check compatibility
+    vinext lint                        Run linter
+    npx @vinext/cloudflare deploy      Deploy to Cloudflare Workers
+    vp exec vinext-cloudflare deploy   Deploy to Cloudflare Workers with Vite+
 
   vinext is a drop-in replacement for the \`next\` CLI.
   No vite.config.ts needed — just run \`vinext dev\` in your Next.js project.
@@ -1012,10 +1093,7 @@ switch (command) {
     break;
 
   case "deploy":
-    deployCommand().catch((e) => {
-      console.error(e);
-      process.exit(1);
-    });
+    failRemovedDeployCommand();
     break;
 
   case "init":

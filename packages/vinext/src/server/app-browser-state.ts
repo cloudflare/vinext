@@ -11,6 +11,7 @@ import {
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
+  NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -25,21 +26,40 @@ import {
 import { createCacheEntryReuseProof, type CacheEntryReuseProof } from "./cache-proof.js";
 import {
   navigationPlanner,
-  type MountedParallelSlotSnapshotV0,
-  type NavigationDecisionV0,
+  resolveDefaultOrUnmatchedSlotPersistenceForLayouts,
+  type MountedParallelSlotSnapshot,
+  type NavigationDecision,
   type OperationLane,
   type OperationToken,
-  type RouteSnapshotV0,
+  type RouteSnapshot,
 } from "./navigation-planner.js";
-import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
+import { verifyOperationTokenForCommit, type VerifiedOperationToken } from "./operation-token.js";
+import {
+  createSnapshotPathAndSearch,
+  type ClientNavigationRenderSnapshot,
+} from "vinext/shims/navigation";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizePath } from "./normalize-path.js";
+import type { BfcacheIdMap } from "./app-history-state.js";
+import { createNextBfcacheIdMap } from "./app-bfcache-identity.js";
+
+export {
+  createBfcacheSegmentStateKeyMap,
+  createInitialBfcacheIdMap,
+  createNextBfcacheIdMap,
+  preserveBfcacheIdsForMergedElements,
+} from "./app-bfcache-identity.js";
+
 export {
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
+  isHistoryStateBfcacheVersionCurrent,
+  readHistoryStateBfcacheIds,
+  readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
+  type BfcacheIdMap,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";
 
@@ -48,6 +68,8 @@ export type { OperationLane } from "./navigation-planner.js";
 type OperationRecordBase = {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 };
 
@@ -60,10 +82,11 @@ export type CommittedOperationRecord = OperationRecordBase & {
   visibleCommitVersion: number;
 };
 
-export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
+type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
 
 export type AppRouterState = {
   activeOperation: OperationRecord | null;
+  bfcacheIds: BfcacheIdMap;
   elements: AppElements;
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
@@ -79,6 +102,7 @@ export type AppRouterState = {
 };
 
 export type AppRouterAction = {
+  bfcacheIds: BfcacheIdMap;
   cacheEntryReuseProof?: CacheEntryReuseProof;
   elements: AppElements;
   interception: AppElementsInterception | null;
@@ -90,7 +114,9 @@ export type AppRouterAction = {
   previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
+  reuseCurrentBfcacheIds: boolean;
   routeId: string;
+  skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   type: "navigate" | "replace" | "traverse";
 };
@@ -103,11 +129,17 @@ export type PendingNavigationCommit = {
   previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
+  restoredHistorySnapshot?: boolean;
+  skippedLayoutIds: readonly string[];
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
-  { origin: "fresh" } | { origin: "visited-cache" }
+  { origin: "committed-cache" } | { origin: "fresh" } | { origin: "visited-cache" }
 >;
+
+export const COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
+  origin: "committed-cache",
+};
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -119,6 +151,8 @@ export const VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOr
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  dynamicStaleTimeSeconds?: number;
+  skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
   disposition: "dispatch";
@@ -135,27 +169,39 @@ type NonDispatchPendingNavigationCommitDispositionDecision = {
 type PendingNavigationCommitDispositionDecision =
   | DispatchPendingNavigationCommitDispositionDecision
   | NonDispatchPendingNavigationCommitDispositionDecision;
+
 function createOperationRecord(options: {
   id: number;
   lane: OperationLane;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   startedVisibleCommitVersion: number;
 }): PendingOperationRecord {
   return {
     id: options.id,
     lane: options.lane,
+    ...(options.navigationCommitKind !== undefined
+      ? { navigationCommitKind: options.navigationCommitKind }
+      : {}),
+    ...(options.navigationId !== undefined ? { navigationId: options.navigationId } : {}),
     startedVisibleCommitVersion: options.startedVisibleCommitVersion,
     state: "pending",
   };
 }
 
+export function isCompleteAppPayloadMetadata(metadata: CacheRestorableAppPayloadMetadata): boolean {
+  return metadata.skippedLayoutIds.length === 0;
+}
+
 export function isCacheRestorableAppPayloadMetadata(
   metadata: CacheRestorableAppPayloadMetadata,
 ): metadata is CacheRestorableAppPayloadMetadata & { cacheEntryReuseProof: CacheEntryReuseProof } {
-  return metadata.cacheEntryReuseProof !== undefined;
+  return metadata.cacheEntryReuseProof !== undefined && isCompleteAppPayloadMetadata(metadata);
 }
 
 function requiresCacheEntryReuseProof(origin: AppNavigationPayloadOrigin): boolean {
   switch (origin.origin) {
+    case "committed-cache":
     case "fresh":
       return false;
     case "visited-cache":
@@ -203,6 +249,7 @@ type ResolveServerActionRequestStateOptions = {
   actionId: string;
   basePath: string;
   elements: AppElements;
+  interceptionContext?: string | null;
   previousNextUrl: string | null;
 };
 
@@ -226,11 +273,12 @@ export function resolveServerActionRequestState(
 ): ResolveServerActionRequestStateResult {
   const headers = createRscRequestHeaders();
   headers.set(RSC_ACTION_HEADER, options.actionId);
+  headers.set(NEXT_ACTION_HEADER, options.actionId);
 
-  const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
-    options.previousNextUrl,
-    options.basePath,
-  );
+  const interceptionContext =
+    resolveInterceptionContextFromPreviousNextUrl(options.previousNextUrl, options.basePath) ??
+    options.interceptionContext ??
+    null;
   if (interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
   }
@@ -252,11 +300,18 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
   targetHref?: string;
 }): PendingNavigationCommitDispositionDecision {
   const traceFields = createPendingNavigationTraceFields(options);
+  const targetSnapshot = createPendingRouteSnapshot(options.pending);
+  const token = createPendingNavigationOperationToken({
+    pending: options.pending,
+    routeManifest: options.routeManifest ?? null,
+    startedNavigationId: options.startedNavigationId,
+    targetSnapshot,
+  });
 
   if (
-    options.startedNavigationId !== options.activeNavigationId ||
-    options.pending.action.operation.startedVisibleCommitVersion !==
-      options.currentState.visibleCommitVersion
+    options.pending.action.operation.navigationCommitKind === "detached" &&
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "authoritative"
   ) {
     return {
       disposition: "skip",
@@ -265,15 +320,55 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     };
   }
 
-  return mapNavigationDecisionToPendingDisposition(
+  // OperationToken is the single eligibility authority for commit approval: a
+  // result may enter commit approval only if its token proves it belongs to the
+  // active navigation and the visible commit version it started from is still
+  // current. The token verifies; ApprovedVisibleCommit (downstream) mutates.
+  // A detached/optimistic payload and the authoritative payload that follows
+  // are two renders in one navigation lifecycle. The first visible commit may
+  // advance the version, but it does not supersede its own authoritative data.
+  const isAuthoritativeSameNavigationHandoff =
+    options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
+    options.currentState.activeOperation.navigationCommitKind === "detached" &&
+    options.pending.action.operation.navigationCommitKind === "authoritative";
+  const visibleCommitVersion = isAuthoritativeSameNavigationHandoff
+    ? options.pending.action.operation.startedVisibleCommitVersion
+    : options.currentState.visibleCommitVersion;
+  const verdict = verifyOperationTokenForCommit(token, {
+    activeNavigationId: options.activeNavigationId,
+    visibleCommitVersion,
+  });
+  if (!verdict.authorized) {
+    // staleOperation — the navigation that created `pending` was superseded, or
+    // visible state advanced after it started. The latter happens when a
+    // synchronous history snapshot restore (restoreHistoryStateSnapshot, see
+    // app-browser-entry.ts popstate handler) bumps visibleCommitVersion before
+    // an in-flight async RSC traverse resolves. The authoritative commit wins;
+    // the stale async payload is intentionally discarded.
+    return {
+      disposition: "skip",
+      preserveElementIds: [],
+      trace: createNavigationTrace(NavigationTraceReasonCodes.staleOperation, traceFields),
+    };
+  }
+
+  const decision = mapNavigationDecisionToPendingDisposition(
     planPendingRootBoundaryFlightResponse({
       currentState: options.currentState,
       pending: options.pending,
       routeManifest: options.routeManifest ?? null,
       targetHref: options.targetHref,
+      targetSnapshot,
+      token: verdict.token,
       traceFields,
     }),
   );
+
+  return mergeSkippedLayoutPreservation({
+    currentState: options.currentState,
+    decision,
+    pending: options.pending,
+  });
 }
 
 function createPendingNavigationTraceFields(options: {
@@ -296,15 +391,10 @@ function createPendingNavigationTraceFields(options: {
   };
 }
 
-function createNavigationSnapshotUrl(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
-}
-
 function createMountedParallelSlotSnapshots(
   elements: AppElements,
-): readonly MountedParallelSlotSnapshotV0[] {
-  const snapshots: MountedParallelSlotSnapshotV0[] = [];
+): readonly MountedParallelSlotSnapshot[] {
+  const snapshots: MountedParallelSlotSnapshot[] = [];
   for (const slotId of getMountedSlotIds(elements)) {
     const parsed = AppElementsWire.parseElementKey(slotId);
     if (parsed?.kind !== "slot") continue;
@@ -316,9 +406,11 @@ function createMountedParallelSlotSnapshots(
   return snapshots;
 }
 
-function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshotV0 {
-  const displayUrl = createNavigationSnapshotUrl(state.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
+function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
+  const displayUrl = createSnapshotPathAndSearch(state.navigationSnapshot);
+  const matchedUrl =
+    state.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: state.interception,
@@ -339,11 +431,11 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshotV0 {
   };
 }
 
-function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshotV0 {
-  const displayUrl = createNavigationSnapshotUrl(pending.action.navigationSnapshot);
-  const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
-    pending.action.navigationSnapshot.pathname,
-  );
+function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshot {
+  const displayUrl = createSnapshotPathAndSearch(pending.action.navigationSnapshot);
+  const matchedUrl =
+    pending.action.interception?.targetMatchedUrl ??
+    normalizeNavigationSnapshotMatchedUrl(pending.action.navigationSnapshot.pathname);
   return {
     displayUrl,
     interception: pending.action.interception,
@@ -365,19 +457,24 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
 function createPendingNavigationOperationToken(options: {
   pending: PendingNavigationCommit;
   routeManifest: RouteManifest | null;
-  targetSnapshot: RouteSnapshotV0;
+  startedNavigationId: number;
+  targetSnapshot: RouteSnapshot;
 }): OperationToken {
   return {
     baseVisibleCommitVersion: options.pending.action.operation.startedVisibleCommitVersion,
     deploymentVersion: null,
     graphVersion: options.routeManifest?.graphVersion ?? null,
     lane: options.pending.action.operation.lane,
+    // The lifecycle navigation id the operation started under. operationId
+    // (renderId) cannot answer "belongs to the active navigation?" because it is
+    // a per-render counter; navigationId carries that lifecycle authority.
+    navigationId: options.startedNavigationId,
     operationId: options.pending.action.operation.id,
     targetSnapshotFingerprint: createRootBoundarySnapshotFingerprint(options.targetSnapshot),
   };
 }
 
-function createRootBoundarySnapshotFingerprint(snapshot: RouteSnapshotV0): string {
+function createRootBoundarySnapshotFingerprint(snapshot: RouteSnapshot): string {
   return `${snapshot.routeId}|root:${snapshot.rootBoundaryId ?? "unknown"}`;
 }
 
@@ -386,14 +483,14 @@ function planPendingRootBoundaryFlightResponse(options: {
   pending: PendingNavigationCommit;
   routeManifest: RouteManifest | null;
   targetHref?: string;
+  // The token has already passed commit eligibility (verifyOperationTokenForCommit)
+  // in the disposition gate above. Requiring the verified brand here makes that
+  // ordering a compile-time guarantee: the planner cannot be reached with an
+  // unverified token.
+  token: VerifiedOperationToken;
+  targetSnapshot: RouteSnapshot;
   traceFields: NavigationTraceFields;
-}): NavigationDecisionV0 {
-  const targetSnapshot = createPendingRouteSnapshot(options.pending);
-  const token = createPendingNavigationOperationToken({
-    pending: options.pending,
-    routeManifest: options.routeManifest,
-    targetSnapshot,
-  });
+}): NavigationDecision {
   const cacheEntryReuseProof = options.pending.cacheEntryReuseProof;
 
   // #726-CORE-07/08 keeps the browser state layer as the lifecycle gate and
@@ -403,7 +500,7 @@ function planPendingRootBoundaryFlightResponse(options: {
   return navigationPlanner.plan({
     routeManifest: options.routeManifest,
     state: {
-      nextOperationToken: token,
+      nextOperationToken: options.token,
       traceFields: options.traceFields,
       visibleCommitVersion: options.currentState.visibleCommitVersion,
       visibleSnapshot: createVisibleRouteSnapshot(options.currentState),
@@ -412,20 +509,21 @@ function planPendingRootBoundaryFlightResponse(options: {
       kind: "flightResponseArrived",
       result: {
         ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
+        ...(options.pending.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
         // Approval call sites must pass the executor's targetHref so the
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition
         // callers that exercise only snapshot-derived planner semantics.
-        href: options.targetHref ?? targetSnapshot.displayUrl,
-        targetSnapshot,
+        href: options.targetHref ?? options.targetSnapshot.displayUrl,
+        targetSnapshot: options.targetSnapshot,
       },
-      token,
+      token: options.token,
     },
   });
 }
 
 function mapNavigationDecisionToPendingDisposition(
-  decision: NavigationDecisionV0,
+  decision: NavigationDecision,
 ): PendingNavigationCommitDispositionDecision {
   switch (decision.kind) {
     case "proposeCommit":
@@ -451,8 +549,94 @@ function mapNavigationDecisionToPendingDisposition(
   }
 }
 
+function mergeSkippedLayoutPreservation(options: {
+  currentState: AppRouterState;
+  decision: PendingNavigationCommitDispositionDecision;
+  pending: PendingNavigationCommit;
+}): PendingNavigationCommitDispositionDecision {
+  if (options.decision.disposition !== "dispatch") return options.decision;
+  if (options.pending.skippedLayoutIds.length === 0) return options.decision;
+
+  const currentLayoutIds = new Set(options.currentState.layoutIds);
+  const targetLayoutIds = new Set(options.pending.action.layoutIds);
+  const preserveElementIds = [...options.decision.preserveElementIds];
+  const seenPreservedIds = new Set(preserveElementIds);
+  const newlyPreservedLayoutIds: string[] = [];
+
+  for (const id of options.pending.skippedLayoutIds) {
+    if (seenPreservedIds.has(id)) continue;
+    if (AppElementsWire.parseElementKey(id)?.kind !== "layout") continue;
+    // Set membership here is intentionally broader than the planner's
+    // prefix-based persistence (resolveSameLayoutAncestorPersistenceForTopologies
+    // breaks at the first divergence). A layout present in both the current and
+    // target chains but past that divergence point is admitted here even though
+    // the planner would not preserve it. That is correct rather than a
+    // divergence bug: the server only emits a skip for a layout it proved
+    // byte-identical via the static-layout cache proof, so preserving the
+    // retained-and-identical layout — together with its owned slots derived
+    // below — is sound regardless of ancestor-chain position.
+    if (!currentLayoutIds.has(id) || !targetLayoutIds.has(id)) continue;
+    if (!Object.hasOwn(options.currentState.elements, id)) continue;
+
+    preserveElementIds.push(id);
+    seenPreservedIds.add(id);
+    newlyPreservedLayoutIds.push(id);
+  }
+
+  if (newlyPreservedLayoutIds.length === 0) {
+    return options.decision;
+  }
+
+  // Restoring a skipped layout into preserveElementIds without restoring the
+  // default/unmatched parallel slots it owns would break the planner invariant
+  // documented at resolveCurrentRootBoundaryCommitElementPersistence: every
+  // preserved slot's owner layout is present in preserveElementIds, and vice
+  // versa. The topology-unknown path returns empty slot persistence, so a
+  // slot-owning layout skipped server-side would otherwise commit with a
+  // missing slot (mergeElements starts from the next payload and, with
+  // preserveAbsentSlots: false, never restores it). Derive the owned slots the
+  // same way the planner does so the preserved layout keeps its slot content.
+  const preservePreviousSlotIds = mergeSkippedLayoutSlotPreservation({
+    currentSlotBindings: options.currentState.slotBindings,
+    preservePreviousSlotIds: options.decision.preservePreviousSlotIds,
+    skippedLayoutIds: newlyPreservedLayoutIds,
+    targetSlotBindings: options.pending.action.slotBindings,
+  });
+
+  return {
+    ...options.decision,
+    preserveElementIds,
+    preservePreviousSlotIds,
+  };
+}
+
+function mergeSkippedLayoutSlotPreservation(options: {
+  currentSlotBindings: readonly AppElementsSlotBinding[];
+  preservePreviousSlotIds: readonly string[];
+  skippedLayoutIds: readonly string[];
+  targetSlotBindings: readonly AppElementsSlotBinding[];
+}): readonly string[] {
+  const ownedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+    currentSlotBindings: options.currentSlotBindings,
+    preservedLayoutIds: options.skippedLayoutIds,
+    targetSlotBindings: options.targetSlotBindings,
+  });
+  if (ownedSlotIds.length === 0) return options.preservePreviousSlotIds;
+
+  const preservePreviousSlotIds = [...options.preservePreviousSlotIds];
+  const seenSlotIds = new Set(preservePreviousSlotIds);
+  for (const slotId of ownedSlotIds) {
+    if (seenSlotIds.has(slotId)) continue;
+    preservePreviousSlotIds.push(slotId);
+    seenSlotIds.add(slotId);
+  }
+  return preservePreviousSlotIds;
+}
+
 export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
+  navigationCommitKind?: "authoritative" | "detached";
+  navigationId?: number;
   nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
@@ -461,6 +645,8 @@ export async function createPendingNavigationCommit(options: {
   // current visible previousNextUrl.
   previousNextUrl?: string | null;
   renderId: number;
+  restoredBfcacheIds?: BfcacheIdMap | null;
+  reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
@@ -478,6 +664,15 @@ export async function createPendingNavigationCommit(options: {
 
   return {
     action: {
+      bfcacheIds: createNextBfcacheIdMap({
+        current: options.currentState.bfcacheIds,
+        currentElements: options.currentState.elements,
+        currentPathname: options.currentState.navigationSnapshot.pathname,
+        elements,
+        nextPathname: options.navigationSnapshot.pathname,
+        restored: options.restoredBfcacheIds,
+        reuseCurrent: options.reuseCurrentBfcacheIds,
+      }),
       ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
       elements,
       interception: metadata.interception,
@@ -489,12 +684,16 @@ export async function createPendingNavigationCommit(options: {
       operation: createOperationRecord({
         id: options.renderId,
         lane: options.operationLane,
+        navigationCommitKind: options.navigationCommitKind,
+        navigationId: options.navigationId,
         startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
       }),
       previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
+      reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
       routeId: metadata.routeId,
+      skippedLayoutIds: metadata.skippedLayoutIds,
       type: options.type,
     },
     // Convenience aliases — always equal their action.* counterparts.
@@ -504,5 +703,6 @@ export async function createPendingNavigationCommit(options: {
     previousNextUrl,
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
+    skippedLayoutIds: metadata.skippedLayoutIds,
   };
 }

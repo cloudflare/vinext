@@ -1,5 +1,6 @@
 import { readFile as readFileFromFs } from "node:fs/promises";
 import type { Plugin } from "vite";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
 
 type ReadPackageJson = (path: string) => Promise<string>;
 
@@ -17,10 +18,6 @@ type PackagePath = {
   packageRoot: string;
   relativePath: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function defaultReadPackageJson(path: string): Promise<string> {
   return readFileFromFs(path, "utf8");

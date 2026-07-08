@@ -26,8 +26,10 @@
 
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
+import { escapeRegExp } from "../utils/regex.js";
+import { lastSignificantChar } from "../utils/has-trailing-comma.js";
 import MagicString from "magic-string";
 import {
   buildFallbackFontFace,
@@ -36,6 +38,7 @@ import {
 import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
+import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
@@ -496,7 +499,7 @@ async function fetchAndCacheFont(
     // dev, or asset for build", which was never true: the CSS is
     // embedded as a JavaScript string literal and Vite's asset pipeline
     // does not scan string literals. Do not resurrect that assumption.
-    css = css.split(fontUrl).join(filePath.replaceAll("\\", "/"));
+    css = css.split(fontUrl).join(filePath);
   }
 
   // Cache the rewritten CSS
@@ -917,6 +920,12 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             cacheDir,
             transformAssetsDir,
           );
+          const preloadUrls = findFontFilesInCss(
+            servedCSS,
+            validated.preload ? validated.subsets : undefined,
+          )
+            .filter((file) => file.preloadFontFile)
+            .map((file) => file.googleFontFileUrl);
           const fallbackMetrics =
             validated.adjustFontFallback === false
               ? undefined
@@ -932,7 +941,10 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             validated.styles.length === 1 ? validated.styles[0] : undefined;
 
           // Inject the internal transform-to-runtime payload into the options object.
-          const internalFontProperties = [`selfHostedCSS: ${JSON.stringify(servedCSS)}`];
+          const internalFontProperties = [
+            `selfHostedCSS: ${JSON.stringify(servedCSS)}`,
+            `preloadUrls: ${JSON.stringify(preloadUrls)}`,
+          ];
           if (adjustedFallbackCSS) {
             internalFontProperties.push(
               `adjustedFallbackCSS: ${JSON.stringify(adjustedFallbackCSS)}`,
@@ -948,12 +960,17 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             `_vinext: { font: { ${internalFontProperties.join(", ")} } }`,
           ];
           const closingBrace = optionsStr.lastIndexOf("}");
-          const beforeBrace = optionsStr.slice(0, closingBrace).trim();
-          // Determine the separator to insert before the new property:
-          //   - Empty string if the object is empty ({ is the last non-whitespace char)
+          // Decide the separator from the last significant character before the
+          // closing brace. `lastSignificantChar` skips whitespace AND comments
+          // without being fooled by `//`/`/*` inside string literals (e.g. a URL
+          // or a path with a double slash), so a trailing comma hidden behind a
+          // comment is honoured and a `//` inside a value can never eat the real
+          // comma. Determine the separator to insert before the new property:
+          //   - Empty string if the object is empty ({ is the last significant char)
           //   - Empty string if there's already a trailing comma (avoid double comma)
           //   - ", " otherwise (before the new property)
-          const separator = beforeBrace.endsWith("{") || beforeBrace.endsWith(",") ? "" : ", ";
+          const lastChar = lastSignificantChar(optionsStr.slice(0, closingBrace));
+          const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
           const optionsWithCSS =
             optionsStr.slice(0, closingBrace) +
             separator +
@@ -1109,33 +1126,60 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
  * Rewrites relative font file paths in `next/font/local` calls into Vite
  * asset import references so that both dev (/@fs/...) and prod
  * (/assets/font-xxx.woff2) URLs resolve correctly.
+ *
+ * @param shimsDir - Absolute path to the shims directory (with trailing
+ *   separator). Used to skip vinext's own shim files from transform — they
+ *   contain example `next/font/local` paths in comments that must not be
+ *   rewritten. A precise prefix check is required (rather than a loose
+ *   substring match) because, now that `node_modules` is no longer excluded,
+ *   the guard runs against arbitrary third-party package paths — some of
+ *   which may legitimately contain the substring `font-local` (e.g. a
+ *   package named `font-local-loader`) and must still be transformed. This
+ *   mirrors `createGoogleFontsPlugin`, which takes `shimsDir` for the same
+ *   reason.
  */
-export function createLocalFontsPlugin(): Plugin {
+export function createLocalFontsPlugin(shimsDir: string): Plugin {
   return {
     name: "vinext:local-fonts",
     enforce: "pre",
 
     transform: {
+      // NOTE: node_modules is intentionally NOT excluded here. npm packages
+      // commonly wrap `next/font/local` and ship the font files alongside the
+      // module (e.g. `geist/dist/mono.js` calls
+      // `localFont({ src: "./fonts/geist-mono/GeistMono-Variable.woff2" })`).
+      // Those relative `src` paths are resolved against the package's own
+      // directory and must be promoted to Vite asset imports just like a user's
+      // source files, otherwise the runtime `@font-face` references the raw
+      // relative path and the font 404s. Next.js's font loader runs on these
+      // package files too, so vinext must as well. The `code` filter plus the
+      // default-import check below keep this from touching unrelated modules.
       filter: {
         id: {
           include: /\.(tsx?|jsx?|mjs)$/,
-          exclude: /node_modules/,
         },
         code: "next/font/local",
       },
       handler(code, id) {
         // Defensive guards — duplicate filter logic
-        if (id.includes("node_modules")) return null;
         if (id.startsWith("\0")) return null;
         if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
-        // Skip vinext's own font-local shim — it contains example paths
-        // in comments that would be incorrectly rewritten.
-        if (id.includes("font-local")) return null;
+        // Skip vinext's own shim files — the font-local shim contains example
+        // paths in comments that would be incorrectly rewritten. A precise
+        // prefix check against `shimsDir` (not a loose `id.includes("font-local")`
+        // substring) is required now that node_modules is no longer excluded,
+        // so legitimate third-party packages whose path happens to contain
+        // `font-local` are still transformed. Mirrors `createGoogleFontsPlugin`.
+        if (id.startsWith(shimsDir)) return null;
 
-        // Verify there's actually an import from next/font/local
-        const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
-        if (!importRe.test(code)) return null;
+        // Verify there's actually a default import from next/font/local and
+        // remember its local binding so family payloads only attach to real
+        // localFont calls.
+        const importMatch =
+          /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*(['"])next\/font\/local\2/.exec(code);
+        if (!importMatch) return null;
+        const localFontIdentifier = importMatch[1];
 
         const s = new MagicString(code);
         let hasChanges = false;
@@ -1162,10 +1206,44 @@ export function createLocalFontsPlugin(): Plugin {
           hasChanges = true;
         }
 
+        const localFontCallRe = new RegExp(
+          String.raw`(?:^|[;{}\n])\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*${escapeRegExp(localFontIdentifier)}\s*\(\s*(?=\{)`,
+          "g",
+        );
+        const familyPayloadInsertions = new Set<number>();
+        let localFontCallMatch;
+        while ((localFontCallMatch = localFontCallRe.exec(code)) !== null) {
+          const bindingName = localFontCallMatch[1];
+          const objRange = _findBalancedObject(code, localFontCallRe.lastIndex);
+          if (!objRange) continue;
+          if (_findCallEnd(code, objRange[1]) === null) continue;
+
+          const insertAt = objRange[1] - 1;
+          if (familyPayloadInsertions.has(insertAt)) continue;
+          const optionsStr = code.slice(objRange[0], objRange[1]);
+          if (/(?:^|[,{])\s*_vinext\s*:/.test(optionsStr)) continue;
+
+          // Decide the separator from the last significant character before the
+          // closing brace (see injectSelfHostedCss): comment- and
+          // string-literal-aware, so a trailing comma hidden behind a comment is
+          // honoured and a `//` inside a value (e.g. a path) is not mistaken for
+          // a comment that would swallow the real comma → double comma.
+          const lastChar = lastSignificantChar(optionsStr.slice(0, -1));
+          const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
+          s.appendLeft(
+            insertAt,
+            `${separator}_vinext: { font: { family: ${JSON.stringify(bindingName)} } }`,
+          );
+          familyPayloadInsertions.add(insertAt);
+          hasChanges = true;
+        }
+
         if (!hasChanges) return null;
 
         // Prepend the asset imports at the top of the file
-        s.prepend(imports.join("\n") + "\n");
+        if (imports.length > 0) {
+          s.prepend(imports.join("\n") + "\n");
+        }
 
         return {
           code: s.toString(),

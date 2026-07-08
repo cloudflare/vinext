@@ -1,5 +1,12 @@
 import type { ReactNode } from "react";
 import { fnv1a64 } from "../utils/hash.js";
+import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
+import { consumeDynamicFetchObservations } from "vinext/shims/fetch-cache";
+import {
+  consumeDynamicUsage,
+  consumeInvalidDynamicUsageError,
+  consumeRenderRequestApiUsage,
+} from "vinext/shims/headers";
 import { AppElementsWire, isAppElementsRecord } from "./app-elements.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import {
@@ -62,6 +69,21 @@ export function createEmptyAppPageRenderObservationState(): AppPageRenderObserva
     dynamicFetches: [],
     requestApis: [],
   };
+}
+
+export function consumeAppPageRenderObservationState(): AppPageRenderObservationState {
+  return {
+    dynamicFetches: consumeDynamicFetchObservations(),
+    requestApis: consumeRenderRequestApiUsage(),
+  };
+}
+
+export function discardAppPageRenderState(): void {
+  _consumeRequestScopedCacheLife();
+  consumeDynamicFetchObservations();
+  consumeRenderRequestApiUsage();
+  consumeInvalidDynamicUsageError();
+  consumeDynamicUsage();
 }
 
 export function createAppPageRenderObservation(options: {

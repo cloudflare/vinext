@@ -11,12 +11,11 @@
  * `sass-embedded`). vinext relies on that built-in handling; this test
  * verifies vinext does not interfere with the pipeline, and that a
  * stylesheet imported via `pages/_app.tsx` reaches the rendered HTML.
+ * `sass` is a root devDependency, so the suite always runs.
  *
  * Uses a per-test tmpdir fixture rather than adding files to a shared
- * `tests/fixtures/*` tree. A shared SCSS fixture would break every test
- * that boots that fixture when `sass` is not installed (CI default),
- * because the route-graph scan trips on the unresolved `.scss` import
- * before any test starts.
+ * `tests/fixtures/*` tree, keeping the SCSS toolchain requirement out
+ * of fixtures shared with non-SCSS tests.
  *
  * Ported from Next.js: test/e2e/app-dir/scss/single-global/single-global.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/scss/single-global/single-global.test.ts
@@ -33,29 +32,24 @@ import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { fetchHtml } from "./helpers.js";
 
-// Skip the suite when `sass` is not installed. SCSS preprocessing is a
-// peer dependency contract: vinext relies on Vite's built-in handling
-// which requires the user to install `sass` (or `sass-embedded`).
-// `@ts-ignore` (not `@ts-expect-error`) because `sass` may or may not be
-// installed depending on the dev environment — when it is, the import
-// resolves and there is no type error to expect.
-let sassAvailable = false;
-try {
-  // @ts-ignore Optional peer dependency, not declared in this repo
-  await import("sass");
-  sassAvailable = true;
-} catch {
-  sassAvailable = false;
-}
-
-const describeIfSass = sassAvailable ? describe : describe.skip;
-
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
 // Regex for any CSS representation of rgb(0, 0, 255) — the SCSS variable
 // value used across these tests. CSS minifiers in the build pipeline may
 // emit any of these forms (rgb(), 6-digit hex, 3-digit hex, named colour).
 const RESOLVED_BLUE_REGEX = /rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)|#0000ff\b|#00f\b|\bblue\b/;
+
+function getHtmlAttr(tag: string, attrName: string): string | null {
+  const match = tag.match(new RegExp(`\\s${attrName}=(["'])(.*?)\\1`, "i"));
+  return match?.[2] ?? null;
+}
+
+function getStylesheetHrefs(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0])
+    .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
+    .map((tag) => getHtmlAttr(tag, "href"))
+    .filter((href): href is string => href !== null);
+}
 
 /**
  * Materialize a minimal Pages Router fixture in a fresh tmpdir.
@@ -66,8 +60,8 @@ const RESOLVED_BLUE_REGEX = /rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)|#0000ff\b|#00f\b|\
  * `_app`-imported CSS reaching the served HTML via `<link rel="stylesheet">`.
  *
  * Symlinks the workspace `node_modules` so the fixture can resolve
- * `react`, `react-dom`, `vinext`, and (if installed) `sass` without
- * an extra install step.
+ * `react`, `react-dom`, `vinext`, and `sass` without an extra
+ * install step.
  */
 async function makePagesRouterScssFixture(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-scss-pages-"));
@@ -99,7 +93,7 @@ async function makePagesRouterScssFixture(): Promise<string> {
   return tmpDir;
 }
 
-describeIfSass("SCSS preprocessing (Pages Router)", () => {
+describe("SCSS preprocessing (Pages Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
   let tmpDir: string;
@@ -121,8 +115,6 @@ describeIfSass("SCSS preprocessing (Pages Router)", () => {
     if (addr && typeof addr === "object") {
       baseUrl = `http://localhost:${addr.port}`;
     }
-
-    await fetch(`${baseUrl}/`).catch(() => {});
   }, 60_000);
 
   afterAll(async () => {
@@ -135,12 +127,16 @@ describeIfSass("SCSS preprocessing (Pages Router)", () => {
     expect(res.status).toBe(200);
     expect(html).toContain("SCSS Pages Test");
 
-    // Pages Router dev does not server-render `<link>` tags for CSS — the
-    // browser loads CSS via the JS module graph when it executes `_app`.
-    // Ask Vite for the compiled CSS via `?direct` to confirm the SCSS
-    // variable resolved (preprocessor ran) rather than being inlined verbatim.
-    const scssDirectUrl = "/styles/global.scss?direct";
-    const cssRes = await fetch(new URL(scssDirectUrl, baseUrl));
+    // Pages Router dev must emit the _app stylesheet as an initial blocking
+    // link, matching Next.js's shared /_app asset handling and avoiding FOUC.
+    const stylesheetHref = getStylesheetHrefs(html).find((href) =>
+      href.endsWith("/styles/global.scss"),
+    );
+    expect(stylesheetHref).toBe("/styles/global.scss");
+
+    // Fetch the exact linked stylesheet URL to confirm the browser-facing CSS
+    // is served and Sass variables resolved before it reaches the browser.
+    const cssRes = await fetch(new URL(stylesheetHref!, baseUrl));
     expect(cssRes.status).toBe(200);
     const css = await cssRes.text();
     expect(css).not.toContain("$var");
@@ -164,7 +160,7 @@ describeIfSass("SCSS preprocessing (Pages Router)", () => {
         build: {
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: { output: { entryFileNames: "entry.js" } },
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
 
@@ -177,7 +173,7 @@ describeIfSass("SCSS preprocessing (Pages Router)", () => {
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
-          rollupOptions: { input: "virtual:vinext-client-entry" },
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
         },
       });
 
@@ -200,10 +196,10 @@ describeIfSass("SCSS preprocessing (Pages Router)", () => {
         // If the CSS file isn't linked, the browser never loads any
         // styles for the SCSS-defined classes — the exact failure mode
         // of LHF-5 (`rgb(0, 0, 0)` instead of the SCSS colour).
-        const linkMatch = html.match(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+\.css)"/);
-        expect(linkMatch, 'expected <link rel="stylesheet"> in the served HTML').not.toBeNull();
+        const stylesheetHref = getStylesheetHrefs(html).find((href) => href.endsWith(".css"));
+        expect(stylesheetHref, 'expected <link rel="stylesheet"> in the served HTML').toBeTruthy();
 
-        const cssRes = await fetch(new URL(linkMatch![1]!, prodUrl));
+        const cssRes = await fetch(new URL(stylesheetHref!, prodUrl));
         expect(cssRes.status).toBe(200);
         const css = await cssRes.text();
         expect(css).not.toContain("$var");

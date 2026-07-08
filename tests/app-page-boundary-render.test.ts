@@ -8,6 +8,7 @@ import {
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
@@ -67,7 +69,7 @@ function createCommonOptions() {
       return [".font { font-family: Test; }"];
     },
     getNavigationContext() {
-      return { pathname: "/posts/missing" };
+      return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
     },
     isRscRequest: false,
     loadSsrHandler,
@@ -80,6 +82,7 @@ function createCommonOptions() {
     },
     metadataRoutes: [],
     renderToReadableStream: renderElementToStream,
+    request: new Request("https://example.com/posts/missing"),
     requestUrl: "https://example.com/posts/missing",
     resolveChildSegments() {
       return [];
@@ -136,9 +139,13 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
+  return React.createElement("p", { "data-boundary": "global-error" }, error.stack);
+}
+
 type TestModule = {
   default: React.ComponentType<any>;
-  metadata?: { description: string };
+  metadata?: { description?: string; title?: string };
   viewport?: { themeColor: string };
 };
 
@@ -156,12 +163,62 @@ const notFoundModule = {
   default: NotFoundBoundary,
 } satisfies TestModule;
 
+function RedirectingRootLayout(): React.ReactNode {
+  const error = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/login;307;",
+  });
+  throw error;
+}
+
+const redirectingRootLayoutModule = {
+  default: RedirectingRootLayout,
+} satisfies TestModule;
+
+function NotFoundThrowingRootLayout(): React.ReactNode {
+  // Mimics notFound() re-thrown while the route-miss boundary itself is
+  // rendering — the shape that has no parent boundary to climb to.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const notFoundThrowingRootLayoutModule = {
+  default: NotFoundThrowingRootLayout,
+} satisfies TestModule;
+
+const notFoundModuleWithMetadata = {
+  default: NotFoundBoundary,
+  metadata: { title: "notfound title" },
+} satisfies TestModule;
+
 const routeErrorModule = {
   default: RouteErrorBoundary,
 } satisfies TestModule;
 
 const globalErrorModule = {
   default: GlobalErrorBoundary,
+} satisfies TestModule;
+
+const globalErrorModuleWithStack = {
+  default: GlobalErrorBoundaryWithStack,
+} satisfies TestModule;
+
+function ThrowingGlobalErrorBoundary(): React.ReactNode {
+  throw new Error("global-error boom");
+}
+
+const throwingGlobalErrorModule = {
+  default: ThrowingGlobalErrorBoundary,
+} satisfies TestModule;
+
+function SignalThrowingGlobalErrorBoundary(): React.ReactNode {
+  // Mimics notFound() called from inside global-error: a navigation signal that
+  // must propagate rather than being degraded to a built-in 200.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const signalThrowingGlobalErrorModule = {
+  default: SignalThrowingGlobalErrorBoundary,
 } satisfies TestModule;
 
 const EMPTY_ROOT_LAYOUTS: readonly TestModule[] = [];
@@ -183,6 +240,50 @@ describe("app page boundary render helpers", () => {
     expect(response).toBeNull();
     expect(common.loadSsrHandler).not.toHaveBeenCalled();
     expect(common.clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [redirectingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(307);
+    const location = response?.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(new URL(location!, common.request.url).pathname).toBe("/login");
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates with a status-text response when an http-access signal is thrown while rendering the boundary", async () => {
+    // Scope boundary for the route-miss redirect fix. Redirects thrown during
+    // boundary rendering are fully handled (see the test above), but a
+    // notFound()/forbidden()/unauthorized() re-thrown *inside* the boundary has
+    // no parent boundary to climb to. renderBoundarySpecialErrorResponse omits
+    // renderFallbackPage precisely so it cannot recurse on the same boundary,
+    // so it falls through to a plain status-text response rather than the
+    // boundary UI. Pins that deliberate terminal behavior.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [notFoundThrowingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const body = await response?.text();
+    expect(body).toBe("Not Found");
+    expect(body).not.toContain('data-boundary="not-found"');
   });
 
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
@@ -217,6 +318,38 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('name="theme-color" content="#111111"');
     expect(html).toContain('name="robots"');
     expect(html).toContain('content="noindex"');
+  });
+
+  it("renders not-found boundary metadata exactly once for HTTP access fallbacks", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should not duplicate metadata with navigation API"
+    //
+    // The upstream fixture calls notFound() from generateMetadata() and expects
+    // the rendered not-found boundary's metadata (`not-found.tsx` static
+    // metadata) to produce a single title in the document.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
   });
 
   it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {
@@ -312,6 +445,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/", "layout:/posts"]);
     expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -414,7 +548,26 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual([]);
     expect(payload.__rootLayout).toBeNull();
+    expect(payload.__sourcePage).toBeUndefined();
     expect(payload["route:/posts/missing"]).toBeTruthy();
+  });
+
+  it("omits source-page metadata when route segments are unavailable", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: {},
+      renderToReadableStream: renderWirePayloadToStream,
+      route: {
+        notFound: notFoundModule,
+        pattern: "/posts/missing",
+      },
+      statusCode: 404,
+    });
+
+    const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+    expect(payload.__sourcePage).toBeUndefined();
   });
 
   it("renders route error boundaries with sanitized errors inside layouts", async () => {
@@ -442,6 +595,57 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("does not serialize production SSR stacks into the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const common = createCommonOptions();
+    const error = new Error("client page error");
+    error.stack = "/private/deployment/server.js:42";
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "ssr",
+        globalErrorModule,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("client page error");
+      expect(html).not.toContain("/private/deployment/server.js:42");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves development RSC stacks in the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const common = createCommonOptions();
+    const error = Object.assign(new Error("server page error"), {
+      digest: "12345",
+      stack: "/app/rsc/page.tsx:2",
+    });
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "rsc",
+        globalErrorModule: globalErrorModuleWithStack,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("/app/rsc/page.tsx:2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("preserves middleware headers on error boundary responses", async () => {
@@ -554,6 +758,7 @@ describe("app page boundary render helpers", () => {
     expect(payload.__route).toBe("route:/posts/missing");
     expect(payload.__layoutIds).toEqual(["layout:/"]);
     expect(payload.__rootLayout).toBe("/");
+    expect(payload.__sourcePage).toBe("/posts/[slug]/page");
     expect(payload["route:/posts/missing"]).toBeTruthy();
   });
 
@@ -575,7 +780,10 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
 
     const html = await response?.text();
     expect(html).toContain('data-boundary="global-error"');
@@ -583,5 +791,65 @@ describe("app page boundary render helpers", () => {
     expect(html).not.toContain('data-layout="root"');
     expect(html).not.toContain("Root layout description");
     expect(html).not.toContain('name="viewport"');
+  });
+
+  it("falls back to the built-in default global-error when the user's global-error throws", async () => {
+    // When the resolved global-error boundary itself throws while rendering, the
+    // SSR render rejects; renderAppPageErrorBoundary catches it and re-renders
+    // with the built-in default global-error so the request still produces a
+    // usable error document with the original HTTP 500 semantics. Locks in the server-side
+    // retry directly (the integration test in tests/nextjs-compat/global-error
+    // exercises the same path through the dev/preview server). Fixes #1548.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("boom"),
+      globalErrorModule: throwingGlobalErrorModule,
+      matchedParams: { slug: "post" },
+      route: {
+        layouts: [rootLayoutModule],
+        params: { slug: "post" },
+        pattern: "/posts/[slug]",
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const html = await response?.text();
+    // The built-in default global-error UI from
+    // packages/vinext/src/shims/default-global-error.tsx.
+    expect(html).toContain("This page couldn");
+    // The user's throwing boundary contributed no markup.
+    expect(html).not.toContain("global-error boom");
+  });
+
+  it("re-throws navigation signals from a throwing global-error instead of degrading to the built-in fallback", async () => {
+    // A redirect()/notFound() thrown from inside global-error must propagate,
+    // not be swallowed into a built-in default 200.
+    const common = createCommonOptions();
+
+    await expect(
+      renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error: new Error("boom"),
+        globalErrorModule: signalThrowingGlobalErrorModule,
+        matchedParams: { slug: "post" },
+        route: {
+          layouts: [rootLayoutModule],
+          params: { slug: "post" },
+          pattern: "/posts/[slug]",
+        },
+        sanitizeErrorForClient(error: Error) {
+          return error;
+        },
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_NOT_FOUND" });
   });
 });

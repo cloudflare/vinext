@@ -9,10 +9,10 @@ import {
   type Viewport,
 } from "vinext/shims/metadata";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
-import { applyFileBasedMetadata } from "./file-based-metadata.js";
+import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
-import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
 /**
@@ -20,10 +20,12 @@ import type { MetadataFileRoute } from "./metadata-routes.js";
  * `APP_PAGE_METADATA_ERROR_MARKER` symbol. The marker lets downstream special-
  * error handling distinguish a `generateMetadata()` redirect/notFound from a
  * page-component redirect/notFound, which matters because metadata is
- * suspended/streamed in Next.js: its redirects ride inside the flight payload
- * with a 200 status code even for document SSR, whereas page redirects still
- * emit a 307 for SSR. See https://github.com/cloudflare/vinext/issues/1347
- * and Next.js test/e2e/app-dir/metadata-navigation.
+ * suspended/streamed in Next.js. Its redirects no longer become a plain
+ * HTTP 307: RSC navigation rides inside the flight payload (200), streaming
+ * document SSR gets an HTML refresh meta tag (200), and html-limited bots
+ * get a blocking 307 — whereas page redirects still emit a 307 for SSR.
+ * See https://github.com/cloudflare/vinext/issues/1347
+ * and Next.js test/e2e/app-dir/metadata-streaming.
  */
 async function resolveModuleMetadata(
   ...args: Parameters<typeof _resolveModuleMetadata>
@@ -35,9 +37,12 @@ async function resolveModuleMetadata(
   }
 }
 
-type AppPageSearchParams = Record<string, string | string[]>;
+export type AppPageSearchParams = Record<string, string | string[]>;
 
 type AppPageHeadModule = Record<string, unknown>;
+
+export type ApplyAppPageFileBasedMetadata =
+  typeof import("./file-based-metadata.js").applyFileBasedMetadata;
 
 type AppPageHeadSource = {
   metadata: Metadata | null;
@@ -50,31 +55,42 @@ type AppPageHeadLayout<TModule extends AppPageHeadModule> = {
 };
 
 type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  layoutParams?: readonly AppPageParams[] | null;
   layoutModule?: TModule | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
+  layoutTreePositions?: readonly number[] | null;
   pageModule?: TModule | null;
   params?: AppPageParams | null;
   routeSegments?: readonly string[] | null;
 };
 
 type AppPageHeadSlot<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  configLayouts?: readonly (TModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   layout?: TModule | null;
+  layoutIndex?: number;
   page?: TModule | null;
+  routeSegments?: readonly string[] | null;
 };
 
 type ResolveActiveParallelRouteHeadInputsOptions<
   TModule extends AppPageHeadModule = AppPageHeadModule,
 > = {
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
+  interceptBranchSegments?: readonly string[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotKey?: string | null;
+  layoutTreePositions?: readonly number[] | null;
   params: AppPageParams;
   routeSegments: readonly string[];
+  slotParams?: Readonly<Record<string, AppPageParams>> | null;
   slots?: Record<string, AppPageHeadSlot<TModule>> | null;
 };
 
 type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   /**
    * Configured next.config `basePath`. Threaded into `applyFileBasedMetadata`
    * so file-based metadata route URLs (icon, opengraph-image, manifest, ...)
@@ -92,9 +108,11 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
   routePath: string;
   routeSegments?: readonly string[] | null;
   searchParams?: URLSearchParams | null;
+  searchParamsObserver?: ThenableParamsObserver;
 };
 
 type ResolveAppPageHeadResult = {
+  hasDynamicMetadata: boolean;
   hasSearchParams: boolean;
   metadata: Metadata | null;
   pageSearchParams: AppPageSearchParams;
@@ -107,6 +125,7 @@ type AppPageSearchParamsCollection = {
 };
 
 type ResolvedParallelRouteHead = {
+  hasDynamicMetadata: boolean;
   metadataResults: (Metadata | null)[];
   metadataSources: AppPageHeadSource[];
   viewportResults: (Viewport | null)[];
@@ -116,9 +135,34 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
   options: ResolveActiveParallelRouteHeadInputsOptions<TModule>,
 ): AppPageHeadParallelRoute<TModule>[] {
   return Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
+    const ownerTreePosition = options.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0;
+    const ownerParams = resolveAppPageSegmentParams(
+      options.routeSegments,
+      ownerTreePosition,
+      options.params,
+    );
     if (options.interceptSlotKey === slotKey && options.interceptPage) {
+      const interceptLayouts = options.interceptLayouts ?? [];
       return {
-        layoutModules: options.interceptLayouts ?? [],
+        layoutModules: [slot.layout, ...interceptLayouts].filter(isPresent),
+        layoutParams: [
+          ...(slot.layout ? [ownerParams] : []),
+          ...interceptLayouts.filter(isPresent).map((_, index) => {
+            const segments = options.interceptLayoutSegments?.[index] ?? [];
+            return {
+              ...ownerParams,
+              ...resolveParallelLayoutParams(
+                options.interceptBranchSegments ?? segments,
+                segments.length,
+                options.interceptParams ?? options.params,
+              ),
+            };
+          }),
+        ],
+        layoutTreePositions: [
+          ...(slot.layout ? [0] : []),
+          ...interceptLayouts.filter(isPresent).map(() => options.routeSegments.length),
+        ],
         pageModule: options.interceptPage,
         params: options.interceptParams ?? options.params,
         routeSegments: options.routeSegments,
@@ -126,16 +170,40 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
     }
 
     return {
-      layoutModules: slot.layout ? [slot.layout] : [],
+      layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
+      layoutParams: [
+        ...(slot.layout ? [ownerParams] : []),
+        ...(slot.configLayoutTreePositions ?? []).map((treePosition) => ({
+          ...ownerParams,
+          ...resolveParallelLayoutParams(
+            slot.routeSegments ?? options.routeSegments,
+            treePosition,
+            options.slotParams?.[slotKey] ?? options.params,
+          ),
+        })),
+      ],
+      layoutTreePositions: [...(slot.layout ? [0] : []), ...(slot.configLayoutTreePositions ?? [])],
       pageModule: slot.page,
-      params: options.params,
-      routeSegments: options.routeSegments,
+      params: options.slotParams?.[slotKey] ?? options.params,
+      routeSegments: slot.routeSegments ?? options.routeSegments,
     };
   });
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function resolveParallelLayoutParams(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
+}
+
+function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): boolean {
+  return typeof module?.generateMetadata === "function";
 }
 
 export function collectAppPageSearchParams(
@@ -265,6 +333,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   fallbackRouteSegments: readonly string[],
   pageSearchParams: AppPageSearchParams,
   parent: Promise<Metadata>,
+  searchParamsObserver?: ThenableParamsObserver,
 ): Promise<ResolvedParallelRouteHead> {
   const params = parallelRoute.params ?? fallbackParams;
   const routeSegments = parallelRoute.routeSegments ?? fallbackRouteSegments;
@@ -275,21 +344,37 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   const layoutModules = [...(parallelRoute.layoutModules ?? []), parallelRoute.layoutModule].filter(
     isPresent,
   );
-  const layoutViewportPromises = layoutModules.map((layoutModule) =>
-    resolveModuleViewport(layoutModule, params),
+  const layoutTreePositions = parallelRoute.layoutTreePositions ?? [];
+  const layoutParams = parallelRoute.layoutParams ?? [];
+  const hasDynamicMetadata =
+    layoutModules.some(hasGenerateMetadata) || hasGenerateMetadata(parallelRoute.pageModule);
+  const layoutViewportPromises = layoutModules.map((layoutModule, index) =>
+    resolveModuleViewport(
+      layoutModule,
+      layoutParams[index] ??
+        resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params),
+    ),
   );
   const pageViewportPromise = parallelRoute.pageModule
-    ? resolveModuleViewport(parallelRoute.pageModule, params)
+    ? resolveModuleViewport(
+        parallelRoute.pageModule,
+        params,
+        pageSearchParams,
+        searchParamsObserver,
+      )
     : Promise.resolve(null);
   for (const layoutViewportPromise of layoutViewportPromises) {
     void layoutViewportPromise.catch(() => null);
   }
   void pageViewportPromise.catch(() => null);
 
-  for (const layoutModule of layoutModules) {
+  for (const [index, layoutModule] of layoutModules.entries()) {
+    const currentLayoutParams =
+      layoutParams[index] ??
+      resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params);
     const layoutMetadata = await resolveModuleMetadata(
       layoutModule,
-      params,
+      currentLayoutParams,
       undefined,
       accumulatedMetadata,
     );
@@ -312,6 +397,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
       params,
       pageSearchParams,
       accumulatedMetadata,
+      searchParamsObserver,
     );
     metadataResults.push(pageMetadata);
     // Keep the page source scoped to the same active slot branch as its layouts.
@@ -324,7 +410,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
     viewportResults.push(pageViewport);
   }
 
-  return { metadataResults, metadataSources, viewportResults };
+  return { hasDynamicMetadata, metadataResults, metadataSources, viewportResults };
 }
 
 export async function resolveAppPageHead<TModule extends AppPageHeadModule>(
@@ -340,6 +426,9 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const layoutTreePositions = options.layoutTreePositions ?? [];
   const layoutInputs = createLayoutInputs(options.layoutModules, layoutTreePositions);
   const layoutSourcePositions = layoutInputs.map((input) => input.treePosition);
+  const primaryHasDynamicMetadata =
+    layoutInputs.some((input) => hasGenerateMetadata(input.module)) ||
+    hasGenerateMetadata(options.pageModule);
   const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(options.searchParams);
   const layoutMetadataPromise = resolveLayoutMetadata(layoutInputs, options.params, routeSegments);
   const layoutViewportPromise = resolveLayoutViewport(layoutInputs, options.params, routeSegments);
@@ -355,10 +444,21 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   );
   void pageParentPromise.catch(() => null);
   const pageMetadataPromise = options.pageModule
-    ? resolveModuleMetadata(options.pageModule, options.params, pageSearchParams, pageParentPromise)
+    ? resolveModuleMetadata(
+        options.pageModule,
+        options.params,
+        pageSearchParams,
+        pageParentPromise,
+        options.searchParamsObserver,
+      )
     : Promise.resolve(null);
   const pageViewportPromise = options.pageModule
-    ? resolveModuleViewport(options.pageModule, options.params)
+    ? resolveModuleViewport(
+        options.pageModule,
+        options.params,
+        pageSearchParams,
+        options.searchParamsObserver,
+      )
     : Promise.resolve(null);
   const parallelRouteHeadPromise = Promise.all(
     (options.parallelRoutes ?? []).map((parallelRoute) =>
@@ -368,6 +468,7 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
         routeSegments,
         pageSearchParams,
         pageParentPromise,
+        options.searchParamsObserver,
       ),
     ),
   );
@@ -388,6 +489,8 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const parallelMetadataResults = parallelRouteHeads.flatMap((head) => head.metadataResults);
   const parallelViewportResults = parallelRouteHeads.flatMap((head) => head.viewportResults);
   const parallelMetadataSources = parallelRouteHeads.flatMap((head) => head.metadataSources);
+  const hasDynamicMetadata =
+    primaryHasDynamicMetadata || parallelRouteHeads.some((head) => head.hasDynamicMetadata);
 
   // Active parallel slot metadata is suppressed from contributing the primary
   // <title> when the matched page already provides one. This preserves Next.js
@@ -425,26 +528,28 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   metadataSources.push(...parallelMetadataSources);
   let metadata = resolvedMetadataBase;
 
-  try {
-    metadata = await applyFileBasedMetadata(
-      resolvedMetadataBase,
-      options.routePath,
-      options.params,
-      options.metadataRoutes,
-      {
-        routeSegments,
-        metadataSources,
-        basePath: options.basePath ?? "",
-      },
-    );
-  } catch (error) {
-    if (!options.fallbackOnFileMetadataError) {
-      throw error;
+  if (options.applyFileBasedMetadata && options.metadataRoutes.length > 0) {
+    try {
+      metadata = await options.applyFileBasedMetadata(
+        resolvedMetadataBase,
+        options.routePath,
+        options.params,
+        options.metadataRoutes,
+        {
+          routeSegments,
+          metadataSources,
+          basePath: options.basePath ?? "",
+        },
+      );
+    } catch (error) {
+      if (!options.fallbackOnFileMetadataError) {
+        throw error;
+      }
+      console.error(
+        `[vinext] File-based metadata resolution failed while rendering error boundary for ${options.routePath}:`,
+        error,
+      );
     }
-    console.error(
-      `[vinext] File-based metadata resolution failed while rendering error boundary for ${options.routePath}:`,
-      error,
-    );
   }
 
   if (metadata) {
@@ -452,6 +557,7 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   }
 
   return {
+    hasDynamicMetadata,
     hasSearchParams,
     metadata,
     pageSearchParams,

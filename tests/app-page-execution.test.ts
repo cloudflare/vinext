@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
+  bufferAppPageBinaryStream,
   probeAppPageComponent,
   probeAppPageLayouts,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
+import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -42,6 +44,7 @@ describe("app page execution helpers", () => {
       kind: "redirect",
       location: "/redirected",
       statusCode: 308,
+      type: "replace",
     });
 
     expect(
@@ -68,11 +71,12 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(redirectResponse.status).toBe(307);
-    expect(redirectResponse.headers.get("location")).toBe("https://example.com/redirected");
+    expect(redirectResponse.headers.get("location")).toBe("/redirected");
     expect(redirectResponse.headers.get("x-middleware-security")).toBe("present");
     expect(redirectResponse.headers.get("vary")).toBe("x-auth-state");
     expect(redirectResponse.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
@@ -127,10 +131,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(internalRedirect.headers.get("location")).toBe("https://example.com/blog/about");
+    expect(internalRedirect.headers.get("location")).toBe("/blog/about");
 
     // External redirects (different origin) must NOT be prefixed — they're
     // outside the app's basePath scope.
@@ -143,13 +148,59 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "https://other.example/foo",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(externalRedirect.headers.get("location")).toBe("https://other.example/foo");
 
-    // Targets that already include the basePath prefix must be left alone
-    // (caller already did the work or middleware-driven redirect).
+    const sameOriginAbsoluteRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "https://example.com/outside",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(sameOriginAbsoluteRedirect.headers.get("location")).toBe("https://example.com/outside");
+
+    const relativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "next",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(relativeRedirect.headers.get("location")).toBe("next");
+
+    const protocolRelativeRedirect = await buildAppPageSpecialErrorResponse({
+      basePath: "/blog",
+      clearRequestContext,
+      isRscRequest: false,
+      request: new Request("https://example.com/blog/protected"),
+      specialError: {
+        kind: "redirect",
+        location: "//other.example/foo",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(protocolRelativeRedirect.headers.get("location")).toBe("/blog//other.example/foo");
+
+    // Next.js's addPathPrefix unconditionally prepends basePath to every raw
+    // slash-prefixed target, even if the caller already included it.
     const alreadyPrefixed = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
       clearRequestContext,
@@ -159,10 +210,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixed.headers.get("location")).toBe("https://example.com/blog/about");
+    expect(alreadyPrefixed.headers.get("location")).toBe("/blog/blog/about");
 
     const alreadyPrefixedRootWithQuery = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
@@ -173,12 +225,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog?from=checkout",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixedRootWithQuery.headers.get("location")).toBe(
-      "https://example.com/blog?from=checkout",
-    );
+    expect(alreadyPrefixedRootWithQuery.headers.get("location")).toBe("/blog/blog?from=checkout");
 
     const alreadyPrefixedRootWithHash = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
@@ -189,12 +240,11 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/blog#top",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(alreadyPrefixedRootWithHash.headers.get("location")).toBe(
-      "https://example.com/blog#top",
-    );
+    expect(alreadyPrefixedRootWithHash.headers.get("location")).toBe("/blog/blog#top");
 
     // No basePath configured → behavior unchanged (resolves against the
     // request URL as before).
@@ -206,13 +256,13 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/about",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(unconfigured.headers.get("location")).toBe("https://example.com/about");
+    expect(unconfigured.headers.get("location")).toBe("/about");
 
-    // Redirect to root ("/") under basePath should land on the basePath itself,
-    // not "/blog/" with a trailing slash artifact.
+    // Raw prefixing preserves the original root slash.
     const rootRedirect = await buildAppPageSpecialErrorResponse({
       basePath: "/blog",
       clearRequestContext,
@@ -222,10 +272,29 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/",
         statusCode: 307,
+        type: "replace",
       },
     });
 
-    expect(rootRedirect.headers.get("location")).toBe("https://example.com/blog");
+    expect(rootRedirect.headers.get("location")).toBe("/blog/");
+  });
+
+  it("buffers a binary stream once and replays its original chunks", async () => {
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) controller.enqueue(new TextEncoder().encode("first"));
+        else if (pullCount === 2) controller.enqueue(new TextEncoder().encode("second"));
+        else controller.close();
+      },
+    });
+
+    const replay = await bufferAppPageBinaryStream(source);
+
+    expect(pullCount).toBe(3);
+    await expect(readStreamAsText(replay)).resolves.toBe("firstsecond");
+    expect(pullCount).toBe(3);
   });
 
   it("appends pending cookies (cookies().set during render) to redirect responses", async () => {
@@ -251,11 +320,12 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/dashboard",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(redirectWithCookies.status).toBe(307);
-    expect(redirectWithCookies.headers.get("location")).toBe("https://example.com/dashboard");
+    expect(redirectWithCookies.headers.get("location")).toBe("/dashboard");
     const setCookies = redirectWithCookies.headers.getSetCookie();
     expect(setCookies).toContain("session=fresh; Path=/; HttpOnly");
     expect(setCookies).toContain("csrf=abc; Path=/");
@@ -273,6 +343,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/dashboard",
         statusCode: 307,
+        type: "replace",
       },
     });
 
@@ -348,6 +419,141 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/redirected");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;replace;/redirected;307;",
+    });
+    await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("preserves explicit push semantics in RSC redirect flights", async () => {
+    const buildRscRedirectFlightStream = vi.fn(
+      ({ digest }: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(digest));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "push",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("push");
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;push;/redirected;307;",
+    });
+  });
+
+  it("keeps framework redirect side-channel headers authoritative over middleware", async () => {
+    const middlewareHeaders = new Headers({
+      "X-Vinext-Rsc-Redirect": "/middleware-target",
+      "X-Vinext-Rsc-Redirect-Type": "push",
+    });
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      middlewareContext: { headers: middlewareHeaders },
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/actual-target",
+        statusCode: 307,
+        type: "replace",
+      },
+    });
+
+    expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/actual-target");
+    expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
+  });
+
+  it("preserves semicolons through encoded redirect parsing and raw Flight re-emission", async () => {
+    const specialError = resolveAppPageSpecialError({
+      digest: "NEXT_REDIRECT;;%2Fdocs%3Bpart;307",
+    });
+    expect(specialError).toEqual({
+      kind: "redirect",
+      location: "/docs;part",
+      statusCode: 307,
+      type: "replace",
+    });
+
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(options.digest));
+            controller.close();
+          },
+        }),
+    );
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: specialError!,
+    });
+    const emittedDigest = await response.text();
+
+    expect(emittedDigest).toBe("NEXT_REDIRECT;replace;/docs;part;307;");
+    expect(parseNextRedirectDigest(emittedDigest)).toEqual({
+      status: 307,
+      type: "replace",
+      url: "/docs;part",
+    });
+  });
+
+  it("keeps metadata-originated RSC redirects on the Flight digest path", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Document requests and RSC navigation requests intentionally diverge:
+    // the document path streams a refresh meta tag, while the client router
+    // still consumes the redirect digest from the Flight stream.
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${options.digest}`));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+        fromMetadata: true,
       },
     });
 
@@ -361,12 +567,15 @@ describe("app page execution helpers", () => {
     await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
   });
 
-  it("always emits 200 + flight payload for metadata-originated redirects (even on document SSR)", async () => {
-    // generateMetadata() redirects are streamed inside the flight payload
-    // because metadata resolution is suspended in Next.js. The HTTP status
-    // stays 200 for both RSC and full document requests. Mirrors Next.js
-    // test/e2e/app-dir/metadata-navigation:
-    //   "should support redirect in generateMetadata"
+  it("renders a metadata-originated document redirect as an HTML refresh when metadata streams", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Next.js captures redirect() thrown by generateMetadata() as a streamed
+    // server error and injects the canonical refresh meta tag through
+    // make-get-server-inserted-html.tsx. The document status stays 200, but it
+    // must remain an HTML document so a browser direct visit can follow it.
     const buildRscRedirectFlightStream = vi.fn(
       () =>
         new ReadableStream<Uint8Array>({
@@ -386,12 +595,51 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
         fromMetadata: true,
       },
     });
 
     expect(response.status).toBe(200);
-    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirected"/>',
+    );
+  });
+
+  it("uses an HTTP redirect for metadata-originated redirects when metadata streaming is disabled", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 307 response status when html limited bots access redirect"
+    const buildRscRedirectFlightStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        type: "replace",
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/redirected");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
   });
 
   it("preserves the 307/308 status code in the encoded digest (permanentRedirect)", async () => {
@@ -414,6 +662,7 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/permanent-target",
         statusCode: 308,
+        type: "replace",
       },
     });
 
@@ -432,14 +681,15 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toMatch(/redirected\.rsc/);
+    expect(response.headers.get("location")).toMatch(/redirected\?_rsc/);
   });
 
-  it("canonicalizes same-origin RSC redirect locations to .rsc URLs", async () => {
+  it("canonicalizes same-origin RSC redirect locations to Next-style RSC URLs", async () => {
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext: vi.fn(),
       isRscRequest: true,
@@ -454,13 +704,143 @@ describe("app page execution helpers", () => {
         kind: "redirect",
         location: "/redirected?tab=1",
         statusCode: 307,
+        type: "replace",
       },
     });
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toMatch(
-      /^https:\/\/example\.com\/redirected\.rsc\?tab=1&_rsc=/,
+      /^https:\/\/example\.com\/redirected\?tab=1&_rsc=/,
     );
+  });
+
+  it("returns HTTP 200 when notFound() is thrown from generateMetadata (fromMetadata)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+    //   "should support notFound in generateMetadata"
+    //
+    // When notFound() / forbidden() / unauthorized() is thrown from
+    // generateMetadata(), Next.js treats the error as a suspended metadata
+    // result — the React not-found boundary handles the UI client-side while
+    // the HTTP response stays 200. The rendered fallback response (status 404
+    // from renderAppPageHttpAccessFallback) must be overridden to 200.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 200 for metadata notFound when no fallback page is available", async () => {
+    // When there is no renderFallbackPage (e.g. no not-found.tsx exists), the
+    // plain text fallback should also be 200 for fromMetadata errors.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, with fallback)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 404 response status when html limited bots access notFound"
+    //
+    // When serveStreamingMetadata === false (html-limited bots), metadata blocks
+    // the render synchronously. Next.js sets the real HTTP error status in this
+    // path (app-render.tsx ~2845). Mirror the redirect-from-metadata path, which
+    // is already gated on serveStreamingMetadata !== false.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, no fallback)", async () => {
+    // Same bot scenario but with no renderFallbackPage (no not-found.tsx).
+    // The plain text fallback must also use the real error status.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it("returns the original status for non-metadata http-access-fallback errors", async () => {
+    // Page-level notFound() calls (fromMetadata absent/false) must still return
+    // the original 404 status — only metadata-originated errors get the 200
+    // override.
+    const fallbackResponse = new Response("page-level-not-found", { status: 404 });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/page"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+      },
+    });
+
+    expect(response.status).toBe(404);
   });
 
   it("probes layouts from inner to outer and stops on a handled special response", async () => {
@@ -551,8 +931,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -584,15 +964,15 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCallCount++;
-          const result = fn();
+          const result = await fn();
           // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
           // detects dynamic usage
-          return Promise.resolve({
+          return {
             result,
             dynamicDetected: probeCallCount === 2,
-          });
+          };
         },
       },
     });
@@ -720,9 +1100,9 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -798,8 +1178,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -836,8 +1216,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin", "layout:/admin/posts"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -883,12 +1263,12 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
           // probeAppPageLayouts iterates inner-to-outer:
           // first call → layout 1 (dashboard) → dynamic
           // second call → layout 0 (root) → static
-          return Promise.resolve({ result: fn(), dynamicDetected: probeCalls === 1 });
+          return { result: await fn(), dynamicDetected: probeCalls === 1 };
         },
       },
     });
@@ -902,6 +1282,72 @@ describe("app page execution helpers", () => {
     expect(byId["layout:/"]).toEqual({
       layer: "runtime-probe",
       outcome: "static",
+    });
+  });
+
+  it("flips a build-time static layout to dynamic when a runtime observation is unsafe for static reuse", async () => {
+    // Parity guard for the observation override: a layout the build classified
+    // `static` is downgraded to `"d"` at request time when
+    // `isLayoutObservationDynamic` reports the observed render is unsafe for
+    // static reuse (finite revalidate, cache tags, request APIs, param scope,
+    // etc.). The emitted debug reason switches from the stale build-time reason
+    // to `runtime-probe`/`dynamic` so the flag and reason stay in agreement.
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        buildTimeReasons: new Map([
+          [0, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+          [1, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+        ]),
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        // Only the dashboard layout's observation is unsafe for static reuse.
+        isLayoutObservationDynamic(layoutId) {
+          return layoutId === "layout:/dashboard";
+        },
+        runWithIsolatedDynamicScope() {
+          throw new Error("isolated scope must not run for build-time classified layouts");
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // dashboard: build-time static, but the observation flips it to dynamic.
+    // root: build-time static with a safe observation stays static.
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "d",
+    });
+
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+    });
+    // The unflipped layout keeps reporting its build-time reason.
+    expect(byId["layout:/"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-static",
     });
   });
 
@@ -954,5 +1400,44 @@ describe("app page execution helpers", () => {
     ).toBe(
       "</font-a.woff2>; rel=preload; as=font; type=font/woff2; crossorigin, </font-b.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on RSC redirect flight responses for edge-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC redirect flight responses for nodejs-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
   });
 });

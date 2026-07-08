@@ -10,13 +10,16 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
+import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 
 /**
- * RSC cache-busting hashes cover the headers that make a `.rsc` payload vary.
+ * RSC cache-busting hashes cover the headers that make an RSC payload vary.
  * Client-side variant headers must survive transit through CDNs and reverse
  * proxies; stripping them changes the server hash and turns stale URLs into
  * repeated canonicalization redirects.
@@ -30,7 +33,6 @@ export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 
 export const VINEXT_RSC_VARY_HEADER = [
   RSC_HEADER,
-  "Accept",
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -44,6 +46,7 @@ const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
 type CreateRscRequestHeadersOptions = {
+  clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
@@ -84,6 +87,15 @@ export function applyRscCompatibilityIdHeader(
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, normalized);
   } else {
     headers.delete(VINEXT_RSC_COMPATIBILITY_ID_HEADER);
+  }
+}
+
+export function applyRscDeploymentIdHeader(headers: Headers): void {
+  const deploymentId = getDeploymentId();
+  if (deploymentId) {
+    headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+  } else {
+    headers.delete(NEXTJS_DEPLOYMENT_ID_HEADER);
   }
 }
 
@@ -227,6 +239,18 @@ function isRscCacheBustingSearchPair(pair: string): boolean {
   }
 }
 
+/**
+ * Detect the internal RSC cache-busting search param using the same
+ * encoding-aware matching as `stripRscCacheBustingSearchParam`
+ * (`isRscCacheBustingSearchPair`). The two share a single matcher so a guard
+ * built on this helper and the stripper can never disagree on which pairs
+ * count as `_rsc`, including encoded-key edge cases like `%5Frsc`.
+ */
+export function hasRscCacheBustingSearchParam(url: URL): boolean {
+  const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  return rawQuery.split("&").some((pair) => pair.length > 0 && isRscCacheBustingSearchPair(pair));
+}
+
 export async function computeRscCacheBustingSearchParam(headers: Headers): Promise<string> {
   const input = createCacheBustingInput(headers);
   if (input === null) {
@@ -265,6 +289,7 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
+  applyDeploymentIdHeader(headers);
 
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);
@@ -272,6 +297,13 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
+  }
+
+  if (
+    options.clientReuseManifestHeader !== undefined &&
+    options.clientReuseManifestHeader !== null
+  ) {
+    headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, options.clientReuseManifestHeader);
   }
 
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
@@ -285,18 +317,20 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-  const pathname = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  const normalizedPath =
-    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  return `${normalizedPath}.rsc${query}`;
+  return beforeHash;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  return `${url.pathname}${url.search}`;
+}
+
+export function createServerActionRequestUrl(href: string): string {
+  const hashIndex = href.indexOf("#");
+  const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
+  const url = new URL(beforeHash, "http://vinext.local");
   return `${url.pathname}${url.search}`;
 }
 
@@ -332,7 +366,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === null && expectedHash === "") {
+  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
     return null;
   }
 
