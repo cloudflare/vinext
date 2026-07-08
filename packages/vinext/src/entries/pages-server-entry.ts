@@ -301,16 +301,14 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
-const _errorPageRoute = ErrorPageModule
-  ? {
-      pattern: "/_error",
-      patternParts: ["_error"],
-      isDynamic: false,
-      params: [],
-      module: ErrorPageModule,
-      filePath: ${errorAssetPathJson},
-    }
-  : null;
+const _errorPageRoute = {
+  pattern: "/_error",
+  patternParts: ["_error"],
+  isDynamic: false,
+  params: [],
+  module: ErrorPageModule,
+  filePath: ${errorAssetPathJson},
+};
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}

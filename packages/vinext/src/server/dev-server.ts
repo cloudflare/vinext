@@ -2173,7 +2173,7 @@ async function renderErrorPage(
       });
       if (res.headersSent || res.writableEnded) return;
       const errorProps = { ...initialErrorProps, statusCode };
-      let renderProps: Record<string, unknown> = { pageProps: errorProps };
+      let renderProps: Record<string, unknown>;
       if (AppComponent && hasPagesGetInitialProps(AppComponent)) {
         const appInitialProps = await loadPagesGetInitialProps(AppComponent, {
           AppTree: (appTreeProps: Record<string, unknown>) => {
@@ -2196,7 +2196,9 @@ async function renderErrorPage(
           },
         });
         if (res.headersSent || res.writableEnded) return;
-        if (appInitialProps) renderProps = appInitialProps;
+        renderProps = appInitialProps ?? {};
+      } else {
+        renderProps = { pageProps: errorProps };
       }
 
       // Try custom _document
@@ -2372,11 +2374,8 @@ window.__NEXT_HYDRATED_CB?.();
     }
   }
 
-  // No custom error page found — fall back to vinext's default. The 404 case
-  // renders the canonical Next.js HTML body (matching `pages/_error.tsx`) so
-  // dev-server responses include "This page could not be found." just like
-  // production. Other status codes keep the plain-text fallback because
-  // Next.js's `_error.tsx` defaults already handle those cases when present.
+  // Defensive fallback for a missing or invalid framework error module. The
+  // normal no-user-error-file path resolves `next/error` in the candidate loop.
   if (statusCode === 404) {
     const defaultResponse = buildDefaultPagesNotFoundResponse();
     const headers: Record<string, string> = {};
