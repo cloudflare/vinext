@@ -2206,20 +2206,64 @@ async function renderErrorPage(
         [appAssetPath, errorAssetPath],
         nonceAttr,
       );
+      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
+      const errorModuleSource = errorAssetPath
+        ? createPagesDevModuleUrl(server.config.root, errorAssetPath, "/")
+        : "next/error";
+      const appModuleSource = appAssetPath
+        ? createPagesDevModuleUrl(server.config.root, appAssetPath, "/")
+        : null;
+      const errorNextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
+        {
+          props: renderProps,
+          page: errorPage,
+          query: parseQuery(url),
+          buildId: process.env.__VINEXT_BUILD_ID,
+          isFallback: false,
+        },
+      )}</script>`;
+      const errorHydrationScript = `
+<script type="module"${nonceAttr}>
+import React from "react";
+import { hydrateRoot } from "react-dom/client";
+import Router, { wrapWithRouterContext } from "next/router";
+
+const nextDataElement = document.getElementById("__NEXT_DATA__");
+window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+const props = window.__NEXT_DATA__.props;
+const pageModule = await import("${errorModuleSource}");
+const PageComponent = pageModule.default;
+let element;
+${
+  appModuleSource
+    ? `const appModule = await import("${appModuleSource}");
+const AppComponent = appModule.default;
+window.__VINEXT_APP__ = AppComponent;
+element = React.createElement(AppComponent, { ...props, Component: PageComponent, pageProps: props.pageProps, router: Router });`
+    : `element = React.createElement(PageComponent, props.pageProps ?? {});`
+}
+let resolveHydrationCommit;
+const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
+element = wrapWithRouterContext(element, resolveHydrationCommit);
+window.__VINEXT_ROOT__ = hydrateRoot(document.getElementById("__next"), element);
+await hydrationCommitted;
+window.__NEXT_HYDRATED = true;
+window.__NEXT_HYDRATED_CB?.();
+</script>`;
+      const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
 
       if (DocumentComponent) {
-        const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
         await streamPageToResponse(res, element, {
           url,
           server,
           fontHeadHTML: "",
           assetHeadHTML,
-          scripts: "",
+          scripts: errorScripts,
           DocumentComponent,
           statusCode,
           documentContext: {
             err,
-            pathname: errorPathname,
+            pathname: errorPage,
             query: parseQuery(url),
             asPath: url,
             req,
@@ -2254,6 +2298,7 @@ async function renderErrorPage(
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
+  ${errorScripts}
 </body>
 </html>`;
         const transformedHtml = await server.transformIndexHtml(url, html);
