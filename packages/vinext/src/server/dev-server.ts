@@ -2094,9 +2094,9 @@ async function renderErrorPage(
   for (const candidate of candidates) {
     try {
       const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
-      if (!errorAssetPath) continue;
+      if (!errorAssetPath && candidate !== "_error") continue;
 
-      const errorModule = await importModule(runner, errorAssetPath);
+      const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -2115,6 +2115,7 @@ async function renderErrorPage(
       }
 
       const createElement = React.createElement;
+      res.statusCode = statusCode;
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
@@ -2125,6 +2126,32 @@ async function renderErrorPage(
       });
       if (res.headersSent || res.writableEnded) return;
       const errorProps = { ...initialErrorProps, statusCode };
+      let renderProps: Record<string, unknown> = { pageProps: errorProps };
+      if (AppComponent && hasPagesGetInitialProps(AppComponent)) {
+        const appInitialProps = await loadPagesGetInitialProps(AppComponent, {
+          AppTree: (appTreeProps: Record<string, unknown>) =>
+            createElement(AppComponent, {
+              ...appTreeProps,
+              Component: ErrorComponent,
+            }),
+          Component: ErrorComponent,
+          router: {
+            pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
+            query: parseQuery(url),
+            asPath: url,
+          },
+          ctx: {
+            req,
+            res,
+            err,
+            pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
+            query: parseQuery(url),
+            asPath: url,
+          },
+        });
+        if (res.headersSent || res.writableEnded) return;
+        if (appInitialProps) renderProps = appInitialProps;
+      }
 
       // If the caller didn't supply wrapWithRouterContext, load it now.
       // runner.import() caches internally so the cost is negligible.
@@ -2159,8 +2186,8 @@ async function renderErrorPage(
       ): React.ReactElement => {
         let errorElement: React.ReactElement = FinalApp
           ? createElement(FinalApp, {
+              ...renderProps,
               Component: FinalComponent,
-              pageProps: errorProps,
             })
           : createElement(FinalComponent, errorProps);
         if (wrapFn) errorElement = wrapFn(errorElement);

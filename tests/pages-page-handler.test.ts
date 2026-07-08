@@ -153,6 +153,37 @@ describe("createPagesPageHandler — route miss", () => {
     expect(res.status).toBe(404);
   });
 
+  // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
+  // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
+  it("preserves a custom App initial-props envelope without pageProps on _error", async () => {
+    const renderedProps: Record<string, unknown>[] = [];
+    const errorComponent = Object.assign(() => null, {
+      getInitialProps: ({ res }: { res: { statusCode: number } }) => ({
+        statusCode: res.statusCode,
+      }),
+    });
+    const errorRoute = makeRoute("/_error", makePageModule({ default: errorComponent }));
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps: async () => ({ initialProps: {} }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [],
+        errorPageRoute: errorRoute,
+        AppComponent,
+        createPageElement: (_PageComponent, _AppComponent, props) => {
+          renderedProps.push(props);
+          return null;
+        },
+      }),
+    );
+
+    const res = await handler(makeRequest("/missing"), "/missing", null, null, null);
+
+    expect(res.status).toBe(404);
+    expect(renderedProps).toContainEqual({ initialProps: {} });
+  });
+
   it("returns _next/data 404 JSON on data request route miss", async () => {
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [] }));
     const res = await handler(makeRequest("/missing"), "/missing", null, null, { isDataReq: true });

@@ -21763,6 +21763,23 @@ describe("next/error shim", () => {
     expect(html).toContain("403");
     expect(html).toContain("Forbidden");
   });
+
+  it("renders the client exception message when statusCode is absent", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(React.createElement(ErrorComponent, {}));
+    expect(html).not.toContain("<h1");
+    expect(html).toContain("Application error: a client-side exception has occurred");
+  });
+
+  it("derives statusCode from the response in getInitialProps", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+    expect(ErrorComponent.getInitialProps({ res: { statusCode: 404 } })).toEqual({
+      statusCode: 404,
+    });
+  });
 });
 
 // next/app default export

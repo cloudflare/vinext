@@ -16,14 +16,22 @@ import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-
 import { RouterContext } from "./internal/router-context.js";
 
 type ErrorProps = {
-  statusCode: number;
+  statusCode?: number;
   title?: string;
   withDarkMode?: boolean;
 };
 
+type ErrorContext = {
+  err?: { statusCode?: number };
+  res?: { statusCode?: number };
+};
+
 function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
-  const defaultTitle =
-    statusCode === 404 ? "This page could not be found" : "Internal Server Error";
+  const defaultTitle = statusCode
+    ? statusCode === 404
+      ? "This page could not be found"
+      : "Internal Server Error"
+    : "Application error: a client-side exception has occurred (see the browser console for more information)";
 
   const displayTitle = title ?? defaultTitle;
 
@@ -44,22 +52,24 @@ function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
     React.createElement(
       "div",
       null,
-      React.createElement(
-        "h1",
-        {
-          style: {
-            display: "inline-block",
-            margin: "0 20px 0 0",
-            padding: "0 23px 0 0",
-            fontSize: 24,
-            fontWeight: 500,
-            verticalAlign: "top",
-            lineHeight: "49px",
-            borderRight: "1px solid rgba(0, 0, 0, .3)",
-          },
-        },
-        statusCode,
-      ),
+      statusCode
+        ? React.createElement(
+            "h1",
+            {
+              style: {
+                display: "inline-block",
+                margin: "0 20px 0 0",
+                padding: "0 23px 0 0",
+                fontSize: 24,
+                fontWeight: 500,
+                verticalAlign: "top",
+                lineHeight: "49px",
+                borderRight: "1px solid rgba(0, 0, 0, .3)",
+              },
+            },
+            statusCode,
+          )
+        : null,
       React.createElement(
         "div",
         { style: { display: "inline-block" } },
@@ -79,6 +89,10 @@ function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
     ),
   );
 }
+
+ErrorComponent.getInitialProps = ({ err, res }: ErrorContext): ErrorProps => ({
+  statusCode: res?.statusCode ?? err?.statusCode,
+});
 
 export default ErrorComponent;
 

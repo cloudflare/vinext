@@ -558,13 +558,18 @@ export function createPagesPageHandler(
         const parsedRouteUrl = new URL(routeUrl, originalRequestUrl);
         const routePathname = parsedRouteUrl.pathname || "/";
         const pagesResolvedUrl = routePathname + originalRequestUrl.search;
-        const createPageReqRes = () =>
-          createPagesReqRes({
+        const createPageReqRes = () => {
+          const reqRes = createPagesReqRes({
             body: undefined,
             query,
             request,
             url: originalRequestPathAndSearch,
           });
+          if (typeof renderStatusCode === "number") {
+            reqRes.res.statusCode = renderStatusCode;
+          }
+          return reqRes;
+        };
 
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
@@ -655,7 +660,11 @@ export function createPagesPageHandler(
 
         let pageProps = pageDataResult.pageProps;
         let renderProps = pageDataResult.props;
-        if (routePattern === "/_error" && typeof renderStatusCode === "number") {
+        if (
+          routePattern === "/_error" &&
+          typeof renderStatusCode === "number" &&
+          renderProps.pageProps !== undefined
+        ) {
           pageProps = { ...pageProps, statusCode: renderStatusCode };
           renderProps = { ...renderProps, pageProps };
         }

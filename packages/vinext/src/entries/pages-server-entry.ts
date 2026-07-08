@@ -95,7 +95,7 @@ export async function generateServerEntry(
   const errorImportCode =
     errorFilePath !== null
       ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
-      : `const ErrorPageModule = null;`;
+      : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n

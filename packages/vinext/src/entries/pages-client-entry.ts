@@ -102,6 +102,9 @@ export async function generateClientEntry(
     // lgtm[js/bad-code-sanitization]
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
+  if (!pageRoutes.some((route) => route.pattern === "/_error")) {
+    loaderEntries.push('  "/_error": () => import("next/error")');
+  }
 
   const appFileBase = appFilePath ?? undefined;
 
