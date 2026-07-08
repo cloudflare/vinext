@@ -131,8 +131,14 @@ test.describe("Hydration", () => {
     // test/e2e/middleware-general/test/index.test.ts
     await page.goto(`${BASE}/mw-rewrite-gsp-query?visible=search`);
 
+    await expect(page.locator("#router-as-path")).toHaveText(
+      "/mw-rewrite-gsp-query?visible=search",
+    );
     await expect(page.locator("#router-query")).toHaveText('{"slug":"foobar"}');
     await waitForHydration(page);
+    await expect(page.locator("#router-as-path")).toHaveText(
+      "/mw-rewrite-gsp-query?visible=search",
+    );
     await expect(page.locator("#router-query")).toHaveText(
       '{"visible":"search","some":"middleware","hello":"config","slug":"foobar"}',
     );

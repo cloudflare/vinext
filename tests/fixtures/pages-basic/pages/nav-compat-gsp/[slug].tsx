@@ -28,6 +28,7 @@ export default function PagesNavCompatGsp({ slug }: Props) {
   return (
     <div>
       <pre id="gsp-slug">{slug}</pre>
+      <pre id="router-as-path">{router.asPath}</pre>
       <pre id="router-query">{JSON.stringify(router.query)}</pre>
       <pre id="use-params">{JSON.stringify(params)}</pre>
       <pre id="use-search-params">{JSON.stringify(searchObject)}</pre>

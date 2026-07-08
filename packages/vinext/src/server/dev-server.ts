@@ -813,9 +813,7 @@ export function createSSRHandler(
           appComponent: AppComponent,
           hasRewrites,
         });
-        const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
-        const staticPropsAsPath = parsedResolvedUrl.pathname || "/";
-        const routerAsPath = isStaticPropsRoute ? staticPropsAsPath : requestAsPath;
+        const routerAsPath = requestAsPath;
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -1368,7 +1366,7 @@ export function createSSRHandler(
                         routerShim.setSSRContext({
                           pathname: patternToNextFormat(route.pattern),
                           query: renderQuery,
-                          asPath: staticPropsAsPath,
+                          asPath: routerAsPath,
                           navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,

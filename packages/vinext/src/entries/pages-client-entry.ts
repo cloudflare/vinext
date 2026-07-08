@@ -140,6 +140,7 @@ import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import Router, {
   getPagesNavigationIsReadyFromSerializedState,
+  getPagesRouterLiveSearchQuery,
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
 } from "next/router";
@@ -313,19 +314,14 @@ async function hydrate() {
       : window.location.pathname;
     const currentUrl = currentPathname + window.location.search + window.location.hash;
     const routeUrl = nextData.__vinext?.routeUrl;
-    const liveSearchQuery = Object.create(null);
-    for (const [key, value] of new URLSearchParams(window.location.search)) {
-      const existing = liveSearchQuery[key];
-      liveSearchQuery[key] = existing === undefined
-        ? value
-        : Array.isArray(existing)
-          ? [...existing, value]
-          : [existing, value];
-    }
     const fallbackRoute = nextData.isFallback === true
       ? {
           pathname: nextData.page,
-          query: { ...nextData.query, ...liveSearchQuery, ...nextData.__vinext?.routeParams },
+          query: {
+            ...nextData.query,
+            ...getPagesRouterLiveSearchQuery(),
+            ...nextData.__vinext?.routeParams,
+          },
         }
       : undefined;
     await Router.replace(

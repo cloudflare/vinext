@@ -1267,6 +1267,14 @@ function copySerializedPagesQuery(
   return result;
 }
 
+export function getPagesRouterLiveSearchQuery(): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
+  for (const [key, value] of new URLSearchParams(window.location.search)) {
+    addQueryParam(query, key, value);
+  }
+  return query;
+}
+
 function getPathnameAndQuery(): {
   pathname: string;
   query: Record<string, string | string[]>;
@@ -1296,11 +1304,7 @@ function getPathnameAndQuery(): {
       : (extractRouteParamsFromPath(pathname, resolvedPath) ??
         getRouteQueryFromNextData(nextData, resolvedPath));
     // URL search params always reflect the current URL
-    const searchQuery: Record<string, string | string[]> = {};
-    const params = new URLSearchParams(window.location.search);
-    for (const [key, value] of params) {
-      addQueryParam(searchQuery, key, value);
-    }
+    const searchQuery = getPagesRouterLiveSearchQuery();
     query = { ...searchQuery, ...routeQuery };
   }
   // asPath uses the resolved browser path, not the route pattern
@@ -3381,26 +3385,11 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
       setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
+    if (isPagesRouterReady()) {
+      setState((snapshot) => (snapshot.isReady ? snapshot : getRouterSnapshot()));
+    }
     return () => {
       window.removeEventListener("vinext:navigate", onNavigate);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const readyTimer = window.setTimeout(() => {
-      if (cancelled) return;
-      const becameReady = markPagesRouterReady();
-      if (isPagesRouterReady()) {
-        setState((snapshot) => (snapshot.isReady ? snapshot : getRouterSnapshot()));
-      }
-      if (becameReady) {
-        notifyNextNavigationPagesContext();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(readyTimer);
     };
   }, []);
 
