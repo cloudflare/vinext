@@ -21774,6 +21774,17 @@ describe("next/error shim", () => {
     expect(html).toContain("Application error: a client-side exception has occurred");
   });
 
+  it("renders the hostname in the client exception message", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { hostname: "preview.example.com" }),
+    );
+    expect(html).toContain("while loading preview.example.com");
+  });
+
   it("matches the default Error getInitialProps static contract", async () => {
     const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
@@ -21786,10 +21797,20 @@ describe("next/error shim", () => {
       statusCode: 401,
       hostname: undefined,
     });
+    expect(ErrorComponent.getInitialProps({ err: {} })).toEqual({
+      statusCode: undefined,
+      hostname: undefined,
+    });
     expect(ErrorComponent.getInitialProps({})).toEqual({
       statusCode: 404,
       hostname: undefined,
     });
+  });
+
+  it("exposes the default Error display name", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(ErrorComponent.displayName).toBe("ErrorPage");
   });
 
   it("derives the Error hostname from the server request", async () => {

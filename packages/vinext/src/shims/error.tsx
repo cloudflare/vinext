@@ -31,12 +31,8 @@ type ErrorContext = {
   res?: { statusCode?: number };
 };
 
-function getErrorInitialProps({
-  err,
-  req,
-  res,
-}: ErrorContext): ErrorProps & { statusCode: number } {
-  const statusCode = res?.statusCode || err?.statusCode || 404;
+function getErrorInitialProps({ err, req, res }: ErrorContext): ErrorProps {
+  const statusCode = res?.statusCode ? res.statusCode : err ? err.statusCode : 404;
   let hostname: string | undefined;
 
   if (typeof window !== "undefined") {
@@ -60,12 +56,12 @@ function getErrorInitialProps({
   return { statusCode, hostname };
 }
 
-function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
+function ErrorComponent({ statusCode, hostname, title }: ErrorProps): React.ReactElement {
   const defaultTitle = statusCode
     ? statusCode === 404
       ? "This page could not be found"
       : "Internal Server Error"
-    : "Application error: a client-side exception has occurred (see the browser console for more information)";
+    : `Application error: a client-side exception has occurred${hostname ? ` while loading ${hostname}` : ""} (see the browser console for more information)`;
 
   const displayTitle = title ?? defaultTitle;
 
@@ -124,6 +120,7 @@ function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
   );
 }
 
+ErrorComponent.displayName = "ErrorPage";
 ErrorComponent.getInitialProps = getErrorInitialProps;
 ErrorComponent.origGetInitialProps = getErrorInitialProps;
 
