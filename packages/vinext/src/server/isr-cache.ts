@@ -184,8 +184,7 @@ export function shouldIsolatePagesMiddlewareIsr(input: {
   initialMiddlewareMatchCanVaryByRequest?: boolean;
 }): boolean {
   return (
-    input.initialMiddlewareMatchCanVaryByRequest === true ||
-    (input.initialMiddlewareMatched === true && !getCdnCacheAdapter().ownsBackgroundRevalidation)
+    input.initialMiddlewareMatched === true || input.initialMiddlewareMatchCanVaryByRequest === true
   );
 }
 

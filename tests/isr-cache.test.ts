@@ -366,8 +366,8 @@ describe("ISR expire ceiling", () => {
     expect(originEntry?.value.value?.kind).toBe("PAGES");
   });
 
-  it("isolates Pages middleware ISR according to matcher and adapter semantics", () => {
-    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(false);
+  it("isolates Pages middleware ISR for matched or request-varying middleware", () => {
+    expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: true })).toBe(true);
     expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatchCanVaryByRequest: true })).toBe(
       true,
     );

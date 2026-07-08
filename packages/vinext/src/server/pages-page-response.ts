@@ -704,9 +704,8 @@ export async function renderPagesPageResponse(
     shouldIsolatePagesMiddlewareIsr(options.nextData?.__vinext ?? {})
   ) {
     // Middleware may produce request-specific rewrites, headers, cookies, or
-    // hydration state. Conditional matchers are isolated for every adapter;
-    // currently-matched middleware is also isolated when a CDN adapter could
-    // otherwise serve the response without executing middleware first.
+    // hydration state. Isolate both matched middleware and request-varying
+    // matchers so distinct visible sources cannot alias one destination entry.
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: ISR_NO_STORE_CACHE_CONTROL,
     });

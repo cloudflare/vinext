@@ -483,7 +483,7 @@ describe("createPagesPageHandler — _next/data", () => {
       for (const source of ["/visible-a?draft=1", "/visible-b?draft=2"]) {
         const response = await handler(makeRequest(source), "/posts/001", null, null, {
           asPath: source,
-          initialMiddlewareMatchCanVaryByRequest: true,
+          initialMiddlewareMatched: true,
         });
         await response.text();
       }
