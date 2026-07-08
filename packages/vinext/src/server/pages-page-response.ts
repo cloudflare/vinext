@@ -207,6 +207,7 @@ type RenderPagesPageResponseOptions = {
   resetSSRHead?: (() => void) | undefined;
   routePattern: string;
   routeUrl: string;
+  cacheRouteUrl?: string;
   routerAsPath?: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
@@ -662,7 +663,8 @@ export async function renderPagesPageResponse(
     const cacheBodyStreamPair = bodyStream.tee();
     responseBodyStream = cacheBodyStreamPair[0];
     const cacheBodyStream = cacheBodyStreamPair[1];
-    const isrPathname = options.routeUrl.split("?")[0];
+    const cacheRouteUrl = options.cacheRouteUrl ?? options.routeUrl;
+    const isrPathname = cacheRouteUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", isrPathname);
 
     schedulePagesIsrCacheWrite({
@@ -671,7 +673,7 @@ export async function renderPagesPageResponse(
       pageData: options.pageProps,
       revalidateSeconds: options.isrRevalidateSeconds,
       routePattern: options.routePattern,
-      tags: getPagesPathCacheTags(options.routeUrl),
+      tags: getPagesPathCacheTags(cacheRouteUrl),
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix: shellSuffix.replace(nextDataScript, cachedNextDataScript),
@@ -715,7 +717,7 @@ export async function renderPagesPageResponse(
     // which Pages Router invalidation uses) while the default emits Cache-Control.
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
-      tags: getPagesPathCacheTags(options.routeUrl),
+      tags: getPagesPathCacheTags(options.cacheRouteUrl ?? options.routeUrl),
     });
     setCacheStateHeaders(responseHeaders, "MISS");
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {

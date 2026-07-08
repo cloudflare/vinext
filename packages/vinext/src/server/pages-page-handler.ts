@@ -14,8 +14,9 @@
 
 import type { ComponentType, ReactNode } from "react";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { stripBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { resolvePagesI18nRequest } from "./pages-i18n.js";
+import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes, getPagesPreviewData } from "./pages-node-compat.js";
 import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
@@ -224,6 +225,12 @@ function buildI18nRenderContext(
     defaultLocale: currentDefaultLocale,
     domainLocales,
   };
+}
+
+function normalizeVisiblePagesUrl(value: string, basePath: string, i18nConfig: I18nConfig): string {
+  const parsed = new URL(value, "http://_");
+  const visibleUrl = stripBasePath(parsed.pathname, basePath) + parsed.search;
+  return i18nConfig ? extractLocaleFromUrl(visibleUrl, i18nConfig).url : visibleUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +458,11 @@ export function createPagesPageHandler(
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
         const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
-        const routerAsPath = renderAsPath ?? routeUrl;
+        const routerAsPath = normalizeVisiblePagesUrl(
+          renderAsPath ?? routeUrl,
+          vinextConfig.basePath,
+          i18nConfig,
+        );
         const pagesNextData = buildPagesReadinessNextData({
           pageModule,
           appComponent: AppComponent as { getInitialProps?: unknown } | null,
@@ -587,6 +598,10 @@ export function createPagesPageHandler(
           initialMiddlewareMatched: options?.initialMiddlewareMatched,
           initialMiddlewareMatchCanVaryByRequest: options?.initialMiddlewareMatchCanVaryByRequest,
         });
+        const isrIdentityUrl = isolateMiddlewareIsr ? routerAsPath : routeUrl;
+        const requestIsrCacheKey = isolateMiddlewareIsr
+          ? (router: string, _pathname: string) => pageIsrCacheKey(router, isrIdentityUrl)
+          : pageIsrCacheKey;
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -605,7 +620,7 @@ export function createPagesPageHandler(
           },
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
-          isrCacheKey: pageIsrCacheKey,
+          isrCacheKey: requestIsrCacheKey,
           isrGet: isolateMiddlewareIsr ? isrGetFromOrigin : isrGet,
           isrSet: isolateMiddlewareIsr ? isrSetToOrigin : isrSet,
           expireSeconds: vinextConfig.expireTime,
@@ -650,6 +665,7 @@ export function createPagesPageHandler(
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,
+          cacheRouteUrl: isrIdentityUrl,
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
@@ -812,7 +828,7 @@ export function createPagesPageHandler(
             : undefined,
           documentReqRes,
           gsspRes,
-          isrCacheKey: pageIsrCacheKey,
+          isrCacheKey: requestIsrCacheKey,
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds,
           isStaticPropsRoute,
@@ -832,6 +848,7 @@ export function createPagesPageHandler(
             typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
           routePattern,
           routeUrl,
+          cacheRouteUrl: isrIdentityUrl,
           routerAsPath,
           safeJsonStringify,
           scriptNonce,

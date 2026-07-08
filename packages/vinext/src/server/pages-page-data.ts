@@ -220,6 +220,7 @@ export type ResolvePagesPageDataOptions = {
   route: Pick<Route, "isDynamic">;
   routePattern: string;
   routeUrl: string;
+  cacheRouteUrl?: string;
   runInFreshUnifiedContext: <T>(callback: () => Promise<T>) => Promise<T>;
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
@@ -795,7 +796,7 @@ export async function resolvePagesPageData(
   }
 
   if (isFallback) {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = (options.cacheRouteUrl ?? options.routeUrl).split("?")[0];
     const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
@@ -881,7 +882,7 @@ export async function resolvePagesPageData(
   let isrRevalidateSeconds: number | null = null;
 
   if (typeof options.pageModule.getStaticProps === "function") {
-    const pathname = options.routeUrl.split("?")[0];
+    const pathname = (options.cacheRouteUrl ?? options.routeUrl).split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
     const cached = await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
@@ -1002,7 +1003,7 @@ export async function resolvePagesPageData(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
                 freshRevalidateSeconds,
-                getPagesPathCacheTags(options.routeUrl),
+                getPagesPathCacheTags(options.cacheRouteUrl ?? options.routeUrl),
                 options.expireSeconds,
               );
             }
@@ -1126,7 +1127,7 @@ export async function resolvePagesPageData(
           status: undefined,
         },
         revalidateSeconds,
-        getPagesPathCacheTags(options.routeUrl),
+        getPagesPathCacheTags(options.cacheRouteUrl ?? options.routeUrl),
         options.expireSeconds,
       );
     }

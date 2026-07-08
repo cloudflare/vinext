@@ -9,6 +9,10 @@ import { afterEach, describe, it, expect, vi } from "vite-plus/test";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
+  MemoryCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
   createPagesPageHandler,
   shouldEmitPagesClientTraceMetadata,
 } from "../packages/vinext/src/server/pages-page-handler.js";
@@ -125,6 +129,41 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
 });
 
 describe("createPagesPageHandler — serialized route metadata", () => {
+  it("strips basePath and locale from production SSR asPath", async () => {
+    const setSSRContext = vi.fn();
+    const route = makeRoute(
+      "/posts/:id",
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [route],
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        vinextConfig: {
+          basePath: "/docs",
+          assetPrefix: "",
+          trailingSlash: false,
+          disableOptimizedLoading: true,
+        },
+        matchRoute: () => ({ route, params: { id: "001" } }),
+        setSSRContext,
+      }),
+    );
+
+    const response = await handler(
+      makeRequest("/docs/fr/visible/1?draft=1"),
+      "/fr/posts/001?draft=1",
+      null,
+      null,
+      { asPath: "/docs/fr/visible/1?draft=1" },
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(setSSRContext).toHaveBeenCalledWith(
+      expect.objectContaining({ asPath: "/visible/1?draft=1" }),
+    );
+  });
+
   async function renderNextData(pageModule: Record<string, unknown>) {
     let nextData: Record<string, any> | undefined;
     const route = makeRoute("/posts/:id", pageModule);
@@ -411,6 +450,57 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("isolates origin ISR entries by visible rewrite source and tags", async () => {
+    class RecordingCacheHandler extends MemoryCacheHandler {
+      writes: Array<{ key: string; tags: unknown }> = [];
+
+      override async set(
+        key: string,
+        data: Parameters<MemoryCacheHandler["set"]>[1],
+        ctx?: Record<string, unknown>,
+      ) {
+        this.writes.push({ key, tags: ctx?.tags });
+        await super.set(key, data, ctx);
+      }
+    }
+
+    const cache = new RecordingCacheHandler();
+    setDataCacheHandler(cache);
+    try {
+      const route = makeRoute(
+        "/posts/:id",
+        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+      );
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: [route],
+          matchRoute: () => ({ route, params: { id: "001" } }),
+        }),
+      );
+
+      for (const source of ["/visible-a?draft=1", "/visible-b?draft=2"]) {
+        const response = await handler(makeRequest(source), "/posts/001", null, null, {
+          asPath: source,
+          initialMiddlewareMatchCanVaryByRequest: true,
+        });
+        await response.text();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(cache.writes.map(({ key }) => key)).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("/visible-a?draft=1"),
+          expect.stringContaining("/visible-b?draft=2"),
+        ]),
+      );
+      expect(cache.writes.map(({ tags }) => tags)).toEqual(
+        expect.arrayContaining([["_N_T_/visible-a"], ["_N_T_/visible-b"]]),
+      );
+    } finally {
+      setDataCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
