@@ -1366,13 +1366,14 @@ function markPagesRouterReady(): boolean {
   return true;
 }
 
-function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
+function initializePagesRouterReadyFromNextData(
+  nextData: VinextNextData,
+  forceReady = false,
+): void {
   if (typeof window === "undefined") return;
-  routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
-    nextData.page,
-    window.location.search,
-    nextData,
-  );
+  routerRuntimeState.pagesRouterReady =
+    forceReady ||
+    getPagesNavigationIsReadyFromSerializedState(nextData.page, window.location.search, nextData);
 }
 
 function markPagesRouterHydrated(): void {

@@ -2266,7 +2266,7 @@ import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
 const props = window.__NEXT_DATA__.props;
-_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);
+_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__, true);
 window.__VINEXT_PAGE_LOADERS__ = { [window.__NEXT_DATA__.page]: () => import("${errorModuleSource}") };
 window.__VINEXT_PAGE_PATTERNS__ = [window.__NEXT_DATA__.page];
 window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
