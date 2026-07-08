@@ -5433,6 +5433,7 @@ export const loadServerActionClient = ${
     // the synthetic graph; real builds continue to use native Oxc folding.
     {
       name: "vinext:typeof-window-scan",
+      apply: "build",
       enforce: "post",
       transform: {
         filter: { code: /\btypeof\s+window\b/ },

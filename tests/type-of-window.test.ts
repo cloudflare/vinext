@@ -41,6 +41,44 @@ describe("typeof window compilation", () => {
     expect(builder.environments.server?.config.define?.["typeof window"]).toBe('"undefined"');
   });
 
+  it("skips custom scan folding for modules in the Vite cache directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-cache-"));
+    temporaryDirectories.push(root);
+    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const builder = await createBuilder({
+      root,
+      cacheDir,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ react: false, rsc: false })],
+    });
+    const plugin = builder.config.plugins.find(
+      (candidate) => candidate.name === "vinext:typeof-window-scan",
+    );
+    if (!plugin?.transform || typeof plugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
+    }
+
+    const transform = plugin.transform.handler;
+    const context = {
+      environment: {
+        config: {
+          build: { write: false },
+          cacheDir,
+          consumer: "server",
+        },
+      },
+    };
+    const source = `if (typeof window !== "undefined") import("browser-only")`;
+
+    expect(
+      await transform.call(context as never, source, path.join(cacheDir, "deps_ssr/react.js")),
+    ).toBeNull();
+    expect(
+      await transform.call(context as never, source, path.join(root, "app/page.js")),
+    ).not.toBeNull();
+  });
+
   it("only folds references to the global window binding", () => {
     const source = `
 if (typeof window !== "undefined") globalBrowserOnly()
