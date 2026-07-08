@@ -645,6 +645,11 @@ export function createSSRHandler(
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
     attachPagesRequestCookies(req);
+    if (isDataReq) {
+      // Next.js disables caching for every rendered Pages response in
+      // development, including redirect and not-found data exits.
+      res.setHeader("Cache-Control", "no-cache, must-revalidate");
+    }
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
@@ -1660,9 +1665,6 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
-          // Next.js disables caching for every Pages response in development.
-          // Apply the same policy after gSSP headers so request-specific data
-          // responses cannot be reused across middleware/header/cookie inputs.
           dataHeaders["Cache-Control"] = "no-cache, must-revalidate";
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new

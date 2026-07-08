@@ -976,6 +976,7 @@ describe("Pages Router integration", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
     expect(res.headers.get("location")).toBeNull();
 
     const body = (await res.json()) as {
@@ -2481,6 +2482,7 @@ describe("Pages Router integration", () => {
       const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       // Body must still be valid JSON so naive clients calling `.json()` do
       // not throw before checking the status code.
@@ -2497,6 +2499,7 @@ describe("Pages Router integration", () => {
       );
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       expect(await res.json()).toEqual({});
     });
 
