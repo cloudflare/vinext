@@ -109,7 +109,7 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("does not decode normalized interception pathnames twice", () => {
+  it("preserves encoded interception target identity and canonicalizes target params", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed/:slug", ["feed", ":slug"], {
         modal: {
@@ -126,7 +126,14 @@ describe("App RSC route matching", () => {
     ]);
 
     expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
-      matchedParams: { slug: "a%61", id: "a%62" },
+      matchedParams: { slug: "a%61", id: "a%2562" },
+    });
+    expect(matcher.findIntercept("/photos/a%2Fb", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%2Fb" },
+    });
+    expect(matcher.findIntercept("/ph%6Ftos/a", "/feed/a%2561")).toBeNull();
+    expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "%E2%9C%93" },
     });
   });
 
@@ -399,7 +406,7 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
   });
 
-  it("canonicalizes encoded source path parts for interception params", () => {
+  it("normalizes source path parts separately from encoded interception targets", () => {
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:tenant", ["_sites", ":tenant"], {
         modal: {
@@ -417,7 +424,7 @@ describe("App RSC route matching", () => {
 
     expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toMatchObject({
       targetPattern: "/photos/:id",
-      matchedParams: { tenant: "acme", id: "a/b" },
+      matchedParams: { tenant: "acme", id: "a%2Fb" },
     });
   });
 

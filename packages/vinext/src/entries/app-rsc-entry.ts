@@ -741,6 +741,7 @@ export default createAppRscHandler({
     actionFailed,
     handlerStart,
     interceptionContext,
+    interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
     middlewareContext,
@@ -825,7 +826,10 @@ export default createAppRscHandler({
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
-        return findIntercept(pathname, interceptionContext);
+        return findIntercept(
+          pathname === cleanPathname ? interceptionPathname : pathname,
+          interceptionContext,
+        );
       },
       generateStaticParams: __generateStaticParams,
       getFontLinks: _getSSRFontLinks,
@@ -877,7 +881,7 @@ export default createAppRscHandler({
         });
       },
       async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
         // component for dynamic bailout — matching the render path, which also

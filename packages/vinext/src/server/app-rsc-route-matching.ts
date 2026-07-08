@@ -124,7 +124,7 @@ function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
     : splitPathnameForRouteMatch(normalizedPathname);
 }
 
-function appRscInterceptionPathnameParts(pathname: string): string[] {
+function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
   const pathOnly = pathname.split("?")[0];
   const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
   return splitPathSegments(normalizedPathname).map((segment) => {
@@ -186,8 +186,8 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
       if (sourcePathname === null) return null;
 
-      const urlParts = appRscInterceptionPathnameParts(pathname);
-      const sourceParts = appRscInterceptionPathnameParts(sourcePathname);
+      const urlParts = appRscPathnameParts(pathname, true);
+      const sourceParts = appRscInterceptionSourcePathnameParts(sourcePathname);
       const matchedSourceRoute = trieMatchRaw(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {
@@ -200,6 +200,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
         const params = matchRoutePatternRaw(urlParts, entry.targetPatternParts);
         if (params === null) continue;
+        canonicalizeAppPageParams(params);
 
         const concreteSourceRouteIndex =
           matchedSourceRoute && entry.sourceMatchPatternParts !== null

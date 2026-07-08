@@ -39,6 +39,21 @@ export default async function FeedPage({
           </Link>
         </li>
         <li>
+          <Link href="/photos/%2561" id="feed-photo-double-encoded-link">
+            Double-encoded photo
+          </Link>
+        </li>
+        <li>
+          <Link href="/photos/a%2Fb" id="feed-photo-encoded-slash-link">
+            Encoded-slash photo
+          </Link>
+        </li>
+        <li>
+          <Link href="/photos/%e2%9c%93" id="feed-photo-unicode-link">
+            Encoded Unicode photo
+          </Link>
+        </li>
+        <li>
           <Link href="/gallery" id="gallery-link">
             Gallery
           </Link>

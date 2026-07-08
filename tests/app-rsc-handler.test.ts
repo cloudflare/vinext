@@ -120,6 +120,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
               route,
             }
           : null),
+    matchRequestRoute: overrides.matchRequestRoute,
     runMiddleware:
       overrides.runMiddleware ??
       (overrides.middlewareModule
@@ -1229,6 +1230,60 @@ describe("createAppRscHandler", () => {
       destination: "2",
       same: "new",
     });
+  });
+
+  it("preserves the encoded request pathname for direct interception matching", async () => {
+    let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage: async (options) => {
+        pageOptions = options;
+        return new Response("page");
+      },
+      matchRequestRoute(pathname: string) {
+        return pathname === "/about/%2561"
+          ? {
+              params: {},
+              route: createPageRoute({ pattern: "/about/:id", isDynamic: true }),
+            }
+          : null;
+      },
+    });
+
+    await handler(new Request("https://example.test/docs/about/%2561"), null);
+
+    expect(pageOptions?.interceptionPathname).toBe("/about/%2561");
+  });
+
+  it("uses the normalized rewrite destination for interception matching", async () => {
+    let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage: async (options) => {
+        pageOptions = options;
+        return new Response("page");
+      },
+      middlewareModule: {
+        default: () =>
+          new Response(null, {
+            headers: {
+              "x-middleware-rewrite": "https://example.test/docs/about/%2561",
+            },
+          }),
+      },
+      matchRoute(pathname: string) {
+        return pathname === "/about/%2561"
+          ? {
+              params: {},
+              route: createPageRoute({ pattern: "/about/:id", isDynamic: true }),
+            }
+          : null;
+      },
+    });
+
+    await handler(new Request("https://example.test/docs/source"), null);
+
+    expect(pageOptions?.interceptionPathname).toBe("/about/%2561");
   });
 
   it("evaluates config rewrite conditions against middleware rewrite queries", async () => {
