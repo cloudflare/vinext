@@ -720,19 +720,23 @@ export function createSSRHandler(
         return;
       }
       // No route matched — try to render custom 404 page
-      await renderErrorPage(
-        server,
-        runner,
-        req,
-        res,
-        url,
-        pagesDir,
-        404,
-        undefined,
-        matcher,
-        undefined,
-        reactStrictMode,
-      );
+      const requestContext = createRequestContext();
+      await runWithRequestContext(requestContext, async () => {
+        await _alsRegistration;
+        await renderErrorPage(
+          server,
+          runner,
+          req,
+          res,
+          url,
+          pagesDir,
+          404,
+          undefined,
+          matcher,
+          undefined,
+          reactStrictMode,
+        );
+      });
       return;
     }
 
@@ -2157,6 +2161,8 @@ async function renderErrorPage(
       } catch {
         // router shim not available — continue without it
       }
+      const serverRouter = errorRouterShim?.default ?? errorRouter;
+      const wrapFn = wrapWithRouterContext ?? errorRouterShim?.wrapWithRouterContext;
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
@@ -2170,13 +2176,16 @@ async function renderErrorPage(
       let renderProps: Record<string, unknown> = { pageProps: errorProps };
       if (AppComponent && hasPagesGetInitialProps(AppComponent)) {
         const appInitialProps = await loadPagesGetInitialProps(AppComponent, {
-          AppTree: (appTreeProps: Record<string, unknown>) =>
-            createElement(AppComponent, {
+          AppTree: (appTreeProps: Record<string, unknown>) => {
+            const appTree = createElement(AppComponent, {
               ...appTreeProps,
               Component: ErrorComponent,
-            }),
+              router: serverRouter,
+            });
+            return wrapFn ? wrapFn(appTree) : appTree;
+          },
           Component: ErrorComponent,
-          router: errorRouter,
+          router: serverRouter,
           ctx: {
             req,
             res,
@@ -2189,11 +2198,6 @@ async function renderErrorPage(
         if (res.headersSent || res.writableEnded) return;
         if (appInitialProps) renderProps = appInitialProps;
       }
-
-      // If the caller didn't supply wrapWithRouterContext, load it now.
-      // runner.import() caches internally so the cost is negligible.
-      let wrapFn = wrapWithRouterContext;
-      wrapFn ??= errorRouterShim?.wrapWithRouterContext;
 
       // Try custom _document
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -2218,7 +2222,7 @@ async function renderErrorPage(
           ? createElement(FinalApp, {
               ...renderProps,
               Component: FinalComponent,
-              router: errorRouter,
+              router: serverRouter,
             })
           : createElement(FinalComponent, errorProps);
         if (wrapFn) errorElement = wrapFn(errorElement);

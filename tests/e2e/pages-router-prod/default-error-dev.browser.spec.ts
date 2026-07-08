@@ -28,6 +28,7 @@ async function createDevelopmentFixture(): Promise<{
   await fs.writeFile(
     path.join(pagesDir, "_app.tsx"),
     `import { useEffect, useState } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { useRouter } from "next/router";
 
 export default function App({ Component, pageProps, customEnvelope, router }) {
@@ -50,7 +51,17 @@ export default function App({ Component, pageProps, customEnvelope, router }) {
   );
 }
 
-App.getInitialProps = async () => ({ customEnvelope: "preserved" });
+App.getInitialProps = async ({ AppTree, ctx, router }) => {
+  if (ctx.asPath === "/missing-a") await new Promise((resolve) => setTimeout(resolve, 50));
+  const appTreeHtml = renderToStaticMarkup(<AppTree pageProps={{}} />);
+  const appTreeHasRouter = appTreeHtml.includes('data-router-pathname="/_error"')
+    && appTreeHtml.includes('data-context-as-path="' + ctx.asPath + '"');
+  return {
+    customEnvelope: router.route === "/_error" && router.isReady === true && appTreeHasRouter
+      ? "preserved"
+      : "broken",
+  };
+};
 `,
   );
   await fs.writeFile(
@@ -146,5 +157,17 @@ test.describe("Pages Router framework error page development fallback", () => {
     );
     expect(unexpectedErrors).toEqual([]);
     consoleErrors.length = 0;
+  });
+
+  test("isolates router context across concurrent missing routes", async ({ developmentApp }) => {
+    const [first, second] = await Promise.all([
+      fetch(`${developmentApp.baseUrl}missing-a`).then((response) => response.text()),
+      fetch(`${developmentApp.baseUrl}missing-b`).then((response) => response.text()),
+    ]);
+
+    expect(first).toContain('data-context-as-path="/missing-a"');
+    expect(second).toContain('data-context-as-path="/missing-b"');
+    expect(first).toContain('data-envelope="preserved"');
+    expect(second).toContain('data-envelope="preserved"');
   });
 });
