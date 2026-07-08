@@ -1660,6 +1660,10 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          // Next.js disables caching for every Pages response in development.
+          // Apply the same policy after gSSP headers so request-specific data
+          // responses cannot be reused across middleware/header/cookie inputs.
+          dataHeaders["Cache-Control"] = "no-cache, must-revalidate";
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew

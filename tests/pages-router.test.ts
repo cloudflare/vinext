@@ -2566,6 +2566,7 @@ describe("Pages Router integration", () => {
         await withDeploymentId(async () => {
           const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
           expect(res.status).toBe(200);
+          expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
           expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
           const json = (await res.json()) as { pageProps: { message: string } };
           expect(json.pageProps.message).toBe("Hello from getServerSideProps");
@@ -2598,6 +2599,7 @@ describe("Pages Router integration", () => {
 
         const okRes = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
         expect(okRes.status).toBe(200);
+        expect(okRes.headers.get("cache-control")).toBe("no-cache, must-revalidate");
         expect(okRes.headers.get("x-nextjs-deployment-id")).toBeNull();
       });
     });
