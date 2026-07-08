@@ -14,7 +14,11 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
+import {
+  MatcherConfig,
+  matchesMiddleware,
+  middlewareMatchCanVaryByRequest,
+} from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -30,6 +34,7 @@ export type MiddlewareModule = Record<string, unknown>;
 export type MiddlewareResult = {
   continue: boolean;
   matched?: boolean;
+  matchCanVaryByRequest?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -302,17 +307,16 @@ export async function executeMiddleware(
     ? stripBasePath(normalizedPathname, options.basePath)
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
+  const matcher = middlewareMatcher(options.module);
 
-  if (
-    !matchesMiddleware(
-      matchPathname,
-      middlewareMatcher(options.module),
-      options.request,
-      options.i18nConfig,
-    )
-  ) {
+  if (!matchesMiddleware(matchPathname, matcher, options.request, options.i18nConfig)) {
     return { continue: true };
   }
+  const matchCanVaryByRequest = middlewareMatchCanVaryByRequest(
+    matchPathname,
+    matcher,
+    options.i18nConfig,
+  );
 
   const nextRequest = createNextRequest(
     options.request,
@@ -342,6 +346,7 @@ export async function executeMiddleware(
     return {
       continue: false,
       matched: true,
+      matchCanVaryByRequest,
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
@@ -354,13 +359,14 @@ export async function executeMiddleware(
   const waitUntilPromises = drainFetchEvent(fetchEvent);
 
   if (!response) {
-    return { continue: true, matched: true, waitUntilPromises };
+    return { continue: true, matched: true, matchCanVaryByRequest, waitUntilPromises };
   }
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
     return {
       continue: true,
       matched: true,
+      matchCanVaryByRequest,
       responseHeaders: collectMiddlewareHeaders(response),
       status: response.status !== 200 ? response.status : undefined,
       waitUntilPromises,
@@ -413,6 +419,7 @@ export async function executeMiddleware(
         return {
           continue: false,
           matched: true,
+          matchCanVaryByRequest,
           response: dataRedirectResponse(normalizedLocation, response),
           waitUntilPromises,
         };
@@ -437,6 +444,7 @@ export async function executeMiddleware(
       return {
         continue: false,
         matched: true,
+        matchCanVaryByRequest,
         redirectUrl: normalizedLocation,
         redirectStatus: response.status,
         response: stripMiddlewareHeadersFromResponse(relativizedResponse),
@@ -486,6 +494,7 @@ export async function executeMiddleware(
     return {
       continue: true,
       matched: true,
+      matchCanVaryByRequest,
       rewriteUrl: rewritePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -497,6 +506,7 @@ export async function executeMiddleware(
   return {
     continue: false,
     matched: true,
+    matchCanVaryByRequest,
     response: stripMiddlewareHeadersFromResponse(response),
     waitUntilPromises,
   };

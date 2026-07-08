@@ -121,7 +121,7 @@ describe("pages page data", () => {
       safeJsonStringify(value: unknown) {
         return JSON.stringify(value);
       },
-      vinext: { hasMiddleware: true },
+      vinext: { hasMiddleware: true, initialMiddlewareMatchCanVaryByRequest: true },
     });
 
     expect(html).toContain("<div>fresh-body</div>");
@@ -129,7 +129,9 @@ describe("pages page data", () => {
     expect(html).toContain('<script src="/tail.js"></script>');
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
-    expect(html).toContain('"__vinext":{"hasMiddleware":true,"initialMiddlewareMatched":false}');
+    expect(html).toContain(
+      '"__vinext":{"hasMiddleware":true,"initialMiddlewareMatchCanVaryByRequest":true,"initialMiddlewareMatched":false}',
+    );
   });
 
   it("preserves custom app props in fallback shells", async () => {
@@ -854,7 +856,7 @@ describe("pages page data", () => {
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
-        vinext: { hasMiddleware: true },
+        vinext: { hasMiddleware: true, initialMiddlewareMatchCanVaryByRequest: true },
       }),
     );
 
@@ -897,7 +899,7 @@ describe("pages page data", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining(
-          '"__vinext":{"hasMiddleware":true,"initialMiddlewareMatched":false}',
+          '"__vinext":{"hasMiddleware":true,"initialMiddlewareMatchCanVaryByRequest":true,"initialMiddlewareMatched":false}',
         ),
         pageData: { pageProps: { title: "fresh" } },
       }),
@@ -1066,7 +1068,11 @@ describe("pages page data", () => {
             return { props: {}, revalidate: 60 };
           },
         },
-        vinext: { hasMiddleware: true, initialMiddlewareMatched: true },
+        vinext: {
+          hasMiddleware: true,
+          initialMiddlewareMatched: true,
+          initialMiddlewareMatchCanVaryByRequest: true,
+        },
       }),
     );
 
@@ -1099,7 +1105,11 @@ describe("pages page data", () => {
             return { props: {}, revalidate: 60 };
           },
         },
-        vinext: { hasMiddleware: true, initialMiddlewareMatched: false },
+        vinext: {
+          hasMiddleware: true,
+          initialMiddlewareMatched: false,
+          initialMiddlewareMatchCanVaryByRequest: true,
+        },
       }),
     );
 

@@ -197,6 +197,7 @@ export type CreatePagesPageHandlerOptions = {
 type RenderPageOptions = {
   isDataReq?: boolean;
   initialMiddlewareMatched?: boolean;
+  initialMiddlewareMatchCanVaryByRequest?: boolean;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -273,8 +274,6 @@ export function createPagesPageHandler(
     AppComponent,
     DocumentComponent,
   } = opts;
-  const pagesIsrGet = hasMiddleware ? isrGetFromOrigin : isrGet;
-  const pagesIsrSet = hasMiddleware ? isrSetToOrigin : isrSet;
 
   function renderToStringAsync(element: ReactNode): Promise<string> {
     return renderToReadableStream(element).then((stream) => new Response(stream).text());
@@ -540,6 +539,8 @@ export function createPagesPageHandler(
             appModuleUrl,
             hasMiddleware,
             initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
+            initialMiddlewareMatchCanVaryByRequest:
+              options?.initialMiddlewareMatchCanVaryByRequest === true,
             ...(!isStaticPropsRoute && routeUrl !== (renderAsPath ?? originalRequestPathAndSearch)
               ? { routeUrl }
               : {}),
@@ -601,8 +602,8 @@ export function createPagesPageHandler(
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isrCacheKey: pageIsrCacheKey,
-          isrGet: pagesIsrGet,
-          isrSet: pagesIsrSet,
+          isrGet: options?.initialMiddlewareMatchCanVaryByRequest ? isrGetFromOrigin : isrGet,
+          isrSet: options?.initialMiddlewareMatchCanVaryByRequest ? isrSetToOrigin : isrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
@@ -657,6 +658,8 @@ export function createPagesPageHandler(
               statusCode: 404,
               asPath: renderAsPath ?? routeUrl,
               initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
+              initialMiddlewareMatchCanVaryByRequest:
+                options?.initialMiddlewareMatchCanVaryByRequest === true,
               renderErrorPageOnMiss: false,
               __forcedRoute: notFoundRoute,
             });
@@ -803,7 +806,7 @@ export function createPagesPageHandler(
           expireSeconds: vinextConfig.expireTime,
           isrRevalidateSeconds,
           isStaticPropsRoute,
-          isrSet: pagesIsrSet,
+          isrSet: options?.initialMiddlewareMatchCanVaryByRequest ? isrSetToOrigin : isrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,
@@ -866,6 +869,8 @@ export function createPagesPageHandler(
                 statusCode: 500,
                 asPath: url,
                 initialMiddlewareMatched: options?.initialMiddlewareMatched === true,
+                initialMiddlewareMatchCanVaryByRequest:
+                  options?.initialMiddlewareMatchCanVaryByRequest === true,
                 renderErrorPageOnMiss: false,
                 __isInternalErrorRender: true,
                 __forcedRoute: errorRoute,

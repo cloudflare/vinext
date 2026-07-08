@@ -323,6 +323,7 @@ describe("pages page response", () => {
         __vinext: {
           hasMiddleware: true,
           initialMiddlewareMatched: true,
+          initialMiddlewareMatchCanVaryByRequest: true,
         },
       },
     });

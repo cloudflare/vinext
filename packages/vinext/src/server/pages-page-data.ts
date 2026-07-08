@@ -910,7 +910,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (options.vinext?.hasMiddleware === true) {
+      if (options.vinext?.initialMiddlewareMatchCanVaryByRequest === true) {
         applyCdnResponseHeaders(hitResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
@@ -1008,7 +1008,7 @@ export async function resolvePagesPageData(
           routePath: options.routePattern,
           routeType: "render",
         },
-        { forceOrigin: options.vinext?.hasMiddleware === true },
+        { forceOrigin: options.vinext?.initialMiddlewareMatchCanVaryByRequest === true },
       );
 
       const staleHtml = rewritePagesInitialMiddlewareMatched(
@@ -1024,7 +1024,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (options.vinext?.hasMiddleware === true) {
+      if (options.vinext?.initialMiddlewareMatchCanVaryByRequest === true) {
         applyCdnResponseHeaders(staleResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: same as the HIT branch — attach an

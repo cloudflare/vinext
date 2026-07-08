@@ -688,7 +688,10 @@ export async function renderPagesPageResponse(
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
-  } else if (options.isrRevalidateSeconds && options.nextData?.__vinext?.hasMiddleware === true) {
+  } else if (
+    options.isrRevalidateSeconds &&
+    options.nextData?.__vinext?.initialMiddlewareMatchCanVaryByRequest === true
+  ) {
     // The initial middleware match is request-specific (matcher conditions may
     // depend on headers/cookies), so the rendered __NEXT_DATA__ cannot be shared
     // by a CDN for the same URL. Keep origin ISR enabled, but prevent edge and

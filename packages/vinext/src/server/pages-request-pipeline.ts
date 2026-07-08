@@ -46,6 +46,7 @@ import { patternToNextFormat } from "../routing/route-validation.js";
 export type PagesRenderOptions = {
   isDataReq?: boolean;
   initialMiddlewareMatched?: boolean;
+  initialMiddlewareMatchCanVaryByRequest?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
@@ -80,6 +81,7 @@ export async function fetchWorkerFilesystemRoute(
 export type MiddlewareResult = {
   continue: boolean;
   matched?: boolean;
+  matchCanVaryByRequest?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -314,6 +316,7 @@ export async function runPagesRequest(
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
   let initialMiddlewareMatched = false;
+  let initialMiddlewareMatchCanVaryByRequest = false;
   const serveFilesystemRoute = async (
     requestPathname: string,
     phase: FilesystemRoutePhase,
@@ -332,6 +335,7 @@ export async function runPagesRequest(
   if (typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
     initialMiddlewareMatched = result.matched === true;
+    initialMiddlewareMatchCanVaryByRequest = result.matchCanVaryByRequest === true;
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -674,6 +678,9 @@ export async function runPagesRequest(
             ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
             ...(isDataReq ? { isDataReq: true } : {}),
             ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
+            ...(initialMiddlewareMatchCanVaryByRequest
+              ? { initialMiddlewareMatchCanVaryByRequest: true }
+              : {}),
           }
         : undefined;
 
@@ -722,7 +729,14 @@ export async function runPagesRequest(
         response = await deps.renderPage(
           request,
           resolvedUrl,
-          initialMiddlewareMatched ? { initialMiddlewareMatched: true } : undefined,
+          initialMiddlewareMatched
+            ? {
+                initialMiddlewareMatched: true,
+                ...(initialMiddlewareMatchCanVaryByRequest
+                  ? { initialMiddlewareMatchCanVaryByRequest: true }
+                  : {}),
+              }
+            : undefined,
           stagedHeaders,
         );
         matchedFallbackRewrite = true;
@@ -735,7 +749,14 @@ export async function runPagesRequest(
       response = await deps.renderPage(
         request,
         resolvedUrl,
-        initialMiddlewareMatched ? { initialMiddlewareMatched: true } : undefined,
+        initialMiddlewareMatched
+          ? {
+              initialMiddlewareMatched: true,
+              ...(initialMiddlewareMatchCanVaryByRequest
+                ? { initialMiddlewareMatchCanVaryByRequest: true }
+                : {}),
+            }
+          : undefined,
         stagedHeaders,
       );
     }

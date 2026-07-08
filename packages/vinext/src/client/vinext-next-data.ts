@@ -45,6 +45,7 @@ export type VinextNextData = {
     hasMiddleware?: boolean;
     /** True when middleware matched the initial request. */
     initialMiddlewareMatched?: boolean;
+    initialMiddlewareMatchCanVaryByRequest?: boolean;
     /** True when build-time rewrites can affect the initial Pages Router ready state. */
     hasRewrites?: boolean;
     /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */

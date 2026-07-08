@@ -74,6 +74,26 @@ export function matchesMiddleware(
   return false;
 }
 
+export function middlewareMatchCanVaryByRequest(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  i18nConfig?: NextI18nConfig | null,
+): boolean {
+  if (!Array.isArray(matcher)) return false;
+  let conditionalMatch = false;
+  for (const entry of matcher) {
+    if (typeof entry === "string") {
+      if (matchMatcherPattern(pathname, entry, i18nConfig)) return false;
+      continue;
+    }
+    if (!isValidMiddlewareMatcherObject(entry)) continue;
+    if (!matchObjectMatcher(pathname, entry, i18nConfig)) continue;
+    if (!entry.has?.length && !entry.missing?.length) return false;
+    conditionalMatch = true;
+  }
+  return conditionalMatch;
+}
+
 function isValidMiddlewareMatcherObject(value: unknown): value is MiddlewareMatcherObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 

@@ -7528,7 +7528,8 @@ describe("middleware matcher patterns", () => {
   });
 
   it("matchesMiddleware: object matchers respect has and missing conditions", async () => {
-    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchesMiddleware, middlewareMatchCanVaryByRequest } =
+      await import("../packages/vinext/src/server/middleware.js");
     const matcher: any = [
       {
         source: "/dashboard",
@@ -7538,6 +7539,8 @@ describe("middleware matcher patterns", () => {
     ];
 
     expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(middlewareMatchCanVaryByRequest("/dashboard", matcher)).toBe(true);
+    expect(middlewareMatchCanVaryByRequest("/other", matcher)).toBe(false);
     expect(
       matchesMiddleware(
         "/dashboard",
@@ -7556,6 +7559,20 @@ describe("middleware matcher patterns", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("middleware match variability is false when an unconditional matcher covers the path", async () => {
+    const { middlewareMatchCanVaryByRequest } =
+      await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = [
+      "/dashboard/:path*",
+      {
+        source: "/dashboard/:path*",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+      },
+    ];
+
+    expect(middlewareMatchCanVaryByRequest("/dashboard/settings", matcher)).toBe(false);
   });
 
   it("matchesMiddleware: rejects a single object matcher config", async () => {

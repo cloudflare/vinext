@@ -639,6 +639,7 @@ export function createSSRHandler(
     isDataReq: boolean = false,
     originalUrl: string = url,
     initialMiddlewareMatched: boolean = false,
+    initialMiddlewareMatchCanVaryByRequest: boolean = false,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -1217,7 +1218,9 @@ export function createSSRHandler(
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
-              "Cache-Control": hasMiddleware ? ISR_NO_STORE_CACHE_CONTROL : hitCacheControl,
+              "Cache-Control": initialMiddlewareMatchCanVaryByRequest
+                ? ISR_NO_STORE_CACHE_CONTROL
+                : hitCacheControl,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, hitHeaders);
@@ -1477,7 +1480,9 @@ export function createSSRHandler(
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
-              "Cache-Control": hasMiddleware ? ISR_NO_STORE_CACHE_CONTROL : staleCacheControl,
+              "Cache-Control": initialMiddlewareMatchCanVaryByRequest
+                ? ISR_NO_STORE_CACHE_CONTROL
+                : staleCacheControl,
             };
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, staleHeaders);
@@ -1946,7 +1951,7 @@ hydrate();
           ...gsspExtraHeaders,
         };
         if (isrRevalidateSeconds) {
-          if (scriptNonce || hasMiddleware) {
+          if (scriptNonce || initialMiddlewareMatchCanVaryByRequest) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
             extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);
