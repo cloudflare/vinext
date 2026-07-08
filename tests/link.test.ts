@@ -688,6 +688,20 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/fr/about"');
   });
 
+  it("preserves URL-object hashes while applying a locale", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: { pathname: "/about", hash: "#hash" }, locale: "fr" } as any,
+        "x",
+      ),
+    );
+    expect(html).toContain('href="/fr/about#hash"');
+  });
+
   it("locale string does not double-prefix", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: "/fr/about", locale: "fr" } as any, "x"),

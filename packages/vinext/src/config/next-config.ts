@@ -1677,9 +1677,14 @@ export async function resolveNextConfig(
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
   if (config.i18n) {
+    const { defaultLocale } = config.i18n;
+    const locales = [
+      defaultLocale,
+      ...config.i18n.locales.filter((locale) => locale !== defaultLocale),
+    ];
     i18n = {
-      locales: config.i18n.locales,
-      defaultLocale: config.i18n.defaultLocale,
+      locales,
+      defaultLocale,
       localeDetection: config.i18n.localeDetection ?? true,
       domains: config.i18n.domains,
     };

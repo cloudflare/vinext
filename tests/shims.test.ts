@@ -14897,6 +14897,34 @@ describe("Pages Router concurrent navigation", () => {
     return { win, pushState, replaceState, render };
   }
 
+  it("exposes locale-free asPath for a localized browser URL", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/nl-NL/another",
+      href: "http://localhost/nl-NL/another",
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "nl-NL",
+      __VINEXT_LOCALES__: ["en-US", "nl-NL"],
+      __VINEXT_DEFAULT_LOCALE__: "en-US",
+    });
+    (win.__NEXT_DATA__ as any).page = "/[[...slug]]";
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(Router.asPath).toBe("/another");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   /**
    * Build a minimal HTML response that navigateClient can parse.
    * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.

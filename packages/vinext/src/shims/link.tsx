@@ -77,7 +77,7 @@ type NavigateEvent = {
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 
 type LinkProps = {
-  href: string | { pathname?: string; query?: UrlQuery };
+  href: string | { pathname?: string; query?: UrlQuery; hash?: string };
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
   as?: string;
   /** Replace the current history entry instead of pushing */
@@ -177,6 +177,9 @@ function resolveHref(href: LinkProps["href"]): string {
   if (href.query) {
     const params = urlQueryToSearchParams(href.query);
     url = appendSearchParamsToUrl(url, params);
+  }
+  if (href.hash) {
+    url += href.hash.startsWith("#") ? href.hash : `#${href.hash}`;
   }
   return url;
 }

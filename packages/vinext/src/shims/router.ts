@@ -1264,10 +1264,11 @@ function getPathnameAndQuery(): {
     return { pathname: "/", query: {}, asPath: "/" };
   }
   const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const canonicalResolvedPath = removeNavigationLocalePrefix(resolvedPath);
   // In Next.js, router.pathname is the route pattern (e.g., "/posts/[id]"),
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
-  const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
+  const pathname = window.__NEXT_DATA__?.page ?? canonicalResolvedPath;
   const nextData = window.__NEXT_DATA__;
   const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
   // URL search params always reflect the current URL
@@ -1279,7 +1280,8 @@ function getPathnameAndQuery(): {
   const query = { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
-    getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
+    getCurrentHistoryAsPath() ??
+    canonicalResolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
 }
 
@@ -1289,15 +1291,19 @@ function getCurrentHistoryAsPath(): string | null {
 
   try {
     const browserUrl = new URL(window.location.href);
+    const stateLocale = state.options.locale === false ? undefined : state.options.locale;
+    const localizedStateAs = applyNavigationLocale(state.as, stateLocale);
     const stateUrl = new URL(
-      toBrowserNavigationHref(state.as, window.location.href, __basePath),
+      toBrowserNavigationHref(localizedStateAs, window.location.href, __basePath),
       window.location.href,
     );
     if (stateUrl.pathname !== browserUrl.pathname || stateUrl.search !== browserUrl.search) {
       return null;
     }
-    const stateAs = stripHash(state.as);
-    const visibleAs = `${stripBasePath(window.location.pathname, __basePath)}${window.location.search}`;
+    const stateAs = removeNavigationLocalePrefix(stripHash(state.as));
+    const visibleAs = `${removeNavigationLocalePrefix(
+      stripBasePath(window.location.pathname, __basePath),
+    )}${window.location.search}`;
     return `${stateAs || visibleAs}${window.location.hash}`;
   } catch {
     return null;

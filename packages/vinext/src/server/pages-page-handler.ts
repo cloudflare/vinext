@@ -15,7 +15,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { resolvePagesI18nRequest } from "./pages-i18n.js";
+import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes, getPagesPreviewData } from "./pages-node-compat.js";
 import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
@@ -428,6 +428,9 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
+    const routerAsPath = i18nConfig
+      ? extractLocaleFromUrl(renderAsPath ?? routeUrl, i18nConfig, locale).url
+      : (renderAsPath ?? routeUrl);
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
     });
@@ -455,7 +458,7 @@ export function createPagesPageHandler(
           typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
                 routePattern,
-                new URL(renderAsPath ?? routeUrl, "http://_").search,
+                new URL(routerAsPath, "http://_").search,
                 pagesNextData,
               )
             : true;
@@ -465,7 +468,7 @@ export function createPagesPageHandler(
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: renderAsPath ?? routeUrl,
+              asPath: routerAsPath,
               navigationIsReady,
               locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -610,7 +613,7 @@ export function createPagesPageHandler(
           AppComponent,
           params,
           query,
-          asPath: renderAsPath ?? routeUrl,
+          asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
           route: { isDynamic: route.isDynamic },
@@ -642,7 +645,7 @@ export function createPagesPageHandler(
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
             return renderPage(request, url, manifest, middlewareHeaders, {
               statusCode: 404,
-              asPath: renderAsPath ?? routeUrl,
+              asPath: routerAsPath,
               renderErrorPageOnMiss: false,
               __forcedRoute: notFoundRoute,
             });
@@ -673,7 +676,7 @@ export function createPagesPageHandler(
           setSSRContext({
             pathname: routePattern,
             query,
-            asPath: renderAsPath ?? routeUrl,
+            asPath: routerAsPath,
             navigationIsReady: false,
             locale,
             locales: i18nConfig ? i18nConfig.locales : undefined,

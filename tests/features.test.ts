@@ -913,6 +913,22 @@ describe("i18n config parsing", () => {
     expect(config.i18n!.localeDetection).toBe(true);
   });
 
+  it("places the default locale first without mutating the input", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const locales = ["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"];
+    const config = await resolveNextConfig({
+      i18n: {
+        locales,
+        defaultLocale: "en-US",
+      },
+    });
+
+    expect(config.i18n!.locales).toEqual(["en-US", "nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en"]);
+    expect(locales).toEqual(["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"]);
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});

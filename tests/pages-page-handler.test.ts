@@ -462,6 +462,37 @@ describe("createPagesPageHandler — SSR context", () => {
     const ctx = setSSRContext.mock.calls[0][0] as Record<string, unknown>;
     expect(ctx.pathname).toBe("/about");
   });
+
+  it("strips the active locale prefix from the initial asPath", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const setSSRContext = vi.fn();
+    const routes = [makeRoute("/about")];
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: routes,
+        i18nConfig: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+        setSSRContext,
+        matchRoute: (url, routeList) => {
+          const route = routeList.find((item) => item.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    await handler(makeRequest("/en/about?hello=world"), "/en/about?hello=world", null, null, {
+      asPath: "/en/about?hello=world",
+    });
+
+    const ctx = setSSRContext.mock.calls.find((call) => call[0] !== null)?.[0] as
+      | { asPath?: string }
+      | undefined;
+    expect(ctx?.asPath).toBe("/about?hello=world");
+  });
 });
 
 // ---------------------------------------------------------------------------
