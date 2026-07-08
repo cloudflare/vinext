@@ -361,8 +361,17 @@ export function createTrackedAppRouteRequest(
     // member #state"), which crashes the handler. So in the common "auto" mode
     // we track dynamic access with own accessor properties on the real
     // NextRequest instead of a Proxy, keeping the object a genuine, re-wrappable
-    // Request. The value-substituting static-generation modes below still need a
-    // Proxy, but those requests are not meant to be re-wrapped.
+    // Request.
+    //
+    // The value-substituting static-generation modes below deliberately keep the
+    // Proxy: own accessors can only *shadow* JS getters, but `new Request(req)`
+    // copies the native internal slots, bypassing them. So stubbing those modes
+    // with own accessors would silently leak the real URL (incl. credentials and
+    // query), headers, cookies, and body on re-wrap — exactly what force-static
+    // strips. Keeping the Proxy makes a re-wrap throw instead of leak (and in
+    // "error" mode throwing on request access is the intended behaviour), which
+    // is the safe outcome for the contradictory case of a static route handler
+    // that hands its request to a fetch-based library.
     if (requestMode === "auto") {
       let proxiedNextUrl: NextURL | null = null;
       // Because the tracking getters live on the real instance, a getter that
