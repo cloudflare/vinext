@@ -4959,6 +4959,7 @@ export const loadServerActionClient = ${
                         nextConfig?.basePath,
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
+                        pathname,
                       );
 
                       // Forward middleware context to the RSC entry so it can

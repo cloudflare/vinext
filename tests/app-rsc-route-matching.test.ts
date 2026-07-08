@@ -80,6 +80,42 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("does not decode already-normalized request pathnames twice", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/admin", ["admin"]),
+      route("/files/:name", ["files", ":name"]),
+    ]);
+
+    expect(matcher.matchRoute("/%61dmin")).toMatchObject({
+      route: { pattern: "/admin" },
+    });
+    expect(matcher.matchNormalizedRoute("/%2561dmin")).toBeNull();
+    expect(matcher.matchNormalizedRoute("/files/a%2561")).toMatchObject({
+      params: { name: "a%61" },
+    });
+  });
+
+  it("does not decode normalized interception pathnames twice", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed/:slug", ["feed", ":slug"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%62" },
+    });
+  });
+
   it("matches standalone route patterns for dynamic metadata routes", () => {
     expect(
       matchAppRscRoutePattern(["blog", "hello", "sitemap.xml"], ["blog", ":slug", "sitemap.xml"]),

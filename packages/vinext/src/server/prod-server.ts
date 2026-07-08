@@ -825,10 +825,7 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
  * Convert a Node.js IncomingMessage to a Web Request object.
  *
  * When `urlOverride` is provided, it is used as the path + query string
- * instead of `req.url`. This avoids redundant path normalization when the
- * caller has already decoded and normalized the pathname (e.g. the App
- * Router prod server normalizes before static-asset lookup, and can pass
- * the result here so the downstream RSC handler doesn't re-normalize).
+ * instead of `req.url`.
  */
 function nodeToWebRequest(
   req: IncomingMessage,
@@ -1435,14 +1432,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     try {
-      // Build the normalized URL (pathname + original query string) so the
-      // RSC handler receives an already-canonical path and doesn't need to
-      // re-normalize. This deduplicates the normalizePath work done above.
-      const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
-      const normalizedUrl = pathname + qs;
-
-      // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
+      // Static-asset checks above use the normalized pathname, but the RSC
+      // handler must receive the original URL so its request boundary decodes
+      // each segment exactly once. Passing `pathname` here would make encoded
+      // percent signs eligible for a second decode inside normalizeRscRequest.
+      const request = nodeToWebRequest(req, rawUrl, prerenderSecret);
       const response = await rscHandler(request);
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);

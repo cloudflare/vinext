@@ -64,6 +64,25 @@ test.describe("Cloudflare Workers SSR", () => {
     expect(await unhandled.text()).toBe("Not Found");
   });
 
+  test("double-encoded static paths are not decoded twice", async ({ request }) => {
+    const direct = await request.get(`${BASE}/admin`);
+    expect(direct.status()).toBe(403);
+
+    const encoded = await request.get(`${BASE}/%2561dmin`);
+    expect(encoded.status()).toBe(404);
+    expect(await encoded.text()).not.toContain("Protected admin content");
+  });
+
+  for (const pathname of ["/foo/..%252fadmin", "/api/health/..%252fadmin"]) {
+    test(`keeps encoded delimiters non-structural for ${pathname}`, async ({ request }) => {
+      const response = await request.get(`${BASE}${pathname}`);
+      const body = await response.text();
+
+      expect(response.status()).toBe(404);
+      expect(body).not.toContain("Protected admin content");
+    });
+  }
+
   test("root layout wraps pages with html/head/body", async ({ page }) => {
     await page.goto(`${BASE}/`);
 

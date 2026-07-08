@@ -4,6 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
  * Middleware for app-router-cloudflare example.
  */
 export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/admin") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
   if (request.nextUrl.pathname === "/_next/static/middleware-rewrite.js") {
     return new Response("rewritten missing asset", {
       headers: { "content-type": "text/plain" },
@@ -22,5 +25,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/", "/_next/static/middleware-rewrite.js"],
+  matcher: ["/api/:path*", "/", "/admin", "/_next/static/middleware-rewrite.js"],
 };

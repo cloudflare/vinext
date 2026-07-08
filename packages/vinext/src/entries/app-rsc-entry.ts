@@ -610,6 +610,10 @@ function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
 }
 
+function matchNormalizedRoute(url) {
+  return __routeMatcher.matchNormalizedRoute(url);
+}
+
 /**
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
@@ -1188,6 +1192,7 @@ export default createAppRscHandler({
       : ""
   }
   matchRoute,
+  matchNormalizedRoute,
   ${
     middlewarePath
       ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, request }) {

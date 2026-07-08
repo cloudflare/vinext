@@ -4,7 +4,7 @@ import {
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { splitPathnameForRouteMatch, splitPathSegments } from "../routing/utils.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -110,16 +110,19 @@ function createRouteParams(): AppRscRouteParams {
   return Object.create(null);
 }
 
-function appRscPathnameParts(pathname: string): string[] {
+function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
   const pathOnly = pathname.split("?")[0];
-  const normalized = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-  return splitPathnameForRouteMatch(normalized);
+  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+  return isNormalized
+    ? splitPathSegments(normalizedPathname)
+    : splitPathnameForRouteMatch(normalizedPathname);
 }
 
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  matchNormalizedRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(pathname: string, sourcePathname?: string | null): AppRscInterceptMatch | null;
 } {
   const routeTrie = buildRouteTrie(routes);
@@ -128,7 +131,10 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
   return {
     matchRoute(url) {
-      return trieMatch(routeTrie, appRscPathnameParts(url));
+      return trieMatch(routeTrie, appRscPathnameParts(url, false));
+    },
+    matchNormalizedRoute(url) {
+      return trieMatch(routeTrie, appRscPathnameParts(url, true));
     },
     findIntercept(pathname, sourcePathname = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the

@@ -156,6 +156,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  if (pathname === "/admin") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
@@ -370,6 +374,7 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/admin",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
