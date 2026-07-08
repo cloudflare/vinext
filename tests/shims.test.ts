@@ -21752,6 +21752,50 @@ describe("next/error shim", () => {
     expect(html).toContain("Internal Server Error");
   });
 
+  it("matches Next.js status-specific and unknown error titles", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 400 })),
+    ).toContain("Bad Request");
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 405 })),
+    ).toContain("Method Not Allowed");
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 418 })),
+    ).toContain("An unexpected error has occurred");
+  });
+
+  it("sets the matching error document title", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+    const { getSSRHeadHTML, resetSSRHead } = await import("../packages/vinext/src/shims/head.js");
+
+    resetSSRHead();
+    renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 400 }));
+    expect(getSSRHeadHTML()).toContain('<title data-next-head="">400: Bad Request</title>');
+  });
+
+  it("enables dark mode styles by default and removes only the media rule when disabled", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const darkHtml = renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 500 }));
+    const lightHtml = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 500, withDarkMode: false }),
+    );
+
+    expect(darkHtml).toContain("body{color:#000;background:#fff;margin:0}");
+    expect(darkHtml).toContain("@media (prefers-color-scheme:dark)");
+    expect(lightHtml).toContain("body{color:#000;background:#fff;margin:0}");
+    expect(lightHtml).not.toContain("@media (prefers-color-scheme:dark)");
+    expect(lightHtml).toContain('class="next-error-h1"');
+  });
+
   it("renders custom title", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -21769,7 +21813,9 @@ describe("next/error shim", () => {
     const { renderToStaticMarkup } = await import("react-dom/server");
     const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
-    const html = renderToStaticMarkup(React.createElement(ErrorComponent, {}));
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: undefined as never }),
+    );
     expect(html).not.toContain("<h1");
     expect(html).toContain("Application error: a client-side exception has occurred");
   });
@@ -21780,7 +21826,10 @@ describe("next/error shim", () => {
     const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
     const html = renderToStaticMarkup(
-      React.createElement(ErrorComponent, { hostname: "preview.example.com" }),
+      React.createElement(ErrorComponent, {
+        statusCode: undefined as never,
+        hostname: "preview.example.com",
+      }),
     );
     expect(html).toContain("while loading preview.example.com");
   });
@@ -21811,6 +21860,24 @@ describe("next/error shim", () => {
     const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
     expect(ErrorComponent.displayName).toBe("ErrorPage");
+  });
+
+  it("exports the public ErrorProps and static component contract", async () => {
+    const declaration = await readFile(
+      new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url),
+      "utf8",
+    );
+    const errorDeclaration = declaration.slice(
+      declaration.indexOf('declare module "next/error"'),
+      declaration.indexOf('declare module "next/font/google"'),
+    );
+
+    expect(errorDeclaration).toContain("export type ErrorProps = {");
+    expect(errorDeclaration).toContain("hostname?: string;");
+    expect(errorDeclaration).toContain("export default class ErrorComponent<P = {}>");
+    expect(errorDeclaration).toContain("static displayName: string;");
+    expect(errorDeclaration).toContain("static getInitialProps:");
+    expect(errorDeclaration).toContain("static origGetInitialProps:");
   });
 
   it("derives the Error hostname from the server request", async () => {

@@ -410,16 +410,28 @@ declare module "next/legacy/image" {
 }
 
 declare module "next/error" {
+  import * as React from "react";
   import { ComponentType, ReactNode } from "react";
 
-  type ErrorProps = {
+  export type ErrorProps = {
     statusCode: number;
+    hostname?: string;
     title?: string;
     withDarkMode?: boolean;
   };
 
-  const ErrorComponent: ComponentType<ErrorProps>;
-  export default ErrorComponent;
+  type ErrorContext = {
+    err?: { statusCode?: number };
+    req?: { url?: string; headers?: { host?: string | string[] } };
+    res?: { statusCode?: number };
+  };
+
+  export default class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
+    static displayName: string;
+    static getInitialProps: (context: ErrorContext) => ErrorProps | Promise<ErrorProps>;
+    static origGetInitialProps: (context: ErrorContext) => ErrorProps | Promise<ErrorProps>;
+    render(): React.ReactNode;
+  }
 
   export type ErrorInfo = {
     error: unknown;
