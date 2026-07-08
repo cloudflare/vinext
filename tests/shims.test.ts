@@ -21862,6 +21862,22 @@ describe("next/error shim", () => {
     expect(ErrorComponent.displayName).toBe("ErrorPage");
   });
 
+  it("supports subclassing the default Error component", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    class CustomError extends ErrorComponent {
+      render() {
+        return React.createElement("section", { "data-custom-error": true }, super.render());
+      }
+    }
+
+    const html = renderToStaticMarkup(React.createElement(CustomError, { statusCode: 404 }));
+    expect(html).toContain('<section data-custom-error="true">');
+    expect(html).toContain("This page could not be found");
+  });
+
   it("exports the public ErrorProps and static component contract", async () => {
     const declaration = await readFile(
       new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url),

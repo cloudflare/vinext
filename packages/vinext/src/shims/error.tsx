@@ -88,61 +88,59 @@ const styles: Record<string, React.CSSProperties> = {
   wrap: { display: "inline-block" },
 };
 
-function ErrorComponent({
-  statusCode,
-  hostname,
-  title: customTitle,
-  withDarkMode = true,
-}: ErrorProps): React.ReactElement {
-  const title = customTitle || statusCodes[statusCode] || "An unexpected error has occurred";
+class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
+  static displayName = "ErrorPage";
+  static getInitialProps = getErrorInitialProps;
+  static origGetInitialProps = getErrorInitialProps;
 
-  return React.createElement(
-    "div",
-    { style: styles.error },
-    React.createElement(
-      Head,
-      null,
-      React.createElement(
-        "title",
-        null,
-        statusCode
-          ? `${statusCode}: ${title}`
-          : "Application error: a client-side exception has occurred",
-      ),
-    ),
-    React.createElement(
+  render(): React.ReactElement {
+    const { statusCode, hostname, title: customTitle, withDarkMode = true } = this.props;
+    const title = customTitle || statusCodes[statusCode] || "An unexpected error has occurred";
+
+    return React.createElement(
       "div",
-      { style: styles.desc },
-      React.createElement("style", {
-        dangerouslySetInnerHTML: {
-          __html: `body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}${
-            withDarkMode
-              ? "@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"
-              : ""
-          }`,
-        },
-      }),
-      statusCode
-        ? React.createElement("h1", { className: "next-error-h1", style: styles.h1 }, statusCode)
-        : null,
+      { style: styles.error },
       React.createElement(
-        "div",
-        { style: styles.wrap },
+        Head,
+        null,
         React.createElement(
-          "h2",
-          { style: styles.h2 },
-          customTitle || statusCode
-            ? `${title}.`
-            : `Application error: a client-side exception has occurred${hostname ? ` while loading ${hostname}` : ""} (see the browser console for more information).`,
+          "title",
+          null,
+          statusCode
+            ? `${statusCode}: ${title}`
+            : "Application error: a client-side exception has occurred",
         ),
       ),
-    ),
-  );
+      React.createElement(
+        "div",
+        { style: styles.desc },
+        React.createElement("style", {
+          dangerouslySetInnerHTML: {
+            __html: `body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}${
+              withDarkMode
+                ? "@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"
+                : ""
+            }`,
+          },
+        }),
+        statusCode
+          ? React.createElement("h1", { className: "next-error-h1", style: styles.h1 }, statusCode)
+          : null,
+        React.createElement(
+          "div",
+          { style: styles.wrap },
+          React.createElement(
+            "h2",
+            { style: styles.h2 },
+            customTitle || statusCode
+              ? `${title}.`
+              : `Application error: a client-side exception has occurred${hostname ? ` while loading ${hostname}` : ""} (see the browser console for more information).`,
+          ),
+        ),
+      ),
+    );
+  }
 }
-
-ErrorComponent.displayName = "ErrorPage";
-ErrorComponent.getInitialProps = getErrorInitialProps;
-ErrorComponent.origGetInitialProps = getErrorInitialProps;
 
 export default ErrorComponent;
 
