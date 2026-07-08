@@ -12,9 +12,9 @@ declare module "next" {
     query: Record<string, string | string[]>;
     body: unknown;
     cookies: Record<string, string>;
-    preview?: true;
-    draftMode?: true;
-    previewData: object | string | false;
+    preview?: boolean;
+    draftMode?: boolean;
+    previewData?: string | false | object | undefined;
   } & IncomingMessage;
   export type NextApiResponse<T = unknown> = {
     status(code: number): NextApiResponse<T>;
