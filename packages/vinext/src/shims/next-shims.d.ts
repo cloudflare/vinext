@@ -21,6 +21,13 @@ declare module "next" {
     json(data: T): void;
     send(data: T): void;
     redirect(statusOrUrl: number | string, url?: string): void;
+    setDraftMode(options: { enable: boolean }): NextApiResponse<T>;
+    setPreviewData(
+      data: object | string,
+      options?: { maxAge?: number; path?: string },
+    ): NextApiResponse<T>;
+    clearPreviewData(options?: { path?: string }): NextApiResponse<T>;
+    revalidate(urlPath: string, opts?: { unstable_onlyGenerated?: boolean }): Promise<void>;
   } & ServerResponse;
 }
 

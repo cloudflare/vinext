@@ -3,6 +3,16 @@ import {
   createPagesReqRes,
   getPagesPreviewData,
 } from "../packages/vinext/src/server/pages-node-compat.js";
+import type { NextApiResponse } from "next";
+
+function exerciseNextApiResponsePreviewTypes(res: NextApiResponse): Promise<void> {
+  res.setPreviewData({ draft: true }, { maxAge: 60, path: "/preview" });
+  res.clearPreviewData({ path: "/preview" });
+  res.setDraftMode({ enable: true });
+  return res.revalidate("/preview", { unstable_onlyGenerated: true });
+}
+
+void exerciseNextApiResponsePreviewTypes;
 
 describe("Pages Node compat response", () => {
   it("setPreviewData appends both preview cookies while preserving existing cookies", () => {

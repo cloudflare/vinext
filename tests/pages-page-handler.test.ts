@@ -328,6 +328,43 @@ describe("createPagesPageHandler — preview responses", () => {
       expect.stringMatching(/^__next_preview_data=; Expires=/),
     ]);
   });
+
+  it("clears tampered preview cookies once when notFound renders the 404 page", async () => {
+    const pageRoute = makeRoute("/missing", {
+      ...makePageModule(),
+      getStaticProps: async () => ({ notFound: true }),
+    });
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [pageRoute, notFoundRoute],
+        matchRoute: (url, routes) => {
+          const pathname = url.split("?")[0];
+          const route = routes.find((candidate) => candidate.pattern === pathname);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/missing", { headers: { cookie } }),
+      "/missing",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

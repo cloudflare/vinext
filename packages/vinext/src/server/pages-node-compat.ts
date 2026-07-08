@@ -509,11 +509,6 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     body: options.body,
   }) as PagesReqResRequest;
   attachPagesRequestCookies(req);
-  const preview = getPagesPreviewState(options.request.headers.get("cookie"));
-  if (preview.data !== false) {
-    req.preview = true;
-    req.previewData = preview.data;
-  }
 
   let resolveResponse!: (value: Response) => void;
   let rejectResponse!: (error: Error) => void;

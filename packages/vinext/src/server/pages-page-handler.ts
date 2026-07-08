@@ -668,15 +668,12 @@ export function createPagesPageHandler(
         if (pageDataResult.kind === "notFound") {
           const notFoundRoute = findNotFoundRoute();
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            return finalizePagesPreviewResponse(
-              await renderPage(request, url, manifest, middlewareHeaders, {
-                statusCode: 404,
-                asPath: renderAsPath ?? routeUrl,
-                renderErrorPageOnMiss: false,
-                __forcedRoute: notFoundRoute,
-              }),
-              preview,
-            );
+            return renderPage(request, url, manifest, middlewareHeaders, {
+              statusCode: 404,
+              asPath: renderAsPath ?? routeUrl,
+              renderErrorPageOnMiss: false,
+              __forcedRoute: notFoundRoute,
+            });
           }
           return finalizePagesPreviewResponse(buildDefaultPagesNotFoundResponse(), preview);
         }
