@@ -1136,15 +1136,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Mirrors Next.js' Router.change(): `getRouteRegex` + `interpolateAs`
   // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
   // shared/lib/router/router.ts around L987).
-  const isHashOnlyUrlObject =
-    typeof href !== "string" &&
-    href.pathname === undefined &&
-    href.query === undefined &&
-    typeof href.hash === "string" &&
-    href.hash.length > 0;
   const unresolvedHref = as ?? resolveHref(href);
   const rawResolvedHref =
-    isHashOnlyUrlObject && typeof unresolvedHref === "string"
+    typeof unresolvedHref === "string" &&
+    (unresolvedHref.startsWith("?") || unresolvedHref.startsWith("#"))
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, as) : null;

@@ -1133,6 +1133,23 @@ describe("Pages Router Link onClick semantics", () => {
     ]);
   });
 
+  it("resolves hash-only string hrefs against the current locale-free asPath", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const result = await renderPagesRouterLinkAndClick({
+      href: "#newhash",
+      props: { locale: "fr" },
+      currentHref: "https://example.com/fr/about?tab=details#hash",
+      pagesRouterAsPath: "/about?tab=details",
+      locale: "fr",
+    });
+
+    expect(result.pagesRouterCalls).toEqual([
+      { href: "/fr/about?tab=details#newhash", replace: false },
+    ]);
+  });
+
   it("preserves a basePath page when navigating to a hash link", async () => {
     // Ported from Next.js: test/e2e/basepath/query-hash.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/query-hash.test.ts
@@ -1145,7 +1162,7 @@ describe("Pages Router Link onClick semantics", () => {
         currentHref: "https://example.com/docs/hello",
       });
 
-      expect(result.pagesRouterCalls).toEqual([{ href: "#hashlink", replace: false }]);
+      expect(result.pagesRouterCalls).toEqual([{ href: "/hello#hashlink", replace: false }]);
     } finally {
       if (previousBasePath === undefined) {
         delete process.env.__NEXT_ROUTER_BASEPATH;
