@@ -8265,18 +8265,17 @@ describe("double-encoded path handling in middleware", () => {
       }),
     };
 
-    // Send a double-encoded path — after single decode, it should be /%64ashboard
+    // Send a double-encoded path. The request-boundary normalizer decodes the
+    // encoded percent sign once, then re-encodes the residual %64 escape so a
+    // later URL parse or route-param decode cannot turn it into /dashboard.
     const testUrl = "http://localhost:3000/%2564ashboard";
     const request = new Request(testUrl);
     await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
-    // Middleware should have received the decoded+normalized URL
+    // Middleware should receive the canonical, idempotently normalized URL.
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    // After single decode: %25 → %, so /%2564 → /%64
-    expect(mwPathname).toBe("/%64ashboard");
-    // It must NOT be the raw /%2564ashboard
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    expect(mwPathname).toBe("/%2564ashboard");
     // It must NOT be double-decoded to /dashboard
     expect(mwPathname).not.toBe("/dashboard");
   });
