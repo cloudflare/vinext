@@ -641,6 +641,7 @@ export function createSSRHandler(
     originalUrl: string = url,
     initialMiddlewareMatched: boolean = false,
     initialMiddlewareMatchCanVaryByRequest: boolean = false,
+    initialMiddlewareRewriteUrl?: string,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -754,6 +755,14 @@ export function createSSRHandler(
       : i18nConfig
         ? extractLocaleFromUrlShared(visibleRequestUrl, i18nConfig).url
         : visibleRequestUrl;
+    const visiblePathname = new URL(originalUrl, "http://vinext.local").pathname;
+    const middlewareRewriteUrl = initialMiddlewareRewriteUrl
+      ? new URL(initialMiddlewareRewriteUrl, "http://vinext.local")
+      : null;
+    const isolateMiddlewareIsr =
+      initialMiddlewareMatchCanVaryByRequest ||
+      middlewareRewriteUrl !== null ||
+      statusCode !== undefined;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -1174,7 +1183,15 @@ export function createSSRHandler(
 
         if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
-          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
+          const cacheKey = pagesIsrCacheKey(
+            isolateMiddlewareIsr
+              ? `${visiblePathname}::route=${encodeURIComponent(
+                  middlewareRewriteUrl
+                    ? middlewareRewriteUrl.pathname + middlewareRewriteUrl.search
+                    : url.split("?")[0],
+                )}`
+              : url.split("?")[0],
+          );
           const cached = await isrGet(cacheKey);
 
           // On-demand revalidation request (`res.revalidate()` from an API
@@ -1229,9 +1246,7 @@ export function createSSRHandler(
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
-              "Cache-Control": initialMiddlewareMatchCanVaryByRequest
-                ? ISR_NO_STORE_CACHE_CONTROL
-                : hitCacheControl,
+              "Cache-Control": isolateMiddlewareIsr ? ISR_NO_STORE_CACHE_CONTROL : hitCacheControl,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, hitHeaders);
@@ -1491,7 +1506,7 @@ export function createSSRHandler(
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
-              "Cache-Control": initialMiddlewareMatchCanVaryByRequest
+              "Cache-Control": isolateMiddlewareIsr
                 ? ISR_NO_STORE_CACHE_CONTROL
                 : staleCacheControl,
             };
@@ -1959,7 +1974,7 @@ hydrate();
           ...gsspExtraHeaders,
         };
         if (isrRevalidateSeconds) {
-          if (scriptNonce || initialMiddlewareMatchCanVaryByRequest) {
+          if (scriptNonce || isolateMiddlewareIsr) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
             extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);

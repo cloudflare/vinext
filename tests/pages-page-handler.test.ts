@@ -489,6 +489,7 @@ describe("createPagesPageHandler — _next/data", () => {
       for (const source of ["/visible-a?draft=1", "/visible-b?draft=2"]) {
         const response = await handler(makeRequest(source), "/posts/001", null, null, {
           asPath: source,
+          initialMiddlewareRewriteUrl: "/posts/001",
           initialMiddlewareMatchCanVaryByRequest: true,
         });
         await response.text();
@@ -509,6 +510,7 @@ describe("createPagesPageHandler — _next/data", () => {
       for (const source of ["/visible-query?draft=1", "/visible-query?draft=2"]) {
         const response = await handler(makeRequest(source), "/posts/001", null, null, {
           asPath: source,
+          initialMiddlewareRewriteUrl: "/posts/001",
           initialMiddlewareMatchCanVaryByRequest: true,
         });
         await response.text();
@@ -526,6 +528,7 @@ describe("createPagesPageHandler — _next/data", () => {
         const response = await handler(makeRequest("/conditional"), routeUrl, null, null, {
           asPath: "/conditional",
           initialMiddlewareMatched,
+          ...(initialMiddlewareMatched ? { initialMiddlewareRewriteUrl: routeUrl } : {}),
         });
         await response.text();
         await new Promise((resolve) => setTimeout(resolve, 0));

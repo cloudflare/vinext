@@ -864,6 +864,7 @@ describe("pages page data", () => {
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
+        isolateMiddlewareIsr: true,
         vinext: { hasMiddleware: true, initialMiddlewareMatchCanVaryByRequest: true },
       }),
     );
@@ -1076,6 +1077,7 @@ describe("pages page data", () => {
             return { props: {}, revalidate: 60 };
           },
         },
+        isolateMiddlewareIsr: true,
         vinext: {
           hasMiddleware: true,
           initialMiddlewareMatched: true,
@@ -1113,6 +1115,7 @@ describe("pages page data", () => {
             return { props: {}, revalidate: 60 };
           },
         },
+        isolateMiddlewareIsr: true,
         vinext: {
           hasMiddleware: true,
           initialMiddlewareMatched: true,
@@ -1150,6 +1153,7 @@ describe("pages page data", () => {
             return { props: {}, revalidate: 60 };
           },
         },
+        isolateMiddlewareIsr: true,
         vinext: {
           hasMiddleware: true,
           initialMiddlewareMatched: false,

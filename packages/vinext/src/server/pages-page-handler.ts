@@ -202,6 +202,8 @@ type RenderPageOptions = {
   isDataReq?: boolean;
   initialMiddlewareMatched?: boolean;
   initialMiddlewareMatchCanVaryByRequest?: boolean;
+  initialMiddlewareRewriteUrl?: string;
+  initialMiddlewareStatus?: number;
   statusCode?: number;
   asPath?: string;
   originalUrl?: string;
@@ -597,9 +599,16 @@ export function createPagesPageHandler(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
         const visiblePathname = new URL(routerAsPath, originalRequestUrl).pathname;
+        const middlewareRewriteUrl = options?.initialMiddlewareRewriteUrl
+          ? new URL(options.initialMiddlewareRewriteUrl, originalRequestUrl)
+          : null;
+        const middlewareRouteIdentity = middlewareRewriteUrl
+          ? middlewareRewriteUrl.pathname + middlewareRewriteUrl.search
+          : routePathname;
         const middlewareAffectsCacheIdentity =
           options?.initialMiddlewareMatched === true &&
-          (visiblePathname !== routePathname ||
+          (middlewareRewriteUrl !== null ||
+            options.initialMiddlewareStatus !== undefined ||
             (middlewareHeaders !== null &&
               middlewareHeaders !== undefined &&
               [...middlewareHeaders.keys()].length > 0));
@@ -619,7 +628,7 @@ export function createPagesPageHandler(
           ? (router: string, _pathname: string) =>
               pageIsrCacheKey(
                 `${router}:middleware`,
-                `${visiblePathname}::route=${encodeURIComponent(routePathname)}`,
+                `${visiblePathname}::route=${encodeURIComponent(middlewareRouteIdentity)}`,
               )
           : pageIsrCacheKey;
         const pageDataResult = await resolvePagesPageData({
@@ -646,6 +655,7 @@ export function createPagesPageHandler(
             : isolateMiddlewareIsr
               ? isrGetFromOrigin
               : isrGet,
+          isolateMiddlewareIsr,
           isrSet: middlewareOverridesRequestHeaders
             ? async () => {}
             : isolateMiddlewareIsr

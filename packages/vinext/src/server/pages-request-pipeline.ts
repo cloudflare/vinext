@@ -47,6 +47,8 @@ export type PagesRenderOptions = {
   isDataReq?: boolean;
   initialMiddlewareMatched?: boolean;
   initialMiddlewareMatchCanVaryByRequest?: boolean;
+  initialMiddlewareRewriteUrl?: string;
+  initialMiddlewareStatus?: number;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
 };
@@ -317,6 +319,7 @@ export async function runPagesRequest(
   let middlewareStatus: number | undefined;
   let initialMiddlewareMatched = false;
   let initialMiddlewareMatchCanVaryByRequest = false;
+  let initialMiddlewareRewriteUrl: string | undefined;
   const serveFilesystemRoute = async (
     requestPathname: string,
     phase: FilesystemRoutePhase,
@@ -407,6 +410,7 @@ export async function runPagesRequest(
     }
 
     if (result.rewriteUrl) {
+      initialMiddlewareRewriteUrl = result.rewriteUrl;
       resolvedUrl = result.rewriteUrl;
     }
 
@@ -676,13 +680,19 @@ export async function runPagesRequest(
       shouldDeferErrorPageOnMiss ||
       isDataReq ||
       initialMiddlewareMatched ||
-      initialMiddlewareMatchCanVaryByRequest
+      initialMiddlewareMatchCanVaryByRequest ||
+      initialMiddlewareRewriteUrl !== undefined ||
+      middlewareStatus !== undefined
         ? {
             ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
             ...(isDataReq ? { isDataReq: true } : {}),
             ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
             ...(initialMiddlewareMatchCanVaryByRequest
               ? { initialMiddlewareMatchCanVaryByRequest: true }
+              : {}),
+            ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
+            ...(middlewareStatus !== undefined
+              ? { initialMiddlewareStatus: middlewareStatus }
               : {}),
           }
         : undefined;
@@ -732,11 +742,18 @@ export async function runPagesRequest(
         response = await deps.renderPage(
           request,
           resolvedUrl,
-          initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
+          initialMiddlewareMatched ||
+            initialMiddlewareMatchCanVaryByRequest ||
+            initialMiddlewareRewriteUrl !== undefined ||
+            middlewareStatus !== undefined
             ? {
                 ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
                 ...(initialMiddlewareMatchCanVaryByRequest
                   ? { initialMiddlewareMatchCanVaryByRequest: true }
+                  : {}),
+                ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
+                ...(middlewareStatus !== undefined
+                  ? { initialMiddlewareStatus: middlewareStatus }
                   : {}),
               }
             : undefined,
@@ -752,11 +769,18 @@ export async function runPagesRequest(
       response = await deps.renderPage(
         request,
         resolvedUrl,
-        initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
+        initialMiddlewareMatched ||
+          initialMiddlewareMatchCanVaryByRequest ||
+          initialMiddlewareRewriteUrl !== undefined ||
+          middlewareStatus !== undefined
           ? {
               ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
               ...(initialMiddlewareMatchCanVaryByRequest
                 ? { initialMiddlewareMatchCanVaryByRequest: true }
+                : {}),
+              ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
+              ...(middlewareStatus !== undefined
+                ? { initialMiddlewareStatus: middlewareStatus }
                 : {}),
             }
           : undefined,
@@ -848,12 +872,20 @@ export async function runPagesRequest(
     type: "render",
     resolvedUrl,
     renderOptions:
-      isDataReq || initialMiddlewareMatched || initialMiddlewareMatchCanVaryByRequest
+      isDataReq ||
+      initialMiddlewareMatched ||
+      initialMiddlewareMatchCanVaryByRequest ||
+      initialMiddlewareRewriteUrl !== undefined ||
+      middlewareStatus !== undefined
         ? {
             ...(isDataReq ? { isDataReq: true } : {}),
             ...(initialMiddlewareMatched ? { initialMiddlewareMatched: true } : {}),
             ...(initialMiddlewareMatchCanVaryByRequest
               ? { initialMiddlewareMatchCanVaryByRequest: true }
+              : {}),
+            ...(initialMiddlewareRewriteUrl ? { initialMiddlewareRewriteUrl } : {}),
+            ...(middlewareStatus !== undefined
+              ? { initialMiddlewareStatus: middlewareStatus }
               : {}),
           }
         : undefined,

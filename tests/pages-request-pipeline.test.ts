@@ -496,7 +496,7 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/bar",
-      { initialMiddlewareMatched: true },
+      { initialMiddlewareMatched: true, initialMiddlewareRewriteUrl: "/bar" },
       expect.any(Headers),
     );
   });

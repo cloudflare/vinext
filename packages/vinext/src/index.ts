@@ -5282,6 +5282,7 @@ export const loadServerActionClient = ${
                   originalRequestUrl,
                   pipelineResult.renderOptions?.initialMiddlewareMatched === true,
                   pipelineResult.renderOptions?.initialMiddlewareMatchCanVaryByRequest === true,
+                  pipelineResult.renderOptions?.initialMiddlewareRewriteUrl,
                 );
               }
             } catch (e) {

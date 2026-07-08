@@ -6,11 +6,7 @@ import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache-
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import {
-  buildPagesCacheValue,
-  shouldIsolatePagesMiddlewareIsr,
-  type ISRCacheEntry,
-} from "./isr-cache.js";
+import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-node-compat.js";
 import {
   buildPagesNextDataScript,
@@ -168,6 +164,7 @@ export type ResolvePagesPageDataOptions = {
   i18n: PagesI18nRenderContext;
   isrCacheKey: (router: string, pathname: string) => string;
   isrGet: (key: string) => Promise<ISRCacheEntry | null>;
+  isolateMiddlewareIsr?: boolean;
   isrSet: (
     key: string,
     data: CachedPagesValue,
@@ -916,7 +913,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (shouldIsolatePagesMiddlewareIsr(options.vinext ?? {})) {
+      if (options.isolateMiddlewareIsr === true) {
         applyCdnResponseHeaders(hitResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
@@ -1014,7 +1011,7 @@ export async function resolvePagesPageData(
           routePath: options.routePattern,
           routeType: "render",
         },
-        { forceOrigin: shouldIsolatePagesMiddlewareIsr(options.vinext ?? {}) },
+        { forceOrigin: options.isolateMiddlewareIsr === true },
       );
 
       const staleHtml = rewritePagesInitialMiddlewareMatched(
@@ -1030,7 +1027,7 @@ export async function resolvePagesPageData(
         cached.value.cacheControl,
         cachedValue.status,
       );
-      if (shouldIsolatePagesMiddlewareIsr(options.vinext ?? {})) {
+      if (options.isolateMiddlewareIsr === true) {
         applyCdnResponseHeaders(staleResponse.headers, { cacheControl: "no-store" });
       }
       // Bot / crawler ETag consistency: same as the HIT branch — attach an
