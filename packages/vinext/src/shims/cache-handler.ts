@@ -189,6 +189,7 @@ function readPositiveNumberField(
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
+  private lastMutationTimestamp = 0;
   private readonly maxMemoryCacheSize: number;
   private currentMemoryCacheSize = 0;
 
@@ -222,6 +223,12 @@ export class MemoryCacheHandler implements CacheHandler {
       if (oldestKey === undefined) return;
       this.deleteEntry(oldestKey);
     }
+  }
+
+  private nextMutationTimestamp(): number {
+    const now = Date.now();
+    this.lastMutationTimestamp = Math.max(now, this.lastMutationTimestamp + 1);
+    return this.lastMutationTimestamp;
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -295,7 +302,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = this.nextMutationTimestamp();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -335,7 +342,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = this.nextMutationTimestamp();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
       while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {

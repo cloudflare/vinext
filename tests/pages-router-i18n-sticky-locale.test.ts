@@ -611,6 +611,33 @@ describe("Pages Router initial-entry history state", () => {
     }
   });
 
+  it("preserves an app-relative asPath segment equal to basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win } = createNavWindow();
+    win.location.pathname = "/app/app/foo";
+    win.location.href = "http://localhost/app/app/foo";
+    win.history.state = {
+      __N: true,
+      url: "/app/foo",
+      as: "/app/foo",
+      options: {},
+    };
+    process.env.__NEXT_ROUTER_BASEPATH = "/app";
+
+    try {
+      await installRuntime(win);
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(Router.asPath).toBe("/app/foo");
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("install does not overwrite pre-existing history state", async () => {
     const previousWindow = (globalThis as any).window;
     const { win, replaceState } = createNavWindow();

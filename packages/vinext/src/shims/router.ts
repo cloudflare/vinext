@@ -1343,7 +1343,7 @@ function getCurrentHistoryAsPath(): string | null {
     ) {
       return null;
     }
-    const stateAs = getPagesRouterVisiblePath(stripHash(state.as));
+    const stateAs = removeNavigationLocalePrefix(stripHash(state.as));
     const visibleAs = `${getPagesRouterVisiblePath(window.location.pathname)}${window.location.search}`;
     return `${stateAs || visibleAs}${window.location.hash}`;
   } catch {

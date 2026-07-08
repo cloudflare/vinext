@@ -388,6 +388,21 @@ describe("ISR expire ceiling", () => {
     expect(shouldIsolatePagesMiddlewareIsr({ initialMiddlewareMatched: false })).toBe(false);
   });
 
+  it("keeps a replacement written in the same millisecond as tag invalidation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const handler = new MemoryCacheHandler();
+    const value = buildPagesCacheValue("<html>fresh</html>", {});
+
+    await handler.revalidateTag("_N_T_/visible");
+    await handler.set("pages:visible", value, {
+      revalidate: 60,
+      tags: ["_N_T_/visible"],
+    });
+
+    await expect(handler.get("pages:visible")).resolves.toMatchObject({ value });
+  });
+
   it("serves stale within expire and treats entries beyond expire as hard misses", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(1_000);
