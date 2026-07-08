@@ -565,6 +565,10 @@ describe("createPagesPageHandler — _next/data", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(cache.writes).toHaveLength(writesBeforeHeaderOverride);
       expect(headerVariant.headers.get("Cache-Control")).toContain("no-store");
+      expect(
+        (headerVariant as Response & { __vinextStreamedHtmlResponse?: boolean })
+          .__vinextStreamedHtmlResponse,
+      ).toBe(true);
     } finally {
       delete process.env.__VINEXT_REVALIDATE_SECRET;
       setDataCacheHandler(new MemoryCacheHandler());

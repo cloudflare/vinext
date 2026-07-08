@@ -887,11 +887,17 @@ export function createPagesPageHandler(
 
         const responseHeaders = new Headers(pageResponse.headers);
         applyCdnResponseHeaders(responseHeaders, { cacheControl: ISR_NEVER_CACHE_CONTROL });
-        return new Response(pageResponse.body, {
+        const noStoreResponse = new Response(pageResponse.body, {
           status: pageResponse.status,
           statusText: pageResponse.statusText,
           headers: responseHeaders,
         });
+        (
+          noStoreResponse as Response & { __vinextStreamedHtmlResponse?: boolean }
+        ).__vinextStreamedHtmlResponse = (
+          pageResponse as Response & { __vinextStreamedHtmlResponse?: boolean }
+        ).__vinextStreamedHtmlResponse;
+        return noStoreResponse;
       } catch (e) {
         console.error("[vinext] SSR error:", e);
         reportRequestError(
