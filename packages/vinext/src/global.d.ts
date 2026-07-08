@@ -415,9 +415,6 @@ declare global {
       __VINEXT_PREVIEW_MODE_ID?: string;
       __VINEXT_PREVIEW_MODE_SIGNING_KEY?: string;
       __VINEXT_PREVIEW_MODE_ENCRYPTION_KEY?: string;
-      __VINEXT_SHARED_PREVIEW_MODE_ID?: string;
-      __VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY?: string;
-      __VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY?: string;
 
       /**
        * Deployment ID string injected via Vite `define` when

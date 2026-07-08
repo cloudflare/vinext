@@ -185,6 +185,11 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import {
+  createPreviewBuildCredentials,
+  getPreviewBuildCredentials,
+  type PreviewBuildCredentials,
+} from "./build/preview-credentials.js";
 import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
@@ -1333,6 +1338,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
+  let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
   // `configResolved` binds the resolved config, so multiple vinext builds in
@@ -1895,12 +1901,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           process.env.NODE_ENV = resolvedNodeEnv;
         }
         if (env?.command === "build") {
-          process.env.__VINEXT_SHARED_PREVIEW_MODE_ID ??= randomBytes(16).toString("hex");
-          process.env.__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY ??= randomBytes(32).toString("hex");
-          process.env.__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY ??=
-            randomBytes(32).toString("hex");
+          previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
         }
-        draftModeSecret = getPagesPreviewModeId();
+        draftModeSecret = previewBuildCredentials?.id ?? getPagesPreviewModeId();
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -5509,20 +5512,15 @@ export const loadServerActionClient = ${
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(sharedRevalidateSecret);
         }
-        const sharedPreviewModeId = process.env.__VINEXT_SHARED_PREVIEW_MODE_ID;
-        const sharedPreviewSigningKey = process.env.__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY;
-        const sharedPreviewEncryptionKey = process.env.__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY;
-        if (sharedPreviewModeId) {
-          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] =
-            JSON.stringify(sharedPreviewModeId);
-        }
-        if (sharedPreviewSigningKey) {
-          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] =
-            JSON.stringify(sharedPreviewSigningKey);
-        }
-        if (sharedPreviewEncryptionKey) {
+        if (previewBuildCredentials) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(
+            previewBuildCredentials.id,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] = JSON.stringify(
+            previewBuildCredentials.signingKey,
+          );
           serverDefines["process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY"] = JSON.stringify(
-            sharedPreviewEncryptionKey,
+            previewBuildCredentials.encryptionKey,
           );
         }
 

@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import os from "node:os";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { runWithPreviewBuildCredentials } from "../packages/vinext/src/build/preview-credentials.js";
 
 // Standard `@types/...` for these Node built-ins live in the workspace, so
 // the imports above are fully typed without explicit casts.
@@ -27,11 +28,23 @@ type VinextPlugin = {
   ) => { define?: Record<string, string> } | null | void;
 };
 
-const PREVIEW_ENV_NAMES = [
-  "__VINEXT_SHARED_PREVIEW_MODE_ID",
-  "__VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY",
-  "__VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY",
+const PREVIEW_DEFINE_NAMES = [
+  "process.env.__VINEXT_PREVIEW_MODE_ID",
+  "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY",
+  "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY",
 ] as const;
+
+function getPreviewDefines(define: Record<string, string> | undefined) {
+  const previewDefines = Object.fromEntries(
+    PREVIEW_DEFINE_NAMES.map((name) => [name, define?.[name]]),
+  );
+  expect(previewDefines).toEqual({
+    "process.env.__VINEXT_PREVIEW_MODE_ID": expect.stringMatching(/^"[0-9a-f]{32}"$/),
+    "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY": expect.stringMatching(/^"[0-9a-f]{64}"$/),
+    "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY": expect.stringMatching(/^"[0-9a-f]{64}"$/),
+  });
+  return previewDefines as Record<(typeof PREVIEW_DEFINE_NAMES)[number], string>;
+}
 
 async function setupTmpProject(nextConfigBody: string): Promise<string> {
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-compiler-define-"));
@@ -153,15 +166,18 @@ describe("compiler.define forwarding to Vite", () => {
 
       // NEXT_RUNTIME is always injected for server environments in addition to
       // user-configured defineServer entries.
+      const previewDefines = getPreviewDefines(rscResult?.define);
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        ...previewDefines,
       });
       // Client environment must never receive server-only defines.
       expect(clientResult).toBeNull();
@@ -302,9 +318,11 @@ describe("compiler.define forwarding to Vite", () => {
       // always returns a define object (never null) even without user defineServer.
       expect(rscResult).not.toBeNull();
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
-      // No other keys should be present when neither defineServer nor revalidate
-      // secret are configured.
-      expect(Object.keys(rscResult!.define!)).toEqual(["process.env.NEXT_RUNTIME"]);
+      expect(Object.keys(rscResult!.define!)).toEqual([
+        "process.env.NEXT_RUNTIME",
+        ...PREVIEW_DEFINE_NAMES,
+      ]);
+      getPreviewDefines(rscResult?.define);
     } finally {
       if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
       else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;
@@ -376,30 +394,6 @@ describe("build-time revalidate secret define (security: server-only)", () => {
 });
 
 describe("build-time preview credentials (security: separated and server-only)", () => {
-  const PREVIEW_ID = "b".repeat(32);
-  const SIGNING_KEY = "c".repeat(64);
-  const ENCRYPTION_KEY = "d".repeat(64);
-  const previous = new Map<string, string | undefined>();
-
-  beforeEach(() => {
-    for (const [name, value] of Object.entries({
-      __VINEXT_SHARED_PREVIEW_MODE_ID: PREVIEW_ID,
-      __VINEXT_SHARED_PREVIEW_MODE_SIGNING_KEY: SIGNING_KEY,
-      __VINEXT_SHARED_PREVIEW_MODE_ENCRYPTION_KEY: ENCRYPTION_KEY,
-    })) {
-      previous.set(name, process.env[name]);
-      process.env[name] = value;
-    }
-  });
-
-  afterEach(() => {
-    for (const [name, value] of previous) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-    previous.clear();
-  });
-
   async function getServerDefinePlugin(): Promise<VinextPlugin> {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as VinextPlugin[];
@@ -424,62 +418,52 @@ describe("build-time preview credentials (security: separated and server-only)",
   it("bakes three independent preview values into server environments", async () => {
     const plugin = await getServerDefinePlugin();
     const result = plugin.configEnvironment!("ssr", {}, { command: "build" });
-    expect(result?.define).toMatchObject({
-      "process.env.__VINEXT_PREVIEW_MODE_ID": JSON.stringify(PREVIEW_ID),
-      "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY": JSON.stringify(SIGNING_KEY),
-      "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY": JSON.stringify(ENCRYPTION_KEY),
-    });
-    expect(new Set([PREVIEW_ID, SIGNING_KEY, ENCRYPTION_KEY]).size).toBe(3);
+    const previewDefines = getPreviewDefines(result?.define);
+    expect(new Set(Object.values(previewDefines)).size).toBe(3);
   }, 15000);
 
   it("never exposes preview credentials to the client environment", async () => {
     const plugin = await getServerDefinePlugin();
     const result = plugin.configEnvironment!("client", {}, { command: "build" });
     expect(result).toBeNull();
-    for (const key of [
-      "process.env.__VINEXT_PREVIEW_MODE_ID",
-      "process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY",
-      "process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY",
-    ]) {
+    for (const key of PREVIEW_DEFINE_NAMES) {
       expect(result?.define?.[key]).toBeUndefined();
     }
   }, 15000);
 
-  it("generates stable credentials for direct non-CLI production builds", async () => {
-    const saved = new Map(PREVIEW_ENV_NAMES.map((name) => [name, process.env[name]]));
-    for (const name of PREVIEW_ENV_NAMES) delete process.env[name];
+  it("shares credentials within one build and rotates independent builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const tmpDir = await setupTmpProject(`export default {};`);
+    const createBuild = () => {
+      const plugins = vinext() as VinextPlugin[];
+      const config = plugins.find(
+        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const define = plugins.find((plugin) => plugin.name === "vinext:compiler-define-server");
+      return async () => {
+        await config!.config!(
+          { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+          { command: "build" },
+        );
+        return getPreviewDefines(
+          define!.configEnvironment!("ssr", {}, { command: "build" })?.define,
+        );
+      };
+    };
     try {
-      const firstPlugins = vinext() as VinextPlugin[];
-      const firstConfig = firstPlugins.find(
-        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      const configureFirst = createBuild();
+      const configureSecond = createBuild();
+      const [sharedFirst, sharedSecond] = await runWithPreviewBuildCredentials(async () =>
+        Promise.all([configureFirst(), configureSecond()]),
       );
-      await firstConfig!.config!(
-        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
-        { command: "build" },
-      );
-      const firstValues = PREVIEW_ENV_NAMES.map((name) => process.env[name]);
-      expect(firstValues).toEqual([
-        expect.stringMatching(/^[0-9a-f]{32}$/),
-        expect.stringMatching(/^[0-9a-f]{64}$/),
-        expect.stringMatching(/^[0-9a-f]{64}$/),
-      ]);
+      expect(sharedSecond).toEqual(sharedFirst);
 
-      const secondPlugins = vinext() as VinextPlugin[];
-      const secondConfig = secondPlugins.find(
-        (plugin) => plugin.name === "vinext:config" && typeof plugin.config === "function",
-      );
-      await secondConfig!.config!(
-        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
-        { command: "build" },
-      );
-      expect(PREVIEW_ENV_NAMES.map((name) => process.env[name])).toEqual(firstValues);
+      const configureIndependently = createBuild();
+      const independentFirst = await configureIndependently();
+      const independentSecond = await configureIndependently();
+      expect(independentFirst).not.toEqual(sharedFirst);
+      expect(independentSecond).not.toEqual(independentFirst);
     } finally {
-      for (const [name, value] of saved) {
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
