@@ -549,6 +549,9 @@ export function createAppPageRouteBodyMetadata(
   trailingSlash?: boolean,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
+  // Next.js also renders real metadata elements in its hidden streaming outlet.
+  // Vinext resolves metadata before rendering, so React can hoist these into the
+  // document head during the initial render instead of appending them after the shell.
   return (
     <div hidden>
       <MetadataHead metadata={metadata} pathname={pathname} trailingSlash={trailingSlash} />

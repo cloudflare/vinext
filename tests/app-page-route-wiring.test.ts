@@ -187,6 +187,35 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
   );
 }
 
+async function renderRouteDocument(elements: AppElements, routeId: string): Promise<string> {
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  return renderHtml(
+    createElement(
+      "html",
+      null,
+      createElement("head"),
+      createElement(
+        "body",
+        null,
+        createElement(
+          ElementsContext.Provider,
+          { value: elements },
+          createElement(Slot, { id: routeId }),
+        ),
+      ),
+    ),
+  );
+}
+
+function readDocumentSection(html: string, tagName: "head" | "body"): string {
+  const start = html.indexOf(`<${tagName}>`);
+  const end = html.indexOf(`</${tagName}>`);
+  if (start === -1 || end === -1) {
+    throw new Error(`Rendered document is missing <${tagName}>`);
+  }
+  return html.slice(start, end + tagName.length + 3);
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeoutId = setTimeout(() => {
@@ -303,7 +332,14 @@ async function buildGeneratedMetadataRouteHtml(
       page: {
         default: PageProbe,
         async generateMetadata() {
-          return { title: "generated page" };
+          return {
+            title: "generated page",
+            alternates: {
+              canonical: "https://example.com/generated",
+              languages: { "en-US": "https://example.com/en/generated" },
+            },
+            robots: { index: false, follow: false },
+          };
         },
       },
       params: [],
@@ -327,7 +363,7 @@ async function buildGeneratedMetadataRouteHtml(
     htmlLimitedBots,
   });
 
-  return renderRouteEntry(elements, "route:/generated");
+  return renderRouteDocument(elements, "route:/generated");
 }
 
 function RouteLoadingProbe() {
@@ -419,20 +455,24 @@ describe("app page route wiring helpers", () => {
   });
 
   it("hoists generated metadata into the head for streaming-capable requests", async () => {
-    // The streamed-body branch renders MetadataHead's real <title>/<meta>/<link>
-    // elements, which React 19 hoists ahead of the route content (into <head>).
-    // A dangerouslySetInnerHTML string would instead strand them in the body,
-    // where crawlers ignore rel=canonical / hreflang / robots.
+    // Next.js renders the same real elements in its streaming metadata outlet:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/metadata.tsx
+    // Vinext has already resolved metadata before this render, so React can hoist
+    // the elements into <head> instead of appending them after a streamed shell.
     const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
 
-    expect(html).toContain("<title>generated page</title>");
+    expect(head).toContain("<title>generated page</title>");
+    expect(head).toContain('rel="canonical" href="https://example.com/generated"');
+    expect(head).toContain('hrefLang="en-US" href="https://example.com/en/generated"');
+    expect(head).toContain('name="robots" content="noindex, nofollow"');
+    expect(body).not.toContain("<title>generated page</title>");
+    expect(body).not.toContain('rel="canonical"');
+    expect(body).not.toContain('hrefLang="en-US"');
+    expect(body).not.toContain('name="robots"');
     // Metadata is hoisted out, leaving the body outlet empty.
-    expect(html).toContain('<div hidden=""></div>');
-    expect(html).not.toContain('<div hidden=""><title>generated page</title>');
-    // The title precedes the route content, i.e. it is hoisted, not nested.
-    expect(html.indexOf("<title>generated page</title>")).toBeLessThan(
-      html.indexOf('data-layout="root"'),
-    );
+    expect(body).toContain('<div hidden=""></div>');
   });
 
   it("renders generated metadata in the head for configured html-limited bots", async () => {
