@@ -122,7 +122,9 @@ export function supportsNativeTypeofWindowFolding(
   viteVersion: string,
   bundledRolldownVersion?: string,
 ): boolean {
-  if (bundledRolldownVersion && isVersionAtLeast(bundledRolldownVersion, 1, 1, 4)) return true;
+  if (bundledRolldownVersion !== undefined) {
+    return isVersionAtLeast(bundledRolldownVersion, 1, 1, 4);
+  }
   return isVersionAtLeast(viteVersion, 8, 1, 4);
 }
 

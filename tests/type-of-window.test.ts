@@ -63,6 +63,7 @@ describe("typeof window compilation", () => {
     expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
     expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
     expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0", "1.1.3")).toBe(false);
   });
 
   it("skips custom scan folding for modules in the Vite cache directory", async () => {
