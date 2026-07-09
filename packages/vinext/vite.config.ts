@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
 
 /**
  * Keep third-party bare specifiers external — even when imported dynamically.
@@ -83,7 +86,9 @@ export default defineConfig({
       entryFileNames: renameBundledDepsOutput,
       chunkFileNames: renameBundledDepsOutput,
     },
-    dts: true,
+    dts: {
+      tsgo: { path: tscPath },
+    },
     fixedExtension: false,
     format: "esm",
     unbundle: true,

@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
 
 const bundledDeps = [
   "@jridgewell/sourcemap-codec",
@@ -31,12 +34,15 @@ export default defineConfig({
       neverBundle: (id) =>
         id.includes("node_modules") && !bundledDeps.some((dep) => id.includes(dep)),
     },
-    dts: true,
+    dts: {
+      tsgo: { path: tscPath },
+    },
     fixedExtension: false,
     format: "esm",
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,
     },
+    tsconfig: "../../tsconfig.create-vinext-app-dts.json",
     unbundle: true,
   },
 });

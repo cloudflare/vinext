@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
 
 export default defineConfig({
   pack: {
@@ -7,9 +10,12 @@ export default defineConfig({
     deps: {
       skipNodeModulesBundle: true,
     },
-    dts: true,
+    dts: {
+      tsgo: { path: tscPath },
+    },
     fixedExtension: false,
     format: "esm",
+    tsconfig: "../../tsconfig.cloudflare-dts.json",
     unbundle: true,
   },
 });
