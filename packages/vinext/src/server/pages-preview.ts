@@ -207,6 +207,16 @@ export function clearPagesPreviewData(
 }
 
 export function appendPagesPreviewClearCookies(headers: Headers): void {
-  headers.append("Set-Cookie", serializeClearedCookie("__prerender_bypass"));
-  headers.append("Set-Cookie", serializeClearedCookie("__next_preview_data"));
+  const cookies = headers.getSetCookie();
+  const hasExpiredCookie = (name: "__prerender_bypass" | "__next_preview_data") =>
+    cookies.some(
+      (cookie) =>
+        cookie.startsWith(`${name}=`) && cookie.includes("Expires=Thu, 01 Jan 1970 00:00:00 GMT"),
+    );
+  if (!hasExpiredCookie("__prerender_bypass")) {
+    headers.append("Set-Cookie", serializeClearedCookie("__prerender_bypass"));
+  }
+  if (!hasExpiredCookie("__next_preview_data")) {
+    headers.append("Set-Cookie", serializeClearedCookie("__next_preview_data"));
+  }
 }

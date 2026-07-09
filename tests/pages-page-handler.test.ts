@@ -372,6 +372,47 @@ describe("createPagesPageHandler — preview responses", () => {
     ]);
   });
 
+  it("preserves unrelated response cookies while clearing tampered preview cookies", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: { setHeader(name: string, value: string): void };
+              }) => {
+                res.setHeader("Set-Cookie", "user-session=active; Path=/; HttpOnly");
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+    const cookie = makePreviewCookieHeader({ draft: true }).replace(
+      /(__next_preview_data=)([^;])([^;]*)/,
+      (_match, prefix: string, first: string, rest: string) =>
+        `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+    );
+
+    const response = await handler(
+      new Request("http://localhost/", { headers: { cookie } }),
+      "/",
+      null,
+      null,
+      null,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "user-session=active; Path=/; HttpOnly",
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
+    ]);
+  });
+
   it("clears tampered preview cookies once when notFound renders the 404 page", async () => {
     const pageRoute = makeRoute("/missing", {
       ...makePageModule(),

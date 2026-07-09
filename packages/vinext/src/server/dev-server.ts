@@ -120,15 +120,17 @@ function applyDevPagesPreviewHeaders(
   }
   if (preview.shouldClear) {
     const clearHeaders = new Headers();
-    appendPagesPreviewClearCookies(clearHeaders);
-    const existing: string[] = [];
     for (const [key, value] of Object.entries(headers)) {
       if (key.toLowerCase() !== "set-cookie") continue;
-      if (Array.isArray(value)) existing.push(...value.map(String));
-      else existing.push(String(value));
+      if (Array.isArray(value)) {
+        for (const cookie of value) clearHeaders.append("Set-Cookie", String(cookie));
+      } else {
+        clearHeaders.append("Set-Cookie", String(value));
+      }
       delete headers[key];
     }
-    headers["Set-Cookie"] = [...existing, ...clearHeaders.getSetCookie()];
+    appendPagesPreviewClearCookies(clearHeaders);
+    headers["Set-Cookie"] = clearHeaders.getSetCookie();
   }
 }
 

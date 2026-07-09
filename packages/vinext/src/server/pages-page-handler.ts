@@ -65,9 +65,7 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
-  if (preview.shouldClear && headers.getSetCookie().length === 0) {
-    appendPagesPreviewClearCookies(headers);
-  }
+  if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
   return new Response(response.body, {
     headers,
     status: response.status,
