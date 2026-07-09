@@ -771,11 +771,6 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
-    const requestPreview = getPagesPreviewState(req.headers.cookie, {
-      isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
-    });
-    const requestPreviewData = requestPreview.data;
-
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
@@ -815,6 +810,17 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        const supportsPreview =
+          typeof pageModule.getStaticProps === "function" ||
+          typeof pageModule.getServerSideProps === "function";
+        const requestPreview = supportsPreview
+          ? getPagesPreviewState(req.headers.cookie, {
+              isOnDemandRevalidate: isOnDemandRevalidateRequest(
+                req.headers[PRERENDER_REVALIDATE_HEADER],
+              ),
+            })
+          : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
+        const requestPreviewData = requestPreview.data;
         // Try to load _app.tsx if it exists. This happens before the readiness
         // predicate so app-level getInitialProps participates in the same
         // initial Pages Router state as the client __NEXT_DATA__ payload.

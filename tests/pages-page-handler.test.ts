@@ -295,8 +295,39 @@ describe("createPagesPageHandler — _next/data", () => {
 });
 
 describe("createPagesPageHandler — preview responses", () => {
-  it("forces private no-store caching on preview HTML", async () => {
-    const handler = createPagesPageHandler(makeOpts());
+  it("does not activate preview on pages without static or server props", async () => {
+    const setSSRContext = vi.fn();
+    const handler = createPagesPageHandler(makeOpts({ setSSRContext }));
+    const request = new Request("http://localhost/", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).not.toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(setSSRContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isPreview: false,
+        nextData: expect.not.objectContaining({ isPreview: true }),
+      }),
+    );
+  });
+
+  it("activates preview on pages with server props", async () => {
+    const setSSRContext = vi.fn();
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({ getServerSideProps: async () => ({ props: { preview: true } }) }),
+          ),
+        ],
+        setSSRContext,
+      }),
+    );
     const request = new Request("http://localhost/", {
       headers: { cookie: makePreviewCookieHeader({ draft: true }) },
     });
@@ -305,10 +336,22 @@ describe("createPagesPageHandler — preview responses", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(setSSRContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isPreview: true,
+        nextData: expect.objectContaining({ isPreview: true }),
+      }),
+    );
   });
 
-  it("clears both cookies when preview data is tampered", async () => {
-    const handler = createPagesPageHandler(makeOpts());
+  it("clears both cookies when preview data is tampered on a preview-capable page", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute("/", makePageModule({ getServerSideProps: async () => ({ props: {} }) })),
+        ],
+      }),
+    );
     const cookie = makePreviewCookieHeader({ draft: true }).replace(
       /(__next_preview_data=)([^;])([^;]*)/,
       (_match, prefix: string, first: string, rest: string) =>

@@ -65,7 +65,9 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
-  if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
+  if (preview.shouldClear && headers.getSetCookie().length === 0) {
+    appendPagesPreviewClearCookies(headers);
+  }
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -467,9 +469,13 @@ export function createPagesPageHandler(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
-        const preview = getPagesPreviewState(request.headers.get("cookie"), {
-          isOnDemandRevalidate,
-        });
+        const supportsPreview =
+          isStaticPropsRoute || typeof pageModule.getServerSideProps === "function";
+        const preview = supportsPreview
+          ? getPagesPreviewState(request.headers.get("cookie"), {
+              isOnDemandRevalidate,
+            })
+          : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const previewData = preview.data;
         const pagesNextData = {
           ...buildPagesReadinessNextData({
@@ -668,12 +674,15 @@ export function createPagesPageHandler(
         if (pageDataResult.kind === "notFound") {
           const notFoundRoute = findNotFoundRoute();
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            return renderPage(request, url, manifest, middlewareHeaders, {
-              statusCode: 404,
-              asPath: renderAsPath ?? routeUrl,
-              renderErrorPageOnMiss: false,
-              __forcedRoute: notFoundRoute,
-            });
+            return finalizePagesPreviewResponse(
+              await renderPage(request, url, manifest, middlewareHeaders, {
+                statusCode: 404,
+                asPath: renderAsPath ?? routeUrl,
+                renderErrorPageOnMiss: false,
+                __forcedRoute: notFoundRoute,
+              }),
+              preview,
+            );
           }
           return finalizePagesPreviewResponse(buildDefaultPagesNotFoundResponse(), preview);
         }
