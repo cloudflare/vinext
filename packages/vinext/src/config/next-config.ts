@@ -1448,7 +1448,10 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 
           for (const domainItem of i18n.domains as unknown[]) {
             if (domainItem === item || !isUnknownRecord(domainItem)) continue;
-            if (Array.isArray(domainItem.locales) && domainItem.locales.includes(locale)) {
+            const domainLocales = domainItem.locales as
+              | { includes(value: unknown): boolean }
+              | undefined;
+            if (domainLocales && domainLocales.includes(locale)) {
               console.warn(
                 `Both ${item.domain} and ${String(domainItem.domain)} configured the locale (${String(locale)}) but only one can. Remove it from one i18n.domains config to continue`,
               );

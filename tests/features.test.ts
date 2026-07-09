@@ -979,6 +979,40 @@ describe("i18n config parsing", () => {
     );
   });
 
+  it("rejects overlapping domain locales exposed by a malformed includes value", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.com", defaultLocale: "en", locales: ["fr"] },
+            { domain: "example.fr", defaultLocale: "fr", locales: "fr" },
+          ],
+        },
+      } as never),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
+  it("rejects duplicate domain default locales", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "french.example.com", defaultLocale: "fr" },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});
