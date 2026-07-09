@@ -2607,12 +2607,23 @@ describe("Pages Router dev preview response boundaries", () => {
       "junction",
     );
     await fsp.mkdir(path.join(fixtureRoot, "pages", "api"), { recursive: true });
+    await fsp.mkdir(path.join(fixtureRoot, "pages", "no-fallback"), { recursive: true });
+    await fsp.mkdir(path.join(fixtureRoot, "pages", "fallback"), { recursive: true });
     await fsp.writeFile(path.join(fixtureRoot, "package.json"), JSON.stringify({ type: "module" }));
     await fsp.writeFile(
       path.join(fixtureRoot, "next.config.mjs"),
       `export default { generateBuildId: async () => "preview-build-id" };\n`,
     );
-    await fsp.writeFile(path.join(fixtureRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "_app.tsx"),
+      `export default function App({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+App.getInitialProps = async ({ Component, ctx }) => ({
+  pageProps: Component.getInitialProps ? await Component.getInitialProps(ctx) : {},
+});
+`,
+    );
     await fsp.writeFile(
       path.join(fixtureRoot, "pages", "api", "preview.ts"),
       `export default function handler(_req, res) {
@@ -2629,6 +2640,24 @@ describe("Pages Router dev preview response boundaries", () => {
 export default function PreviewPage({ preview }) {
   return <p id="preview">{String(preview)}</p>;
 }\n`,
+    );
+    const fallbackPage = `export function getStaticPaths() {
+  return { paths: [{ params: { post: "first" } }], fallback: FALLBACK_VALUE };
+}
+export function getStaticProps({ params, preview, previewData }) {
+  return { props: { params, preview: preview ?? false, previewData: previewData ?? null } };
+}
+export default function Page(props) {
+  return <pre id="props">{JSON.stringify(props)}</pre>;
+}
+`;
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "no-fallback", "[post].tsx"),
+      fallbackPage.replace("FALLBACK_VALUE", "false"),
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "fallback", "[post].tsx"),
+      fallbackPage.replace("FALLBACK_VALUE", "true"),
     );
     ({ server: previewServer, baseUrl: previewBaseUrl } = await startFixtureServer(fixtureRoot));
   });
@@ -2662,6 +2691,42 @@ export default function PreviewPage({ preview }) {
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
     }
+  });
+
+  it("renders unlisted fallback false and fallback true paths with real preview props", async () => {
+    const cookie = await enablePreview();
+
+    const noFallbackWithoutPreview = await fetch(`${previewBaseUrl}/no-fallback/second`);
+    expect(noFallbackWithoutPreview.status).toBe(404);
+
+    for (const pathname of ["/no-fallback/second", "/fallback/second"]) {
+      const response = await fetch(`${previewBaseUrl}${pathname}`, { headers: { cookie } });
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const nextDataMatch = html.match(
+        /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+      );
+      expect(nextDataMatch).toBeTruthy();
+      const nextData = JSON.parse(nextDataMatch![1]!);
+      expect(nextData.props.pageProps).toEqual({
+        params: { post: "second" },
+        preview: true,
+        previewData: { draft: true },
+      });
+      expect(nextData.isFallback).toBe(false);
+    }
+  });
+
+  it("preserves __N_PREVIEW after custom App getInitialProps", async () => {
+    const cookie = await enablePreview();
+    const response = await fetch(`${previewBaseUrl}/preview`, { headers: { cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    expect(JSON.parse(nextDataMatch![1]!).props.__N_PREVIEW).toBe(true);
   });
 
   it("expires tampered preview cookies for HTML and data", async () => {

@@ -931,7 +931,7 @@ export function createSSRHandler(
             matchesPagesStaticPath(pathEntry, params, routeParams, url),
           );
 
-          if (fallback === false && !isValidPath) {
+          if (fallback === false && !isValidPath && requestPreviewData === false) {
             if (isDataReq) {
               // Data requests get a JSON 404 so the client router can
               // hard-navigate instead of trying to parse HTML as JSON.
@@ -967,7 +967,13 @@ export function createSSRHandler(
           const userAgentHeader = req.headers["user-agent"];
           const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
           const isBotRequest = !!userAgent && isBotUserAgent(userAgent, htmlLimitedBots);
-          if (fallback === true && !isValidPath && !isDataReq && !isBotRequest) {
+          if (
+            fallback === true &&
+            !isValidPath &&
+            !isDataReq &&
+            !isBotRequest &&
+            requestPreviewData === false
+          ) {
             const fallbackCacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const generatedEntry = await isrGet(fallbackCacheKey);
             isFallbackRender = generatedEntry?.value.value?.kind !== "PAGES";
@@ -1033,6 +1039,7 @@ export function createSSRHandler(
           if (appResult.kind === "render") {
             pageProps = appResult.pageProps;
             renderProps = appResult.renderProps;
+            if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
           }
           return false;
         }
