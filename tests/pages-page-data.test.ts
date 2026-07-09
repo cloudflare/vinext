@@ -114,8 +114,10 @@ describe("pages page data", () => {
   });
 
   it("preserves custom app props in fallback shells", async () => {
+    const queries: unknown[] = [];
     const AppComponent = Object.assign(function App() {}, {
-      getInitialProps() {
+      getInitialProps(context: { router: { query: unknown } }) {
+        queries.push(context.router.query);
         return { appValue: "preserved", pageProps: { discarded: true } };
       },
     });
@@ -138,6 +140,7 @@ describe("pages page data", () => {
       pageProps: {},
       props: { appValue: "preserved", pageProps: {} },
     });
+    expect(queries).toEqual([{}]);
   });
 
   it("preserves custom app props during stale ISR regeneration", async () => {

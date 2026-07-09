@@ -1183,6 +1183,21 @@ type RouteQueryNextData = {
   query?: Record<string, string | string[] | undefined>;
 };
 
+function copySerializedRouteQuery(
+  query: RouteQueryNextData["query"],
+): Record<string, string | string[]> {
+  const routeQuery: Record<string, string | string[]> = {};
+  if (!query) return routeQuery;
+  for (const [key, value] of Object.entries(query)) {
+    if (typeof value === "string") {
+      routeQuery[key] = value;
+    } else if (Array.isArray(value)) {
+      routeQuery[key] = [...value];
+    }
+  }
+  return routeQuery;
+}
+
 function extractRouteParamsFromPath(
   pattern: string,
   pathname: string,
@@ -1220,14 +1235,7 @@ function getRouteQueryFromNextData(
   if (!nextData?.query || !nextData.page) return routeQuery;
 
   if (extractRouteParamsFromPath(nextData.page, resolvedPath) === null) {
-    for (const [key, value] of Object.entries(nextData.query)) {
-      if (typeof value === "string") {
-        routeQuery[key] = value;
-      } else if (Array.isArray(value)) {
-        routeQuery[key] = [...value];
-      }
-    }
-    return routeQuery;
+    return copySerializedRouteQuery(nextData.query);
   }
 
   const routeParamNames = extractRouteParamNames(nextData.page);
@@ -1276,7 +1284,7 @@ function getPathnameAndQuery(): {
   for (const [key, value] of params) {
     addQueryParam(searchQuery, key, value);
   }
-  const query = { ...searchQuery, ...routeQuery };
+  const query = nextData?.isFallback ? {} : { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;

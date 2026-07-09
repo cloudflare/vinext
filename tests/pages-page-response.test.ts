@@ -147,6 +147,44 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
+  it("serializes only route params for non-fallback pages", async () => {
+    const common = createCommonOptions();
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isFallback: false,
+      params: { slug: "first" },
+      query: { slug: "first", utm_source: "test", ref: "google" },
+      routePattern: "/[slug]",
+      routeUrl: "/first?utm_source=test&ref=google",
+    });
+
+    const html = await response.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]!).query).toEqual({ slug: "first" });
+  });
+
+  it("serializes the fallback shell render query instead of matched params", async () => {
+    const common = createCommonOptions();
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      isFallback: true,
+      params: { slug: "first" },
+      query: {},
+      routePattern: "/[slug]",
+      routeUrl: "/first",
+    });
+
+    const html = await response.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]!).query).toEqual({});
+  });
+
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
     const common = createCommonOptions();
 

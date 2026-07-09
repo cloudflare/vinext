@@ -4964,8 +4964,7 @@ describe("Next.js edge cases", () => {
     expect(data.props.pageProps.id).toBe("1");
     expect(data.props.pageProps.title).toBe("First Article");
     // getStaticProps params should only contain route params, not URL query
-    expect(data.query).not.toHaveProperty("utm_source");
-    expect(data.query).not.toHaveProperty("ref");
+    expect(data.query).toEqual({ id: "1" });
   });
 
   it("__NEXT_DATA__ query contains dynamic params for static pages", async () => {

@@ -267,6 +267,7 @@ export function buildPagesNextDataScript(
     | "pageProps"
     | "props"
     | "params"
+    | "query"
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
@@ -278,7 +279,7 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: options.params,
+    query: options.isFallback ? (options.query ?? {}) : options.params,
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };
@@ -496,6 +497,7 @@ export async function renderPagesPageResponse(
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    query: options.query,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,

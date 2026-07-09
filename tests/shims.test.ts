@@ -14334,6 +14334,59 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/fallback-route-params/fallback-route-params.test.ts
+  // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/fallback-route-params/fallback-route-params.test.ts
+  it("keeps fallback route params empty until hydration data commits", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/second",
+        search: "?foo=bar",
+        hash: "",
+      },
+      history: { state: null },
+      __NEXT_DATA__: {
+        page: "/[slug]",
+        query: {},
+        isFallback: true,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      function Probe() {
+        return React.createElement("span", null, JSON.stringify(useRouter().query));
+      }
+
+      expect(renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)))).toBe(
+        "<span>{}</span>",
+      );
+
+      (globalThis as any).window.__NEXT_DATA__ = {
+        page: "/[slug]",
+        query: { slug: "second", foo: "bar" },
+        isFallback: false,
+      };
+
+      expect(renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)))).toBe(
+        "<span>{&quot;foo&quot;:&quot;bar&quot;,&quot;slug&quot;:&quot;second&quot;}</span>",
+      );
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("prefers dynamic route params over same-key search params in client router state", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");

@@ -666,13 +666,15 @@ export function createPagesPageHandler(
             : (pageDataResult.documentReqRes ?? createPageReqRes());
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
+        const renderQuery = isFallbackRender ? {} : query;
 
-        // Republish SSR context with isFallback flipped on so `useRouter().isFallback`
-        // returns true during render, matching Next.js render.tsx fallback shell.
+        // Next.js removes all query values from a fallback shell before rendering.
+        // The client starts with an empty router query, then its hydration replace
+        // fetches the concrete page data and publishes the matched route params.
         if (isFallbackRender && typeof setSSRContext === "function") {
           setSSRContext({
             pathname: routePattern,
-            query,
+            query: renderQuery,
             asPath: renderAsPath ?? routeUrl,
             navigationIsReady: false,
             locale,
@@ -795,7 +797,7 @@ export function createPagesPageHandler(
           pageProps,
           props: renderProps,
           params,
-          query,
+          query: renderQuery,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },

@@ -738,7 +738,10 @@ export async function resolvePagesPageData(
   let renderProps: PagesRenderProps = { pageProps };
 
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
-    const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
+    const result = await loadPagesAppInitialRenderProps(
+      isFallback ? { ...options, query: {} } : options,
+      getSharedReqRes,
+    );
     if (result.kind === "response") {
       return {
         kind: "response",

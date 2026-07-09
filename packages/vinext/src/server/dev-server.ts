@@ -741,6 +741,7 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    let renderQuery: Record<string, string | string[]> = query;
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
@@ -932,10 +933,11 @@ export function createSSRHandler(
             const fallbackCacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const generatedEntry = await isrGet(fallbackCacheKey);
             isFallbackRender = generatedEntry?.value.value?.kind !== "PAGES";
+            if (isFallbackRender) renderQuery = {};
             if (isFallbackRender && typeof routerShim.setSSRContext === "function") {
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
-                query,
+                query: renderQuery,
                 asPath: requestAsPath,
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
@@ -981,7 +983,7 @@ export function createSSRHandler(
             req,
             res,
             pathname: patternToNextFormat(route.pattern),
-            query,
+            query: renderQuery,
             asPath: requestAsPath,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -1849,7 +1851,7 @@ hydrate();
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: isFallbackRender ? renderQuery : params,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
@@ -1925,7 +1927,7 @@ hydrate();
           // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
-            query,
+            query: renderQuery,
             asPath: requestAsPath,
             ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },

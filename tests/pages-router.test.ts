@@ -2247,6 +2247,7 @@ describe("Pages Router integration", () => {
     expect(match).toBeTruthy();
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(true);
+    expect(nextData.query).toEqual({});
     // Empty pageProps on the fallback shell — client fetches them later.
     expect(nextData.props).toEqual({ pageProps: {} });
   });
