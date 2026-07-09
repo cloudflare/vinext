@@ -69,6 +69,7 @@ import {
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
 import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
@@ -1856,83 +1857,13 @@ export function createSSRHandler(
           },
         };
 
-        // Hydration entry: inline script that imports the page and hydrates.
-        // Stores the React root and page loader for client-side navigation.
-        const hydrationScript = `
-<script type="module"${nonceAttr}>
-import "vinext/instrumentation-client";
-import React from "react";
-import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
-
-const nextDataElement = document.getElementById("__NEXT_DATA__");
-if (nextDataElement?.textContent) {
-  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
-  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
-  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
-  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
-}
-const nextData = window.__NEXT_DATA__;
-_initializePagesRouterReadyFromNextData(nextData);
-const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
-const rawPageProps = props.pageProps;
-const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
-window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleSource}") };
-window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
-// reactStrictMode flag — read by wrapWithRouterContext so the <React.StrictMode>
-// wrap is applied on initial hydration and every navigation (matches Next.js).
-window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictMode === true)};
-
-async function hydrate() {
-  let hydrateRootOptions;
-  if (import.meta.env.DEV) {
-    const overlay = await import("vinext/dev-error-overlay");
-    overlay.installDevErrorOverlay();
-    overlay.installViteHmrErrorHandler(import.meta.hot);
-    overlay.reportInitialDevServerErrors();
-    hydrateRootOptions = {
-      onCaughtError: overlay.devOnCaughtError,
-      onUncaughtError: overlay.devOnUncaughtError,
-    };
-  }
-
-  const pageModule = await import("${pageModuleSource}");
-  const PageComponent = pageModule.default;
-  let element;
-  ${
-    appModuleSource
-      ? `
-  const appModule = await import("${appModuleSource}");
-  const AppComponent = appModule.default;
-  window.__VINEXT_APP__ = AppComponent;
-  element = React.createElement(AppComponent, {
-    ...props,
-    Component: PageComponent,
-    pageProps: rawPageProps,
-    router: Router,
-  });
-  `
-      : `
-  element = React.createElement(PageComponent, pageProps);
-  `
-  }
-  let resolveHydrationCommit;
-  const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
-  element = wrapWithRouterContext(element, resolveHydrationCommit);
-  const root = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
-  window.__VINEXT_ROOT__ = root;
-  await hydrationCommitted;
-  const hydratedAt = performance.now();
-  window.__VINEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED = true;
-  window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
-  }
-}
-hydrate();
-</script>`;
+        const hydrationScript = createPagesDevHydrationScript({
+          appModuleSource,
+          pageModuleSource,
+          reactStrictMode: reactStrictMode === true,
+          replaceFallbackRoute: true,
+          scriptNonce,
+        });
 
         const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
           {
@@ -2324,55 +2255,15 @@ async function renderErrorPage(
           isFallback: false,
         },
       )}</script>`;
-      const errorHydrationScript = `
-<script type="module"${nonceAttr}>
-import React from "react";
-import { hydrateRoot } from "react-dom/client";
-import "vinext/instrumentation-client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
-
-const nextDataElement = document.getElementById("__NEXT_DATA__");
-window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
-const props = window.__NEXT_DATA__.props;
-_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__, true);
-window.__VINEXT_PAGE_LOADERS__ = { [window.__NEXT_DATA__.page]: () => import("${errorModuleSource}") };
-window.__VINEXT_PAGE_PATTERNS__ = [window.__NEXT_DATA__.page];
-window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
-window.__VINEXT_REACT_STRICT_MODE__ = ${JSON.stringify(reactStrictMode === true)};
-const pageModule = await import("${errorModuleSource}");
-const PageComponent = pageModule.default;
-let element;
-${
-  appModuleSource
-    ? `const appModule = await import("${appModuleSource}");
-const AppComponent = appModule.default;
-window.__VINEXT_APP__ = AppComponent;
-const initialRouter = { ...Router, isReady: true };
-element = React.createElement(AppComponent, { ...props, Component: PageComponent, pageProps: props.pageProps, router: initialRouter });`
-    : `element = React.createElement(PageComponent, props.pageProps ?? {});`
-}
-let resolveHydrationCommit;
-const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
-element = wrapWithRouterContext(element, resolveHydrationCommit);
-let hydrateRootOptions;
-if (import.meta.env.DEV) {
-  const overlay = await import("vinext/dev-error-overlay");
-  overlay.installDevErrorOverlay();
-  overlay.installViteHmrErrorHandler(import.meta.hot);
-  overlay.reportInitialDevServerErrors();
-  hydrateRootOptions = {
-    onCaughtError: overlay.devOnCaughtError,
-    onUncaughtError: overlay.devOnUncaughtError,
-  };
-}
-window.__VINEXT_ROOT__ = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
-await hydrationCommitted;
-const hydratedAt = performance.now();
-window.__VINEXT_HYDRATED_AT = hydratedAt;
-window.__NEXT_HYDRATED = true;
-window.__NEXT_HYDRATED_AT = hydratedAt;
-window.__NEXT_HYDRATED_CB?.();
-</script>`;
+      const errorHydrationScript = createPagesDevHydrationScript({
+        appModuleSource,
+        forceRouterReady: true,
+        normalizePageProps: false,
+        pageModuleSource: errorModuleSource,
+        reactStrictMode: reactStrictMode === true,
+        scriptNonce,
+        setPagePatternsFromNextData: true,
+      });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
 
       if (DocumentComponent) {
