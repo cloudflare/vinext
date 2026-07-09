@@ -26,6 +26,30 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("does not expose process environment variables on the request", async () => {
+    const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+    process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch((req, res) => {
+          res.json({ hasEnv: Object.hasOwn(req, "env") });
+        }),
+        request: new Request("https://example.com/api/env"),
+        url: "/api/env",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ hasEnv: false });
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+      } else {
+        process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+      }
+    }
+  });
+
   it("merges dynamic params with duplicate query-string values", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch(

@@ -15,7 +15,7 @@ declare module "next" {
     query: Partial<{ [key: string]: string | string[] }>;
     cookies: Partial<{ [key: string]: string }>;
     body: any;
-    env: Env;
+    env?: Env;
     draftMode?: boolean;
     preview?: boolean;
     previewData?: PreviewData;

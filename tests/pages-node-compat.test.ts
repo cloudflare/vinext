@@ -23,8 +23,10 @@ function exerciseNextApiRequestPreviewTypes(req: NextApiRequest): NextApiRequest
   req.cookies.missing = undefined;
   req.body = undefined;
   req.body = { nested: true };
-  req.env.EXAMPLE = undefined;
-  req.env.EXAMPLE = "value";
+  if (req.env) {
+    req.env.EXAMPLE = undefined;
+    req.env.EXAMPLE = "value";
+  }
   req.preview = false;
   req.preview = undefined;
   req.draftMode = false;
@@ -66,6 +68,28 @@ void previewDataValues;
 void nextApiHandler;
 
 describe("Pages Node compat response", () => {
+  it("does not expose process environment variables on the request", () => {
+    const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+    process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+
+    try {
+      const { req } = createPagesReqRes({
+        body: undefined,
+        query: {},
+        request: new Request("https://example.test/api/env"),
+        url: "/api/env",
+      });
+
+      expect(req).not.toHaveProperty("env");
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+      } else {
+        process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+      }
+    }
+  });
+
   it("setPreviewData appends both preview cookies while preserving existing cookies", () => {
     const { res } = createPagesReqRes({
       body: undefined,

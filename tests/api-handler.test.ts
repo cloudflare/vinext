@@ -346,6 +346,31 @@ describe("handleApiRoute", () => {
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("does not expose process environment variables on the request", async () => {
+      const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+      process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+      let capturedRequest: any;
+      const handler = vi.fn((req: any) => {
+        capturedRequest = req;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/env");
+      const res = mockRes();
+
+      try {
+        await handleApiRoute(server, req, res, "/api/env", [route("/api/env")]);
+
+        expect(capturedRequest).not.toHaveProperty("env");
+        expect(capturedRequest.env).toBeUndefined();
+      } finally {
+        if (previousValue === undefined) {
+          delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+        } else {
+          process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+        }
+      }
+    });
+
     it("parses JSON body with application/json content-type", async () => {
       let capturedBody: unknown;
       const handler = vi.fn((req: any) => {
