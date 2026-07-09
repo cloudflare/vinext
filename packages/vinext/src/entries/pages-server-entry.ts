@@ -95,7 +95,7 @@ export async function generateServerEntry(
   const errorImportCode =
     errorFilePath !== null
       ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
-      : `const ErrorPageModule = null;`;
+      : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -301,16 +301,14 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
-const _errorPageRoute = ErrorPageModule
-  ? {
-      pattern: "/_error",
-      patternParts: ["_error"],
-      isDynamic: false,
-      params: [],
-      module: ErrorPageModule,
-      filePath: ${errorAssetPathJson},
-    }
-  : null;
+const _errorPageRoute = {
+  pattern: "/_error",
+  patternParts: ["_error"],
+  isDynamic: false,
+  params: [],
+  module: ErrorPageModule,
+  filePath: ${errorAssetPathJson},
+};
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}

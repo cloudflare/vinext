@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -9,6 +10,7 @@ import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import { buildPagesNextDataScript } from "../packages/vinext/src/server/pages-page-response.js";
 import type { Plugin } from "vite-plus";
+import type { NextPageContext } from "next";
 import type { NextRouter } from "../packages/vinext/src/shims/router.js";
 import type {
   CacheHandler,
@@ -2545,6 +2547,26 @@ describe("window.next debug global", () => {
       expect(typeof router.isPreview).toBe("boolean");
       expect(typeof router.isFallback).toBe("boolean");
       expect(typeof router.route).toBe("string");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("reads Pages preview state from __NEXT_DATA__", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: { pathname: "/preview", search: "", hash: "", href: "http://localhost/preview" },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      __NEXT_DATA__: { page: "/preview", query: {}, isFallback: false, isPreview: true },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      expect(routerModule.default.isPreview).toBe(true);
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();
@@ -14897,6 +14919,34 @@ describe("Pages Router concurrent navigation", () => {
     return { win, pushState, replaceState, render };
   }
 
+  it("exposes locale-free asPath for a localized browser URL", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/nl-NL/another",
+      href: "http://localhost/nl-NL/another",
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "nl-NL",
+      __VINEXT_LOCALES__: ["en-US", "nl-NL"],
+      __VINEXT_DEFAULT_LOCALE__: "en-US",
+    });
+    (win.__NEXT_DATA__ as any).page = "/[[...slug]]";
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(Router.asPath).toBe("/another");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   /**
    * Build a minimal HTML response that navigateClient can parse.
    * Includes __NEXT_DATA__ with a pageModuleUrl pointing to the given path.
@@ -18150,6 +18200,51 @@ describe("Pages Router _next/data client navigation", () => {
       expect(loaderAbout).toHaveBeenCalledTimes(1);
       expect(win.__NEXT_DATA__.page).toBe("/about");
       expect(win.__NEXT_DATA__.props.pageProps).toEqual({ hello: "world" });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("updates and clears isPreview from Pages data response markers", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/preview": vi.fn(async () => makePageModule("preview")),
+        "/published": vi.fn(async () => makePageModule("published")),
+      },
+      sspPatterns: ["/preview", "/published"],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const href =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return new Response(
+        JSON.stringify({
+          ...(href.includes("/preview.json") ? { __N_PREVIEW: true } : {}),
+          pageProps: {},
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      await Router.push("/preview");
+      expect(Router.isPreview).toBe(true);
+      expect(win.__NEXT_DATA__.isPreview).toBe(true);
+
+      await Router.push("/published");
+      expect(Router.isPreview).toBe(false);
+      expect(win.__NEXT_DATA__.isPreview).toBe(false);
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
@@ -21732,6 +21827,8 @@ describe("next/legacy/image shim", () => {
 });
 
 describe("next/error shim", () => {
+  const asNextPageContext = (context: unknown): NextPageContext => context as NextPageContext;
+
   it("renders 404 error page", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -21752,6 +21849,50 @@ describe("next/error shim", () => {
     expect(html).toContain("Internal Server Error");
   });
 
+  it("matches Next.js status-specific and unknown error titles", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 400 })),
+    ).toContain("Bad Request");
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 405 })),
+    ).toContain("Method Not Allowed");
+    expect(
+      renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 418 })),
+    ).toContain("An unexpected error has occurred");
+  });
+
+  it("sets the matching error document title", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+    const { getSSRHeadHTML, resetSSRHead } = await import("../packages/vinext/src/shims/head.js");
+
+    resetSSRHead();
+    renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 400 }));
+    expect(getSSRHeadHTML()).toContain('<title data-next-head="">400: Bad Request</title>');
+  });
+
+  it("enables dark mode styles by default and removes only the media rule when disabled", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const darkHtml = renderToStaticMarkup(React.createElement(ErrorComponent, { statusCode: 500 }));
+    const lightHtml = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 500, withDarkMode: false }),
+    );
+
+    expect(darkHtml).toContain("body{color:#000;background:#fff;margin:0}");
+    expect(darkHtml).toContain("@media (prefers-color-scheme:dark)");
+    expect(lightHtml).toContain("body{color:#000;background:#fff;margin:0}");
+    expect(lightHtml).not.toContain("@media (prefers-color-scheme:dark)");
+    expect(lightHtml).toContain('class="next-error-h1"');
+  });
+
   it("renders custom title", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -21762,6 +21903,173 @@ describe("next/error shim", () => {
     );
     expect(html).toContain("403");
     expect(html).toContain("Forbidden");
+  });
+
+  it("renders the client exception message when statusCode is absent", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: undefined as never }),
+    );
+    expect(html).not.toContain("<h1");
+    expect(html).toContain("Application error: a client-side exception has occurred");
+  });
+
+  it("renders the hostname in the client exception message", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, {
+        statusCode: undefined as never,
+        hostname: "preview.example.com",
+      }),
+    );
+    expect(html).toContain("while loading preview.example.com");
+  });
+
+  it("matches the default Error getInitialProps static contract", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(ErrorComponent.origGetInitialProps).toBe(ErrorComponent.getInitialProps);
+    expect(ErrorComponent.getInitialProps(asNextPageContext({ res: { statusCode: 500 } }))).toEqual(
+      {
+        statusCode: 500,
+        hostname: undefined,
+      },
+    );
+    expect(ErrorComponent.getInitialProps(asNextPageContext({ err: { statusCode: 401 } }))).toEqual(
+      {
+        statusCode: 401,
+        hostname: undefined,
+      },
+    );
+    expect(ErrorComponent.getInitialProps(asNextPageContext({ err: {} }))).toEqual({
+      statusCode: undefined,
+      hostname: undefined,
+    });
+    expect(ErrorComponent.getInitialProps(asNextPageContext({}))).toEqual({
+      statusCode: 404,
+      hostname: undefined,
+    });
+  });
+
+  it("exposes the default Error display name", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(ErrorComponent.displayName).toBe("ErrorPage");
+  });
+
+  it("supports subclassing the default Error component", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    class CustomError extends ErrorComponent {
+      render() {
+        return React.createElement("section", { "data-custom-error": true }, super.render());
+      }
+    }
+
+    const html = renderToStaticMarkup(React.createElement(CustomError, { statusCode: 404 }));
+    expect(html).toContain('<section data-custom-error="true">');
+    expect(html).toContain("This page could not be found");
+  });
+
+  it("exports the public ErrorProps and static component contract", async () => {
+    const declaration = await readFile(
+      new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url),
+      "utf8",
+    );
+    const errorDeclaration = declaration.slice(
+      declaration.indexOf('declare module "next/error"'),
+      declaration.indexOf('declare module "next/font/google"'),
+    );
+
+    expect(errorDeclaration).toContain("export type ErrorProps = {");
+    expect(errorDeclaration).toContain("hostname?: string;");
+    expect(errorDeclaration).toContain("export default class ErrorComponent<P = {}>");
+    expect(errorDeclaration).toContain("static displayName: string;");
+    expect(errorDeclaration).toContain("static getInitialProps:");
+    expect(errorDeclaration).toContain("static origGetInitialProps:");
+  });
+
+  it("allows the upstream CustomError static getInitialProps override", async () => {
+    // Ported from Next.js: test/e2e/typescript/pages/_error.tsx
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/typescript/pages/_error.tsx
+    const ts = await import("typescript");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "vinext-next-error-types-"));
+    const fixturePath = path.join(tempDir, "_error.tsx");
+    const declarationPath = new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url)
+      .pathname;
+
+    try {
+      await writeFile(
+        fixturePath,
+        `import type { NextPageContext } from "next";
+import ErrorComponent from "next/error";
+
+class CustomError extends ErrorComponent {
+  static getInitialProps({ res }: NextPageContext) {
+    const statusCode = res?.statusCode ?? 500;
+    return { statusCode, title: "CustomError" };
+  }
+}
+
+export default CustomError;
+`,
+      );
+
+      const program = ts.createProgram([fixturePath, declarationPath], {
+        esModuleInterop: true,
+        jsx: ts.JsxEmit.ReactJSX,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+        skipLibCheck: true,
+        strict: true,
+        target: ts.ScriptTarget.ES2022,
+      });
+      const diagnostics = ts
+        .getPreEmitDiagnostics(program)
+        .filter((diagnostic) => diagnostic.file?.fileName.startsWith(tempDir));
+
+      expect(
+        diagnostics.map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("derives the Error hostname from the server request", async () => {
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    expect(
+      ErrorComponent.getInitialProps(
+        asNextPageContext({
+          req: { url: "https://preview.example.com:8443/failure" },
+        }),
+      ),
+    ).toEqual({
+      statusCode: 404,
+      hostname: "preview.example.com",
+    });
+    expect(
+      ErrorComponent.getInitialProps(
+        asNextPageContext({
+          req: { url: "/failure", headers: { host: "fallback.example.com:3000" } },
+        }),
+      ),
+    ).toEqual({
+      statusCode: 404,
+      hostname: "fallback.example.com",
+    });
   });
 });
 
@@ -21813,6 +22121,10 @@ describe("next/app shim", () => {
     expect(typeof AppDefault.getInitialProps).toBe("function");
     // origGetInitialProps is preserved for userland code that introspects it.
     expect(typeof AppDefault.origGetInitialProps).toBe("function");
+    expect(AppDefault.getInitialProps).toBe(AppDefault.origGetInitialProps);
+
+    class InheritedApp extends AppDefault {}
+    expect(InheritedApp.getInitialProps).toBe(InheritedApp.origGetInitialProps);
 
     const pageCtx = { req: { url: "/test" } };
     const Component = Object.assign(() => null, {
