@@ -3033,6 +3033,263 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("evaluates Pages root components in _document > _app > page order in dev", async () => {
+    // Ported from Next.js: test/e2e/app-document-import-order/app-document-import-order.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-document-import-order/app-document-import-order.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-import-order-dev-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(tmpDir, "side-effect.ts"),
+      `const calls = ((globalThis as any).__VINEXT_IMPORT_ORDER__ ??= []);
+export function record(name: string) { calls.push(name); }
+export function read() { return calls; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_document.tsx"),
+      `import Document, { Html, Head, Main, NextScript } from "next/document";
+import { record } from "../side-effect";
+record("_document");
+export default class CustomDocument extends Document {
+  render() { return <Html><Head /><body><Main /><NextScript /></body></Html>; }
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_app.tsx"),
+      `import { record } from "../side-effect";
+record("_app");
+export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      `import { read, record } from "../side-effect";
+record("page");
+export default function Page() { return <p id="import-order">{read().join(",")}</p>; }
+`,
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('<p id="import-order">_document,_app,page</p>');
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("evaluates Pages root components before a cold-start missing route in dev", async () => {
+    // Ported from Next.js: test/e2e/app-document-import-order/app-document-import-order.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-document-import-order/app-document-import-order.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-error-import-order-dev-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(tmpDir, "side-effect.ts"),
+      `const calls = ((globalThis as any).__VINEXT_ERROR_IMPORT_ORDER__ ??= []);
+export function record(name: string) { calls.push(name); }
+export function read() { return calls; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_document.tsx"),
+      `import Document, { Html, Head, Main, NextScript } from "next/document";
+import { record } from "../side-effect";
+record("_document");
+export default class CustomDocument extends Document {
+  render() { return <Html><Head /><body><Main /><NextScript /></body></Html>; }
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_app.tsx"),
+      `import { record } from "../side-effect";
+record("_app");
+export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `import { read, record } from "../side-effect";
+record("404");
+export default function NotFound() { return <p id="import-order">{read().join(",")}</p>; }
+`,
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/missing`);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain('<p id="import-order">_document,_app,404</p>');
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a throwing _document import on a normal dev route", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-document-import-error-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(pagesDir, "_document.tsx"),
+      `throw new Error("document import failed");
+export default function Document() { return null; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      `export default function Page() { return <p>page rendered</p>; }
+`,
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/`);
+      expect(res.status).toBe(500);
+      const html = await res.text();
+      expect(html).toContain("document import failed");
+      expect(html).not.toContain("page rendered");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not evaluate _document for a dev data request", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-document-dev-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = { generateBuildId: () => "test-build-id" };\n`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_document.tsx"),
+      `throw new Error("document import failed");
+export default function Document() { return null; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "_app.tsx"),
+      `export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      `export async function getServerSideProps() { return { props: { value: "data response" } }; }
+export default function Page({ value }) { return <p>{value}</p>; }
+`,
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/_next/data/test-build-id/index.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({
+        pageProps: { value: "data response" },
+        __N_SSP: true,
+      });
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates a throwing _app import on a cold-start missing dev route", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-import-error-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(pagesDir, "_app.tsx"),
+      `throw new Error("app import failed");
+export default function App({ Component, pageProps }) { return <Component {...pageProps} />; }
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "404.tsx"),
+      `export default function NotFound() { return <p>404 rendered</p>; }
+`,
+    );
+
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+
+      const res = await fetch(`http://localhost:${addr.port}/missing`);
+      expect(res.status).toBe(500);
+      const html = await res.text();
+      expect(html).toContain("app import failed");
+      expect(html).not.toContain("404 rendered");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("dev Pages client assets expose virtual CSS added by client transforms", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-virtual-css-"));
     fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
@@ -8434,7 +8691,11 @@ describe("Pages Router dev ISR regeneration", () => {
           };
         }
 
-        if (id === path.join(FIXTURE_DIR, "pages", "_app")) {
+        if (/[/\\]_document(?:\.[^/\\]+)?$/.test(id)) {
+          return { default: null };
+        }
+
+        if (/[/\\]_app(?:\.[^/\\]+)?$/.test(id)) {
           return { default: App };
         }
 

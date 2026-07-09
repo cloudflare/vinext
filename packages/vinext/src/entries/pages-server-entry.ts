@@ -290,11 +290,10 @@ async function _renderIsrPassToStringAsync(element) {
   );
 }
 
+${docImportCode}
+${appImportCode}
 ${pageImports.join("\n")}
 ${apiImports.join("\n")}
-
-${appImportCode}
-${docImportCode}
 ${errorImportCode}
 
 export const pageRoutes = [

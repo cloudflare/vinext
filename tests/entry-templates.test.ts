@@ -1148,6 +1148,53 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("imports Pages root components in _document > _app > page order", async () => {
+    // Ported from Next.js: test/e2e/app-document-import-order/app-document-import-order.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-document-import-order/app-document-import-order.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-import-order-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "_document.tsx"),
+        "export default function Document() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "_app.tsx"),
+        "export default function App() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      const documentImportIndex = code.indexOf(
+        `import { default as DocumentComponent } from ${JSON.stringify(path.join(pagesDir, "_document.tsx"))}`,
+      );
+      const appImportIndex = code.indexOf(
+        `import { default as AppComponent } from ${JSON.stringify(path.join(pagesDir, "_app.tsx"))}`,
+      );
+      const pageImportIndex = code.indexOf(
+        `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
+      );
+
+      expect(documentImportIndex).toBeGreaterThanOrEqual(0);
+      expect(appImportIndex).toBeGreaterThan(documentImportIndex);
+      expect(pageImportIndex).toBeGreaterThan(appImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("precomputes Pages route dataKind in the server entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-kind-entry-"));
     const pagesDir = path.join(tmpDir, "pages");
