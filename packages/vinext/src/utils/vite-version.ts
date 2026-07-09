@@ -92,11 +92,13 @@ function getViteVersionFromRequire(require: NodeRequire): string {
   throw new Error(`could not determine Vite version from ${vitePkg?.name ?? "vite/package.json"}`);
 }
 
-function parseViteVersion(version: unknown): [major: number, minor: number, patch: number] | null {
+function parseViteVersion(
+  version: unknown,
+): [major: number, minor: number, patch: number, prerelease: boolean] | null {
   if (typeof version !== "string") return null;
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
   if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
+  return [Number(match[1]), Number(match[2]), Number(match[3]), !!match[4]];
 }
 
 function isModuleNotFoundError(error: unknown): boolean {
@@ -105,18 +107,25 @@ function isModuleNotFoundError(error: unknown): boolean {
   );
 }
 
+export function supportsNativeTypeofWindowFolding(viteVersion: string): boolean {
+  const parsedVersion = parseViteVersion(viteVersion);
+  if (!parsedVersion) return false;
+  const [major, minor, patch, prerelease] = parsedVersion;
+  if (major !== 8) return major > 8;
+  if (minor !== 1) return minor > 1;
+  if (patch !== 4) return patch > 4;
+  return !prerelease;
+}
+
 export function assertSupportedViteVersion(): {
-  major: number;
   supportsNativeTypeofWindowFolding: boolean;
 } {
   const viteVersion = getViteVersion();
-  const [major, minor, patch] = parseViteVersion(viteVersion)!;
+  const [major] = parseViteVersion(viteVersion)!;
   if (major < 8) {
     throw new Error(`[vinext] Vite 8 or newer is required. Detected Vite ${major}.`);
   }
   return {
-    major,
-    supportsNativeTypeofWindowFolding:
-      major > 8 || (major === 8 && (minor > 1 || (minor === 1 && patch >= 4))),
+    supportsNativeTypeofWindowFolding: supportsNativeTypeofWindowFolding(viteVersion),
   };
 }
