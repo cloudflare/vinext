@@ -808,6 +808,7 @@ export default createAppRscHandler({
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,

@@ -319,6 +319,7 @@ function PageProbe() {
 async function buildGeneratedMetadataRouteHtml(
   userAgent: string,
   htmlLimitedBots?: string,
+  serveStreamingMetadata?: boolean,
 ): Promise<string> {
   const elements = await buildResolvedPageElements({
     route: {
@@ -358,6 +359,7 @@ async function buildGeneratedMetadataRouteHtml(
         headers: { "user-agent": userAgent },
       }),
       searchParams: null,
+      serveStreamingMetadata,
     },
     metadataRoutes: [],
     htmlLimitedBots,
@@ -463,7 +465,7 @@ describe("app page route wiring helpers", () => {
 
     expect(head).not.toContain("<title>generated page</title>");
     expect(head).not.toContain('rel="canonical"');
-    expect(head).not.toContain('hrefLang="en-US"');
+    expect(head).not.toContain('hreflang="en-US"');
     expect(head).not.toContain('name="robots"');
     expect(body).toContain("<title>generated page</title>");
     expect(body).toContain('rel="canonical" href="https://example.com/generated"');
@@ -475,18 +477,45 @@ describe("app page route wiring helpers", () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
     const html = await buildGeneratedMetadataRouteHtml("Minibot", "Minibot");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
 
-    expect(html).toContain("<title>generated page</title>");
-    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+    expect(head).toContain("<title>generated page</title>");
+    expect(head).toContain('rel="canonical" href="https://example.com/generated"');
+    expect(body).not.toContain("<title>generated page</title>");
+  });
+
+  it("streams generated metadata for bots outside the configured html-limited rule", async () => {
+    // The custom rule replaces the default bot list, so Twitterbot is streaming-capable here.
+    const html = await buildGeneratedMetadataRouteHtml("Twitterbot", "Minibot");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
+
+    expect(head).not.toContain("<title>generated page</title>");
+    expect(body).toContain("<title>generated page</title>");
   });
 
   it("renders generated metadata in the head for default html-limited bots", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     const html = await buildGeneratedMetadataRouteHtml("Twitterbot");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
 
-    expect(html).toContain("<title>generated page</title>");
-    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+    expect(head).toContain("<title>generated page</title>");
+    expect(head).toContain('rel="canonical" href="https://example.com/generated"');
+    expect(body).not.toContain("<title>generated page</title>");
+  });
+
+  it("renders generated metadata in the head when streaming is disabled for prerendering", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming-static-generation/metadata-streaming-static-generation.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", undefined, false);
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
+
+    expect(head).toContain("<title>generated page</title>");
+    expect(body).not.toContain("<title>generated page</title>");
   });
 
   it("falls back to the default html-limited bot list for an empty config string", async () => {

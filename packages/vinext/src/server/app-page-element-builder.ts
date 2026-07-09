@@ -101,6 +101,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
+  /** Whether generated metadata may stream into the response body. */
+  serveStreamingMetadata?: boolean;
 };
 
 export type BuildPageElementsOptions<
@@ -198,6 +200,7 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    serveStreamingMetadata,
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -360,10 +363,11 @@ export async function buildPageElements<
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
   const metadataPlacement =
     hasDynamicMetadata &&
-    shouldServeStreamingMetadata(
-      pageRequest.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    )
+    (serveStreamingMetadata ??
+      shouldServeStreamingMetadata(
+        pageRequest.request.headers.get("user-agent") ?? "",
+        options.htmlLimitedBots,
+      ))
       ? "body"
       : "head";
 

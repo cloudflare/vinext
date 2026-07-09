@@ -244,6 +244,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
+      serveStreamingMetadata?: boolean;
     },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
@@ -565,6 +566,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  const serveStreamingMetadata = shouldServeStreamingMetadata(
+    options.request.headers.get("user-agent") ?? "",
+    options.htmlLimitedBots,
+  );
+  // Full static artifacts resolve generated metadata into <head>. PPR fallback
+  // shells keep request-time placement until metadata staticness can be tracked
+  // independently from the route's staticness.
+  const placeGeneratedMetadataInBody =
+    (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
@@ -718,6 +729,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               {
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                // Cache regeneration produces a complete static artifact, so metadata
+                // must be resolved into <head> before the artifact is stored.
+                serveStreamingMetadata: false,
               },
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
@@ -847,6 +861,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         {
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          serveStreamingMetadata: placeGeneratedMetadataInBody,
         },
       );
     },
@@ -919,6 +934,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
+            serveStreamingMetadata: placeGeneratedMetadataInBody,
           },
         );
       },
@@ -938,7 +954,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return options.renderErrorBoundaryPage(buildError);
       },
       renderSpecialError(specialError) {
-        return renderPageSpecialError(options, specialError);
+        return renderPageSpecialError(options, specialError, serveStreamingMetadata);
       },
       resolveSpecialError: resolveAppPageSpecialError,
     });
@@ -982,7 +998,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
-  const isPrerender = process.env.VINEXT_PRERENDER === "1";
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
 
@@ -1098,10 +1113,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
     renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(options, specialError, layoutIndex);
+      return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
     },
     renderPageSpecialError(specialError) {
-      return renderPageSpecialError(options, specialError);
+      return renderPageSpecialError(options, specialError, serveStreamingMetadata);
     },
     renderToReadableStream: options.renderToReadableStream,
     hasCustomGlobalError: options.hasCustomGlobalError,
@@ -1121,6 +1136,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
   layoutIndex: number,
+  serveStreamingMetadata: boolean,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
@@ -1131,10 +1147,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
       }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
-    serveStreamingMetadata: shouldServeStreamingMetadata(
-      options.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    ),
+    serveStreamingMetadata,
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
@@ -1167,6 +1180,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
+  serveStreamingMetadata: boolean,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
@@ -1177,10 +1191,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
-    serveStreamingMetadata: shouldServeStreamingMetadata(
-      options.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    ),
+    serveStreamingMetadata,
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
