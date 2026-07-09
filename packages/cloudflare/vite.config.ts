@@ -1,7 +1,9 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
-const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+const typescriptPackageUrl = import.meta.resolve("typescript/package.json");
+const { default: getTscPath } = await import(
+  new URL("lib/getExePath.js", typescriptPackageUrl).href
+);
 
 export default defineConfig({
   pack: {
@@ -11,7 +13,7 @@ export default defineConfig({
       skipNodeModulesBundle: true,
     },
     dts: {
-      tsgo: { path: tscPath },
+      tsgo: { path: getTscPath() },
     },
     fixedExtension: false,
     format: "esm",

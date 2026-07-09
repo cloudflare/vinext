@@ -1,7 +1,9 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
-const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+const typescriptPackageUrl = import.meta.resolve("typescript/package.json");
+const { default: getTscPath } = await import(
+  new URL("lib/getExePath.js", typescriptPackageUrl).href
+);
 
 const bundledDeps = [
   "@jridgewell/sourcemap-codec",
@@ -35,7 +37,7 @@ export default defineConfig({
         id.includes("node_modules") && !bundledDeps.some((dep) => id.includes(dep)),
     },
     dts: {
-      tsgo: { path: tscPath },
+      tsgo: { path: getTscPath() },
     },
     fixedExtension: false,
     format: "esm",
