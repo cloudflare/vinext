@@ -146,7 +146,8 @@ jobs:
       # so a partial test run still publishes fresh classifications.
       #
       # Guardrails mirror the results-ingest step at the end of the report
-      # job: only the full suite (suite-filter=all), only against main.
+      # job: only the full suite (suite-filter=all), only against main, and
+      # only against the Next.js version used by the scheduled run.
       # A filtered run still produces a complete classification (the
       # classifier walks the whole Next.js checkout regardless of which
       # tests will actually run), so the partial-data argument from the
@@ -157,6 +158,7 @@ jobs:
         if: |
           (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
+          && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
@@ -549,11 +551,15 @@ jobs:
       #     check that `inputs.vinext-ref` resolves to main (its default).
       #     Branch / PR runs are useful for spot-checks but should not pollute
       #     the historical record.
+      #   - Only when testing the Next.js version used by the scheduled run.
+      #     Manual runs against other refs are useful for investigation but
+      #     should not replace the scheduled compatibility snapshot.
       - name: Submit results to /compatibility ingest
         if: |
           always()
           && (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
+          && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
