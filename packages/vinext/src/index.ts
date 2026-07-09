@@ -236,7 +236,6 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
-import { escapeRegExp } from "./utils/regex.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -277,11 +276,6 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-function getCacheDirPrefix(cacheDir: string): string {
-  const normalizedCacheDir = toSlash(cacheDir);
-  return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
-}
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
@@ -1337,10 +1331,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // `configResolved` binds the resolved config, so multiple vinext builds in
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
-
-  // Populated from the resolved Vite config before transform filters are
-  // compiled, while keeping the filter object referenced by the plugin stable.
-  const typeofWindowIdFilter = { exclude: /(?!)/ };
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
@@ -3279,8 +3269,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
-        const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
-        typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
@@ -5429,22 +5417,30 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Fold `typeof window` like Next.js before Rolldown resolves imports. This
-    // removes browser-only dynamic imports from server bundles before package
-    // conditional exports are evaluated.
     {
       name: "vinext:typeof-window",
+      configEnvironment(_name, environment) {
+        return {
+          define: {
+            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          },
+        };
+      },
+    },
+    // plugin-RSC's analysis builds replace each module with lexer-discovered
+    // imports before Rolldown's native define folding runs. Fold only in those
+    // write-less analysis builds so dead browser/server imports are absent from
+    // the synthetic graph; real builds continue to use native Oxc folding.
+    {
+      name: "vinext:typeof-window-scan",
+      apply: "build",
       enforce: "post",
       transform: {
-        filter: {
-          id: typeofWindowIdFilter,
-          code: /typeof\s+window/,
-        },
+        filter: { code: /\btypeof\s+window\b/ },
         handler(code, id) {
-          const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
-          if (toSlash(id).startsWith(cacheDirPrefix)) {
-            return null;
-          }
+          if (this.environment.config.build.write !== false) return null;
+          const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
+          if (toSlash(id).startsWith(cacheDir)) return null;
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
         },
       },
