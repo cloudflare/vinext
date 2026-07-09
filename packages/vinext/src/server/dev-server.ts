@@ -134,6 +134,12 @@ function applyDevPagesPreviewHeaders(
   }
 }
 
+function applyDevPagesPreviewResponse(res: ServerResponse, preview: PagesPreviewState): void {
+  const headers = res.getHeaders() as Record<string, string | string[] | number>;
+  applyDevPagesPreviewHeaders(headers, preview);
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+}
+
 async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<string> {
   // The cache-fill render is a second render pass for the same request.
   // Reset render-scoped state so it cannot leak from the streamed response
@@ -1111,6 +1117,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -1561,6 +1568,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.

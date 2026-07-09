@@ -2642,6 +2642,16 @@ export default function PreviewPage({ preview }) {
 }\n`,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "gssp-not-found.tsx"),
+      `export function getServerSideProps() { return { notFound: true }; }
+export default function Page() { return null; }\n`,
+    );
+    await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "gsp-not-found.tsx"),
+      `export function getStaticProps() { return { notFound: true }; }
+export default function Page() { return null; }\n`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "initial-props.tsx"),
       `export default function InitialPropsPage() {
   return <p id="initial-props">page</p>;
@@ -2763,6 +2773,20 @@ export default function Page(props) {
         expect.stringMatching(/^__prerender_bypass=; Expires=/),
         expect.stringMatching(/^__next_preview_data=; Expires=/),
       ]);
+    }
+  });
+
+  it("expires tampered preview cookies on notFound HTML and data exits", async () => {
+    const cookie = tamperPreviewCookie(await enablePreview());
+    for (const page of ["gssp-not-found", "gsp-not-found"]) {
+      for (const pathname of [`/${page}`, `/_next/data/preview-build-id/${page}.json`]) {
+        const response = await fetch(`${previewBaseUrl}${pathname}`, { headers: { cookie } });
+        expect(response.status).toBe(404);
+        expect(response.headers.getSetCookie()).toEqual([
+          expect.stringMatching(/^__prerender_bypass=; Expires=/),
+          expect.stringMatching(/^__next_preview_data=; Expires=/),
+        ]);
+      }
     }
   });
 });
