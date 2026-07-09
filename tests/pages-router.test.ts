@@ -8417,7 +8417,11 @@ describe("Pages Router dev ISR regeneration", () => {
       const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
       const loadModule = async (id: string) => {
         // ALS registration side-effects loaded at createSSRHandler startup
-        if (id === "vinext/head-state" || id === "vinext/router-state") {
+        if (
+          id === "vinext/head-state" ||
+          id === "vinext/router-state" ||
+          id === "vinext/shims/pages-dynamic-state"
+        ) {
           return {};
         }
 

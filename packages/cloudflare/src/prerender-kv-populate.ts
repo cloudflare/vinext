@@ -1,5 +1,5 @@
 /**
- * Deploy-time KV population for App Router prerendered artifacts.
+ * Deploy-time KV population for prerendered artifacts.
  *
  * Reads `dist/server/vinext-prerender.json` and `dist/server/prerendered-routes/*`,
  * converts rendered App Router HTML/RSC artifacts into the same serialized
@@ -9,10 +9,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
+import { appIsrCacheKey, isrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
 import {
   getRenderedAppRoutes,
+  isFallbackShellArtifactPath,
   readPrerenderManifest,
 } from "vinext/internal/server/prerender-manifest";
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
@@ -169,6 +170,51 @@ export function buildPrerenderKVPairs(
       });
     }
 
+    routeCount++;
+  }
+
+  for (const route of manifest.routes) {
+    if (route.status !== "rendered" || route.router !== "pages") continue;
+    const artifactPathname = route.path ?? route.route;
+    if (isFallbackShellArtifactPath(artifactPathname, route)) continue;
+    let htmlPath: string;
+    try {
+      htmlPath = resolveContainedFile(prerenderDir, getOutputPath(artifactPathname, trailingSlash));
+    } catch (error) {
+      console.warn(
+        `[vinext] Skipping prerender KV seed for ${artifactPathname}: ${formatUnknownError(error)}`,
+      );
+      continue;
+    }
+    if (!fs.existsSync(htmlPath)) continue;
+    if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
+
+    const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : 31_536_000;
+    const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+    const expirationTtl = typeof route.revalidate === "number" ? ttlSeconds : undefined;
+    pairs.push({
+      key: buildKVKey(options?.appPrefix, isrCacheKey("pages", cachePathname, manifest.buildId)),
+      value: buildCacheEntry(
+        {
+          kind: "PAGES",
+          html: fs.readFileSync(htmlPath, "utf-8"),
+          pageData: {},
+          headers: route.headers,
+          status:
+            cachePathname === "/404"
+              ? 404
+              : cachePathname === "/500" || cachePathname === "/_error"
+                ? 500
+                : undefined,
+        },
+        [],
+        now,
+        revalidateSeconds,
+        expireSeconds,
+      ),
+      ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
+    });
     routeCount++;
   }
 

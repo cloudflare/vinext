@@ -19,6 +19,7 @@ import type {
   HeadState,
   I18nState,
   NavigationState,
+  PagesDynamicState,
   PrivateCacheState,
   RouterState,
   RootParamsState,
@@ -48,6 +49,7 @@ export type UnifiedRequestContext = {
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
+  PagesDynamicState &
   CacheState &
   PrivateCacheState &
   FetchCacheState &
@@ -114,6 +116,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     ssrContext: null,
     ssrHeadChildren: [],
     documentInitialHead: [],
+    pagesDynamicModuleIds: new Set<string>(),
     rootParams: null,
     ...opts,
   };

@@ -204,6 +204,8 @@ declare global {
      */
     __VINEXT_RSC_PREFETCHED_URLS__: Set<string> | undefined;
 
+    __NEXT_PRELOADREADY?: (ids?: (string | number)[]) => Promise<void>;
+
     // ── Next.js conventional globals ────────────────────────────────────────
     //
     // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as

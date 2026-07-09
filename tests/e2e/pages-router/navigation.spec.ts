@@ -4,6 +4,32 @@ import { waitForHydration } from "../helpers";
 const BASE = "http://localhost:4173";
 
 test.describe("Client-side navigation", () => {
+  test("route announcer is empty initially and announces soft navigation", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+
+    const announcer = page.locator("#__next-route-announcer__");
+    await expect(announcer).toBeAttached();
+    await expect(announcer).toHaveText("");
+
+    await page.click('a[href="/about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+    await expect(announcer).toHaveText("About - vinext");
+  });
+
+  test("route announcer uses visible heading text when the title is empty", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      document.title = "";
+    });
+
+    await page.click('a[href="/route-announcer-heading"]');
+
+    await expect(page.locator("h1")).toContainText("Visible heading");
+    await expect(page.locator("#__next-route-announcer__")).toHaveText("Visible heading");
+  });
+
   test("Link click navigates without full page reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");

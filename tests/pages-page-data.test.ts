@@ -5,6 +5,7 @@ import {
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -63,6 +64,66 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  it("serves auto-exported Pages HTML from the prerender cache", async () => {
+    const isrGet = vi.fn().mockResolvedValue({
+      isStale: false,
+      value: {
+        value: {
+          kind: "PAGES",
+          html: "<html>prerendered</html>",
+          pageData: {},
+          headers: undefined,
+          status: undefined,
+        },
+        cacheControl: { revalidate: 31_536_000 },
+      },
+    });
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet,
+        pageModule: { default: function Page() {} },
+      }),
+    );
+
+    expect(isrGet).toHaveBeenCalledWith("pages:/posts/post");
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(await result.response.text()).toBe("<html>prerendered</html>");
+      expect(result.response.headers.get("x-nextjs-cache")).toBe("HIT");
+    }
+  });
+
+  it("returns 304 for a matching bot ETag on an auto-export cache hit", async () => {
+    const html = "<html>prerendered</html>";
+    const result = await resolvePagesPageData(
+      createOptions({
+        ifNoneMatch: generatePagesETag(html),
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            value: {
+              kind: "PAGES",
+              html,
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+            cacheControl: { revalidate: 31_536_000 },
+          },
+        }),
+        pageModule: { default: function Page() {} },
+        userAgent: "Googlebot",
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(result.response.status).toBe(304);
+      expect(await result.response.text()).toBe("");
+      expect(result.response.headers.get("etag")).toBe(generatePagesETag(html));
+    }
+  });
+
   it("preserves non-object pageProps returned by custom app getInitialProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({

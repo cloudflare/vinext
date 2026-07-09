@@ -234,6 +234,23 @@ export async function isrSetPrerenderedAppPage(
   }
 }
 
+export async function isrSetPrerenderedPagesPage(
+  key: string,
+  data: CachedPagesValue,
+  metadata: { expireSeconds?: number; revalidateSeconds?: number },
+): Promise<void> {
+  const revalidateSeconds = metadata.revalidateSeconds ?? 31_536_000;
+  await getCdnCacheAdapter().set(key, data, {
+    revalidate: revalidateSeconds,
+    cacheControl:
+      metadata.expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: metadata.expireSeconds },
+    tags: [],
+  });
+  setRevalidateDuration(key, revalidateSeconds);
+}
+
 // ---------------------------------------------------------------------------
 // Background regeneration dedup — one in-flight regeneration per cache key.
 // Uses Symbol.for() on globalThis so the map is shared across Vite's

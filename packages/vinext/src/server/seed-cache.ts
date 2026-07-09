@@ -31,8 +31,8 @@
 
 import fs from "node:fs";
 import path from "pathslash";
-import type { CachedAppPageValue } from "vinext/shims/cache-handler";
-import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
+import type { CachedAppPageValue, CachedPagesValue } from "vinext/shims/cache-handler";
+import { isrCacheKey, isrSetPrerenderedAppPage, isrSetPrerenderedPagesPage } from "./isr-cache.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import {
@@ -62,6 +62,11 @@ type PrerenderCacheSeedOptions = {
   writeAppPageEntry?: (
     key: string,
     data: CachedAppPageValue,
+    metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
+  writePagesPageEntry?: (
+    key: string,
+    data: CachedPagesValue,
     metadata: PrerenderCacheSeedMetadata,
   ) => Promise<void>;
 };
@@ -97,6 +102,7 @@ export async function seedMemoryCacheFromPrerender(
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
+  const writePagesPageEntry = options?.writePagesPageEntry ?? isrSetPrerenderedPagesPage;
   let seeded = 0;
 
   const appRoutes = getRenderedAppRoutes(routes);
@@ -147,6 +153,35 @@ export async function seedMemoryCacheFromPrerender(
       );
       seeded++;
     }
+  }
+
+  for (const route of routes) {
+    if (route.status !== "rendered" || route.router !== "pages") continue;
+    const artifactPathname = route.path ?? route.route;
+    if (isFallbackShellArtifactPath(artifactPathname, route)) continue;
+    const fullPath = path.join(prerenderDir, getOutputPath(artifactPathname, trailingSlash));
+    if (!fs.existsSync(fullPath)) continue;
+    const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    await writePagesPageEntry(
+      isrCacheKey("pages", cachePathname, buildId),
+      {
+        kind: "PAGES",
+        html: fs.readFileSync(fullPath, "utf-8"),
+        pageData: {},
+        headers: route.headers,
+        status:
+          cachePathname === "/404"
+            ? 404
+            : cachePathname === "/500" || cachePathname === "/_error"
+              ? 500
+              : undefined,
+      },
+      {
+        revalidateSeconds: typeof route.revalidate === "number" ? route.revalidate : undefined,
+        expireSeconds: typeof route.expire === "number" ? route.expire : undefined,
+      },
+    );
+    seeded++;
   }
 
   return seeded;

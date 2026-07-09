@@ -7,6 +7,36 @@ test.describe("Hydration", () => {
   // The consoleErrors fixture automatically fails tests if any console errors occur.
   // This catches React hydration mismatches, runtime errors, etc.
 
+  test("waits for SSR dynamic modules before hydrating", async ({ page }) => {
+    let releaseDynamicModule!: () => void;
+    const dynamicModuleReleased = new Promise<void>((resolve) => {
+      releaseDynamicModule = resolve;
+    });
+    let markDynamicModuleRequested!: () => void;
+    const dynamicModuleRequested = new Promise<void>((resolve) => {
+      markDynamicModuleRequested = resolve;
+    });
+
+    await page.route("**/dynamic-hydration-gate.txt", async (route) => {
+      markDynamicModuleRequested();
+      await dynamicModuleReleased;
+      await route.fulfill({ status: 200, body: "ready" });
+    });
+
+    await page.goto(`${BASE}/dynamic-page`, { waitUntil: "domcontentloaded" });
+    await dynamicModuleRequested;
+
+    const increment = page.locator('[data-testid="dynamic-increment"]');
+    await expect(increment).toHaveText("Count: 0");
+    await increment.dispatchEvent("click");
+    await expect(increment).toHaveText("Count: 0");
+
+    releaseDynamicModule();
+    await waitForHydration(page);
+    await increment.dispatchEvent("click");
+    await expect(increment).toHaveText("Count: 1");
+  });
+
   test("interactive counter works after hydration", async ({ page, consoleErrors }) => {
     await page.goto(`${BASE}/counter`);
 

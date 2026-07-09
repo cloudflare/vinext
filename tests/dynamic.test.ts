@@ -6,11 +6,12 @@
  * SSR rendering, ssr:false behavior, loading components, error
  * boundaries, displayName assignment, and flushPreloads().
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { renderToReadableStream } from "react-dom/server.edge";
 import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";
+import { preloadPagesDynamicModules } from "../packages/vinext/src/shims/pages-dynamic.js";
 
 // ─── Test components ────────────────────────────────────────────────────
 
@@ -70,6 +71,36 @@ describe("next/dynamic SSR", () => {
     });
 
     await expect(renderDynamicToHtml(DynamicComponent)).resolves.toContain("Hello from dynamic");
+  });
+});
+
+describe("next/dynamic Pages hydration preloading", () => {
+  it("preloads transformed module IDs once and resolves loader failures", async () => {
+    const originalWindow = globalThis.window;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+    try {
+      const loader = vi.fn(async () => ({ default: Hello }));
+      const failingLoader = vi.fn(() => Promise.reject(new Error("dynamic load failed")));
+      const unmatchedLoader = vi.fn(async () => ({ default: Hello }));
+      dynamic(loader, { loadableGenerated: { modules: ["pages/dynamic-hello.tsx"] } });
+      dynamic(failingLoader, {
+        loadableGenerated: { modules: ["pages/failing-dynamic.tsx"] },
+      });
+      dynamic(unmatchedLoader, {
+        loadableGenerated: { modules: ["pages/unmatched-dynamic.tsx"] },
+      });
+
+      await expect(
+        preloadPagesDynamicModules(["pages/dynamic-hello.tsx", "pages/failing-dynamic.tsx"]),
+      ).resolves.toBeUndefined();
+      await preloadPagesDynamicModules(["pages/dynamic-hello.tsx", "pages/failing-dynamic.tsx"]);
+
+      expect(loader).toHaveBeenCalledTimes(1);
+      expect(failingLoader).toHaveBeenCalledTimes(1);
+      expect(unmatchedLoader).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
   });
 });
 

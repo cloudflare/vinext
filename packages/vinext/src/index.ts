@@ -2306,6 +2306,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/pages-router-runtime": path.join(shimsDir, "pages-router-runtime"),
             "vinext/router-state": path.join(shimsDir, "router-state"),
             "vinext/head-state": path.join(shimsDir, "head-state"),
+            "vinext/shims/pages-dynamic-state": path.join(shimsDir, "pages-dynamic-state"),
+            "vinext/shims/pages-dynamic": path.join(shimsDir, "pages-dynamic"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),

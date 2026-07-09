@@ -11,6 +11,7 @@ import {
   useMemo,
   useContext,
   useLayoutEffect,
+  useRef,
   Fragment,
   Component,
   StrictMode,
@@ -1389,6 +1390,55 @@ function PagesRouterHydrationMarker(): null {
   useEffect(() => {
     markPagesRouterHydrated();
   }, []);
+
+  return null;
+}
+
+const routeAnnouncerStyles = {
+  border: 0,
+  clip: "rect(0 0 0 0)",
+  height: "1px",
+  margin: "-1px",
+  overflow: "hidden",
+  padding: 0,
+  position: "absolute",
+  top: 0,
+  width: "1px",
+  whiteSpace: "nowrap",
+  wordWrap: "normal",
+} as const;
+
+function PagesRouteAnnouncer(): null {
+  const router = useContext(RouterContext);
+  const asPath = router?.asPath ?? "";
+  const announcer = useRef<HTMLParagraphElement | null>(null);
+  const previousPath = useRef(asPath);
+
+  useEffect(() => {
+    const portal = document.createElement("next-route-announcer");
+    const element = document.createElement("p");
+    element.id = "__next-route-announcer__";
+    element.setAttribute("aria-live", "assertive");
+    element.setAttribute("role", "alert");
+    Object.assign(element.style, routeAnnouncerStyles);
+    portal.appendChild(element);
+    document.body.appendChild(portal);
+    announcer.current = element;
+    return () => {
+      announcer.current = null;
+      portal.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (previousPath.current === asPath) return;
+    previousPath.current = asPath;
+    const heading = document.querySelector("h1");
+    const headingText = heading?.innerText ?? heading?.textContent;
+    if (announcer.current) {
+      announcer.current.textContent = document.title || headingText || asPath;
+    }
+  }, [asPath]);
 
   return null;
 }
@@ -3341,7 +3391,13 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   const content = createElement(
     RouterContext.Provider,
     { value: router },
-    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker)),
+    createElement(
+      Fragment,
+      null,
+      children,
+      createElement(PagesRouteAnnouncer),
+      createElement(PagesRouterHydrationMarker),
+    ),
   );
   return AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouter }, content)

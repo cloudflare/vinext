@@ -217,6 +217,7 @@ import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import "vinext/router-state";
 import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";
+import { runWithPagesDynamicState } from "vinext/shims/pages-dynamic-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
@@ -456,8 +457,9 @@ const _renderPage = __createPagesPageHandler({
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
   __registerConfiguredCacheAdapters();
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
-  return _renderPage(request, url, manifest, middlewareHeaders, options);
+  const render = () => runWithPagesDynamicState(() => _renderPage(request, url, manifest, middlewareHeaders, options));
+  if (ctx) return _runWithExecutionContext(ctx, render);
+  return render();
 }
 
 

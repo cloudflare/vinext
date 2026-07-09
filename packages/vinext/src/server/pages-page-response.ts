@@ -27,6 +27,7 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { getPagesDynamicModuleIds } from "vinext/shims/pages-dynamic";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -117,7 +118,14 @@ type PagesFontPreload = {
  */
 export type PagesNextDataExtras = Pick<
   VinextNextData,
-  "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+  | "__vinext"
+  | "appGip"
+  | "autoExport"
+  | "dynamicIds"
+  | "gip"
+  | "gsp"
+  | "gssp"
+  | "isExperimentalCompile"
 >;
 
 export type PagesI18nRenderContext = {
@@ -489,19 +497,6 @@ export async function renderPagesPageResponse(
     options.getFontStyles(),
     options.scriptNonce,
   );
-  const nextDataScript = buildPagesNextDataScript({
-    buildId: options.buildId,
-    i18n: options.i18n,
-    isFallback: options.isFallback,
-    pageProps: options.pageProps,
-    props: renderProps,
-    params: options.params,
-    routePattern: options.routePattern,
-    safeJsonStringify: options.safeJsonStringify,
-    scriptNonce: options.scriptNonce,
-    nextData: options.nextData,
-    vinext: options.vinext,
-  });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -561,6 +556,21 @@ export async function renderPagesPageResponse(
     );
     bodyStream = await options.renderToReadableStream(pageElement);
   }
+
+  const dynamicIds = getPagesDynamicModuleIds();
+  const nextDataScript = buildPagesNextDataScript({
+    buildId: options.buildId,
+    i18n: options.i18n,
+    isFallback: options.isFallback,
+    pageProps: options.pageProps,
+    props: renderProps,
+    params: options.params,
+    routePattern: options.routePattern,
+    safeJsonStringify: options.safeJsonStringify,
+    scriptNonce: options.scriptNonce,
+    nextData: dynamicIds ? { ...options.nextData, dynamicIds } : options.nextData,
+    vinext: options.vinext,
+  });
 
   // Fold any head tags returned by `_document.getInitialProps()` into the
   // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors

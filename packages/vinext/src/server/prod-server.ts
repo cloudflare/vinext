@@ -1631,6 +1631,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);
 
+  const seededPagesRoutes = await seedMemoryCacheFromPrerenderFallback(
+    path.dirname(serverEntryPath),
+  );
+  if (seededPagesRoutes > 0 && !silent) {
+    console.log(
+      `[vinext] Seeded ${seededPagesRoutes} pre-rendered route${seededPagesRoutes !== 1 ? "s" : ""} into memory cache`,
+    );
+  }
+
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];

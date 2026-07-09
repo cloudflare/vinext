@@ -10,6 +10,60 @@ test.describe("Pages Router Production — Interactive", () => {
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 1");
   });
 
+  test("waits for SSR dynamic modules before hydrating", async ({ page }) => {
+    let releaseDynamicChunk!: () => void;
+    const dynamicChunkReleased = new Promise<void>((resolve) => {
+      releaseDynamicChunk = resolve;
+    });
+    let markDynamicChunkRequested!: () => void;
+    const dynamicChunkRequested = new Promise<void>((resolve) => {
+      markDynamicChunkRequested = resolve;
+    });
+
+    await page.route(/\/_next\/static\/chunks\/heavy-[^/]+\.js$/, async (route) => {
+      markDynamicChunkRequested();
+      await dynamicChunkReleased;
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/dynamic-page`, { waitUntil: "domcontentloaded" });
+    await dynamicChunkRequested;
+
+    const increment = page.locator('[data-testid="dynamic-increment"]');
+    await expect(increment).toHaveText("Count: 0");
+    await increment.click();
+    await expect(increment).toHaveText("Count: 0");
+
+    releaseDynamicChunk();
+    await page.waitForFunction(() => window.__NEXT_HYDRATED === true);
+    await increment.click();
+    await expect(increment).toHaveText("Count: 1");
+  });
+
+  test("preserves a successful dynamic retry across remounts", async ({ page }) => {
+    let gateRequests = 0;
+    await page.route("**/dynamic-retry-gate.txt", async (route) => {
+      gateRequests += 1;
+      if (gateRequests === 1) {
+        await route.fulfill({ status: 503, body: "retryable dynamic unavailable" });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/dynamic-retry`);
+    await expect(page.locator('[data-testid="retry-dynamic"]')).toHaveCount(2);
+    await page.locator('[data-testid="retry-dynamic"]').first().click();
+    await expect(page.locator('[data-testid="retryable-dynamic-loaded"]')).toHaveCount(2);
+
+    await page.locator('[data-testid="toggle-dynamic"]').click();
+    await expect(page.locator('[data-testid="retryable-dynamic-loaded"]')).toHaveCount(0);
+    await page.locator('[data-testid="toggle-dynamic"]').click();
+    await expect(page.locator('[data-testid="retryable-dynamic-loaded"]')).toHaveCount(2);
+    await expect(page.locator('[data-testid="retry-dynamic"]')).toHaveCount(0);
+    expect(gateRequests).toBe(2);
+  });
+
   test("Link click navigates to correct page", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");

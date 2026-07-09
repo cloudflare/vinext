@@ -33,6 +33,8 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
+import { getPagesDynamicModuleIds } from "vinext/shims/pages-dynamic";
+import "vinext/shims/pages-dynamic-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
@@ -320,7 +322,7 @@ async function streamPageToResponse(
     server: ViteDevServer;
     fontHeadHTML: string;
     assetHeadHTML?: string;
-    scripts: string;
+    scripts: string | (() => string);
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
     extraHeaders?: Record<string, string | string[]>;
@@ -453,15 +455,17 @@ async function streamPageToResponse(
       );
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
+    const resolvedScripts = typeof scripts === "function" ? scripts() : scripts;
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", resolvedScripts);
     if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
+      docHtml = docHtml.replace("</body>", `  ${resolvedScripts}\n</body>`);
     }
     shellTemplate = docHtml;
   } else {
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
     // canonical ordering. Don't duplicate them here.
+    const resolvedScripts = typeof scripts === "function" ? scripts() : scripts;
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
@@ -470,7 +474,7 @@ async function streamPageToResponse(
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
-  ${scripts}
+  ${resolvedScripts}
 </body>
 </html>`;
   }
@@ -612,6 +616,7 @@ export function createSSRHandler(
   const _alsRegistration = Promise.all([
     runner.import("vinext/head-state"),
     runner.import("vinext/router-state"),
+    runner.import("vinext/shims/pages-dynamic-state"),
   ]);
   // Suppress unhandled-rejection if the server closes before the first
   // request (common in tests). Errors still propagate when the first
@@ -1775,6 +1780,7 @@ import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
+import { preloadPagesDynamicModules } from "vinext/shims/pages-dynamic";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -1813,20 +1819,25 @@ async function hydrate() {
   ${
     appModuleSource
       ? `
-  const appModule = await import("${appModuleSource}");
-  const AppComponent = appModule.default;
-  window.__VINEXT_APP__ = AppComponent;
-  element = React.createElement(AppComponent, {
-    ...props,
-    Component: PageComponent,
-    pageProps: rawPageProps,
-    router: Router,
-  });
+  try {
+    const appModule = await import("${appModuleSource}");
+    const AppComponent = appModule.default;
+    window.__VINEXT_APP__ = AppComponent;
+    element = React.createElement(AppComponent, {
+      ...props,
+      Component: PageComponent,
+      pageProps: rawPageProps,
+      router: Router,
+    });
+  } catch {
+    element = React.createElement(PageComponent, pageProps);
+  }
   `
       : `
   element = React.createElement(PageComponent, pageProps);
   `
   }
+  await preloadPagesDynamicModules(nextData.dynamicIds);
   let resolveHydrationCommit;
   const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
   element = wrapWithRouterContext(element, resolveHydrationCommit);
@@ -1844,21 +1855,6 @@ async function hydrate() {
 }
 hydrate();
 </script>`;
-
-        const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
-          {
-            props: renderProps,
-            page: patternToNextFormat(route.pattern),
-            query: params,
-            buildId: process.env.__VINEXT_BUILD_ID,
-            isFallback: isFallbackRender,
-            locale: locale ?? currentDefaultLocale,
-            locales: i18nConfig?.locales,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
-            ...serializedPagesNextData,
-          },
-        )}</script>`;
 
         // Try to load custom _document.tsx
         const docPath = path.join(pagesDir, "_document");
@@ -1883,7 +1879,25 @@ hydrate();
           scriptNonce,
         );
 
-        const allScripts = `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
+        const buildAllScripts = () => {
+          const dynamicIds = getPagesDynamicModuleIds();
+          const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
+            {
+              props: renderProps,
+              page: patternToNextFormat(route.pattern),
+              query: params,
+              buildId: process.env.__VINEXT_BUILD_ID,
+              isFallback: isFallbackRender,
+              locale: locale ?? currentDefaultLocale,
+              locales: i18nConfig?.locales,
+              defaultLocale: currentDefaultLocale,
+              domainLocales,
+              ...serializedPagesNextData,
+              ...(dynamicIds ? { dynamicIds } : {}),
+            },
+          )}</script>`;
+          return `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
+        };
 
         // Build response headers: start with gSSP headers, then layer on
         // ISR and font preload headers (which take precedence).
@@ -1915,7 +1929,7 @@ hydrate();
           server,
           fontHeadHTML,
           assetHeadHTML,
-          scripts: allScripts,
+          scripts: buildAllScripts,
           DocumentComponent,
           statusCode,
           extraHeaders,
@@ -2006,7 +2020,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${buildAllScripts()}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);

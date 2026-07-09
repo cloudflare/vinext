@@ -21,6 +21,7 @@
  */
 import React, { type ComponentType } from "react";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
+import { recordPagesDynamicModuleIds, registerPagesDynamicInitializer } from "./pages-dynamic.js";
 
 type DynamicLoadingProps = {
   error?: Error | null;
@@ -99,19 +100,6 @@ function createLazyComponent<P extends object>(loader: LoaderFn<P>) {
     if (hasDefaultExport(mod)) return mod;
     return { default: mod };
   });
-}
-
-function useRetryableLazyComponent<P extends object>(
-  loader: LoaderFn<P>,
-  initialLazyComponent: ReturnType<typeof createLazyComponent<P>>,
-) {
-  const [LazyComponent, setLazyComponent] = React.useState(() => initialLazyComponent);
-  const [retryKey, setRetryKey] = React.useState(0);
-  const retry = React.useCallback(() => {
-    setLazyComponent(() => createLazyComponent(loader));
-    setRetryKey((key) => key + 1);
-  }, [loader]);
-  return { LazyComponent, retry, retryKey };
 }
 
 type DynamicErrorBoundaryProps = {
@@ -206,6 +194,42 @@ function dynamic<P extends object = object>(
   } = normalizeDynamicOptions(dynamicInput, options);
   const loader = dynamicLoader ? normalizeLoader(dynamicLoader) : () => Promise.resolve(() => null);
   const preloadModuleIds = loadableGenerated?.modules ?? modules;
+  let initialLoad: ReturnType<typeof loader> | undefined;
+  const loadInitial = () => (initialLoad ??= loader());
+  let sharedSnapshot:
+    | {
+        LazyComponent: ReturnType<typeof createLazyComponent<P>>;
+        retryKey: number;
+      }
+    | undefined;
+  const sharedListeners = new Set<() => void>();
+  const subscribeSharedSnapshot = (listener: () => void) => {
+    sharedListeners.add(listener);
+    return () => sharedListeners.delete(listener);
+  };
+  const getSharedSnapshot = () =>
+    (sharedSnapshot ??= {
+      LazyComponent: createLazyComponent(loadInitial),
+      retryKey: 0,
+    });
+  const retrySharedSnapshot = () => {
+    initialLoad = loader();
+    const currentSnapshot = getSharedSnapshot();
+    sharedSnapshot = {
+      LazyComponent: createLazyComponent(() => initialLoad!),
+      retryKey: currentSnapshot.retryKey + 1,
+    };
+    for (const listener of sharedListeners) listener();
+  };
+  const useSharedLazyComponent = () => {
+    const snapshot = React.useSyncExternalStore(
+      subscribeSharedSnapshot,
+      getSharedSnapshot,
+      getSharedSnapshot,
+    );
+    return { ...snapshot, retry: retrySharedSnapshot };
+  };
+  registerPagesDynamicInitializer(preloadModuleIds, loadInitial);
 
   // ssr: false — render nothing on the server, lazy-load on client
   if (!ssr) {
@@ -225,14 +249,9 @@ function dynamic<P extends object = object>(
       return SSRFalse;
     }
 
-    const InitialLazyComponent = createLazyComponent(loader);
-
     const ClientSSRFalse = (props: P) => {
       const [mounted, setMounted] = React.useState(false);
-      const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
-        loader,
-        InitialLazyComponent,
-      );
+      const { LazyComponent, retry, retryKey } = useSharedLazyComponent();
       React.useEffect(() => setMounted(true), []);
 
       if (!mounted) {
@@ -251,7 +270,7 @@ function dynamic<P extends object = object>(
         if (ErrorBoundary) {
           content = React.createElement(
             ErrorBoundary,
-            { fallback: LoadingComponent, retry, resetKey: retryKey },
+            { key: retryKey, fallback: LoadingComponent, retry, resetKey: retryKey },
             lazyElement,
           );
         }
@@ -290,9 +309,10 @@ function dynamic<P extends object = object>(
 
     // SSR path: Use React.lazy so that renderToReadableStream can suspend
     // until the dynamically-imported component is available.
-    const LazyServer = createLazyComponent(loader);
+    const LazyServer = getSharedSnapshot().LazyComponent;
 
     const ServerDynamic = (props: P) => {
+      recordPagesDynamicModuleIds(preloadModuleIds);
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
@@ -322,13 +342,8 @@ function dynamic<P extends object = object>(
     return ServerDynamic;
   }
 
-  const InitialLazyComponent = createLazyComponent(loader);
-
   const ClientDynamic = (props: P) => {
-    const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
-      loader,
-      InitialLazyComponent,
-    );
+    const { LazyComponent, retry, retryKey } = useSharedLazyComponent();
     const fallback = LoadingComponent
       ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
       : null;
@@ -339,7 +354,7 @@ function dynamic<P extends object = object>(
       if (ErrorBoundary) {
         content = React.createElement(
           ErrorBoundary,
-          { fallback: LoadingComponent, retry, resetKey: retryKey },
+          { key: retryKey, fallback: LoadingComponent, retry, resetKey: retryKey },
           lazyElement,
         );
       }

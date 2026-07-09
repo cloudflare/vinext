@@ -7,6 +7,8 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import { recordPagesDynamicModuleIds } from "../packages/vinext/src/shims/pages-dynamic.js";
+import { runWithPagesDynamicState } from "../packages/vinext/src/shims/pages-dynamic-state.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -147,6 +149,23 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
+  it("serializes only next/dynamic modules used during the request render", async () => {
+    const common = createCommonOptions();
+    common.renderToReadableStream.mockImplementation(async () => {
+      recordPagesDynamicModuleIds(["pages/dynamic.js -> ../components/foo"]);
+      return createStream(["<div>dynamic</div>"]);
+    });
+
+    const response = await runWithPagesDynamicState(() => renderPagesPageResponse(common.options));
+    const html = await response.text();
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/)?.[1] ??
+        "{}",
+    );
+
+    expect(nextData.dynamicIds).toEqual(["pages/dynamic.js -> ../components/foo"]);
+  });
+
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
     const common = createCommonOptions();
 

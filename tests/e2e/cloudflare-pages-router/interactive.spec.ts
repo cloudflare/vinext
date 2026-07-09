@@ -27,7 +27,7 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     // Click About link
     await page.click('a[href="/about"]');
     await expect(page.locator("h1")).toHaveText("About");
-    await expect(page.locator("p")).toContainText("Cloudflare Workers");
+    await expect(page.locator("#__next > p")).toContainText("Cloudflare Workers");
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
@@ -52,7 +52,7 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     await page.click('a[href="/ssr"]');
     await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
     // Should have timestamp from GSSP
-    await expect(page.locator("p")).toContainText("Generated at:");
+    await expect(page.locator("#__next > p")).toContainText("Generated at:");
   });
 
   test("browser back button works after navigating to SSR page", async ({ page }) => {
@@ -91,12 +91,12 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
   test("SSR page renders different timestamps on each request", async ({ page }) => {
     // First request
     await page.goto(`${BASE}/ssr`);
-    const text1 = await page.locator("p").textContent();
+    const text1 = await page.locator("#__next > p").textContent();
 
     // Wait a moment and make a second request
     await page.waitForTimeout(100);
     await page.goto(`${BASE}/ssr`);
-    const text2 = await page.locator("p").textContent();
+    const text2 = await page.locator("#__next > p").textContent();
 
     // Timestamps should differ (proving server-side rendering, not caching)
     expect(text1).not.toBe(text2);

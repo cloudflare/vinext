@@ -93,6 +93,106 @@ describe("buildPrerenderKVPairs", () => {
     });
   });
 
+  it("builds a KV entry for prerendered Pages Router HTML", () => {
+    writePrerenderFixture(
+      {
+        buildId: "pages-build",
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            revalidate: 60,
+            expire: 300,
+            router: "pages",
+            headers: { "x-prerendered": "true" },
+          },
+        ],
+      },
+      { "about.html": "<html>Pages about</html>" },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, {
+      appPrefix: "site-a",
+      now: 1_000,
+      ttlSeconds: 123,
+    });
+
+    expect(routeCount).toBe(1);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({
+      key: "site-a:cache:pages:pages-build:/about",
+      expiration_ttl: 123,
+    });
+    expect(JSON.parse(pairs[0].value)).toEqual({
+      value: {
+        kind: "PAGES",
+        html: "<html>Pages about</html>",
+        pageData: {},
+        headers: { "x-prerendered": "true" },
+      },
+      tags: [],
+      lastModified: 1_000,
+      revalidateAt: 61_000,
+      expireAt: 301_000,
+      cacheControl: { revalidate: 60, expire: 300 },
+    });
+  });
+
+  it("skips Pages fallback shells and zero-revalidate entries", () => {
+    writePrerenderFixture(
+      {
+        buildId: "pages-filtered",
+        routes: [
+          {
+            route: "/posts/[slug]",
+            status: "rendered",
+            revalidate: false,
+            router: "pages",
+            fallback: true,
+          },
+          { route: "/zero", status: "rendered", revalidate: 0, router: "pages" },
+          { route: "/static", status: "rendered", revalidate: false, router: "pages" },
+        ],
+      },
+      {
+        "posts/[slug].html": "<html>Fallback</html>",
+        "zero.html": "<html>Zero</html>",
+        "static.html": "<html>Static</html>",
+      },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, { now: 2_000 });
+
+    expect(routeCount).toBe(1);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].key).toBe("cache:pages:pages-filtered:/static");
+    expect(pairs[0]).not.toHaveProperty("expiration_ttl");
+    expect(JSON.parse(pairs[0].value)).toMatchObject({
+      revalidateAt: 31_536_002_000,
+      cacheControl: { revalidate: 31_536_000 },
+    });
+  });
+
+  it("preserves the status of Pages error documents", () => {
+    writePrerenderFixture(
+      {
+        buildId: "pages-errors",
+        routes: [
+          { route: "/404", status: "rendered", revalidate: false, router: "pages" },
+          { route: "/500", status: "rendered", revalidate: false, router: "pages" },
+        ],
+      },
+      {
+        "404.html": "<html>Not found</html>",
+        "500.html": "<html>Server error</html>",
+      },
+    );
+
+    const { pairs } = buildPrerenderKVPairs(serverDir, { now: 2_000 });
+
+    expect(pairs.map((pair) => JSON.parse(pair.value).value.status)).toEqual([404, 500]);
+  });
+
   it("omits KV expiration for static prerendered routes and skips zero revalidate", () => {
     writePrerenderFixture(
       {

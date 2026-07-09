@@ -1383,6 +1383,16 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("_initializePagesRouterReadyFromNextData,");
       expect(code).toContain('} from "next/router";');
       expect(code).toContain("_initializePagesRouterReadyFromNextData(nextData);");
+      expect(code).toContain(
+        'import { preloadPagesDynamicModules } from "vinext/shims/pages-dynamic";',
+      );
+      expect(code).toContain("await preloadPagesDynamicModules(nextData.dynamicIds);");
+      expect(code.indexOf("await appLoader()")).toBeLessThan(
+        code.indexOf("await preloadPagesDynamicModules(nextData.dynamicIds);"),
+      );
+      expect(code.indexOf("await preloadPagesDynamicModules(nextData.dynamicIds);")).toBeLessThan(
+        code.indexOf("hydrateRoot(container, element, hydrateRootOptions)"),
+      );
       expect(code).toContain("router: Router,");
       expect(code).toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
