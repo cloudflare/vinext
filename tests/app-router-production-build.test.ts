@@ -370,38 +370,37 @@ export default function proxy(request: NextRequest) {
       fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "app", "route.ts"),
-        `import ts from "typescript";
+        `import { API } from "typescript/unstable/sync";
+import { createVirtualFileSystem } from "typescript/unstable/fs";
 
 const code = "type X = Promise<number>;\\n'hello'.toUpperCase()";
 
 export function GET(request) {
+  const root = "/vinext-typescript-api";
+  const fileName = root + "/input.ts";
+  const configFileName = root + "/tsconfig.json";
   const compilerOptions = request.nextUrl.searchParams.has("esnext")
-    ? { target: ts.ScriptTarget.ESNext, lib: ["lib.esnext.d.ts", "lib.dom.d.ts"] }
+    ? { target: "ESNext", lib: ["ESNext", "DOM"] }
     : {};
-  const fileName = "input.ts";
-  const host = {
-    getCompilationSettings: () => compilerOptions,
-    getScriptFileNames: () => [fileName],
-    getScriptVersion: () => "0",
-    getScriptSnapshot: (name) => {
-      if (name === fileName) return ts.ScriptSnapshot.fromString(code);
-      if (!ts.sys.fileExists(name)) return undefined;
-      return ts.ScriptSnapshot.fromString(ts.sys.readFile(name));
-    },
-    getCurrentDirectory: () => process.cwd(),
-    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-  };
-  const service = ts.createLanguageService(host);
-  const promise = service.getQuickInfoAtPosition(fileName, 9);
-  const upper = service.getQuickInfoAtPosition(fileName, 34);
-  return Response.json({
-    defaultLib: ts.getDefaultLibFilePath(compilerOptions),
-    promise: promise && ts.displayPartsToString(promise.displayParts),
-    upper: upper && ts.displayPartsToString(upper.displayParts),
+  const fs = createVirtualFileSystem({
+    [fileName]: code,
+    [configFileName]: JSON.stringify({ compilerOptions, files: ["input.ts"] }),
   });
+  const api = new API({ cwd: root, fs });
+
+  try {
+    const snapshot = api.updateSnapshot({ openProjects: [configFileName] });
+    const project = snapshot.getProjects()[0];
+    const promise = project.checker.getSymbolAtPosition(fileName, 9);
+    const upper = project.checker.getSymbolAtPosition(fileName, 34);
+    return Response.json({
+      promise:
+        promise && project.checker.typeToString(project.checker.getDeclaredTypeOfSymbol(promise)),
+      upper: upper && project.checker.typeToString(project.checker.getTypeOfSymbol(upper)),
+    });
+  } finally {
+    api.close();
+  }
 }
 `,
       );
@@ -431,8 +430,8 @@ export function GET(request) {
         if (!(response instanceof Response)) return;
         expect(response.status).toBe(200);
         expect(await response.json()).toMatchObject({
-          promise: "interface Promise<T>",
-          upper: "(method) String.toUpperCase(): string",
+          promise: "Promise<T>",
+          upper: "() => string",
         });
       }
     } finally {

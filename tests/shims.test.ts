@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -22000,7 +22002,6 @@ describe("next/error shim", () => {
   it("allows the upstream CustomError static getInitialProps override", async () => {
     // Ported from Next.js: test/e2e/typescript/pages/_error.tsx
     // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/typescript/pages/_error.tsx
-    const ts = await import("typescript");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "vinext-next-error-types-"));
     const fixturePath = path.join(tempDir, "_error.tsx");
     const declarationPath = new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url)
@@ -22023,25 +22024,33 @@ export default CustomError;
 `,
       );
 
-      const program = ts.createProgram([fixturePath, declarationPath], {
-        esModuleInterop: true,
-        jsx: ts.JsxEmit.ReactJSX,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
-        noEmit: true,
-        skipLibCheck: true,
-        strict: true,
-        target: ts.ScriptTarget.ES2022,
-      });
-      const diagnostics = ts
-        .getPreEmitDiagnostics(program)
-        .filter((diagnostic) => diagnostic.file?.fileName.startsWith(tempDir));
+      const tscPath = fileURLToPath(
+        new URL("bin/tsc", import.meta.resolve("typescript/package.json")),
+      );
+      const result = spawnSync(
+        tscPath,
+        [
+          fixturePath,
+          declarationPath,
+          "--ignoreConfig",
+          "--esModuleInterop",
+          "--jsx",
+          "react-jsx",
+          "--module",
+          "esnext",
+          "--moduleResolution",
+          "bundler",
+          "--noEmit",
+          "--skipLibCheck",
+          "--strict",
+          "--target",
+          "es2022",
+        ],
+        { encoding: "utf8" },
+      );
 
-      expect(
-        diagnostics.map((diagnostic) =>
-          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-        ),
-      ).toEqual([]);
+      expect(result.stdout + result.stderr).toBe("");
+      expect(result.status).toBe(0);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
