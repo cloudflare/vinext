@@ -12,6 +12,7 @@ import {
   getTypeofWindowReplacement,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
+import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -24,7 +25,7 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
-  it("configures native typeof window folding per environment", async () => {
+  it("configures the installed Vite typeof window folding strategy", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-define-"));
     temporaryDirectories.push(root);
     const builder = await createBuilder({
@@ -37,8 +38,32 @@ describe("typeof window compilation", () => {
       plugins: [vinext({ react: false, rsc: false })],
     });
 
-    expect(builder.environments.client?.config.define?.["typeof window"]).toBe('"object"');
-    expect(builder.environments.server?.config.define?.["typeof window"]).toBe('"undefined"');
+    const vitePackage = (await import("vite/package.json", { with: { type: "json" } })).default;
+    const viteVersion = vitePackage.bundledVersions?.vite ?? (await import("vite")).version;
+    const usesNativeFolding = supportsNativeTypeofWindowFolding(
+      viteVersion,
+      vitePackage.bundledVersions?.rolldown,
+    );
+
+    expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"object"' : undefined,
+    );
+    expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"undefined"' : undefined,
+    );
+  });
+
+  it("uses native folding only from the stable Vite 8.1.4 release", () => {
+    expect(supportsNativeTypeofWindowFolding("8.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.4+build.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("9.0.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0", "1.1.3")).toBe(false);
   });
 
   it("skips custom scan folding for modules in the Vite cache directory", async () => {
