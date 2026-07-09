@@ -185,6 +185,11 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import {
+  createPreviewBuildCredentials,
+  getPreviewBuildCredentials,
+  type PreviewBuildCredentials,
+} from "./build/preview-credentials.js";
 import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
@@ -232,7 +237,8 @@ import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
@@ -1295,7 +1301,8 @@ type NitroSetupContext = {
 };
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
-  assertSupportedViteVersion();
+  const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
+    assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   let root: string;
   let pagesDir: string;
@@ -1325,7 +1332,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
-  const draftModeSecret = randomUUID();
+  let draftModeSecret = getPagesPreviewModeId();
+  let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
   // `configResolved` binds the resolved config, so multiple vinext builds in
@@ -1883,6 +1891,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
           process.env.NODE_ENV = resolvedNodeEnv;
         }
+        if (env?.command === "build") {
+          previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
+        }
+        draftModeSecret = previewBuildCredentials?.id ?? getPagesPreviewModeId();
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -5420,6 +5432,7 @@ export const loadServerActionClient = ${
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
+        if (!useNativeTypeofWindowFolding) return null;
         return {
           define: {
             "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
@@ -5427,18 +5440,23 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // plugin-RSC's analysis builds replace each module with lexer-discovered
-    // imports before Rolldown's native define folding runs. Fold only in those
-    // write-less analysis builds so dead browser/server imports are absent from
-    // the synthetic graph; real builds continue to use native Oxc folding.
+    // Toolchains before Vite 8.1.4 / Rolldown 1.1.4 can run native define
+    // folding too late to prune dead imports, so retain the custom fold for
+    // every build. Newer toolchains only need it for plugin-RSC's write-less
+    // analysis builds, which replace modules with lexer-discovered imports
+    // before native folding runs.
     {
       name: "vinext:typeof-window-scan",
-      apply: "build",
+      apply(_config, environment) {
+        return !useNativeTypeofWindowFolding || environment.command === "build";
+      },
       enforce: "post",
       transform: {
         filter: { code: /\btypeof\s+window\b/ },
         handler(code, id) {
-          if (this.environment.config.build.write !== false) return null;
+          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
+            return null;
+          }
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
@@ -5496,6 +5514,17 @@ export const loadServerActionClient = ${
         if (sharedRevalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(sharedRevalidateSecret);
+        }
+        if (previewBuildCredentials) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(
+            previewBuildCredentials.id,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] = JSON.stringify(
+            previewBuildCredentials.signingKey,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY"] = JSON.stringify(
+            previewBuildCredentials.encryptionKey,
+          );
         }
 
         return { define: serverDefines };

@@ -82,10 +82,13 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
+import { attachPagesRequestCookies } from "./pages-node-compat.js";
 import {
-  attachPagesRequestCookies,
-  getPagesPreviewDataFromCookieHeader,
-} from "./pages-node-compat.js";
+  appendPagesPreviewClearCookies,
+  getPagesPreviewState,
+  PAGES_PREVIEW_CACHE_CONTROL,
+  type PagesPreviewState,
+} from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -100,6 +103,41 @@ async function renderToStringAsync(element: React.ReactElement): Promise<string>
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+function applyDevPagesPreviewHeaders(
+  headers: Record<string, string | string[] | number>,
+  preview: PagesPreviewState,
+): void {
+  const removeHeader = (name: string) => {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === name) delete headers[key];
+    }
+  };
+  if (preview.data !== false) {
+    removeHeader("cache-control");
+    headers["Cache-Control"] = PAGES_PREVIEW_CACHE_CONTROL;
+  }
+  if (preview.shouldClear) {
+    const clearHeaders = new Headers();
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "set-cookie") continue;
+      if (Array.isArray(value)) {
+        for (const cookie of value) clearHeaders.append("Set-Cookie", String(cookie));
+      } else {
+        clearHeaders.append("Set-Cookie", String(value));
+      }
+      delete headers[key];
+    }
+    appendPagesPreviewClearCookies(clearHeaders);
+    headers["Set-Cookie"] = clearHeaders.getSetCookie();
+  }
+}
+
+function applyDevPagesPreviewResponse(res: ServerResponse, preview: PagesPreviewState): void {
+  const headers = res.getHeaders() as Record<string, string | string[] | number>;
+  applyDevPagesPreviewHeaders(headers, preview);
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
 }
 
 async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<string> {
@@ -748,7 +786,11 @@ export function createSSRHandler(
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
     const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq ? gsspResolvedUrl : originalUrl;
+    const requestAsPath = isDataReq
+      ? gsspResolvedUrl
+      : i18nConfig
+        ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
+        : originalUrl;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -757,7 +799,6 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
-
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
@@ -797,6 +838,17 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        const supportsPreview =
+          typeof pageModule.getStaticProps === "function" ||
+          typeof pageModule.getServerSideProps === "function";
+        const requestPreview = supportsPreview
+          ? getPagesPreviewState(req.headers.cookie, {
+              isOnDemandRevalidate: isOnDemandRevalidateRequest(
+                req.headers[PRERENDER_REVALIDATE_HEADER],
+              ),
+            })
+          : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
+        const requestPreviewData = requestPreview.data;
         // Try to load _app.tsx if it exists. This happens before the readiness
         // predicate so app-level getInitialProps participates in the same
         // initial Pages Router state as the client __NEXT_DATA__ payload.
@@ -811,11 +863,14 @@ export function createSSRHandler(
             // _app exists but failed to load
           }
         }
-        const pagesNextData = buildPagesReadinessNextData({
-          pageModule,
-          appComponent: AppComponent,
-          hasRewrites,
-        });
+        const pagesNextData = {
+          ...buildPagesReadinessNextData({
+            pageModule,
+            appComponent: AppComponent,
+            hasRewrites,
+          }),
+          ...(requestPreviewData === false ? {} : { isPreview: true as const }),
+        };
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -835,6 +890,7 @@ export function createSSRHandler(
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
             domainLocales,
+            isPreview: requestPreviewData !== false,
           });
         }
         // Mark end of compile phase: everything from here is rendering.
@@ -882,6 +938,7 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let renderProps: Record<string, unknown> = { pageProps };
+        if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
         let isrRevalidateSeconds: number | null = null;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
@@ -889,7 +946,7 @@ export function createSSRHandler(
         // and `useRouter().isFallback === true`, matching Next.js render.tsx.
         let isFallbackRender = false;
         let shouldPersistFallbackData = false;
-        let staticPropsPreviewData: ReturnType<typeof getPagesPreviewDataFromCookieHeader> = false;
+        let staticPropsPreviewData = requestPreviewData;
 
         // Handle getStaticPaths for dynamic routes: validate the path,
         // respect `fallback: false` (return 404 for unlisted paths), and
@@ -908,7 +965,7 @@ export function createSSRHandler(
             matchesPagesStaticPath(pathEntry, params, routeParams, url),
           );
 
-          if (fallback === false && !isValidPath) {
+          if (fallback === false && !isValidPath && requestPreviewData === false) {
             if (isDataReq) {
               // Data requests get a JSON 404 so the client router can
               // hard-navigate instead of trying to parse HTML as JSON.
@@ -946,7 +1003,13 @@ export function createSSRHandler(
           const userAgentHeader = req.headers["user-agent"];
           const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
           const isBotRequest = !!userAgent && isBotUserAgent(userAgent, htmlLimitedBots);
-          if (fallback === true && !isValidPath && !isDataReq && !isBotRequest) {
+          if (
+            fallback === true &&
+            !isValidPath &&
+            !isDataReq &&
+            !isBotRequest &&
+            requestPreviewData === false
+          ) {
             const fallbackCacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const generatedEntry = await isrGet(fallbackCacheKey);
             isFallbackRender = generatedEntry?.value.value?.kind !== "PAGES";
@@ -1012,6 +1075,7 @@ export function createSSRHandler(
           if (appResult.kind === "render") {
             pageProps = appResult.pageProps;
             renderProps = appResult.renderProps;
+            if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
           }
           return false;
         }
@@ -1023,7 +1087,7 @@ export function createSSRHandler(
           renderProps = { ...renderProps, __N_SSP: true };
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
-          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie);
+          const previewData = requestPreviewData;
           const previewContext =
             previewData === false
               ? {}
@@ -1071,6 +1135,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -1187,9 +1252,7 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
-          const previewData = getPagesPreviewDataFromCookieHeader(req.headers.cookie, {
-            isOnDemandRevalidate,
-          });
+          const previewData = requestPreviewData;
           staticPropsPreviewData = previewData;
           const previewContext =
             previewData === false
@@ -1526,6 +1589,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -1653,6 +1717,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
@@ -1914,7 +1979,7 @@ hydrate();
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (isrRevalidateSeconds) {
+        if (requestPreviewData === false && isrRevalidateSeconds) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
@@ -1922,6 +1987,7 @@ hydrate();
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
+        applyDevPagesPreviewHeaders(extraHeaders, requestPreview);
 
         // Set HTTP Link header for font preloading.
         // This lets the browser (and CDN) start fetching font files before parsing HTML.

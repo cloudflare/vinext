@@ -44,6 +44,7 @@ import {
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
 import { clearPagesClientAssetsBuildMetadata } from "./build/pages-client-assets-module.js";
+import { runWithPreviewBuildCredentials } from "./build/preview-credentials.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -531,7 +532,6 @@ async function buildApp() {
   if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
     process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
   }
-
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");
 
@@ -585,86 +585,88 @@ async function buildApp() {
   if (pagesClientAssetsBuildSession) {
     process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
   }
-  try {
-    const config = buildViteConfig({}, logger);
-    const builder = await vite.createBuilder(config);
-    await builder.buildApp();
+  await runWithPreviewBuildCredentials(async () => {
+    try {
+      const config = buildViteConfig({}, logger);
+      const builder = await vite.createBuilder(config);
+      await builder.buildApp();
 
-    if (isHybrid) {
-      // Hybrid app (both app/ and pages/ directories): also build the Pages Router
-      // SSR bundle so the prerender phase can render Pages Router routes.
-      // The App Router multi-env build (buildApp) doesn't include the Pages Router
-      // SSR entry, so we run it as a separate step here.
-      // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
-      // loading the user's vite.config (which has vinext() without disableAppRouter)
-      // and to prevent the multi-env environments config from overriding our SSR
-      // input and entryFileNames.
-      console.log("  Building Pages Router server (hybrid)...");
-      // Inherit transform plugins from the user's vite.config (e.g. SVG loaders,
-      // CSS-in-JS) that vinext doesn't auto-register. We load the raw config via
-      // loadConfigFromFile — before any plugin config() hooks fire — so that
-      // cloudflare() hasn't yet injected its multi-env environments block.
-      // We then exclude the plugin families that vinext({ disableAppRouter: true })
-      // will re-register itself, and cloudflare() which must not run here.
-      const root = process.cwd();
-      let userTransformPlugins: import("vite").PluginOption[] = [];
-      if (hasViteConfig(process.cwd())) {
-        const loaded = await vite.loadConfigFromFile(
-          { command: "build", mode: "production", isSsrBuild: true },
-          undefined,
-          root,
-        );
-        if (loaded?.config.plugins) {
-          const flat = (loaded.config.plugins as unknown[]).flat(Infinity) as {
-            name?: string;
-          }[];
-          userTransformPlugins = flat.filter(
-            (p): p is import("vite").Plugin =>
-              !!p &&
-              typeof p.name === "string" &&
-              // vinext and its sub-plugins — re-registered below
-              !p.name.startsWith("vinext:") &&
-              // @vitejs/plugin-react — auto-registered by vinext
-              !p.name.startsWith("vite:react") &&
-              // @vitejs/plugin-rsc and its sub-plugins — App Router only
-              !p.name.startsWith("rsc:") &&
-              p.name !== "vite-rsc-load-module-dev-proxy" &&
-              // cloudflare() — injects multi-env environments block which
-              // conflicts with the plain SSR build config below
-              !p.name.startsWith("vite-plugin-cloudflare"),
+      if (isHybrid) {
+        // Hybrid app (both app/ and pages/ directories): also build the Pages Router
+        // SSR bundle so the prerender phase can render Pages Router routes.
+        // The App Router multi-env build (buildApp) doesn't include the Pages Router
+        // SSR entry, so we run it as a separate step here.
+        // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
+        // loading the user's vite.config (which has vinext() without disableAppRouter)
+        // and to prevent the multi-env environments config from overriding our SSR
+        // input and entryFileNames.
+        console.log("  Building Pages Router server (hybrid)...");
+        // Inherit transform plugins from the user's vite.config (e.g. SVG loaders,
+        // CSS-in-JS) that vinext doesn't auto-register. We load the raw config via
+        // loadConfigFromFile — before any plugin config() hooks fire — so that
+        // cloudflare() hasn't yet injected its multi-env environments block.
+        // We then exclude the plugin families that vinext({ disableAppRouter: true })
+        // will re-register itself, and cloudflare() which must not run here.
+        const root = process.cwd();
+        let userTransformPlugins: import("vite").PluginOption[] = [];
+        if (hasViteConfig(process.cwd())) {
+          const loaded = await vite.loadConfigFromFile(
+            { command: "build", mode: "production", isSsrBuild: true },
+            undefined,
+            root,
           );
+          if (loaded?.config.plugins) {
+            const flat = (loaded.config.plugins as unknown[]).flat(Infinity) as {
+              name?: string;
+            }[];
+            userTransformPlugins = flat.filter(
+              (p): p is import("vite").Plugin =>
+                !!p &&
+                typeof p.name === "string" &&
+                // vinext and its sub-plugins — re-registered below
+                !p.name.startsWith("vinext:") &&
+                // @vitejs/plugin-react — auto-registered by vinext
+                !p.name.startsWith("vite:react") &&
+                // @vitejs/plugin-rsc and its sub-plugins — App Router only
+                !p.name.startsWith("rsc:") &&
+                p.name !== "vite-rsc-load-module-dev-proxy" &&
+                // cloudflare() — injects multi-env environments block which
+                // conflicts with the plain SSR build config below
+                !p.name.startsWith("vite-plugin-cloudflare"),
+            );
+          }
+        }
+        await vite.build({
+          root,
+          configFile: false,
+          plugins: [...userTransformPlugins, vinext({ disableAppRouter: true })],
+          resolve: {
+            dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+          },
+          ...(logger ? { customLogger: logger } : {}),
+          build: {
+            outDir: "dist/server",
+            emptyOutDir: false, // preserve RSC artefacts from buildApp()
+            ssr: "virtual:vinext-server-entry",
+            ...withBuildBundlerOptions({
+              output: {
+                entryFileNames: "entry.js",
+              },
+            }),
+          },
+        });
+      }
+    } finally {
+      if (pagesClientAssetsBuildSession) {
+        clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
+        if (
+          process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === pagesClientAssetsBuildSession
+        ) {
+          delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
         }
       }
-      await vite.build({
-        root,
-        configFile: false,
-        plugins: [...userTransformPlugins, vinext({ disableAppRouter: true })],
-        resolve: {
-          dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
-        },
-        ...(logger ? { customLogger: logger } : {}),
-        build: {
-          outDir: "dist/server",
-          emptyOutDir: false, // preserve RSC artefacts from buildApp()
-          ssr: "virtual:vinext-server-entry",
-          ...withBuildBundlerOptions({
-            output: {
-              entryFileNames: "entry.js",
-            },
-          }),
-        },
-      });
     }
-  } finally {
-    if (pagesClientAssetsBuildSession) {
-      clearPagesClientAssetsBuildMetadata(pagesClientAssetsBuildSession);
-      if (
-        process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === pagesClientAssetsBuildSession
-      ) {
-        delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-      }
-    }
-  }
+  });
 
   if (outputMode === "standalone") {
     const standalone = emitStandaloneOutput({

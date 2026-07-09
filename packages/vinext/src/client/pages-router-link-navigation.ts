@@ -45,7 +45,7 @@ export function resolvePagesRouterQueryOnlyHref(
     locales?: readonly string[];
   },
 ): string {
-  if (!href.startsWith("?")) return href;
+  if (!href.startsWith("?") && !href.startsWith("#")) return href;
 
   try {
     const fallbackUrl = new URL(fallbackHref);
