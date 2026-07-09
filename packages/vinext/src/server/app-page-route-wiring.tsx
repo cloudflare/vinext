@@ -20,7 +20,13 @@ import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
-import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
+import {
+  MetadataHead,
+  ViewportHead,
+  renderMetadataToHtml,
+  type Metadata,
+  type Viewport,
+} from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
@@ -549,13 +555,13 @@ export function createAppPageRouteBodyMetadata(
   trailingSlash?: boolean,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
-  // Next.js also renders real metadata elements in its hidden streaming outlet.
-  // Vinext resolves metadata before rendering, so React can hoist these into the
-  // document head during the initial render instead of appending them after the shell.
   return (
-    <div hidden>
-      <MetadataHead metadata={metadata} pathname={pathname} trailingSlash={trailingSlash} />
-    </div>
+    <div
+      hidden
+      dangerouslySetInnerHTML={{
+        __html: renderMetadataToHtml(metadata, pathname, { trailingSlash }),
+      }}
+    />
   );
 }
 

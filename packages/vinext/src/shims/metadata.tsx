@@ -860,10 +860,6 @@ function renderMetadataElementToHtml(node: unknown): string {
   }
 }
 
-/**
- * @deprecated Production metadata renders through {@link MetadataHead}. This
- * serializer remains exported for compatibility with existing shim consumers.
- */
 export function renderMetadataToHtml(
   metadata: Metadata,
   pathname = "/",

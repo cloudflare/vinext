@@ -76,28 +76,28 @@ test.describe("Dynamic Metadata (generateMetadata)", () => {
     await expect(ogDescription).toHaveAttribute("content", "Dynamic OG Description");
   });
 
-  test("generateMetadata keeps SEO metadata in head after hydration", async ({ page }) => {
+  test("generateMetadata keeps streamed metadata in body after hydration", async ({ page }) => {
     await page.goto(`${BASE}/metadata-dynamic-test`);
     await waitForAppRouterHydration(page);
 
     await expect(page).toHaveTitle("Dynamic Metadata Page");
-    await expect(page.locator("head title")).toHaveCount(1);
-    await expect(page.locator('head link[rel="canonical"]')).toHaveAttribute(
+    await expect(page.locator("head title")).toHaveCount(0);
+    await expect(page.locator("body title")).toHaveCount(1);
+    await expect(page.locator('body link[rel="canonical"]')).toHaveAttribute(
       "href",
       "https://example.com/metadata-dynamic-test",
     );
-    await expect(page.locator('head link[rel="alternate"][hreflang="en-US"]')).toHaveAttribute(
+    await expect(page.locator('body link[rel="alternate"][hreflang="en-US"]')).toHaveAttribute(
       "href",
       "https://example.com/en/metadata-dynamic-test",
     );
-    await expect(page.locator('head meta[name="robots"]')).toHaveAttribute(
+    await expect(page.locator('body meta[name="robots"]')).toHaveAttribute(
       "content",
       "noindex, nofollow",
     );
-    await expect(page.locator("body title")).toHaveCount(0);
-    await expect(page.locator('body link[rel="canonical"]')).toHaveCount(0);
-    await expect(page.locator('body link[rel="alternate"][hreflang="en-US"]')).toHaveCount(0);
-    await expect(page.locator('body meta[name="robots"]')).toHaveCount(0);
+    await expect(page.locator('head link[rel="canonical"]')).toHaveCount(0);
+    await expect(page.locator('head link[rel="alternate"][hreflang="en-US"]')).toHaveCount(0);
+    await expect(page.locator('head meta[name="robots"]')).toHaveCount(0);
   });
 });
 

@@ -454,25 +454,21 @@ describe("app page route wiring helpers", () => {
     });
   });
 
-  it("hoists generated metadata into the head for streaming-capable requests", async () => {
-    // Next.js renders the same real elements in its streaming metadata outlet:
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/metadata.tsx
-    // Vinext has already resolved metadata before this render, so React can hoist
-    // the elements into <head> instead of appending them after a streamed shell.
+  it("streams generated metadata into the body for streaming-capable requests", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome");
     const head = readDocumentSection(html, "head");
     const body = readDocumentSection(html, "body");
 
-    expect(head).toContain("<title>generated page</title>");
-    expect(head).toContain('rel="canonical" href="https://example.com/generated"');
-    expect(head).toContain('hrefLang="en-US" href="https://example.com/en/generated"');
-    expect(head).toContain('name="robots" content="noindex, nofollow"');
-    expect(body).not.toContain("<title>generated page</title>");
-    expect(body).not.toContain('rel="canonical"');
-    expect(body).not.toContain('hrefLang="en-US"');
-    expect(body).not.toContain('name="robots"');
-    // Metadata is hoisted out, leaving the body outlet empty.
-    expect(body).toContain('<div hidden=""></div>');
+    expect(head).not.toContain("<title>generated page</title>");
+    expect(head).not.toContain('rel="canonical"');
+    expect(head).not.toContain('hrefLang="en-US"');
+    expect(head).not.toContain('name="robots"');
+    expect(body).toContain("<title>generated page</title>");
+    expect(body).toContain('rel="canonical" href="https://example.com/generated"');
+    expect(body).toContain('href="https://example.com/en/generated" hreflang="en-US"');
+    expect(body).toContain('name="robots" content="noindex, nofollow"');
   });
 
   it("renders generated metadata in the head for configured html-limited bots", async () => {
@@ -494,14 +490,14 @@ describe("app page route wiring helpers", () => {
   });
 
   it("falls back to the default html-limited bot list for an empty config string", async () => {
-    // Next.js normalizes a falsy htmlLimitedBots config to the default bot regex,
-    // so HeadlessChrome is treated as streaming-capable and metadata is hoisted.
+    // Next.js normalizes a falsy htmlLimitedBots config to the default bot regex.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/streaming-metadata.ts
     const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", "");
+    const head = readDocumentSection(html, "head");
+    const body = readDocumentSection(html, "body");
 
-    expect(html).toContain("<title>generated page</title>");
-    expect(html).toContain('<div hidden=""></div>');
-    expect(html).not.toContain('<div hidden=""><title>generated page</title>');
+    expect(head).not.toContain("<title>generated page</title>");
+    expect(body).toContain("<title>generated page</title>");
   });
 
   it("resolves child segments from tree positions and preserves route groups", () => {

@@ -2868,7 +2868,7 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="/apple.png"');
   });
 
-  it("serializes rich metadata for compatibility", () => {
+  it("serializes rich metadata for the streaming body outlet", () => {
     const html = renderMetadataToHtml(
       {
         metadataBase: new URL("https://example.com"),
@@ -2909,7 +2909,8 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('property="og:image:type"');
     expect(html).toContain('content="image/png"');
     expect(html).toContain('rel="alternate"');
-    expect(html).toContain('href="https://example.com/products/en" hreflang="en-US"');
+    expect(html).toContain('hreflang="en-US"');
+    expect(html).toContain('href="https://example.com/products/en"');
     expect(html).toContain('rel="icon"');
     expect(html).toContain('href="/icon.png"');
     expect(html).toContain('sizes="32x32"');
