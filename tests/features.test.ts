@@ -929,6 +929,23 @@ describe("i18n config parsing", () => {
     expect(locales).toEqual(["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"]);
   });
 
+  it("rejects a default locale that is not included in locales", async () => {
+    // Ported from Next.js: packages/next/src/server/config.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/packages/next/src/server/config.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});

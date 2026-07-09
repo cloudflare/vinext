@@ -1678,6 +1678,11 @@ export async function resolveNextConfig(
   let i18n: NextI18nConfig | null = null;
   if (config.i18n) {
     const { defaultLocale } = config.i18n;
+    if (!config.i18n.locales.includes(defaultLocale)) {
+      throw new Error(
+        "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+      );
+    }
     const locales = [
       defaultLocale,
       ...config.i18n.locales.filter((locale) => locale !== defaultLocale),
