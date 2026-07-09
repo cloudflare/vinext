@@ -457,6 +457,35 @@ describe("createTickBufferedTransform pre-head splice", () => {
     expect(calls).toBeGreaterThanOrEqual(1);
     expect(calls).toBeLessThan(10);
   });
+
+  it("uses one beforeInteractive shell snapshot", async () => {
+    const registrations = ['<script id="shell-before">shell()</script>'];
+    const transform = createTickBufferedTransform(createNoopRscEmbedTransform(), "", () =>
+      registrations.join(""),
+    );
+    const source = new TransformStream<Uint8Array, Uint8Array>();
+    const reader = source.readable.pipeThrough(transform).getReader();
+    const writer = source.writable.getWriter();
+    const decoder = new TextDecoder();
+
+    await writer.write(new TextEncoder().encode("<!DOCTYPE html><html><head>"));
+    const shellChunk = await reader.read();
+    expect(shellChunk.done).toBe(false);
+    expect(decoder.decode(shellChunk.value)).toContain('id="shell-before"');
+
+    await writer.write(new TextEncoder().encode("</head><body>late content</body></html>"));
+    await writer.close();
+
+    let remaining = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      remaining += decoder.decode(chunk.value, { stream: true });
+    }
+    remaining += decoder.decode();
+
+    expect(remaining).not.toContain("shell-before");
+  });
 });
 
 describe("createTickBufferedTransform inline CSS", () => {

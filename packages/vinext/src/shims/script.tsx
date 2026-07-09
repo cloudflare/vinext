@@ -14,97 +14,22 @@
  */
 import React, { useEffect, useRef } from "react";
 import * as ReactDOM from "react-dom";
-import { hasAppNavigationRuntimeBootstrap } from "../client/navigation-runtime.js";
+import { fnv1a64 } from "../utils/hash.js";
 import { escapeInlineContent } from "./head.js";
+import { useDocumentScriptRegister } from "./document-script-context.js";
 import { useScriptNonce } from "./script-nonce-context.js";
 import {
   useBeforeInteractiveRegister,
   type BeforeInteractiveInlineScript,
 } from "./before-interactive-context.js";
+import {
+  loadClientScript,
+  loadedScripts,
+  resolveScriptNonce,
+  type ScriptProps,
+} from "./script-loader.js";
 
-export type ScriptProps = {
-  /** Script source URL */
-  src?: string;
-  /** Loading strategy. Default: "afterInteractive" */
-  strategy?: "beforeInteractive" | "afterInteractive" | "lazyOnload" | "worker";
-  /** Unique identifier for the script */
-  id?: string;
-  /** Called when the script has loaded */
-  onLoad?: (e: Event) => void;
-  /** Called when the script is ready (after load, and on every re-render if already loaded) */
-  onReady?: () => void;
-  /** Called on script load error */
-  onError?: (e: Event) => void;
-  /** Inline script content */
-  children?: React.ReactNode;
-  /** Dangerous inner HTML */
-  dangerouslySetInnerHTML?: { __html: string };
-  /** Script type attribute */
-  type?: string;
-  /** Async attribute */
-  async?: boolean;
-  /** Defer attribute */
-  defer?: boolean;
-  /** Crossorigin attribute */
-  crossOrigin?: string;
-  /** Nonce for CSP */
-  nonce?: string;
-  /** Integrity hash */
-  integrity?: string;
-  /**
-   * Associated stylesheets to load alongside the script. Emitted as
-   * `<link rel="stylesheet" href="...">` on SSR (via `ReactDOM.preinit`)
-   * and inserted into `<head>` on the client load path.
-   *
-   * Mirrors Next.js App Router behaviour at
-   * `.nextjs-ref/packages/next/src/client/script.tsx` (`insertStylesheets`
-   * and the `appDir` block).
-   */
-  stylesheets?: string[];
-  /** Additional attributes */
-  [key: string]: unknown;
-};
-
-// Track scripts that have already been loaded, plus remote scripts currently
-// loading, to avoid duplicate DOM insertion when same-src components mount
-// before the first load event fires.
-const loadedScripts = new Set<string>();
-const loadingScripts = new Map<string, Promise<Event>>();
-
-function getClientAutoNonce(): string | undefined {
-  if (typeof document === "undefined") return undefined;
-
-  const existingNonceElement = document.querySelector("[nonce]");
-  if (!existingNonceElement) return undefined;
-
-  // `HTMLElement` is not defined in some SSR/edge runtimes that polyfill
-  // `document` but stop short of the full DOM surface. Guarding the
-  // constructor before `instanceof` keeps SSR from crashing in those hosts;
-  // when the constructor *is* present we still prefer the typed `.nonce`
-  // property because browsers strip the `nonce` attribute from serialised
-  // HTML for CSP reasons.
-  if (typeof HTMLElement !== "undefined" && existingNonceElement instanceof HTMLElement) {
-    return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
-  }
-
-  return existingNonceElement.getAttribute("nonce") || undefined;
-}
-
-function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): string | undefined {
-  if (typeof explicitNonce === "string" && explicitNonce.length > 0) {
-    return explicitNonce;
-  }
-
-  if (typeof contextualNonce === "string" && contextualNonce.length > 0) {
-    return contextualNonce;
-  }
-
-  if (typeof window === "undefined") {
-    return undefined;
-  }
-
-  return getClientAutoNonce();
-}
+export { handleClientScriptLoad, initScriptLoader, type ScriptProps } from "./script-loader.js";
 
 /**
  * Insert `<link rel="stylesheet">` tags into `document.head` for each entry
@@ -162,8 +87,13 @@ function buildBeforeInteractiveScriptProps(options: {
   rest: Record<string, unknown>;
   resolvedNonce?: string;
   dangerouslySetInnerHTML?: { __html: string };
+  scriptKey: string;
 }): Record<string, unknown> {
-  const scriptProps: Record<string, unknown> = { ...options.rest };
+  const scriptProps: Record<string, unknown> = {
+    ...options.rest,
+    "data-nscript": "beforeInteractive",
+    "data-vinext-script-key": options.scriptKey,
+  };
   if (options.src) scriptProps.src = options.src;
   if (options.id) scriptProps.id = options.id;
   if (options.resolvedNonce) {
@@ -175,6 +105,44 @@ function buildBeforeInteractiveScriptProps(options: {
     };
   }
   return scriptProps;
+}
+
+function stringifyAppBeforeInteractiveRecord(record: unknown): string {
+  return JSON.stringify(record)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function renderAppBeforeInteractiveRecord(options: {
+  src?: string;
+  id?: string;
+  rest: Record<string, unknown>;
+  resolvedNonce?: string;
+  inlineContent: string | null;
+  scriptKey: string;
+}): React.ReactElement {
+  const scriptProps: Record<string, unknown> = {
+    ...options.rest,
+    "data-nscript": "beforeInteractive",
+    "data-vinext-script-key": options.scriptKey,
+  };
+  if (options.id) scriptProps.id = options.id;
+  if (options.resolvedNonce) scriptProps.nonce = options.resolvedNonce;
+  if (!options.src) scriptProps.children = options.inlineContent ?? "";
+
+  return React.createElement("script", {
+    nonce: options.resolvedNonce,
+    "data-vinext-before-interactive-runtime": options.scriptKey,
+    dangerouslySetInnerHTML: {
+      __html: `(self.__next_s=self.__next_s||[]).push(${stringifyAppBeforeInteractiveRecord([
+        options.src ?? 0,
+        scriptProps,
+      ])})`,
+    },
+  });
 }
 
 /**
@@ -207,6 +175,41 @@ function extractBeforeInteractiveInlineContent(
     return joined.length > 0 ? joined : null;
   }
   return null;
+}
+
+function createScriptKey(options: {
+  id?: string;
+  src?: string;
+  inlineContent: string | null;
+}): string {
+  if (options.id) return `id:${options.id}`;
+  if (options.src) return `src:${options.src}`;
+  return `inline:${fnv1a64(options.inlineContent ?? "")}`;
+}
+
+function findServerRenderedBeforeInteractiveScript(options: {
+  scriptKey: string;
+}): "head" | "body" | null {
+  if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") {
+    return null;
+  }
+
+  const scripts = document.querySelectorAll('script[data-nscript="beforeInteractive"]');
+  for (const script of scripts) {
+    if (script.getAttribute("data-vinext-script-key") !== options.scriptKey) continue;
+    return document.head?.contains(script) === false ? "body" : "head";
+  }
+  return null;
+}
+
+function seedServerRenderedBeforeInteractiveScript(options: {
+  scriptKey: string;
+  cacheKey: string;
+  seedLoaded: boolean;
+}): "head" | "body" | null {
+  const location = findServerRenderedBeforeInteractiveScript({ scriptKey: options.scriptKey });
+  if (location && options.cacheKey && options.seedLoaded) loadedScripts.add(options.cacheKey);
+  return location;
 }
 
 /**
@@ -273,165 +276,7 @@ function collectBeforeInteractiveAttributes(
   return out;
 }
 
-function setBooleanScriptAttribute(el: HTMLScriptElement, attr: string, value: unknown): boolean {
-  const enabled = value !== false && value !== "false" && Boolean(value);
-
-  switch (attr) {
-    case "async":
-      el.async = enabled;
-      break;
-    case "defer":
-      el.defer = enabled;
-      break;
-    case "noModule":
-    case "nomodule":
-      el.noModule = enabled;
-      break;
-    default:
-      return false;
-  }
-
-  if (!enabled) {
-    // Dynamic script elements start in the browser's force-async state.
-    // Setting and removing the attribute mirrors Next.js and clears that state.
-    el.setAttribute(attr, "");
-    el.removeAttribute(attr);
-  }
-
-  return true;
-}
-
-function setScriptAttributes(el: HTMLScriptElement, rest: Record<string, unknown>): void {
-  for (const [attr, value] of Object.entries(rest)) {
-    if (attr === "dangerouslySetInnerHTML") continue;
-    if (value === undefined) continue;
-    if (setBooleanScriptAttribute(el, attr, value)) continue;
-    if (attr === "className" && typeof value === "string") {
-      el.setAttribute("class", value);
-    } else if (typeof value === "string") {
-      el.setAttribute(attr, value);
-    } else if (typeof value === "boolean" && value) {
-      el.setAttribute(attr, "");
-    }
-  }
-}
-
-function loadClientScript(
-  props: ScriptProps,
-  options: {
-    resolvedNonce?: string;
-    fireReadyWhenAlreadyLoaded: boolean;
-  },
-): void {
-  const {
-    src,
-    id,
-    onLoad,
-    onReady,
-    onError,
-    strategy = "afterInteractive",
-    children,
-    dangerouslySetInnerHTML,
-    stylesheets,
-    ...rest
-  } = props;
-  if (typeof window === "undefined") return;
-
-  // Insert associated stylesheets into <head> regardless of whether the
-  // script was already loaded — the script's onReady handlers may already
-  // assume the stylesheet is present. `insertClientStylesheets` dedupes
-  // via ReactDOM.preinit where available.
-  insertClientStylesheets(stylesheets);
-
-  const key = id ?? src ?? "";
-  if (key && loadedScripts.has(key)) {
-    if (options.fireReadyWhenAlreadyLoaded) {
-      onReady?.();
-    }
-    return;
-  }
-
-  if (src) {
-    const existingLoad = loadingScripts.get(src);
-    if (existingLoad) {
-      void existingLoad.then(
-        (event) => {
-          if (key) loadedScripts.add(key);
-          onLoad?.(event);
-          onReady?.();
-        },
-        (event) => onError?.(event),
-      );
-      return;
-    }
-  }
-
-  const el = document.createElement("script");
-  if (src) el.src = src;
-  if (id) el.id = id;
-
-  setScriptAttributes(el, rest);
-  if (options.resolvedNonce && !el.getAttribute("nonce")) {
-    el.setAttribute("nonce", options.resolvedNonce);
-  }
-
-  if (strategy === "worker") {
-    el.setAttribute("type", "text/partytown");
-  }
-
-  const markLoaded = () => {
-    if (key) loadedScripts.add(key);
-    onReady?.();
-  };
-
-  if (dangerouslySetInnerHTML?.__html) {
-    // Intentional: mirrors the Next.js <Script> API where dangerouslySetInnerHTML
-    // is developer-supplied inline script content (not user input). The prop name
-    // itself signals developer awareness of the XSS risk, consistent with React's
-    // design. User-supplied data must never flow into this prop.
-    el.innerHTML = dangerouslySetInnerHTML.__html;
-    markLoaded();
-  } else if (children && typeof children === "string") {
-    el.textContent = children;
-    markLoaded();
-  } else if (src) {
-    const loadPromise = new Promise<Event>((resolve, reject) => {
-      el.addEventListener("load", (event) => {
-        resolve(event);
-        if (key) loadedScripts.add(key);
-        onLoad?.(event);
-        onReady?.();
-      });
-      el.addEventListener("error", (event) => {
-        reject(event);
-        onError?.(event);
-      });
-    });
-    loadPromise.catch(() => undefined).finally(() => loadingScripts.delete(src));
-    loadingScripts.set(src, loadPromise);
-  }
-
-  document.body.appendChild(el);
-}
-
-/**
- * Load a script imperatively (outside of React).
- */
-export function handleClientScriptLoad(props: ScriptProps): void {
-  loadClientScript(props, {
-    resolvedNonce: resolveScriptNonce(props.nonce),
-    fireReadyWhenAlreadyLoaded: false,
-  });
-}
-
-/**
- * Initialize multiple scripts at once (called during app bootstrap).
- */
-export function initScriptLoader(scripts: ScriptProps[]): void {
-  for (const script of scripts) {
-    handleClientScriptLoad(script);
-  }
-}
+Object.defineProperty(Script, "__nextScript", { value: true });
 
 function Script(props: ScriptProps): React.ReactElement | null {
   const {
@@ -447,7 +292,8 @@ function Script(props: ScriptProps): React.ReactElement | null {
     ...rest
   } = props;
 
-  const hasMounted = useRef(false);
+  const hasOnReadyEffectCalled = useRef(false);
+  const hasLoadScriptEffectCalled = useRef(false);
   const key = id ?? src ?? "";
   const contextualNonce = useScriptNonce();
   const resolvedNonce = resolveScriptNonce(rest.nonce, contextualNonce);
@@ -455,12 +301,60 @@ function Script(props: ScriptProps): React.ReactElement | null {
   // missing (Pages Router SSR, raw renderToString, client render) we keep the
   // inline `<script>` element in source order.
   const registerBeforeInteractive = useBeforeInteractiveRegister();
+  const registerDocumentScript = useDocumentScriptRegister();
+  const inlineContent = src
+    ? null
+    : extractBeforeInteractiveInlineContent(children, dangerouslySetInnerHTML);
+  const scriptKey = createScriptKey({ id, src, inlineContent });
+  const appScript =
+    typeof window === "undefined"
+      ? undefined
+      : (
+          window as typeof window & {
+            __VINEXT_APP_SCRIPT__?: (
+              scriptKey: string,
+              subscription?: {
+                src: string;
+                onReady: ScriptProps["onReady"];
+                onError: ScriptProps["onError"];
+              },
+            ) => boolean;
+          }
+        ).__VINEXT_APP_SCRIPT__;
+  const hasAppRuntimeRecord =
+    (strategy === "beforeInteractive" || strategy === "beforePageRender") &&
+    appScript?.(scriptKey) === true;
+  const serverRenderedScriptLocation =
+    typeof window !== "undefined" &&
+    (strategy === "beforeInteractive" || strategy === "beforePageRender") &&
+    seedServerRenderedBeforeInteractiveScript({
+      scriptKey,
+      cacheKey: key,
+      seedLoaded: !hasAppRuntimeRecord,
+    });
+  const hasAppRuntimeQueue =
+    typeof window !== "undefined" &&
+    Array.isArray((window as typeof window & { __next_s?: unknown }).__next_s);
+  const hasPagesClientRuntime =
+    typeof window !== "undefined" &&
+    typeof (window as typeof window & { next?: { router?: unknown } }).next?.router === "object";
 
-  // Client path: load scripts via useEffect based on strategy.
-  // useEffect never runs during SSR, so it's safe to call unconditionally.
   useEffect(() => {
-    if (hasMounted.current) return;
-    hasMounted.current = true;
+    if (hasOnReadyEffectCalled.current) return;
+    hasOnReadyEffectCalled.current = true;
+
+    if (onReady && key && loadedScripts.has(key)) {
+      onReady();
+      return;
+    }
+    if (src && hasAppRuntimeRecord && (onReady || onError)) {
+      appScript?.(scriptKey, { src, onReady, onError });
+    }
+  }, [onReady, onError, key, src, scriptKey, hasAppRuntimeRecord, appScript]);
+
+  useEffect(() => {
+    if (hasLoadScriptEffectCalled.current) return;
+    hasLoadScriptEffectCalled.current = true;
 
     if (strategy === "beforeInteractive") {
       // The script itself is loaded by Next.js's bootstrap before hydration,
@@ -469,22 +363,12 @@ function Script(props: ScriptProps): React.ReactElement | null {
       // dedupes against any SSR-emitted <link rel="stylesheet">, so this is
       // safe even when the server already hoisted them via React Float.
       insertClientStylesheets(stylesheets);
-      return;
-    }
-
-    // Already loaded — just fire onReady
-    if (key && loadedScripts.has(key)) {
-      // Stylesheets must still be inserted on subsequent mounts of the same
-      // script. loadClientScript handles this for the fresh-load path; the
-      // already-loaded shortcut needs it explicitly.
-      insertClientStylesheets(stylesheets);
-      onReady?.();
-      return;
-    }
-
-    const load = () => {
-      if (key && loadedScripts.has(key)) {
-        onReady?.();
+      if (
+        serverRenderedScriptLocation === "head" ||
+        hasAppRuntimeRecord ||
+        hasAppRuntimeQueue ||
+        !hasPagesClientRuntime
+      ) {
         return;
       }
 
@@ -501,7 +385,43 @@ function Script(props: ScriptProps): React.ReactElement | null {
           stylesheets,
           ...rest,
         },
-        { resolvedNonce, fireReadyWhenAlreadyLoaded: true },
+        {
+          resolvedNonce,
+          fireReadyWhenAlreadyLoaded: true,
+          insertStylesheets: insertClientStylesheets,
+        },
+      );
+      return;
+    }
+
+    if (key && loadedScripts.has(key)) {
+      insertClientStylesheets(stylesheets);
+      return;
+    }
+
+    const load = () => {
+      if (key && loadedScripts.has(key)) {
+        return;
+      }
+
+      loadClientScript(
+        {
+          src,
+          id,
+          strategy,
+          onLoad,
+          onReady,
+          onError,
+          children,
+          dangerouslySetInnerHTML,
+          stylesheets,
+          ...rest,
+        },
+        {
+          resolvedNonce,
+          fireReadyWhenAlreadyLoaded: true,
+          insertStylesheets: insertClientStylesheets,
+        },
       );
     };
 
@@ -539,6 +459,11 @@ function Script(props: ScriptProps): React.ReactElement | null {
     key,
     resolvedNonce,
     rest,
+    scriptKey,
+    serverRenderedScriptLocation,
+    hasAppRuntimeRecord,
+    hasAppRuntimeQueue,
+    hasPagesClientRuntime,
   ]);
 
   // SSR path: only "beforeInteractive" renders a <script> tag server-side
@@ -580,7 +505,30 @@ function Script(props: ScriptProps): React.ReactElement | null {
       ReactDOM.preload(src, preloadOptions);
     }
 
-    if (strategy === "beforeInteractive") {
+    if (registerDocumentScript) {
+      if (strategy === "beforeInteractive" || strategy === "beforePageRender") {
+        registerDocumentScript({
+          kind: "beforeInteractive",
+          script: {
+            key: scriptKey,
+            id,
+            src: src ?? undefined,
+            innerHTML:
+              inlineContent !== null ? escapeInlineContent(inlineContent, "script") : undefined,
+            nonce: resolvedNonce,
+            attributes: collectBeforeInteractiveAttributes(rest),
+          },
+        });
+      } else {
+        registerDocumentScript({
+          kind: "client",
+          script: { ...props, strategy, nonce: resolvedNonce },
+        });
+      }
+      return null;
+    }
+
+    if (strategy === "beforeInteractive" || strategy === "beforePageRender") {
       // beforeInteractive scripts need to run BEFORE any stylesheets,
       // modulepreload links, or other resource hints React Float hoists into
       // <head>. React Fizz emits user-rendered head children AFTER the hoisted
@@ -595,11 +543,9 @@ function Script(props: ScriptProps): React.ReactElement | null {
       // beforeInteractive scripts equally through the App Router runtime
       // (.nextjs-ref/packages/next/src/client/script.tsx — the `(self.__next_s=
       // ...).push([0|src, …])` branch).
-      const inlineContent = src
-        ? null
-        : extractBeforeInteractiveInlineContent(children, dangerouslySetInnerHTML);
       if ((src || inlineContent !== null) && registerBeforeInteractive) {
         const registered: BeforeInteractiveInlineScript = {
+          key: scriptKey,
           id,
           src: src ?? undefined,
           // Escape `</script>` sequences exactly as the inline render path does
@@ -611,8 +557,18 @@ function Script(props: ScriptProps): React.ReactElement | null {
           nonce: resolvedNonce,
           attributes: collectBeforeInteractiveAttributes(rest),
         };
-        registerBeforeInteractive(registered);
-        return null;
+        const registration = registerBeforeInteractive(registered);
+        if (registration === "hoisted") return null;
+        if (registration === "app-runtime") {
+          return renderAppBeforeInteractiveRecord({
+            src,
+            id,
+            rest,
+            resolvedNonce,
+            inlineContent,
+            scriptKey,
+          });
+        }
       }
 
       return React.createElement(
@@ -623,6 +579,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
           rest,
           resolvedNonce,
           dangerouslySetInnerHTML,
+          scriptKey,
         }),
         children,
       );
@@ -631,26 +588,35 @@ function Script(props: ScriptProps): React.ReactElement | null {
     return null;
   }
 
-  if (strategy === "beforeInteractive") {
-    // On the client, suppress the `<script>` render for any beforeInteractive
-    // Script in App Router pages — inline AND external `src`. The pre-head
-    // splice in app-ssr-entry/app-ssr-stream already put the tag in the DOM
-    // (the SSR registration condition above mirrors this exactly), so rendering
-    // it again would duplicate the script (double execution) or cause a
-    // hydration mismatch (positions differ).
-    //
-    // For Pages Router and any other SSR path that didn't run through
-    // app-ssr-entry, the server rendered the `<script>` inline in source
-    // order, so the client must match. We detect "App Router" via the
-    // navigation runtime that the App Router bootstrap installs before
-    // calling hydrateRoot — it is the most reliable runtime signal we
-    // can read from inside a `"use client"` shim.
-    const inlineContent = src
-      ? null
-      : extractBeforeInteractiveInlineContent(children, dangerouslySetInnerHTML);
-    if ((src || inlineContent !== null) && hasAppNavigationRuntimeBootstrap()) {
+  if (strategy === "beforeInteractive" || strategy === "beforePageRender") {
+    if ((src || inlineContent !== null) && hasAppRuntimeRecord) {
+      return renderAppBeforeInteractiveRecord({
+        src,
+        id,
+        rest,
+        resolvedNonce,
+        inlineContent,
+        scriptKey,
+      });
+    }
+    // Suppress only when this exact script was hoisted into `<head>`. A script
+    // first revealed after the App Router shell snapshot renders the same
+    // runtime queue record on the server and hydrating client instead. The
+    // marker lookup above seeds loadedScripts once the queue consumer creates
+    // the real head script, preserving onReady/remount behavior.
+    if ((src || inlineContent !== null) && serverRenderedScriptLocation === "head") {
       return null;
     }
+
+    if (
+      (src || inlineContent !== null) &&
+      serverRenderedScriptLocation === null &&
+      key &&
+      loadedScripts.has(key)
+    ) {
+      return null;
+    }
+    if (hasPagesClientRuntime) return null;
 
     return React.createElement(
       "script",
@@ -660,6 +626,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
         rest,
         resolvedNonce,
         dangerouslySetInnerHTML,
+        scriptKey,
       }),
       children,
     );

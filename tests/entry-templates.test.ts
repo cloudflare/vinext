@@ -1383,6 +1383,11 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("_initializePagesRouterReadyFromNextData,");
       expect(code).toContain('} from "next/router";');
       expect(code).toContain("_initializePagesRouterReadyFromNextData(nextData);");
+      expect(code).not.toContain('import { initScriptLoader } from "vinext/shims/script-loader";');
+      expect(code).not.toContain('from "next/script"');
+      expect(code.indexOf("_initializePagesRouterReadyFromNextData(nextData)")).toBeLessThan(
+        code.indexOf("hydrateRoot(container"),
+      );
       expect(code).toContain("router: Router,");
       expect(code).toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");

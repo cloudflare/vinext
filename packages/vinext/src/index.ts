@@ -2909,7 +2909,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
             "@tailwindcss/oxide",
           ]),
-          ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
+          include: [
+            ...new Set([
+              ...incomingInclude,
+              "react",
+              "react-dom",
+              "react-dom/client",
+              "react/jsx-runtime",
+              "react/jsx-dev-runtime",
+            ]),
+          ],
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,

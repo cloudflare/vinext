@@ -109,6 +109,8 @@ type DocumentRenderPageInput = {
   renderToReadableStream: (element: React.ReactElement) => Promise<ReadableStream<Uint8Array>>;
   /** Render the document `styles` element to an HTML string. */
   renderStylesToString: (element: React.ReactElement) => Promise<string>;
+  /** Wrap each page render with request-scoped collectors/providers. */
+  wrapPageElement?: ((element: React.ReactElement) => React.ReactElement) | undefined;
   /** Per-request CSP nonce applied to the enhanced page tree, if any. */
   scriptNonce?: string | undefined;
   /** Extra `DocumentContext` fields (pathname/query/asPath). */
@@ -192,7 +194,10 @@ export async function runDocumentRenderPage(
     const enhancedElement = enhancePageElement(enhancers);
     // Nonce responsibility lives here so prod and dev produce identical
     // output — callers' `enhancePageElement` must not apply it themselves.
-    const wrapped = withScriptNonce(enhancedElement as React.ReactElement, input.scriptNonce);
+    const pageElement = input.wrapPageElement
+      ? input.wrapPageElement(enhancedElement as React.ReactElement)
+      : (enhancedElement as React.ReactElement);
+    const wrapped = withScriptNonce(pageElement, input.scriptNonce);
     const stream = await input.renderToReadableStream(wrapped);
     const html = await readStreamAsText(stream);
     return { html, head: [] };

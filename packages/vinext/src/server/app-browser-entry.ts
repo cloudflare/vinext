@@ -70,6 +70,7 @@ import {
 } from "vinext/shims/app-router-scroll-state";
 import { resolveHybridClientRewriteHref } from "vinext/shims/internal/hybrid-client-route-owner";
 import { installWindowNext, setWindowNextInternalSourcePage } from "../client/window-next.js";
+import { loadBeforeInteractiveRuntimeRecords } from "./app-before-interactive-runtime.js";
 import {
   chunksToReadableStream,
   createProgressiveRscStream,
@@ -1476,6 +1477,8 @@ function registerServerActionCallback(): void {
 
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
+
+  await loadBeforeInteractiveRuntimeRecords();
 
   if (hasServerActions) registerServerActionCallback();
   installAppNavigationFailureListeners();

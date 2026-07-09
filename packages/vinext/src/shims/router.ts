@@ -47,6 +47,7 @@ import {
 } from "./internal/pages-data-fetch-dedup.js";
 import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
+import { initScriptLoader, type ScriptProps } from "./script-loader.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { splitPathSegments } from "../routing/utils.js";
 import {
@@ -1372,6 +1373,9 @@ function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void 
     nextData.page,
     window.location.search,
     nextData,
+  );
+  initScriptLoader(
+    Array.isArray(nextData.scriptLoader) ? (nextData.scriptLoader as ScriptProps[]) : [],
   );
 }
 

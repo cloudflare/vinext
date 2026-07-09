@@ -11,21 +11,31 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Script, {
   handleClientScriptLoad,
+  initScriptLoader,
   type ScriptProps,
 } from "../packages/vinext/src/shims/script.js";
+import {
+  loadClientScript,
+  loadedScripts,
+  scriptCache,
+} from "../packages/vinext/src/shims/script-loader.js";
 import { ScriptNonceProvider } from "../packages/vinext/src/shims/script-nonce-context.js";
 import {
   BeforeInteractiveContext,
   type BeforeInteractiveInlineScript,
+  type BeforeInteractiveRegistration,
 } from "../packages/vinext/src/shims/before-interactive-context.js";
 import { renderBeforeInteractiveInlineScripts } from "../packages/vinext/src/server/before-interactive-head.js";
-import { NAVIGATION_RUNTIME_KEY } from "../packages/vinext/src/client/navigation-runtime.js";
 
 const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
 const originalHTMLElement = globalThis.HTMLElement;
+const originalRequestIdleCallback = globalThis.requestIdleCallback;
 
-function setGlobalValue(key: "document" | "window" | "HTMLElement", value: unknown): void {
+function setGlobalValue(
+  key: "document" | "window" | "HTMLElement" | "requestIdleCallback",
+  value: unknown,
+): void {
   if (value === undefined) {
     Reflect.deleteProperty(globalThis, key);
     return;
@@ -39,9 +49,12 @@ function setGlobalValue(key: "document" | "window" | "HTMLElement", value: unkno
 }
 
 afterEach(() => {
+  loadedScripts.clear();
+  scriptCache.clear();
   setGlobalValue("document", originalDocument);
   setGlobalValue("window", originalWindow);
   setGlobalValue("HTMLElement", originalHTMLElement);
+  setGlobalValue("requestIdleCallback", originalRequestIdleCallback);
 });
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
@@ -56,6 +69,7 @@ describe("Script SSR rendering", () => {
     );
     expect(html).toContain("<script");
     expect(html).toContain('src="/analytics.js"');
+    expect(html).toContain('data-nscript="beforeInteractive"');
   });
 
   it("emits a preload link for afterInteractive strategy on SSR (no <script> tag)", () => {
@@ -167,6 +181,37 @@ describe("Script SSR rendering", () => {
     );
     expect(html).toContain('id="google-analytics"');
     expect(html).toContain('src="/gtag.js"');
+    expect(html).toContain('data-nscript="beforeInteractive"');
+  });
+
+  it("suppresses a Pages beforeInteractive script already hoisted into the document", () => {
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll(selector: string) {
+        if (selector === "script[data-vinext-before-interactive-runtime]") return [];
+        expect(selector).toBe('script[data-nscript="beforeInteractive"]');
+        return [
+          {
+            getAttribute(name: string) {
+              if (name === "data-vinext-script-key") return "id:legacy-before-interactive";
+              return null;
+            },
+            textContent: "",
+          },
+        ];
+      },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        id: "legacy-before-interactive",
+        src: "/legacy-before.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toBe("");
   });
 
   it("renders beforeInteractive with inline content", () => {
@@ -220,7 +265,12 @@ describe("Script SSR rendering", () => {
     ReactDOMServer.renderToString(
       React.createElement(
         BeforeInteractiveContext.Provider,
-        { value: (script: BeforeInteractiveInlineScript) => captured.push(script) },
+        {
+          value: (script: BeforeInteractiveInlineScript): BeforeInteractiveRegistration => {
+            captured.push(script);
+            return "hoisted";
+          },
+        },
         React.createElement(Script, {
           id: "example-script",
           strategy: "beforeInteractive",
@@ -383,6 +433,42 @@ describe("Script SSR rendering", () => {
     expect(appendedScripts[0]!.async).toBe(false);
     expect(appendedScripts[0]!.attrs).not.toHaveProperty("async");
   });
+
+  it.each(["afterInteractive", "lazyOnload", "worker"] as const)(
+    "marks client-injected %s scripts with data-nscript",
+    (strategy) => {
+      const createdScript = {
+        attrs: {} as Record<string, string>,
+        src: "",
+        setAttribute(name: string, value: string) {
+          this.attrs[name] = value;
+        },
+        getAttribute(name: string): string | null {
+          return this.attrs[name] ?? null;
+        },
+        addEventListener() {},
+      };
+      setGlobalValue("window", {
+        addEventListener(_event: string, callback: () => void) {
+          callback();
+        },
+      });
+      setGlobalValue("requestIdleCallback", (callback: IdleRequestCallback) => {
+        callback({ didTimeout: false, timeRemaining: () => 50 });
+        return 1;
+      });
+      setGlobalValue("document", {
+        querySelector: () => null,
+        readyState: "complete",
+        createElement: () => createdScript,
+        body: { appendChild() {} },
+      });
+
+      handleClientScriptLoad({ src: `/${strategy}.js`, strategy });
+
+      expect(createdScript.attrs["data-nscript"]).toBe(strategy);
+    },
+  );
 });
 
 // ─── nonce resolution ───────────────────────────────────────────────────
@@ -616,9 +702,10 @@ describe("Script stylesheets prop", () => {
   });
 
   it("does not throw when handleClientScriptLoad is invoked with a stylesheets prop", () => {
-    // handleClientScriptLoad runs on the client and feeds into ReactDOM.preinit
-    // (when available). The shim must accept the prop without crashing or
-    // setting it as a `stylesheets="..."` attribute on the created <script>.
+    // The imperative loader is intentionally React-free so Pages bootstrap can
+    // import it without pulling the ReactDOM namespace into Vite's dev entry.
+    // It inserts stylesheet links directly and must not leak the prop onto the
+    // created <script> element.
     const createdScript = {
       attrs: {} as Record<string, string>,
       setAttribute(name: string, value: string) {
@@ -629,19 +716,26 @@ describe("Script stylesheets prop", () => {
       },
       addEventListener() {},
     };
+    const createdLink = {
+      rel: "",
+      type: "",
+      href: "",
+    };
 
     const appendedScripts: Array<typeof createdScript> = [];
+    const appendedLinks: Array<typeof createdLink> = [];
     class MockHTMLElement {}
     setGlobalValue("HTMLElement", MockHTMLElement);
     setGlobalValue("window", {});
     setGlobalValue("document", {
       querySelector: () => null,
       createElement(tagName: string) {
-        expect(tagName).toBe("script");
-        return createdScript;
+        return tagName === "link" ? createdLink : createdScript;
       },
       head: {
-        appendChild() {},
+        appendChild(element: unknown) {
+          appendedLinks.push(element as typeof createdLink);
+        },
       },
       body: {
         appendChild(el: unknown) {
@@ -658,9 +752,200 @@ describe("Script stylesheets prop", () => {
     ).not.toThrow();
 
     expect(appendedScripts).toHaveLength(1);
+    expect(appendedLinks).toEqual([
+      { rel: "stylesheet", type: "text/css", href: "/imperative.css" },
+    ]);
     // The stylesheets prop must never leak onto the <script> attribute list.
     expect(appendedScripts[0]!.attrs).not.toHaveProperty("stylesheets");
   });
+
+  it("deduplicates a shared stylesheet across imperative scripts", () => {
+    const appendedLinks: Array<{ href: string }> = [];
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement(tagName: string) {
+        if (tagName === "link") return { rel: "", type: "", href: "" };
+        return {
+          setAttribute() {},
+          getAttribute: () => null,
+          addEventListener() {},
+        };
+      },
+      head: {
+        appendChild(element: { href: string }) {
+          appendedLinks.push(element);
+        },
+      },
+      body: { appendChild() {} },
+    });
+
+    handleClientScriptLoad({ id: "first", stylesheets: ["/shared.css"] });
+    handleClientScriptLoad({ id: "second", stylesheets: ["/shared.css"] });
+
+    expect(appendedLinks.map((link) => link.href)).toEqual(["/shared.css"]);
+  });
+});
+
+describe("Script loader bootstrap cache", () => {
+  function installScriptDocument() {
+    const appendedScripts: Array<{
+      listeners: Record<string, (event: Event) => void>;
+      src: string;
+    }> = [];
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement() {
+        const script = {
+          listeners: {} as Record<string, (event: Event) => void>,
+          src: "",
+          setAttribute() {},
+          getAttribute: () => null,
+          addEventListener(name: string, listener: (event: Event) => void) {
+            script.listeners[name] = listener;
+          },
+        };
+        return script;
+      },
+      body: {
+        appendChild(script: (typeof appendedScripts)[number]) {
+          appendedScripts.push(script);
+        },
+      },
+    });
+    return appendedScripts;
+  }
+
+  it("retains loaded sources across scripts with different ids", async () => {
+    const appendedScripts = installScriptDocument();
+
+    handleClientScriptLoad({ id: "document-after", src: "/shared.js" });
+    appendedScripts[0]!.listeners.load!(new Event("load"));
+    await scriptCache.get("/shared.js");
+
+    handleClientScriptLoad({ id: "page-after-one", src: "/shared.js" });
+    handleClientScriptLoad({ id: "page-after-two", src: "/shared.js" });
+
+    expect(appendedScripts).toHaveLength(1);
+  });
+
+  it("marks a shared-source cache key while the first script is pending", () => {
+    const appendedScripts = installScriptDocument();
+    const calls: string[] = [];
+
+    handleClientScriptLoad({ id: "first", src: "/shared.js" });
+    handleClientScriptLoad({
+      id: "second",
+      src: "/shared.js",
+      onLoad: () => calls.push("load"),
+      onReady: () => calls.push("ready"),
+      onError: () => calls.push("error"),
+    });
+
+    expect(appendedScripts).toHaveLength(1);
+    expect(loadedScripts.has("second")).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it("fires only onLoad for a fulfilled shared-source attachment", async () => {
+    const appendedScripts = installScriptDocument();
+    const calls: string[] = [];
+
+    handleClientScriptLoad({ id: "first", src: "/shared.js" });
+    handleClientScriptLoad({
+      id: "second",
+      src: "/shared.js",
+      onLoad: () => calls.push("load"),
+      onReady: () => calls.push("ready"),
+    });
+    appendedScripts[0]!.listeners.load!(new Event("load"));
+    await scriptCache.get("/shared.js");
+
+    expect(calls).toEqual(["load"]);
+
+    loadClientScript(
+      {
+        id: "second",
+        src: "/shared.js",
+        onReady: () => calls.push("remount-ready"),
+      },
+      { fireReadyWhenAlreadyLoaded: true },
+    );
+    expect(calls).toEqual(["load", "remount-ready"]);
+  });
+
+  it("settles a rejected source before later shared-source attachments", async () => {
+    const appendedScripts = installScriptDocument();
+    const calls: Array<[string, Event | undefined]> = [];
+
+    handleClientScriptLoad({
+      id: "first",
+      src: "/shared.js",
+      onError: (event) => calls.push(["first-error", event]),
+    });
+    const error = new Event("error");
+    appendedScripts[0]!.listeners.error!(error);
+    await scriptCache.get("/shared.js");
+
+    handleClientScriptLoad({
+      id: "second",
+      src: "/shared.js",
+      onLoad: (event) => calls.push(["second-load", event]),
+      onReady: () => calls.push(["second-ready", undefined]),
+      onError: (event) => calls.push(["second-error", event]),
+    });
+    await Promise.resolve();
+
+    expect(loadedScripts.has("second")).toBe(true);
+    expect(calls).toEqual([
+      ["first-error", error],
+      ["second-load", undefined],
+    ]);
+  });
+
+  for (const strategy of ["beforeInteractive", "beforePageRender"] as const) {
+    it(`seeds ${strategy} scripts by id or src`, () => {
+      const appendedScripts: unknown[] = [];
+      const emittedScript = {
+        id: strategy === "beforeInteractive" ? `${strategy}-id` : "",
+        getAttribute(name: string) {
+          return name === "src" ? `/${strategy}.js` : null;
+        },
+      };
+
+      setGlobalValue("window", {});
+      setGlobalValue("document", {
+        querySelector: () => null,
+        querySelectorAll(selector: string) {
+          return selector === `[data-nscript="${strategy}"]` ? [emittedScript] : [];
+        },
+        createElement() {
+          return {
+            setAttribute() {},
+            getAttribute: () => null,
+            addEventListener() {},
+          };
+        },
+        body: {
+          appendChild(element: unknown) {
+            appendedScripts.push(element);
+          },
+        },
+      });
+
+      initScriptLoader([]);
+      handleClientScriptLoad(
+        strategy === "beforeInteractive"
+          ? { id: `${strategy}-id`, src: "/different.js" }
+          : { src: `/${strategy}.js` },
+      );
+
+      expect(appendedScripts).toHaveLength(0);
+    });
+  }
 });
 
 // ─── #2016: src beforeInteractive registration, marker, attr mapping ──────
@@ -681,12 +966,87 @@ describe("Script stylesheets prop", () => {
 //      lowercases these in set-attributes-from-props.ts.
 
 describe("Script beforeInteractive registry (#2016)", () => {
+  it("renders beforeInteractive inline when the shell collector is sealed", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (): BeforeInteractiveRegistration => "inline" },
+        React.createElement(
+          Script,
+          {
+            id: "late-before-interactive",
+            strategy: "beforeInteractive",
+          } as ScriptProps,
+          "window.lateBeforeInteractive = true",
+        ),
+      ),
+    );
+
+    expect(html).toContain('id="late-before-interactive"');
+    expect(html).toContain('data-nscript="beforeInteractive"');
+    expect(html).toContain("window.lateBeforeInteractive = true");
+  });
+
+  it("renders late App beforeInteractive scripts as executable runtime records", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (): BeforeInteractiveRegistration => "app-runtime" },
+        React.createElement(
+          Script,
+          {
+            id: "late-app-script",
+            strategy: "beforeInteractive",
+          } as ScriptProps,
+          "window.lateAppScript = true",
+        ),
+      ),
+    );
+
+    expect(html).toContain('data-vinext-before-interactive-runtime="id:late-app-script"');
+    expect(html).toContain("(self.__next_s=self.__next_s||[]).push(");
+    expect(html).toContain('"data-vinext-script-key":"id:late-app-script"');
+    expect(html).toContain('"children":"window.lateAppScript = true"');
+    expect(html).not.toContain('data-nscript="beforeInteractive"');
+  });
+
+  it("serializes contextual nonces and numeric attributes into late App runtime records", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        ScriptNonceProvider,
+        { nonce: "context-nonce" },
+        React.createElement(
+          BeforeInteractiveContext.Provider,
+          { value: (): BeforeInteractiveRegistration => "app-runtime" },
+          React.createElement(
+            Script,
+            {
+              id: "late-app-script-attributes",
+              strategy: "beforeInteractive",
+              "data-version": 2,
+            } as ScriptProps,
+            "window.lateAppScriptAttributes = true",
+          ),
+        ),
+      ),
+    );
+
+    expect(html).toContain('nonce="context-nonce"');
+    expect(html).toContain('"nonce":"context-nonce"');
+    expect(html).toContain('"data-version":2');
+  });
+
   it("registers src beforeInteractive scripts so they are hoisted into <head>", () => {
     const captured: BeforeInteractiveInlineScript[] = [];
     const html = ReactDOMServer.renderToString(
       React.createElement(
         BeforeInteractiveContext.Provider,
-        { value: (s: BeforeInteractiveInlineScript) => captured.push(s) },
+        {
+          value: (s: BeforeInteractiveInlineScript): BeforeInteractiveRegistration => {
+            captured.push(s);
+            return "hoisted";
+          },
+        },
         React.createElement(Script, {
           src: "/analytics.js",
           id: "analytics",
@@ -708,7 +1068,12 @@ describe("Script beforeInteractive registry (#2016)", () => {
     ReactDOMServer.renderToString(
       React.createElement(
         BeforeInteractiveContext.Provider,
-        { value: (s: BeforeInteractiveInlineScript) => captured.push(s) },
+        {
+          value: (s: BeforeInteractiveInlineScript): BeforeInteractiveRegistration => {
+            captured.push(s);
+            return "hoisted";
+          },
+        },
         React.createElement(Script, {
           src: "/cdn.js",
           strategy: "beforeInteractive",
@@ -729,17 +1094,17 @@ describe("Script beforeInteractive registry (#2016)", () => {
   });
 
   it("does not re-render a hoisted src beforeInteractive script on the client", () => {
-    // With the App Router runtime installed on `window`, the SSR pipeline has
-    // already hoisted the script's tag into <head>. The client component must
-    // return null for both inline AND src beforeInteractive scripts so React
-    // does not duplicate the tag (duplicate execution / hydration mismatch).
-    setGlobalValue("window", {
-      [NAVIGATION_RUNTIME_KEY]: {
-        bootstrap: { routeManifest: null, rsc: undefined },
-        functions: {},
+    const hoistedScript = {
+      getAttribute(name: string) {
+        return name === "data-vinext-script-key" ? "src:/dedupe.js" : null;
       },
+    };
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [hoistedScript],
+      head: { contains: (node: unknown) => node === hoistedScript },
     });
-    setGlobalValue("document", { querySelector: () => null });
 
     const html = ReactDOMServer.renderToString(
       React.createElement(Script, {
@@ -750,11 +1115,129 @@ describe("Script beforeInteractive registry (#2016)", () => {
 
     expect(html).toBe("");
   });
+
+  it("re-renders a late body script while seeding its onReady cache key", () => {
+    const lateScript = {
+      getAttribute(name: string) {
+        return name === "data-vinext-script-key" ? "id:late-body" : null;
+      },
+    };
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [lateScript],
+      head: { contains: () => false },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        id: "late-body",
+        src: "/late-body.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('id="late-body"');
+    expect(html).toContain('src="/late-body.js"');
+    expect(loadedScripts.has("late-body")).toBe(true);
+  });
+
+  it("does not execute a late body script again when it remounts", () => {
+    loadedScripts.add("late-body");
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      head: { contains: () => false },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        id: "late-body",
+        src: "/late-body.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toBe("");
+  });
+
+  it("seeds the load cache from a hoisted App Router beforeInteractive script", () => {
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [
+        {
+          getAttribute(name: string) {
+            return name === "data-vinext-script-key" ? "id:app-before-ready" : null;
+          },
+        },
+      ],
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        id: "app-before-ready",
+        src: "/beforeinteractive-ready.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toBe("");
+    expect(loadedScripts.has("app-before-ready")).toBe(true);
+  });
+
+  it("dedupes escaped inline beforeInteractive scripts by stable emitted identity", () => {
+    const source = 'window.value = "</script><script>bad()</script>";';
+    const captured: BeforeInteractiveInlineScript[] = [];
+    ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        {
+          value: (script: BeforeInteractiveInlineScript): BeforeInteractiveRegistration => {
+            captured.push(script);
+            return "hoisted";
+          },
+        },
+        React.createElement(Script, {
+          strategy: "beforeInteractive",
+          children: source,
+        } as ScriptProps),
+      ),
+    );
+    const emitted = renderBeforeInteractiveInlineScripts(captured);
+    const key = captured[0]!.key;
+    expect(emitted).toContain(`data-vinext-script-key="${key}"`);
+
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      querySelectorAll: () => [
+        {
+          getAttribute(name: string) {
+            return name === "data-vinext-script-key" ? key : null;
+          },
+          textContent: 'window.value = "\\u003c/script>";',
+        },
+      ],
+    });
+
+    expect(
+      ReactDOMServer.renderToString(
+        React.createElement(Script, {
+          strategy: "beforeInteractive",
+          children: source,
+        } as ScriptProps),
+      ),
+    ).toBe("");
+  });
 });
 
 describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
   it('marks every hoisted script with data-nscript="beforeInteractive"', () => {
-    const html = renderBeforeInteractiveInlineScripts([{ id: "x", innerHTML: "console.log(1)" }]);
+    const html = renderBeforeInteractiveInlineScripts([
+      { key: "id:x", id: "x", innerHTML: "console.log(1)" },
+    ]);
     expect(html).toContain('data-nscript="beforeInteractive"');
     expect(html).toContain('id="x"');
     expect(html).toContain("console.log(1)");
@@ -763,6 +1246,7 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
   it("emits a <script src> tag (with no body) for registered src scripts", () => {
     const html = renderBeforeInteractiveInlineScripts([
       {
+        key: "id:a",
         id: "a",
         src: "/a.js",
         attributes: { crossorigin: "anonymous", defer: true },
@@ -782,8 +1266,13 @@ describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
   // render with the correct `class` attribute, never `classname`).
   it("renders multiple hoisted beforeInteractive scripts with correct class attributes", () => {
     const html = renderBeforeInteractiveInlineScripts([
-      { id: "first", innerHTML: "1", attributes: { class: "first-script" } },
-      { id: "second", src: "/second.js", attributes: { class: "second-script" } },
+      { key: "id:first", id: "first", innerHTML: "1", attributes: { class: "first-script" } },
+      {
+        key: "id:second",
+        id: "second",
+        src: "/second.js",
+        attributes: { class: "second-script" },
+      },
     ]);
     expect(html).toContain('class="first-script"');
     expect(html).toContain('class="second-script"');

@@ -2,6 +2,12 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import {
+  DocumentScriptContext,
+  type DocumentScriptRegistration,
+} from "vinext/shims/document-script-context";
+import type { ScriptProps } from "vinext/shims/script";
+import type { BeforeInteractiveInlineScript } from "vinext/shims/before-interactive-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   applyCdnResponseHeaders,
@@ -26,6 +32,8 @@ import {
 import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
+import { insertBeforeInteractiveScripts } from "./before-interactive-head.js";
+import { createBeforeInteractiveCollector } from "./before-interactive-collector.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 // ---------------------------------------------------------------------------
@@ -117,7 +125,14 @@ type PagesFontPreload = {
  */
 export type PagesNextDataExtras = Pick<
   VinextNextData,
-  "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+  | "__vinext"
+  | "appGip"
+  | "autoExport"
+  | "gip"
+  | "gsp"
+  | "gssp"
+  | "isExperimentalCompile"
+  | "scriptLoader"
 >;
 
 export type PagesI18nRenderContext = {
@@ -311,12 +326,13 @@ export function buildPagesNextDataScript(
 async function buildPagesShellHtml(
   bodyMarker: string,
   fontHeadHTML: string,
-  nextDataScript: string,
   options: Pick<
     RenderPagesPageResponseOptions,
     "assetTags" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
+    buildNextDataScript: (scriptLoader: ScriptProps[]) => string;
+    beforeInteractiveScripts: BeforeInteractiveInlineScript[];
     /**
      * Document props already resolved by `runDocumentRenderPage`. When set,
      * `getInitialProps` was consumed by the renderPage path and must not be
@@ -327,37 +343,77 @@ async function buildPagesShellHtml(
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
+    const documentClientScripts: ScriptProps[] = [];
+    const documentBeforeInteractiveScripts: BeforeInteractiveInlineScript[] = [];
     const docProps =
       options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
-    const docElement = docProps
+    const rawDocElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
+    const docElement = React.createElement(
+      DocumentScriptContext.Provider,
+      {
+        value(registration: DocumentScriptRegistration) {
+          if (registration.kind === "beforeInteractive") {
+            documentBeforeInteractiveScripts.push(registration.script);
+          } else {
+            documentClientScripts.push(registration.script);
+          }
+        },
+      },
+      rawDocElement,
+    );
     let html = await options.renderDocumentToString(docElement);
+    const nextDataScript = options.buildNextDataScript(documentClientScripts);
+    const beforeInteractiveScripts = [
+      ...options.beforeInteractiveScripts,
+      ...documentBeforeInteractiveScripts,
+    ];
+    const assetTags = options.assetTags;
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
+    if (options.ssrHeadHTML || assetTags || fontHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${options.assetTags}\n</head>`,
+        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${assetTags}\n</head>`,
       );
+    }
+    const placeholder = "<!-- __NEXT_SCRIPTS__ -->";
+    const placeholderIndex = html.indexOf(placeholder);
+    if (placeholderIndex !== -1) {
+      const spanOpen = html.lastIndexOf("<span", placeholderIndex);
+      const spanClose = html.indexOf("</span>", placeholderIndex + placeholder.length);
+      const openEnd = spanOpen === -1 ? -1 : html.indexOf(">", spanOpen);
+      const onlyWhitespaceBefore =
+        openEnd !== -1 && html.slice(openEnd + 1, placeholderIndex).trim().length === 0;
+      const onlyWhitespaceAfter =
+        spanClose !== -1 &&
+        html.slice(placeholderIndex + placeholder.length, spanClose).trim().length === 0;
+      if (spanOpen !== -1 && onlyWhitespaceBefore && onlyWhitespaceAfter) {
+        html = html.slice(0, spanOpen) + nextDataScript + html.slice(spanClose + 7);
+      }
     }
     html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
     if (!html.includes("__NEXT_DATA__")) {
       html = html.replace("</body>", `  ${nextDataScript}\n</body>`);
     }
-    return html;
+    return insertBeforeInteractiveScripts(html, beforeInteractiveScripts);
   }
+
+  const nextDataScript = options.buildNextDataScript([]);
+  const assetTags = options.assetTags;
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
-  return (
+  return insertBeforeInteractiveScripts(
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-    `  ${options.assetTags}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${nextDataScript}\n` +
-    "</body>\n</html>"
+      `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
+      `  ${assetTags}\n` +
+      "</head>\n<body>\n" +
+      `  <div id="__next">${bodyMarker}</div>\n` +
+      `  ${nextDataScript}\n` +
+      "</body>\n</html>",
+    options.beforeInteractiveScripts,
   );
 }
 
@@ -489,19 +545,23 @@ export async function renderPagesPageResponse(
     options.getFontStyles(),
     options.scriptNonce,
   );
-  const nextDataScript = buildPagesNextDataScript({
-    buildId: options.buildId,
-    i18n: options.i18n,
-    isFallback: options.isFallback,
-    pageProps: options.pageProps,
-    props: renderProps,
-    params: options.params,
-    routePattern: options.routePattern,
-    safeJsonStringify: options.safeJsonStringify,
-    scriptNonce: options.scriptNonce,
-    nextData: options.nextData,
-    vinext: options.vinext,
-  });
+  const buildNextDataScript = (scriptLoader: ScriptProps[]) =>
+    buildPagesNextDataScript({
+      buildId: options.buildId,
+      i18n: options.i18n,
+      isFallback: options.isFallback,
+      pageProps: options.pageProps,
+      props: renderProps,
+      params: options.params,
+      routePattern: options.routePattern,
+      safeJsonStringify: options.safeJsonStringify,
+      scriptNonce: options.scriptNonce,
+      vinext: options.vinext,
+      nextData: {
+        ...options.nextData,
+        scriptLoader: scriptLoader.length > 0 ? scriptLoader : options.nextData?.scriptLoader,
+      },
+    });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -513,6 +573,7 @@ export async function renderPagesPageResponse(
   // user does not define `getInitialProps`. The contract (including
   // `withScriptNonce` and `styles` rendering) lives in the shared helper so
   // prod and dev stay in lockstep.
+  const beforeInteractiveCollector = createBeforeInteractiveCollector();
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent: options.DocumentComponent,
     enhancePageElement: options.enhancePageElement,
@@ -523,6 +584,7 @@ export async function renderPagesPageResponse(
     // Mirrors the dev path, which passes its `renderToStringAsync` wrapper.
     renderStylesToString: async (element) =>
       readStreamAsText(await options.renderToReadableStream(element)),
+    wrapPageElement: beforeInteractiveCollector.wrapPageElement,
     scriptNonce: options.scriptNonce,
     context: {
       err: options.err,
@@ -556,7 +618,9 @@ export async function renderPagesPageResponse(
     // (`rendered`), this element is never used, so there's no point
     // constructing the tree on that path.
     const pageElement = withScriptNonce(
-      React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+      beforeInteractiveCollector.wrapPageElement(
+        React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+      ),
       options.scriptNonce,
     );
     bodyStream = await options.renderToReadableStream(pageElement);
@@ -589,8 +653,11 @@ export async function renderPagesPageResponse(
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     ssrHeadHTML += `\n  ${documentRenderPage.stylesHTML}`;
   }
-  const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
+  beforeInteractiveCollector.seal();
+  const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, {
     assetTags: options.assetTags,
+    beforeInteractiveScripts: beforeInteractiveCollector.scripts,
+    buildNextDataScript,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,

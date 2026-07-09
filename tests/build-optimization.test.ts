@@ -174,7 +174,10 @@ describe("optimizeDeps.exclude for vinext", () => {
         root: tmpDir,
         build: {},
         plugins: [],
-        optimizeDeps: { exclude: ["@lingui/macro"] },
+        optimizeDeps: {
+          exclude: ["@lingui/macro"],
+          include: ["existing-framework-dep"],
+        },
       };
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
@@ -184,6 +187,16 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
+      expect(result.optimizeDeps?.include).toEqual(
+        expect.arrayContaining([
+          "existing-framework-dep",
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+          "react/jsx-dev-runtime",
+        ]),
+      );
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
       expect(result.environments.ssr.resolve.external).toContain("typescript");

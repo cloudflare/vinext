@@ -16,6 +16,8 @@ import React from "react";
  * scripts and `innerHTML` set for inline scripts (never both).
  */
 export type BeforeInteractiveInlineScript = {
+  /** Stable identity shared by emitted and hydrating script instances. */
+  key: string;
   /** Optional id attribute. */
   id?: string;
   /** External script URL. Set for src beforeInteractive scripts. */
@@ -36,7 +38,11 @@ export type BeforeInteractiveInlineScript = {
   attributes?: Record<string, string | boolean>;
 };
 
-export type RegisterBeforeInteractiveInlineScript = (script: BeforeInteractiveInlineScript) => void;
+export type BeforeInteractiveRegistration = "hoisted" | "inline" | "app-runtime";
+
+export type RegisterBeforeInteractiveInlineScript = (
+  script: BeforeInteractiveInlineScript,
+) => BeforeInteractiveRegistration;
 
 export const BeforeInteractiveContext =
   React.createContext<RegisterBeforeInteractiveInlineScript | null>(null);

@@ -39,4 +39,105 @@ test.describe("inline beforeInteractive head ordering", () => {
     // hydration warnings.
     void consoleErrors;
   });
+
+  test("fires onReady for hydrated and remounted hoisted scripts without re-executing", async ({
+    page,
+    consoleErrors,
+  }) => {
+    await page.goto(`${BASE}/beforeinteractive-ready`);
+    await expect(page.getByRole("heading", { name: "App Before Interactive Ready" })).toBeVisible();
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextAppBeforeReadyCalls")))
+      .toBe(1);
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextAppBeforeScriptExecutions")))
+      .toBe(1);
+    await expect(page.locator('script[src="/beforeinteractive-ready.js"]')).toHaveCount(1);
+
+    const toggle = page.getByRole("button", { name: "Toggle script" });
+    await toggle.click();
+    await toggle.click();
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextAppBeforeReadyCalls")))
+      .toBe(2);
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextAppBeforeScriptExecutions")))
+      .toBe(1);
+    await expect(page.locator('script[src="/beforeinteractive-ready.js"]')).toHaveCount(1);
+
+    void consoleErrors;
+  });
+
+  test("hydrates a late Suspense script without suppressing or duplicating it", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.addInitScript(() => {
+      window.addEventListener("unhandledrejection", () => {
+        Reflect.set(
+          window,
+          "__vinextUnhandledRejectionCalls",
+          (Reflect.get(window, "__vinextUnhandledRejectionCalls") ?? 0) + 1,
+        );
+      });
+      const appendChild = Object.getOwnPropertyDescriptor(Node.prototype, "appendChild")?.value as (
+        this: Node,
+        node: Node,
+      ) => Node;
+      Node.prototype.appendChild = function <T extends Node>(node: T): T {
+        if (
+          node instanceof HTMLScriptElement &&
+          node.src.endsWith("/beforeinteractive-late-failed.js")
+        ) {
+          const appended = appendChild.call(this, node) as T;
+          queueMicrotask(() => node.dispatchEvent(new Event("error")));
+          return appended;
+        }
+        return appendChild.call(this, node) as T;
+      };
+    });
+    await page.goto(`${BASE}/beforeinteractive-late-suspense`);
+    await expect(
+      page.getByRole("heading", { name: "Late Before Interactive Suspense" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Toggle late script" })).toBeVisible();
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextLateBeforeErrorCalls")))
+      .toBe(1);
+    expect(await page.evaluate(() => Reflect.get(window, "__vinextLateFailedReadyCalls"))).toBe(
+      undefined,
+    );
+    expect(await page.evaluate(() => Reflect.get(window, "__vinextUnhandledRejectionCalls"))).toBe(
+      undefined,
+    );
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextLateBeforeScriptExecutions")))
+      .toBe(1);
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextLateBeforeReadyCalls")))
+      .toBe(1);
+    expect(
+      await page.evaluate(() => Reflect.get(window, "__vinextLateBeforeReadyFiredEarly")),
+    ).not.toBe(true);
+    await expect(page.locator('script[id="app-late-before-ready"]')).toHaveCount(1);
+
+    const toggle = page.getByRole("button", { name: "Toggle late script" });
+    await toggle.click();
+    await toggle.click();
+
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextLateBeforeReadyCalls")))
+      .toBe(2);
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, "__vinextLateBeforeScriptExecutions")))
+      .toBe(1);
+    await expect(page.locator('script[id="app-late-before-ready"]')).toHaveCount(1);
+
+    expect(pageErrors).toEqual([]);
+  });
 });

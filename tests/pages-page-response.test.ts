@@ -7,6 +7,8 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import Script from "../packages/vinext/src/shims/script.js";
+import { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -191,6 +193,204 @@ describe("pages page response", () => {
 
     expect(common.clearSsrContext).toHaveBeenCalledTimes(1);
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
+  });
+
+  // Ported from Next.js: test/e2e/script-loader/script-loader.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/script-loader/script-loader.test.ts
+  it("places client-loaded Pages scripts after __NEXT_DATA__ as body siblings", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><span><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+    );
+
+    const response = await renderPagesPageResponse(common.options);
+    const html = await response.text();
+
+    expect(html).not.toContain("<span><!-- __NEXT_SCRIPTS__ --></span>");
+    expect(html).toMatch(/<script id="__NEXT_DATA__"[^>]*>[\s\S]*<\/script><\/body>/);
+  });
+
+  // Ported from Next.js: test/e2e/script-loader/script-loader.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/script-loader/script-loader.test.ts
+  it("hoists legacy page beforeInteractive scripts ahead of Pages asset chunks", async () => {
+    const common = createCommonOptions();
+    const reactDomServer = await import("react-dom/server.edge");
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createPageElement: () =>
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Script, {
+            id: "legacy-before-interactive",
+            src: "/legacy-before.js",
+            strategy: "beforeInteractive",
+          }),
+          React.createElement("main", null, "page"),
+        ),
+      renderToReadableStream: async (element: React.ReactNode) =>
+        reactDomServer.renderToReadableStream(element as React.ReactElement),
+    });
+    const html = await response.text();
+    const scriptIndex = html.indexOf('id="legacy-before-interactive"');
+    const fontIndex = html.indexOf('href="/font.css"');
+    const headIndex = html.indexOf('name="test-head"');
+    const assetIndex = html.indexOf('src="/entry.js"');
+
+    expect(scriptIndex).toBeGreaterThan(-1);
+    expect(html).toContain('data-nscript="beforeInteractive"');
+    expect(fontIndex).toBeGreaterThan(scriptIndex);
+    expect(headIndex).toBeGreaterThan(scriptIndex);
+    expect(assetIndex).toBeGreaterThan(scriptIndex);
+    expect(html).not.toMatch(/<div id="__next">[\s\S]*legacy-before-interactive/);
+  });
+
+  it("renders beforeInteractive scripts revealed after the shell snapshot inline", async () => {
+    const common = createCommonOptions();
+    const reactDomServer = await import("react-dom/server.edge");
+    let revealLateScript!: () => void;
+    const lateScriptReady = new Promise<void>((resolve) => {
+      revealLateScript = resolve;
+    });
+    let revealed = false;
+
+    function LateScript() {
+      if (!revealed) throw lateScriptReady;
+      return React.createElement(
+        Script,
+        {
+          id: "late-before-interactive",
+          strategy: "beforeInteractive",
+        },
+        "window.lateBeforeInteractive = true",
+      );
+    }
+
+    const responsePromise = renderPagesPageResponse({
+      ...common.options,
+      createPageElement: () =>
+        React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", { id: "shell-fallback" }, "loading") },
+          React.createElement(LateScript),
+        ),
+      renderToReadableStream: async (element: React.ReactNode) =>
+        reactDomServer.renderToReadableStream(element as React.ReactElement),
+    });
+
+    const response = await responsePromise;
+    revealed = true;
+    revealLateScript();
+    const html = await response.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+
+    expect(html).toContain("late-before-interactive");
+    expect(html).toContain("window.lateBeforeInteractive");
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]).scriptLoader).toBeUndefined();
+  });
+
+  it("serializes client scripts declared only in _document into __NEXT_DATA__", async () => {
+    const common = createCommonOptions();
+    const reactDomServer = await import("react-dom/server.edge");
+
+    function ScriptDocument() {
+      return React.createElement(
+        Html,
+        null,
+        React.createElement(Head),
+        React.createElement(
+          "body",
+          null,
+          React.createElement(Main),
+          React.createElement(NextScript),
+          React.createElement(Script, {
+            id: "document-after",
+            src: "/document-after.js",
+            strategy: "afterInteractive",
+          }),
+          React.createElement(Script, {
+            id: "document-lazy",
+            src: "/document-lazy.js",
+            strategy: "lazyOnload",
+          }),
+        ),
+      );
+    }
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: ScriptDocument,
+      renderDocumentToString: async (element) =>
+        new Response(
+          await reactDomServer.renderToReadableStream(element as React.ReactElement),
+        ).text(),
+    });
+    const html = await response.text();
+    const nextDataJson = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    )?.[1];
+
+    expect(nextDataJson).toBeDefined();
+    expect(JSON.parse(nextDataJson!).scriptLoader).toEqual([
+      expect.objectContaining({
+        id: "document-after",
+        src: "/document-after.js",
+        strategy: "afterInteractive",
+      }),
+      expect.objectContaining({
+        id: "document-lazy",
+        src: "/document-lazy.js",
+        strategy: "lazyOnload",
+      }),
+    ]);
+  });
+
+  it("hoists modern and legacy beforeInteractive scripts from the _document body", async () => {
+    const common = createCommonOptions();
+    const reactDomServer = await import("react-dom/server.edge");
+
+    function ScriptDocument() {
+      return React.createElement(
+        Html,
+        null,
+        React.createElement(Head),
+        React.createElement(
+          "body",
+          null,
+          React.createElement(Main),
+          React.createElement(NextScript),
+          React.createElement(Script, {
+            id: "document-modern-before",
+            src: "/document-modern.js",
+            strategy: "beforeInteractive",
+          }),
+          React.createElement(Script, {
+            id: "document-legacy-before",
+            src: "/document-legacy.js",
+            strategy: "beforePageRender" as "beforeInteractive",
+          }),
+        ),
+      );
+    }
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: ScriptDocument,
+      renderDocumentToString: async (element) =>
+        new Response(
+          await reactDomServer.renderToReadableStream(element as React.ReactElement),
+        ).text(),
+    });
+    const html = await response.text();
+    const assetIndex = html.indexOf('src="/entry.js"');
+
+    expect(html.indexOf('id="document-modern-before"')).toBeLessThan(assetIndex);
+    expect(html.indexOf('id="document-legacy-before"')).toBeLessThan(assetIndex);
+    expect(html).not.toMatch(/<body>[\s\S]*id="document-(modern|legacy)-before"/);
   });
 
   it("preserves array-valued non-set-cookie headers from gSSP responses", async () => {

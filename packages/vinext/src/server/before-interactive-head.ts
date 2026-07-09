@@ -26,6 +26,7 @@ export function renderBeforeInteractiveInlineScripts(
   let html = "";
   for (const script of scripts) {
     let attrs = "";
+    attrs += ` data-vinext-script-key="${escapeHtmlAttr(script.key)}"`;
     if (script.id) {
       attrs += ` id="${escapeHtmlAttr(script.id)}"`;
     }
@@ -61,4 +62,21 @@ export function renderBeforeInteractiveInlineScripts(
     html += `<script${attrs}>${script.innerHTML ?? ""}</script>`;
   }
   return html;
+}
+
+export function insertBeforeInteractiveScripts(
+  html: string,
+  scripts: readonly BeforeInteractiveInlineScript[],
+): string {
+  return insertAfterHeadOpen(html, renderBeforeInteractiveInlineScripts(scripts));
+}
+
+export function insertAfterHeadOpen(html: string, insertion: string): string {
+  if (!insertion) return html;
+
+  const headOpenIndex = html.indexOf("<head");
+  const headOpenEnd = headOpenIndex === -1 ? -1 : html.indexOf(">", headOpenIndex + 5);
+  if (headOpenEnd === -1) return html;
+
+  return html.slice(0, headOpenEnd + 1) + insertion + html.slice(headOpenEnd + 1);
 }

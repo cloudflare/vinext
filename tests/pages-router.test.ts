@@ -1247,6 +1247,28 @@ describe("Pages Router integration", () => {
     expect(html).toContain("A vinext test app");
     // Custom _document sets className on body
     expect(html).toContain("custom-body");
+    const nextDataJson = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    )?.[1];
+    expect(nextDataJson).toBeDefined();
+    expect(JSON.parse(nextDataJson!).scriptLoader).toEqual([
+      expect.objectContaining({
+        id: "document-after",
+        src: "/dedupe-script.js",
+        strategy: "afterInteractive",
+      }),
+    ]);
+    expect(html.indexOf('id="document-before"')).toBeLessThan(html.indexOf('src="/@vite/client"'));
+    const hydrationProxyPath = html.match(
+      /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+    )?.[1];
+    expect(hydrationProxyPath).toBeDefined();
+    const hydrationProxy = await fetch(new URL(hydrationProxyPath!, baseUrl)).then((response) =>
+      response.text(),
+    );
+    expect(hydrationProxy.indexOf("initScriptLoader(")).toBeLessThan(
+      hydrationProxy.indexOf("hydrateRoot("),
+    );
   });
 
   // --- API Routes ---

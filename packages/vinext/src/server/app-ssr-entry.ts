@@ -506,10 +506,11 @@ export async function handleSsr(
         // hoisted stylesheets/modulepreloads). See
         // packages/vinext/src/shims/script.tsx for the capture side.
         const beforeInteractiveInlineScripts: BeforeInteractiveInlineScript[] = [];
-        const registerBeforeInteractiveInlineScript = (
-          script: BeforeInteractiveInlineScript,
-        ): void => {
+        let beforeInteractiveSnapshotTaken = false;
+        const registerBeforeInteractiveInlineScript = (script: BeforeInteractiveInlineScript) => {
+          if (beforeInteractiveSnapshotTaken) return "app-runtime" as const;
           beforeInteractiveInlineScripts.push(script);
+          return "hoisted" as const;
         };
         const treeWithBeforeInteractive = createReactElement(
           BeforeInteractiveContext.Provider,
@@ -697,13 +698,13 @@ export async function handleSsr(
         // The transform calls this once when it splices after `<head ...>`.
         // By that point React Fizz has rendered the layout's `<head>` children
         // (which is where the Script shim registers), so the captured array is
-        // populated. We deliberately return a snapshot — `flushBuffered` will
-        // not re-invoke us, and any beforeInteractive Script that renders
-        // later (inside a Suspense boundary further down the tree) falls back
-        // to its inline location, matching the documented guarantee that
-        // ordering applies to scripts rendered in the initial shell.
-        const getBeforeInteractiveHeadHTML = (): string =>
-          renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+        // populated. After this shell snapshot, later Suspense registrations
+        // are rejected by the collector so the Script shim renders their
+        // runtime loader inline in the streamed boundary, matching Next.js.
+        const getBeforeInteractiveHeadHTML = (): string => {
+          beforeInteractiveSnapshotTaken = true;
+          return renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+        };
 
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
