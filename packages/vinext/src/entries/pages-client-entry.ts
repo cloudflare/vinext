@@ -65,6 +65,7 @@ export async function generateClientEntry(
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
   const pagesPrefetchRoutes: VinextPagesLinkPrefetchRoute[] = [
@@ -102,9 +103,11 @@ export async function generateClientEntry(
     // lgtm[js/bad-code-sanitization]
     return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
   });
-  if (!pageRoutes.some((route) => route.pattern === "/_error")) {
-    loaderEntries.push('  "/_error": () => import("next/error")');
-  }
+  loaderEntries.push(
+    errorFilePath !== null
+      ? `  "/_error": () => import(${JSON.stringify(errorFilePath)})`
+      : '  "/_error": () => import("next/error")',
+  );
 
   const appFileBase = appFilePath ?? undefined;
 
