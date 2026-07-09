@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  appendPagesPreviewClearCookies,
   clearPagesPreviewData,
   getPagesPreviewState,
   setPagesDraftMode,
@@ -73,6 +74,39 @@ describe("Pages preview tokens", () => {
     expect(response.getHeader("set-cookie")).toEqual([
       expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
       expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
+    ]);
+  });
+
+  it("appends root host-only clears alongside scoped preview expirations", () => {
+    const headers = new Headers();
+    headers.append(
+      "Set-Cookie",
+      "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
+    );
+    headers.append(
+      "Set-Cookie",
+      "__next_preview_data=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Domain=example.test",
+    );
+
+    appendPagesPreviewClearCookies(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
+      "__next_preview_data=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Domain=example.test",
+      expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/;/),
+      expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/;/),
+    ]);
+  });
+
+  it("does not duplicate equivalent root host-only preview expirations", () => {
+    const headers = new Headers();
+
+    appendPagesPreviewClearCookies(headers);
+    appendPagesPreviewClearCookies(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      expect.stringMatching(/^__next_preview_data=; Expires=/),
     ]);
   });
 

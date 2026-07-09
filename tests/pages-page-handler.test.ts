@@ -382,9 +382,12 @@ describe("createPagesPageHandler — preview responses", () => {
               getServerSideProps: async ({
                 res,
               }: {
-                res: { setHeader(name: string, value: string): void };
+                res: { setHeader(name: string, value: string | string[]): void };
               }) => {
-                res.setHeader("Set-Cookie", "user-session=active; Path=/; HttpOnly");
+                res.setHeader("Set-Cookie", [
+                  "user-session=active; Path=/; HttpOnly",
+                  "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
+                ]);
                 return { props: {} };
               },
             }),
@@ -408,6 +411,7 @@ describe("createPagesPageHandler — preview responses", () => {
 
     expect(response.headers.getSetCookie()).toEqual([
       "user-session=active; Path=/; HttpOnly",
+      "__prerender_bypass=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Path=/draft",
       expect.stringMatching(/^__prerender_bypass=; Expires=/),
       expect.stringMatching(/^__next_preview_data=; Expires=/),
     ]);

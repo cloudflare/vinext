@@ -209,10 +209,26 @@ export function clearPagesPreviewData(
 export function appendPagesPreviewClearCookies(headers: Headers): void {
   const cookies = headers.getSetCookie();
   const hasExpiredCookie = (name: "__prerender_bypass" | "__next_preview_data") =>
-    cookies.some(
-      (cookie) =>
-        cookie.startsWith(`${name}=`) && cookie.includes("Expires=Thu, 01 Jan 1970 00:00:00 GMT"),
-    );
+    cookies.some((cookie) => {
+      const [cookieValue, ...attributes] = cookie.split(";").map((part) => part.trim());
+      if (!cookieValue?.startsWith(`${name}=`)) return false;
+
+      let expiresAtEpoch = false;
+      let path: string | undefined;
+      let hasDomain = false;
+      for (const attribute of attributes) {
+        const separator = attribute.indexOf("=");
+        const attributeName = (separator === -1 ? attribute : attribute.slice(0, separator))
+          .trim()
+          .toLowerCase();
+        const attributeValue = separator === -1 ? "" : attribute.slice(separator + 1).trim();
+        if (attributeName === "expires") expiresAtEpoch = Date.parse(attributeValue) === 0;
+        if (attributeName === "path") path = attributeValue;
+        if (attributeName === "domain") hasDomain = true;
+      }
+
+      return expiresAtEpoch && path === "/" && !hasDomain;
+    });
   if (!hasExpiredCookie("__prerender_bypass")) {
     headers.append("Set-Cookie", serializeClearedCookie("__prerender_bypass"));
   }
