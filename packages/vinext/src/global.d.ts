@@ -83,6 +83,9 @@ declare global {
         }>
       | undefined;
 
+    /** The currently committed Pages Router page component. */
+    __VINEXT_PAGE_COMPONENT__: React.ComponentType<Record<string, unknown>> | undefined;
+
     /**
      * Pages Router code-split loader map. Keys are route patterns in Next.js
      * bracket format (e.g. `/blog/[slug]`), values are dynamic `import()`

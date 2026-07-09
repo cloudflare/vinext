@@ -244,6 +244,7 @@ async function hydrate() {
     console.error("[vinext] Page module has no default export");
     return;
   }
+  window.__VINEXT_PAGE_COMPONENT__ = PageComponent;
 
   let element;
   ${

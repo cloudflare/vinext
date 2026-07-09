@@ -380,6 +380,78 @@ describe("pages page data", () => {
     });
   });
 
+  it("passes AppTree through custom app getInitialProps to page getInitialProps", async () => {
+    // Ported from Next.js: test/e2e/app-tree/app-tree.test.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/app-tree/app-tree.test.ts
+    const appTree = vi.fn(() => "app-tree");
+    const Page = Object.assign(
+      function Page() {
+        return null;
+      },
+      {
+        getInitialProps(context: { AppTree?: (props: Record<string, unknown>) => ReactNode }) {
+          return { rendered: context.AppTree?.({ pageProps: {} }) };
+        },
+      },
+    );
+    const App = Object.assign(
+      function App() {
+        return null;
+      },
+      {
+        async getInitialProps(context: {
+          Component: typeof Page;
+          ctx: { AppTree?: (props: Record<string, unknown>) => ReactNode };
+        }) {
+          return { pageProps: context.Component.getInitialProps(context.ctx) };
+        },
+      },
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: App,
+        createAppTree: appTree,
+        pageModule: { default: Page },
+      }),
+    );
+
+    expect(appTree).toHaveBeenCalledWith({ pageProps: {} });
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { rendered: "app-tree" },
+    });
+  });
+
+  it("passes AppTree directly to page getInitialProps without custom app getInitialProps", async () => {
+    // Ported from Next.js: test/e2e/app-tree/app-tree.test.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/app-tree/app-tree.test.ts
+    const appTree = vi.fn(() => "default-app-tree");
+    const Page = Object.assign(
+      function Page() {
+        return null;
+      },
+      {
+        getInitialProps(context: { AppTree?: (props: Record<string, unknown>) => ReactNode }) {
+          return { rendered: context.AppTree?.({ pageProps: {} }) };
+        },
+      },
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createAppTree: appTree,
+        pageModule: { default: Page },
+      }),
+    );
+
+    expect(appTree).toHaveBeenCalledWith({ pageProps: {} });
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { rendered: "default-app-tree" },
+    });
+  });
+
   it("preserves getInitialProps this binding via component receiver", async () => {
     const Page = Object.assign(
       function Page() {

@@ -368,6 +368,7 @@ async function loadPagesAppInitialRenderProps(
       asPath: options.asPath ?? options.routeUrl,
     },
     ctx: {
+      AppTree: options.createAppTree ?? options.createPageElement,
       req,
       res,
       err: options.err,
@@ -1091,7 +1092,9 @@ export async function resolvePagesPageData(
     hasPagesGetInitialProps(options.pageModule.default)
   ) {
     const { req, res, responsePromise } = getSharedReqRes();
+    const AppTree = options.createAppTree ?? options.createPageElement;
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
+      AppTree,
       req,
       res,
       err: options.err,

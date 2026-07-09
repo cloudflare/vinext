@@ -1385,6 +1385,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("_initializePagesRouterReadyFromNextData(nextData);");
       expect(code).toContain("router: Router,");
       expect(code).toContain("pageProps: rawPageProps,");
+      expect(code).toContain("window.__VINEXT_PAGE_COMPONENT__ = PageComponent;");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("if (nextData.isFallback) {");

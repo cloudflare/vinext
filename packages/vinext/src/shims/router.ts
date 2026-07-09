@@ -431,6 +431,8 @@ type PagesRouterRuntimeState = {
   deprecatedEventBridgeInstalled: boolean;
   pagesRouterReady: boolean;
   publicRouter?: Record<string, unknown>;
+  committedComponent?: PagesComponent;
+  committedSnapshot?: RouterSnapshot;
 };
 
 type PagesRouterRuntimeComponents = {
@@ -439,8 +441,10 @@ type PagesRouterRuntimeComponents = {
     onCommit: () => void;
     onError: (error: Error) => void;
   }>;
-  Provider: ComponentType<{ children: ReactNode }>;
+  Provider: ComponentType<{ children?: ReactNode; initialSnapshot?: RouterSnapshot }>;
 };
+
+type RouterSnapshot = ReturnType<typeof getPathnameAndQuery> & { isReady: boolean };
 
 const PAGES_ROUTER_RUNTIME_STATE_KEY = Symbol.for("vinext.pagesRouter.runtimeState");
 
@@ -1393,7 +1397,7 @@ function PagesRouterHydrationMarker(): null {
   return null;
 }
 
-function getRouterSnapshot(): ReturnType<typeof getPathnameAndQuery> & { isReady: boolean } {
+function getRouterSnapshot(): RouterSnapshot {
   // On the server, derive `router.isReady` from the SSR navigation-readiness
   // context (auto-export dynamic / query-string / rewrite-capable routes are
   // not ready until the client router publishes the live URL). Mirrors Next.js
@@ -1973,26 +1977,36 @@ async function loadComponentOnlyProps(
     locales: window.__VINEXT_LOCALES__,
     defaultLocale: window.__VINEXT_DEFAULT_LOCALE__,
   };
+  const committedComponent =
+    routerRuntimeState.committedComponent ?? window.__VINEXT_PAGE_COMPONENT__ ?? PageComponent;
+  const committedSnapshot = routerRuntimeState.committedSnapshot ?? getRouterSnapshot();
+  const AppTree = (appProps: Record<string, unknown>) => {
+    const element = AppComponent
+      ? createElement(AppComponent as ComponentType<Record<string, unknown>>, {
+          ...appProps,
+          Component: committedComponent,
+          router: Router,
+        })
+      : createElement(
+          committedComponent as ComponentType<Record<string, unknown>>,
+          propsObject(appProps.pageProps),
+        );
+    return wrapWithRouterContext(element, noopCommit, noopCommit, committedSnapshot);
+  };
 
   if (typeof AppComponent?.getInitialProps === "function") {
-    const AppTree = (appProps: Record<string, unknown>) =>
-      createElement(AppComponent as ComponentType<Record<string, unknown>>, {
-        ...appProps,
-        Component: PageComponent,
-        router: Router,
-      });
     return propsObject(
       await AppComponent.getInitialProps({
         Component: PageComponent,
         AppTree,
-        ctx,
+        ctx: { ...ctx, AppTree },
         router: Router,
       }),
     );
   }
 
   if (typeof PageComponent.getInitialProps === "function") {
-    return { pageProps: propsObject(await PageComponent.getInitialProps(ctx)) };
+    return { pageProps: propsObject(await PageComponent.getInitialProps({ ...ctx, AppTree })) };
   }
 
   return { pageProps: {} };
@@ -2047,6 +2061,14 @@ async function renderPagesNavigationTarget(
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
+  routerRuntimeState.committedComponent = PageComponent;
+  window.__VINEXT_PAGE_COMPONENT__ = PageComponent;
+  routerRuntimeState.committedSnapshot = {
+    pathname: target.pattern,
+    query: mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params),
+    asPath: url,
+    isReady: true,
+  };
 }
 
 async function navigateClientNoData(
@@ -2419,6 +2441,9 @@ async function navigateClientHtml(
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
+  routerRuntimeState.committedComponent = PageComponent;
+  window.__VINEXT_PAGE_COMPONENT__ = PageComponent;
+  routerRuntimeState.committedSnapshot = getRouterSnapshot();
 }
 
 /**
@@ -2871,6 +2896,8 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
+  routerRuntimeState.committedSnapshot ??= getRouterSnapshot();
+
   // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
   // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
   // line of defence and is what surfaces the matching console.error to React's
@@ -3269,8 +3296,16 @@ export function useRouter(): NextRouter {
   );
 }
 
-function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
-  const [{ pathname, query, asPath, isReady }, setState] = useState(getRouterSnapshot);
+function PagesRouterProvider({
+  children,
+  initialSnapshot,
+}: {
+  children?: ReactNode;
+  initialSnapshot?: RouterSnapshot;
+}): ReactElement {
+  const [{ pathname, query, asPath, isReady }, setState] = useState(
+    initialSnapshot ?? getRouterSnapshot,
+  );
 
   // Popstate is handled by the Pages Router client entry via
   // installPagesRouterRuntime() so beforePopState() is consistently enforced
@@ -3615,6 +3650,7 @@ export function wrapWithRouterContext(
   element: ReactElement,
   onCommit: () => void = noopCommit,
   onError: (error: Error) => void = noopCommit,
+  initialSnapshot?: RouterSnapshot,
 ): ReactElement {
   const { CommitBoundary, Provider } = getPagesRouterRuntimeComponents();
   // React Strict Mode (Pages Router). When `reactStrictMode: true`, wrap the
@@ -3627,7 +3663,7 @@ export function wrapWithRouterContext(
   // navigations, mirroring Next.js's `doRender` closure used for both. The
   // CommitBoundary stays outside StrictMode so its commit `useLayoutEffect`
   // is not double-invoked (Next.js keeps `<Root>` outside <StrictMode> too).
-  let inner: ReactElement = createElement(Provider, null, element);
+  let inner: ReactElement = createElement(Provider, { initialSnapshot }, element);
   // Re-read the static page-load flag on each render so hydration and
   // navigation share this single wrapping path.
   if (typeof window !== "undefined" && window.__VINEXT_REACT_STRICT_MODE__ === true) {

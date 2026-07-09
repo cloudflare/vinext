@@ -127,6 +127,7 @@ describe("loadDevAppInitialProps", () => {
       AppTree: expect.any(Function),
       router: { pathname: "/posts/[slug]", query: { slug: "post" }, asPath: "/posts/post" },
       ctx: {
+        AppTree: expect.any(Function),
         pathname: "/posts/[slug]",
         query: { slug: "post" },
         asPath: "/posts/post",

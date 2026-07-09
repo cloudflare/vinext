@@ -123,6 +123,7 @@ export type DevAppInitialPropsContext = {
   component: unknown;
   req: unknown;
   res: unknown;
+  err?: unknown;
   pathname: string;
   query: Record<string, unknown>;
   asPath: string;
@@ -153,8 +154,10 @@ export async function loadDevAppInitialProps(
     Component: ctx.component,
     router: { pathname: ctx.pathname, query: ctx.query, asPath: ctx.asPath },
     ctx: {
+      AppTree: ctx.appTree,
       req: ctx.req,
       res: ctx.res,
+      err: ctx.err,
       pathname: ctx.pathname,
       query: ctx.query,
       asPath: ctx.asPath,

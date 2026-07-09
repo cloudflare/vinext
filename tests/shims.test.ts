@@ -14859,6 +14859,7 @@ describe("Pages Router concurrent navigation", () => {
       },
       __VINEXT_ROOT__: { render },
       __VINEXT_APP__: undefined,
+      __VINEXT_PAGE_COMPONENT__: undefined,
       __VINEXT_LOCALE__: undefined as string | undefined,
       __VINEXT_LOCALES__: undefined as string[] | undefined,
       __VINEXT_DEFAULT_LOCALE__: undefined as string | undefined,
@@ -18062,6 +18063,7 @@ describe("Pages Router _next/data client navigation", () => {
       } as any,
       __VINEXT_ROOT__: { render },
       __VINEXT_APP__: undefined,
+      __VINEXT_PAGE_COMPONENT__: undefined as unknown,
       __VINEXT_LOCALE__: opts.locale,
       __VINEXT_LOCALES__: undefined,
       __VINEXT_DEFAULT_LOCALE__: undefined,
@@ -18150,6 +18152,156 @@ describe("Pages Router _next/data client navigation", () => {
       expect(loaderAbout).toHaveBeenCalledTimes(1);
       expect(win.__NEXT_DATA__.page).toBe("/about");
       expect(win.__NEXT_DATA__.props.pageProps).toEqual({ hello: "world" });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("passes the committed AppTree through custom app getInitialProps during no-data navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    let receivedPageContext: Record<string, unknown> | undefined;
+
+    try {
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      function Home() {
+        const router = routerModule.useRouter();
+        return React.createElement(
+          "p",
+          { id: "route" },
+          `home:${router.pathname}:${router.asPath}`,
+        );
+      }
+      const Another = Object.assign(
+        function Another() {
+          const router = routerModule.useRouter();
+          return React.createElement(
+            "p",
+            { id: "route" },
+            `another:${router.pathname}:${router.asPath}`,
+          );
+        },
+        {
+          getInitialProps(context: Record<string, unknown>) {
+            receivedPageContext = context;
+            const AppTree = context.AppTree as (props: Record<string, unknown>) => unknown;
+            return {
+              rendered: renderToStaticMarkup(AppTree({ pageProps: {} }) as React.ReactElement),
+            };
+          },
+        },
+      );
+      const App = Object.assign(
+        ({ Component, pageProps }: any) => React.createElement(Component, pageProps),
+        {
+          async getInitialProps(context: {
+            Component: typeof Another;
+            ctx: Record<string, unknown>;
+          }) {
+            return { pageProps: context.Component.getInitialProps(context.ctx) };
+          },
+        },
+      );
+      const { win } = createDataNavWindow({
+        loaders: {
+          "/": vi.fn(async () => ({ default: Home })),
+          "/another": vi.fn(async () => ({ default: Another })),
+        },
+        appLoader: vi.fn(async () => ({ default: App })),
+        ssgPatterns: [],
+        sspPatterns: [],
+      });
+      win.__VINEXT_PAGE_COMPONENT__ = Home;
+      (globalThis as any).window = win;
+      globalThis.fetch = vi.fn() as any;
+
+      await Router.push("/another");
+
+      expect(receivedPageContext).toMatchObject({
+        AppTree: expect.any(Function),
+        pathname: "/another",
+        asPath: "/another",
+      });
+      expect(win.__NEXT_DATA__.props.pageProps.rendered).toContain('<p id="route">home:/:/</p>');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("keeps page getInitialProps AppTree on the committed component and router state", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const receivedPageContexts: Record<string, unknown>[] = [];
+
+    try {
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const createPage = (name: string) =>
+        Object.assign(
+          function Page() {
+            const router = routerModule.useRouter();
+            return React.createElement(
+              "p",
+              { id: "route" },
+              `${name}:${router.pathname}:${router.asPath}`,
+            );
+          },
+          {
+            getInitialProps(context: Record<string, unknown>) {
+              receivedPageContexts.push(context);
+              const AppTree = context.AppTree as (props: Record<string, unknown>) => unknown;
+              return {
+                rendered: renderToStaticMarkup(AppTree({ pageProps: {} }) as React.ReactElement),
+              };
+            },
+          },
+        );
+      const Home = createPage("home");
+      const Another = createPage("another");
+      const { win } = createDataNavWindow({
+        loaders: {
+          "/": vi.fn(async () => ({ default: Home })),
+          "/another": vi.fn(async () => ({ default: Another })),
+        },
+        ssgPatterns: [],
+        sspPatterns: [],
+      });
+      win.__VINEXT_PAGE_COMPONENT__ = Home;
+      (globalThis as any).window = win;
+      globalThis.fetch = vi.fn() as any;
+
+      await Router.push("/another");
+
+      expect(receivedPageContexts[0]).toMatchObject({
+        AppTree: expect.any(Function),
+        pathname: "/another",
+        asPath: "/another",
+      });
+      expect(win.__NEXT_DATA__.props.pageProps.rendered).toContain('<p id="route">home:/:/</p>');
+
+      await Router.push("/");
+
+      expect(receivedPageContexts[1]).toMatchObject({
+        AppTree: expect.any(Function),
+        pathname: "/",
+        asPath: "/",
+      });
+      expect(win.__NEXT_DATA__.props.pageProps.rendered).toContain(
+        '<p id="route">another:/another:/another</p>',
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
