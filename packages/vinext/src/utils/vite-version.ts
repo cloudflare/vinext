@@ -55,12 +55,19 @@ export function getDepOptimizeNodeEnvOptions(nodeEnvDefine: string): {
 }
 
 /**
- * Detect Vite major version at runtime. Prefer the project cwd, then fall back
- * to vinext's own dependency graph for tests and linked source checkouts.
+ * Detect the Vite toolchain version at runtime. Prefer the project cwd, then
+ * fall back to vinext's own dependency graph for tests and linked checkouts.
  */
-function getViteVersion(): string {
+type ViteToolchainVersion = {
+  vite: string;
+  rolldown?: string;
+};
+
+function getViteToolchainVersion(): ViteToolchainVersion {
   try {
-    return getViteVersionFromRequire(createRequire(path.join(process.cwd(), "package.json")));
+    return getViteToolchainVersionFromRequire(
+      createRequire(path.join(process.cwd(), "package.json")),
+    );
   } catch (error) {
     if (!isModuleNotFoundError(error)) {
       const message = error instanceof Error ? error.message : String(error);
@@ -69,7 +76,7 @@ function getViteVersion(): string {
   }
 
   try {
-    return getViteVersionFromRequire(createRequire(import.meta.url));
+    return getViteToolchainVersionFromRequire(createRequire(import.meta.url));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -78,15 +85,19 @@ function getViteVersion(): string {
   }
 }
 
-function getViteVersionFromRequire(require: NodeRequire): string {
+function getViteToolchainVersionFromRequire(require: NodeRequire): ViteToolchainVersion {
   const vitePkg = require("vite/package.json");
   if (vitePkg?.name === "vite" && parseViteVersion(vitePkg.version)) {
-    return vitePkg.version;
+    return { vite: vitePkg.version };
   }
 
   const bundledViteVersion = vitePkg?.bundledVersions?.vite;
   if (parseViteVersion(bundledViteVersion)) {
-    return bundledViteVersion;
+    const bundledRolldownVersion = vitePkg?.bundledVersions?.rolldown;
+    return {
+      vite: bundledViteVersion,
+      rolldown: parseViteVersion(bundledRolldownVersion) ? bundledRolldownVersion : undefined,
+    };
   }
 
   throw new Error(`could not determine Vite version from ${vitePkg?.name ?? "vite/package.json"}`);
@@ -107,25 +118,41 @@ function isModuleNotFoundError(error: unknown): boolean {
   );
 }
 
-export function supportsNativeTypeofWindowFolding(viteVersion: string): boolean {
-  const parsedVersion = parseViteVersion(viteVersion);
+export function supportsNativeTypeofWindowFolding(
+  viteVersion: string,
+  bundledRolldownVersion?: string,
+): boolean {
+  if (bundledRolldownVersion && isVersionAtLeast(bundledRolldownVersion, 1, 1, 4)) return true;
+  return isVersionAtLeast(viteVersion, 8, 1, 4);
+}
+
+function isVersionAtLeast(
+  version: string,
+  requiredMajor: number,
+  requiredMinor: number,
+  requiredPatch: number,
+): boolean {
+  const parsedVersion = parseViteVersion(version);
   if (!parsedVersion) return false;
   const [major, minor, patch, prerelease] = parsedVersion;
-  if (major !== 8) return major > 8;
-  if (minor !== 1) return minor > 1;
-  if (patch !== 4) return patch > 4;
+  if (major !== requiredMajor) return major > requiredMajor;
+  if (minor !== requiredMinor) return minor > requiredMinor;
+  if (patch !== requiredPatch) return patch > requiredPatch;
   return !prerelease;
 }
 
 export function assertSupportedViteVersion(): {
   supportsNativeTypeofWindowFolding: boolean;
 } {
-  const viteVersion = getViteVersion();
-  const [major] = parseViteVersion(viteVersion)!;
+  const toolchainVersion = getViteToolchainVersion();
+  const [major] = parseViteVersion(toolchainVersion.vite)!;
   if (major < 8) {
     throw new Error(`[vinext] Vite 8 or newer is required. Detected Vite ${major}.`);
   }
   return {
-    supportsNativeTypeofWindowFolding: supportsNativeTypeofWindowFolding(viteVersion),
+    supportsNativeTypeofWindowFolding: supportsNativeTypeofWindowFolding(
+      toolchainVersion.vite,
+      toolchainVersion.rolldown,
+    ),
   };
 }

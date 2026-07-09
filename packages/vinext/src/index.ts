@@ -5429,10 +5429,11 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // Before Vite 8.1.4, native define folding can run too late to prune dead
-    // imports, so retain the custom fold for every build. Newer Vite versions
-    // only need it for plugin-RSC's write-less analysis builds, which replace
-    // modules with lexer-discovered imports before native folding runs.
+    // Toolchains before Vite 8.1.4 / Rolldown 1.1.4 can run native define
+    // folding too late to prune dead imports, so retain the custom fold for
+    // every build. Newer toolchains only need it for plugin-RSC's write-less
+    // analysis builds, which replace modules with lexer-discovered imports
+    // before native folding runs.
     {
       name: "vinext:typeof-window-scan",
       apply(_config, environment) {

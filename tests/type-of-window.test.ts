@@ -38,10 +38,12 @@ describe("typeof window compilation", () => {
       plugins: [vinext({ react: false, rsc: false })],
     });
 
-    const bundledViteVersion = (await import("vite/package.json", { with: { type: "json" } }))
-      .default.bundledVersions?.vite;
-    const viteVersion = bundledViteVersion ?? (await import("vite")).version;
-    const usesNativeFolding = supportsNativeTypeofWindowFolding(viteVersion);
+    const vitePackage = (await import("vite/package.json", { with: { type: "json" } })).default;
+    const viteVersion = vitePackage.bundledVersions?.vite ?? (await import("vite")).version;
+    const usesNativeFolding = supportsNativeTypeofWindowFolding(
+      viteVersion,
+      vitePackage.bundledVersions?.rolldown,
+    );
 
     expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
       usesNativeFolding ? '"object"' : undefined,
@@ -58,6 +60,9 @@ describe("typeof window compilation", () => {
     expect(supportsNativeTypeofWindowFolding("8.1.4+build.1")).toBe(true);
     expect(supportsNativeTypeofWindowFolding("8.2.0-beta.1")).toBe(true);
     expect(supportsNativeTypeofWindowFolding("9.0.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
   });
 
   it("skips custom scan folding for modules in the Vite cache directory", async () => {
