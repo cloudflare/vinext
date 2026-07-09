@@ -58,9 +58,9 @@ export function getDepOptimizeNodeEnvOptions(nodeEnvDefine: string): {
  * Detect Vite major version at runtime. Prefer the project cwd, then fall back
  * to vinext's own dependency graph for tests and linked source checkouts.
  */
-function getViteMajorVersion(): number {
+function getViteVersion(): string {
   try {
-    return getViteMajorVersionFromRequire(createRequire(path.join(process.cwd(), "package.json")));
+    return getViteVersionFromRequire(createRequire(path.join(process.cwd(), "package.json")));
   } catch (error) {
     if (!isModuleNotFoundError(error)) {
       const message = error instanceof Error ? error.message : String(error);
@@ -69,7 +69,7 @@ function getViteMajorVersion(): number {
   }
 
   try {
-    return getViteMajorVersionFromRequire(createRequire(import.meta.url));
+    return getViteVersionFromRequire(createRequire(import.meta.url));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -78,19 +78,25 @@ function getViteMajorVersion(): number {
   }
 }
 
-function getViteMajorVersionFromRequire(require: NodeRequire): number {
+function getViteVersionFromRequire(require: NodeRequire): string {
   const vitePkg = require("vite/package.json");
-  const viteMajor = parseInt(vitePkg?.version, 10);
-  if (vitePkg?.name === "vite" && Number.isFinite(viteMajor)) {
-    return viteMajor;
+  if (vitePkg?.name === "vite" && parseViteVersion(vitePkg.version)) {
+    return vitePkg.version;
   }
 
-  const bundledViteMajor = parseInt(vitePkg?.bundledVersions?.vite, 10);
-  if (Number.isFinite(bundledViteMajor)) {
-    return bundledViteMajor;
+  const bundledViteVersion = vitePkg?.bundledVersions?.vite;
+  if (parseViteVersion(bundledViteVersion)) {
+    return bundledViteVersion;
   }
 
   throw new Error(`could not determine Vite version from ${vitePkg?.name ?? "vite/package.json"}`);
+}
+
+function parseViteVersion(version: unknown): [major: number, minor: number, patch: number] | null {
+  if (typeof version !== "string") return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
 function isModuleNotFoundError(error: unknown): boolean {
@@ -99,10 +105,18 @@ function isModuleNotFoundError(error: unknown): boolean {
   );
 }
 
-export function assertSupportedViteVersion(): number {
-  const viteMajorVersion = getViteMajorVersion();
-  if (viteMajorVersion < 8) {
-    throw new Error(`[vinext] Vite 8 or newer is required. Detected Vite ${viteMajorVersion}.`);
+export function assertSupportedViteVersion(): {
+  major: number;
+  supportsNativeTypeofWindowFolding: boolean;
+} {
+  const viteVersion = getViteVersion();
+  const [major, minor, patch] = parseViteVersion(viteVersion)!;
+  if (major < 8) {
+    throw new Error(`[vinext] Vite 8 or newer is required. Detected Vite ${major}.`);
   }
-  return viteMajorVersion;
+  return {
+    major,
+    supportsNativeTypeofWindowFolding:
+      major > 8 || (major === 8 && (minor > 1 || (minor === 1 && patch >= 4))),
+  };
 }

@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
-  it("configures native typeof window folding per environment", async () => {
+  it("configures the installed Vite typeof window folding strategy", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-define-"));
     temporaryDirectories.push(root);
     const builder = await createBuilder({
@@ -37,8 +37,19 @@ describe("typeof window compilation", () => {
       plugins: [vinext({ react: false, rsc: false })],
     });
 
-    expect(builder.environments.client?.config.define?.["typeof window"]).toBe('"object"');
-    expect(builder.environments.server?.config.define?.["typeof window"]).toBe('"undefined"');
+    const bundledViteVersion = (await import("vite/package.json", { with: { type: "json" } }))
+      .default.bundledVersions?.vite;
+    const viteVersion = bundledViteVersion ?? (await import("vite")).version;
+    const [major, minor, patch] = viteVersion.split(".").map(Number);
+    const usesNativeFolding =
+      major > 8 || (major === 8 && (minor > 1 || (minor === 1 && patch >= 4)));
+
+    expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"object"' : undefined,
+    );
+    expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"undefined"' : undefined,
+    );
   });
 
   it("skips custom scan folding for modules in the Vite cache directory", async () => {

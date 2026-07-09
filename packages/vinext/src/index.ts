@@ -1295,7 +1295,8 @@ type NitroSetupContext = {
 };
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
-  assertSupportedViteVersion();
+  const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
+    assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   let root: string;
   let pagesDir: string;
@@ -5420,6 +5421,7 @@ export const loadServerActionClient = ${
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
+        if (!useNativeTypeofWindowFolding) return null;
         return {
           define: {
             "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
@@ -5427,18 +5429,22 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // plugin-RSC's analysis builds replace each module with lexer-discovered
-    // imports before Rolldown's native define folding runs. Fold only in those
-    // write-less analysis builds so dead browser/server imports are absent from
-    // the synthetic graph; real builds continue to use native Oxc folding.
+    // Before Vite 8.1.4, native define folding can run too late to prune dead
+    // imports, so retain the custom fold for every build. Newer Vite versions
+    // only need it for plugin-RSC's write-less analysis builds, which replace
+    // modules with lexer-discovered imports before native folding runs.
     {
       name: "vinext:typeof-window-scan",
-      apply: "build",
+      apply(_config, environment) {
+        return !useNativeTypeofWindowFolding || environment.command === "build";
+      },
       enforce: "post",
       transform: {
         filter: { code: /\btypeof\s+window\b/ },
         handler(code, id) {
-          if (this.environment.config.build.write !== false) return null;
+          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
+            return null;
+          }
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
