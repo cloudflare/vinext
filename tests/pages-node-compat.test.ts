@@ -23,10 +23,9 @@ function exerciseNextApiRequestPreviewTypes(req: NextApiRequest): NextApiRequest
   req.cookies.missing = undefined;
   req.body = undefined;
   req.body = { nested: true };
-  if (req.env) {
-    req.env.EXAMPLE = undefined;
-    req.env.EXAMPLE = "value";
-  }
+  req.env.EXAMPLE = undefined;
+  req.env.EXAMPLE = "value";
+  void (req.env.EXAMPLE satisfies string | undefined);
   req.preview = false;
   req.preview = undefined;
   req.draftMode = false;
