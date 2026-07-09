@@ -946,6 +946,39 @@ describe("i18n config parsing", () => {
     );
   });
 
+  it("validates i18n before invoking config callbacks", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const redirects = vi.fn(() => []);
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+        redirects,
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+    expect(redirects).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid locales before checking default locale membership", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: [42],
+          defaultLocale: "en",
+        },
+      } as never),
+    ).rejects.toThrow(
+      'Specified i18n.locales contains invalid values (42), locales must be valid locale tags provided as strings e.g. "en-US".',
+    );
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});
