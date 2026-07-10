@@ -31,7 +31,10 @@ for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
   }
 }
 
-for (const matcher of [`/:path(${"(?:a+)".repeat(10)})`, `/:path(${"(?:a|aa)".repeat(26)})`]) {
+for (const matcher of [
+  ...[8, 9, 10].map((count) => `/:path(${"(?:a+)".repeat(count)})`),
+  `/:path(${"(?:a|aa)".repeat(26)})`,
+]) {
   if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
     throw new Error(`Unsafe bounded sequence did not fail closed: ${matcher}`);
   }

@@ -20,6 +20,8 @@ export const config = {
     "/codes/:value((?:[A-Z]{2})+)",
     "/shared/:value((?:ab|ac)+)",
     "/mixed/:value((?:[a-z]|[0-9])+)",
+    "/shorthand/:value((?:\\d|[a-z])+)",
+    "/bracket-shorthand/:value((?:[\\d]|[a-z])+)",
     {
       source: "/conditioned",
       has: [

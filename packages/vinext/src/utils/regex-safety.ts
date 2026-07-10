@@ -16,8 +16,15 @@ type RegexNode =
 
 type RegexSymbol =
   | { kind: "literal"; key: string; value: string }
-  | { kind: "class"; key: string; values: ReadonlySet<string> }
+  | {
+      kind: "class";
+      key: string;
+      values: ReadonlySet<string>;
+      nonAscii: NonAsciiDomain;
+    }
   | { kind: "opaque"; key: string; pattern: string; ignoreCase: boolean };
+
+type NonAsciiDomain = "none" | "whitespace" | "non-whitespace" | "all";
 
 export type RegexSafetyIssue =
   | "nested repetition"
@@ -33,6 +40,7 @@ const MAX_WORDS = 4_096;
 const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
+const MAX_OVERLAPPING_VARIABLE_BOUNDARIES = 7;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -49,10 +57,43 @@ function literalSymbol(character: string, ignoreCase: boolean): RegexSymbol {
   return { kind: "literal", key, value: character };
 }
 
-function simpleAsciiClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null {
+function createClassSymbol(values: ReadonlySet<string>, nonAscii: NonAsciiDomain): RegexSymbol {
+  const key = [...values].sort().join("");
+  return { kind: "class", key: `class:${nonAscii}:${key}`, values, nonAscii };
+}
+
+function shorthandClassSymbol(shorthand: string, ignoreCase: boolean): RegexSymbol | null {
+  if (!"dDwWsS".includes(shorthand)) return null;
+  const regexp = new RegExp(`\\${shorthand}`);
+  const values = new Set<string>();
+  for (let code = 0; code <= 0x7f; code++) {
+    const character = String.fromCharCode(code);
+    if (regexp.test(character)) {
+      values.add(ignoreCase ? canonicalizeIgnoreCase(character) : character);
+    }
+  }
+  const nonAscii: NonAsciiDomain =
+    shorthand === "d" || shorthand === "w"
+      ? "none"
+      : shorthand === "s"
+        ? "whitespace"
+        : shorthand === "S"
+          ? "non-whitespace"
+          : "all";
+  return createClassSymbol(values, nonAscii);
+}
+
+function unionNonAscii(left: NonAsciiDomain, right: NonAsciiDomain): NonAsciiDomain {
+  if (left === "none") return right;
+  if (right === "none" || left === right) return left;
+  return "all";
+}
+
+function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null {
   const end = raw.length - 1;
   if (raw[0] !== "[" || raw[end] !== "]" || raw[1] === "^") return null;
   const values = new Set<string>();
+  let nonAscii: NonAsciiDomain = "none";
 
   const add = (character: string): boolean => {
     if (character.charCodeAt(0) > 0x7f) return false;
@@ -60,9 +101,28 @@ function simpleAsciiClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol |
     return true;
   };
 
+  const addClass = (symbol: RegexSymbol): boolean => {
+    if (symbol.kind !== "class") return false;
+    for (const value of symbol.values) values.add(value);
+    nonAscii = unionNonAscii(nonAscii, symbol.nonAscii);
+    return true;
+  };
+
   for (let index = 1; index < end; index++) {
     const start = raw[index];
-    if (start === "\\") return null;
+    if (start === "\\") {
+      const escaped = raw[++index];
+      if (escaped === undefined) return null;
+      const shorthand = shorthandClassSymbol(escaped, ignoreCase);
+      if (shorthand) {
+        if (!addClass(shorthand)) return null;
+      } else if ("\\-]".includes(escaped)) {
+        if (!add(escaped)) return null;
+      } else {
+        return null;
+      }
+      continue;
+    }
     if (index + 2 < end && raw[index + 1] === "-") {
       const rangeEnd = raw[index + 2];
       if (rangeEnd === "\\") return null;
@@ -78,9 +138,8 @@ function simpleAsciiClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol |
     }
   }
 
-  if (values.size === 0) return null;
-  const key = [...values].sort().join("");
-  return { kind: "class", key: `class:${key}`, values };
+  if (values.size === 0 && nonAscii === "none") return null;
+  return createClassSymbol(values, nonAscii);
 }
 
 class RegexParser {
@@ -221,7 +280,7 @@ class RegexParser {
     return this.node({
       kind: "atom",
       symbol:
-        simpleAsciiClassSymbol(raw, this.ignoreCase) ??
+        simpleClassSymbol(raw, this.ignoreCase) ??
         ({ kind: "opaque", key: raw, pattern: raw, ignoreCase: this.ignoreCase } as const),
       fixedWidth: true,
     });
@@ -234,6 +293,10 @@ class RegexParser {
     }
     if (escaped === "b" || escaped === "B") {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
+    }
+    const shorthand = shorthandClassSymbol(escaped, this.ignoreCase);
+    if (shorthand) {
+      return this.node({ kind: "atom", symbol: shorthand, fixedWidth: true });
     }
     if (/\d/.test(escaped)) {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
@@ -472,10 +535,26 @@ function opaqueMatchesLiteral(opaque: RegexSymbol, literal: RegexSymbol): boolea
   }
 }
 
+function classMatchesLiteral(characterClass: RegexSymbol, literal: RegexSymbol): boolean {
+  if (characterClass.kind !== "class" || literal.kind !== "literal") return false;
+  if (literal.value.charCodeAt(0) <= 0x7f) return characterClass.values.has(literal.key);
+  if (characterClass.nonAscii === "all") return true;
+  const whitespace = /\s/.test(literal.value);
+  return whitespace
+    ? characterClass.nonAscii === "whitespace"
+    : characterClass.nonAscii === "non-whitespace";
+}
+
+function nonAsciiDomainsOverlap(left: NonAsciiDomain, right: NonAsciiDomain): boolean {
+  if (left === "none" || right === "none") return false;
+  if (left === "all" || right === "all") return true;
+  return left === right;
+}
+
 function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
   if (left.kind === "literal" && right.kind === "literal") return left.key === right.key;
-  if (left.kind === "class" && right.kind === "literal") return left.values.has(right.key);
-  if (left.kind === "literal" && right.kind === "class") return right.values.has(left.key);
+  if (left.kind === "class" && right.kind === "literal") return classMatchesLiteral(left, right);
+  if (left.kind === "literal" && right.kind === "class") return classMatchesLiteral(right, left);
   if (left.kind === "class" && right.kind === "class") {
     const [smaller, larger] =
       left.values.size <= right.values.size
@@ -484,7 +563,7 @@ function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
     for (const value of smaller) {
       if (larger.has(value)) return true;
     }
-    return false;
+    return nonAsciiDomainsOverlap(left.nonAscii, right.nonAscii);
   }
   if (left.kind === "opaque" && right.kind === "literal") {
     return opaqueMatchesLiteral(left, right);
@@ -715,7 +794,7 @@ function findSequenceIssue(
 
   let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
   const comparisons = { count: 0 };
-  let boundaryExpansion = 1;
+  let overlappingBoundaryCount = 0;
   for (const child of node.children) {
     const variableRepetition =
       child.kind === "repeat" && (child.min !== child.max || !Number.isFinite(child.max));
@@ -725,18 +804,21 @@ function findSequenceIssue(
         boundariesMayOverlap(ends, starts, comparisons),
       ).length;
       if (overlappingBoundaries > 0) {
-        boundaryExpansion *= 2 ** overlappingBoundaries;
+        overlappingBoundaryCount++;
       } else if (!isNullable(child)) {
-        boundaryExpansion = 1;
+        overlappingBoundaryCount = 0;
       }
-      if (boundaryExpansion > MAX_SEQUENCE_EXPANSIONS) {
+      // Seven overlapping boundaries already create a degree-seven partition
+      // search over the pathname length. Reject that chain before compiling a
+      // request-facing expression; shorter common pairs remain valid.
+      if (overlappingBoundaryCount >= MAX_OVERLAPPING_VARIABLE_BOUNDARIES) {
         return "overlapping sequential repetition";
       }
       const ends = lastSymbols(child);
       pendingRepetitionEnds = isNullable(child) ? [...pendingRepetitionEnds, ends] : [ends];
     } else if (!isNullable(child)) {
       pendingRepetitionEnds = [];
-      boundaryExpansion = 1;
+      overlappingBoundaryCount = 0;
     }
   }
   return null;

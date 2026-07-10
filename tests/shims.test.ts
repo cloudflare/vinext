@@ -7609,9 +7609,21 @@ describe("middleware matcher patterns", () => {
     }
 
     for (const matcher of [
+      "/shorthand/:value((?:\\d|[a-z])+)",
+      "/bracket-shorthand/:value((?:[\\d]|[a-z])+)",
+      "/space-or-word/:value((?:\\s|[a-z])+)",
+      "/digit-or-not/:value((?:\\d|\\D)+)",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+
+    for (const matcher of [
       "/:path((?:[a-z]|[A-Z])+)",
       "/:path((?:[a-f]|[d-z])+)",
       "/:path((?:[a-z]|m)+)",
+      "/:path((?:\\w|[a-z])+)",
+      "/:path((?:[\\w]|[A-Z])+)",
+      "/:path((?:\\D|[a-z])+)",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
@@ -7623,13 +7635,18 @@ describe("middleware matcher patterns", () => {
   it("rejects bounded sequence-level ambiguity within the analysis budget", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const adjacentRepetitions = `/:path(${"(?:a+)".repeat(10)})`;
     const expandingChoices = `/:path(${"(?:a|aa)".repeat(26)})`;
 
-    expect(compileMiddlewareMatcherPattern(adjacentRepetitions)).toMatchObject({
-      kind: "unsafe",
-      error: expect.stringContaining("overlapping sequential repetition"),
-    });
+    for (const count of [8, 9, 10]) {
+      const adjacentRepetitions = `/:path(${"(?:a+)".repeat(count)})`;
+      expect(
+        compileMiddlewareMatcherPattern(adjacentRepetitions),
+        `${count} repeats`,
+      ).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("overlapping sequential repetition"),
+      });
+    }
     expect(compileMiddlewareMatcherPattern(expandingChoices)).toMatchObject({
       kind: "unsafe",
       error: expect.stringContaining("ambiguous sequence expansion"),
