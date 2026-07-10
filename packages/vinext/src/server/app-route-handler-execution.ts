@@ -114,9 +114,11 @@ type ExecuteAppRouteHandlerOptions = {
   executionContext: ExecutionContextLike | null;
   getAndClearPendingCookies: () => string[];
   getCollectedFetchTags: () => string[];
+  getActiveDraftModeState?: () => boolean | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handler: AppRouteHandlerModule;
   isAutoHead: boolean;
+  initialDraftModeCookie?: string | null;
   isDraftMode?: boolean;
   isProduction: boolean;
   isrDebug?: AppRouteDebugLogger;
@@ -205,6 +207,19 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
+    const pendingCookies = options.getAndClearPendingCookies();
+    const handlerDraftCookie = options.getDraftModeCookieHeader();
+    const draftCookie = handlerDraftCookie ?? options.initialDraftModeCookie;
+    const activeDraftMode = options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
+    const shouldApplyDraftPolicy = activeDraftMode || draftCookie != null;
+
+    // Unlike force-static request reads, draft-mode mutations are dynamic in
+    // Next.js. Remember the route when the handler itself crossed the draft
+    // boundary so a pre-existing ISR entry cannot be replayed later.
+    if (handlerDraftCookie != null) {
+      markKnownDynamicAppRoute(options.routePattern);
+    }
+
     // The route's cache tags, shared by the response Cache-Tag header (so edge
     // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
     const routeTags = options.buildPageCacheTags(
@@ -217,7 +232,7 @@ export async function executeAppRouteHandler(
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
-        isDraftMode: options.isDraftMode,
+        isDraftMode: shouldApplyDraftPolicy,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
       })
@@ -240,7 +255,7 @@ export async function executeAppRouteHandler(
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
-        isDraftMode: options.isDraftMode,
+        isDraftMode: shouldApplyDraftPolicy,
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
@@ -271,12 +286,6 @@ export async function executeAppRouteHandler(
       options.executionContext?.waitUntil(routeWritePromise);
     }
 
-    const pendingCookies = options.getAndClearPendingCookies();
-    const draftCookie = options.getDraftModeCookieHeader();
-    // A route may enable or disable draft mode after dispatch captured the
-    // request's initial state. Any emitted draft cookie means this response
-    // crossed that boundary and must remain private too.
-    const shouldApplyDraftPolicy = options.isDraftMode === true || draftCookie != null;
     options.clearRequestContext();
 
     return applyDraftModeCachePolicy(
@@ -292,8 +301,13 @@ export async function executeAppRouteHandler(
     );
   } catch (error) {
     const pendingCookies = options.getAndClearPendingCookies();
-    const draftCookie = options.getDraftModeCookieHeader();
-    const shouldApplyDraftPolicy = options.isDraftMode === true || draftCookie != null;
+    const handlerDraftCookie = options.getDraftModeCookieHeader();
+    const draftCookie = handlerDraftCookie ?? options.initialDraftModeCookie;
+    const activeDraftMode = options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
+    const shouldApplyDraftPolicy = activeDraftMode || draftCookie != null;
+    if (handlerDraftCookie != null) {
+      markKnownDynamicAppRoute(options.routePattern);
+    }
     const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url, {
       isAction: isPossibleAppRouteActionRequest(options.request),
     });
@@ -322,7 +336,11 @@ export async function executeAppRouteHandler(
 
       return applyDraftModeCachePolicy(
         applyRouteHandlerMiddlewareContext(
-          new Response(null, { status: specialError.statusCode }),
+          finalizeRouteHandlerResponse(new Response(null, { status: specialError.statusCode }), {
+            pendingCookies,
+            draftCookie,
+            isHead: options.isAutoHead,
+          }),
           options.middlewareContext,
         ),
         shouldApplyDraftPolicy,
@@ -346,7 +364,11 @@ export async function executeAppRouteHandler(
 
     return applyDraftModeCachePolicy(
       applyRouteHandlerMiddlewareContext(
-        new Response(null, { status: 500 }),
+        finalizeRouteHandlerResponse(new Response(null, { status: 500 }), {
+          pendingCookies,
+          draftCookie,
+          isHead: options.isAutoHead,
+        }),
         options.middlewareContext,
       ),
       shouldApplyDraftPolicy,

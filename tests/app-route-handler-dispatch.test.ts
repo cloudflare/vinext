@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
   return {
@@ -25,6 +26,78 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it.each([
+    {
+      enabled: true,
+      expectedDraftMode: true,
+      expectedCookie: "__prerender_bypass=test-draft-secret",
+    },
+    { enabled: false, expectedDraftMode: false, expectedCookie: "__prerender_bypass=;" },
+  ])(
+    "bypasses a prewarmed cache and preserves a pending draft transition (enabled: $enabled)",
+    async ({ enabled, expectedDraftMode, expectedCookie }) => {
+      const cookies = new Map<string, string>();
+      if (!enabled) cookies.set("__prerender_bypass", "test-draft-secret");
+      setHeadersContext({
+        headers: new Headers(),
+        cookies,
+        draftModeSecret: "test-draft-secret",
+      });
+
+      const draft = await draftMode();
+      if (enabled) draft.enable();
+      else draft.disable();
+
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedRouteValue("prewarmed-public-response")),
+      );
+      const isrSet = vi.fn();
+
+      try {
+        const response = await dispatchAppRouteHandler({
+          cleanPathname: "/api/middleware-draft",
+          clearRequestContext() {
+            setHeadersContext(null);
+          },
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          isrGet,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: null,
+          request: new Request("https://example.com/api/middleware-draft"),
+          route: {
+            pattern: `/api/middleware-draft-${enabled}`,
+            routeHandler: {
+              async GET() {
+                return Response.json({ draftMode: (await draftMode()).isEnabled });
+              },
+              revalidate: 60,
+            },
+            routeSegments: ["api", "middleware-draft"],
+          },
+          scheduleBackgroundRegeneration() {},
+          searchParams: new URLSearchParams(),
+        });
+
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+        expect(await response.json()).toEqual({ draftMode: expectedDraftMode });
+        expect(response.headers.get("set-cookie")).toContain(expectedCookie);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(response.headers.get("x-vinext-cache")).toBeNull();
+      } finally {
+        setHeadersContext(null);
+      }
+    },
+  );
+
   it("rejects invalid HTTP methods with 400 before auto-OPTIONS/405 logic", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L531-L538

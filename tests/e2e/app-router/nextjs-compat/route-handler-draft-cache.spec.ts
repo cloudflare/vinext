@@ -101,4 +101,29 @@ test.describe("production route-handler draft-mode cache isolation", () => {
       await setDraftMode(request, false);
     }
   });
+
+  test("does not cache a force-static route handler that enables draft mode", async ({
+    request,
+  }) => {
+    await setDraftMode(request, false);
+
+    const first = await request.get(`${BASE}/nextjs-compat/api/draft-force-static`);
+    expect(first.status()).toBe(200);
+    const firstPayload = (await first.json()) as DraftIsrPayload;
+
+    expect(firstPayload.draftMode).toBe(true);
+    expect(first.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(first.headers()["cache-control"]).toContain("no-store");
+    expect(first.headers()["x-vinext-cache"]).toBeUndefined();
+
+    await setDraftMode(request, false);
+    const second = await request.get(`${BASE}/nextjs-compat/api/draft-force-static`);
+    const secondPayload = (await second.json()) as DraftIsrPayload;
+
+    expect(secondPayload.draftMode).toBe(true);
+    expect(secondPayload.token).not.toBe(firstPayload.token);
+    expect(second.headers()["cache-control"]).toContain("no-store");
+
+    await setDraftMode(request, false);
+  });
 });

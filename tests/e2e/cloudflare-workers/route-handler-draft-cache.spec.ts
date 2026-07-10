@@ -94,4 +94,64 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       await setDraftMode(request, false);
     }
   });
+
+  test("does not cache a middleware draft transition on an ISR MISS", async ({ request }) => {
+    await setDraftMode(request, false);
+    const scenario = `middleware-miss-${Date.now()}`;
+
+    const draft = await request.get(`${BASE_URL}/api/draft-isr/${scenario}?draft=true`);
+    expect(draft.status()).toBe(200);
+    const draftPayload = (await draft.json()) as { draftMode: boolean; token: string };
+    expect(draftPayload.draftMode).toBe(true);
+    expect(draft.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(draft.headers()["cache-control"]).toContain("no-store");
+    expect(draft.headers()["x-vinext-cache"]).toBeUndefined();
+
+    await setDraftMode(request, false);
+    const anonymous = await readDraftIsrRoute(request, scenario);
+    expect(anonymous.payload.draftMode).toBe(false);
+    expect(anonymous.payload.token).not.toBe(draftPayload.token);
+  });
+
+  test("preserves a middleware draft transition instead of serving a prewarmed HIT", async ({
+    request,
+  }) => {
+    await setDraftMode(request, false);
+    const scenario = `middleware-hit-${Date.now()}`;
+    const prewarmed = await readDraftIsrRoute(request, scenario);
+
+    const draft = await request.get(`${BASE_URL}/api/draft-isr/${scenario}?draft=true`);
+    expect(draft.status()).toBe(200);
+    const draftPayload = (await draft.json()) as { draftMode: boolean; token: string };
+    expect(draftPayload.draftMode).toBe(true);
+    expect(draftPayload.token).not.toBe(prewarmed.payload.token);
+    expect(draft.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(draft.headers()["cache-control"]).toContain("no-store");
+    expect(draft.headers()["x-vinext-cache"]).toBeUndefined();
+
+    await setDraftMode(request, false);
+  });
+
+  test("does not cache a force-static route handler that enables draft mode", async ({
+    request,
+  }) => {
+    await setDraftMode(request, false);
+
+    const first = await request.get(`${BASE_URL}/api/draft-force-static`);
+    expect(first.status()).toBe(200);
+    const firstPayload = (await first.json()) as { draftMode: boolean; token: string };
+    expect(firstPayload.draftMode).toBe(true);
+    expect(first.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(first.headers()["cache-control"]).toContain("no-store");
+    expect(first.headers()["x-vinext-cache"]).toBeUndefined();
+
+    await setDraftMode(request, false);
+    const second = await request.get(`${BASE_URL}/api/draft-force-static`);
+    const secondPayload = (await second.json()) as { draftMode: boolean; token: string };
+    expect(secondPayload.draftMode).toBe(true);
+    expect(secondPayload.token).not.toBe(firstPayload.token);
+    expect(second.headers()["cache-control"]).toContain("no-store");
+
+    await setDraftMode(request, false);
+  });
 });

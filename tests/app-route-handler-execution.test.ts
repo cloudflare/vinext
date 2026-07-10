@@ -3,6 +3,9 @@ import {
   consumeDynamicUsage,
   cookies,
   draftMode,
+  getActiveDraftModeState,
+  getAndClearPendingCookies,
+  getDraftModeCookieHeader,
   headers,
   markDynamicUsage,
   setHeadersContext,
@@ -275,6 +278,162 @@ describe("app route handler execution helpers", () => {
     expect(didClearRequestContext).toBe(true);
     expect(reportCalls).toEqual([]);
   });
+
+  it.each([
+    { enabled: true, initialDraftMode: false, expectedCookie: "__prerender_bypass=draft-secret" },
+    { enabled: false, initialDraftMode: true, expectedCookie: "__prerender_bypass=;" },
+  ])(
+    "does not cache a force-static handler draft transition (enabled: $enabled)",
+    async ({ enabled, initialDraftMode, expectedCookie }) => {
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const isrSet = vi.fn();
+      const routePattern = `/api/force-static-draft-${enabled}-${Date.now()}`;
+      const request = new Request(`https://example.com${routePattern}`, {
+        headers: initialDraftMode ? { cookie: "__prerender_bypass=draft-secret" } : undefined,
+      });
+
+      setHeadersContext({
+        headers: request.headers,
+        cookies: new Map(initialDraftMode ? [["__prerender_bypass", "draft-secret"]] : []),
+        draftModeSecret: "draft-secret",
+      });
+
+      try {
+        const response = await executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: routePattern,
+          clearRequestContext() {
+            setHeadersContext(null);
+          },
+          consumeDynamicUsage,
+          draftModeSecret: "draft-secret",
+          executionContext: {
+            waitUntil(promise) {
+              waitUntilPromises.push(promise);
+            },
+          },
+          getActiveDraftModeState,
+          getAndClearPendingCookies,
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader,
+          handler: { dynamic: "force-static", revalidate: 60 },
+          async handlerFn() {
+            const draft = await draftMode();
+            if (enabled) draft.enable();
+            else draft.disable();
+            return Response.json({ draftMode: draft.isEnabled });
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds: 60,
+          routePattern,
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        });
+
+        expect(waitUntilPromises).toEqual([]);
+        expect(isrSet).not.toHaveBeenCalled();
+        expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+        expect(await response.json()).toEqual({ draftMode: enabled });
+        expect(response.headers.get("set-cookie")).toContain(expectedCookie);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(response.headers.get("x-vinext-cache")).toBeNull();
+      } finally {
+        setHeadersContext(null);
+        consumeDynamicUsage();
+      }
+    },
+  );
+
+  it.each([
+    {
+      kind: "redirect",
+      expectedStatus: 307,
+      throwValue: { digest: "NEXT_REDIRECT;replace;%2Ftarget;307" },
+    },
+    { kind: "not-found", expectedStatus: 404, throwValue: { digest: "NEXT_NOT_FOUND" } },
+    { kind: "error", expectedStatus: 500, throwValue: new Error("draft failure") },
+  ])(
+    "preserves a force-static draft transition on $kind responses",
+    async ({ expectedStatus, throwValue }) => {
+      const routePattern = `/api/force-static-draft-error-${expectedStatus}-${Date.now()}`;
+      const isrSet = vi.fn();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      setHeadersContext({
+        headers: new Headers(),
+        cookies: new Map(),
+        draftModeSecret: "draft-secret",
+      });
+
+      try {
+        const response = await executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: routePattern,
+          clearRequestContext() {
+            setHeadersContext(null);
+          },
+          consumeDynamicUsage,
+          draftModeSecret: "draft-secret",
+          executionContext: null,
+          getActiveDraftModeState,
+          getAndClearPendingCookies,
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader,
+          handler: { dynamic: "force-static", revalidate: 60 },
+          async handlerFn() {
+            (await draftMode()).enable();
+            throw throwValue;
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request: new Request(`https://example.com${routePattern}`),
+          revalidateSeconds: 60,
+          routePattern,
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        });
+
+        expect(response.status).toBe(expectedStatus);
+        expect(response.headers.get("set-cookie")).toContain("__prerender_bypass=draft-secret");
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(isrSet).not.toHaveBeenCalled();
+        expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+        setHeadersContext(null);
+        consumeDynamicUsage();
+      }
+    },
+  );
 
   it("marks dynamic route handlers and skips cache writes when request data is read", async () => {
     const dynamicUsage = createDynamicUsageState();
