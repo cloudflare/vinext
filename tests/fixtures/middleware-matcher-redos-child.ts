@@ -31,6 +31,12 @@ for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
   }
 }
 
+for (const matcher of [`/:path(${"(?:a+)".repeat(10)})`, `/:path(${"(?:a|aa)".repeat(26)})`]) {
+  if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
+    throw new Error(`Unsafe bounded sequence did not fail closed: ${matcher}`);
+  }
+}
+
 // Keep the analysis itself linear for large, disjoint literal alternations.
 // CJK literals have stable, distinct non-Unicode ignore-case canonical forms.
 const alternatives = Array.from({ length: 2_000 }, (_, index) =>

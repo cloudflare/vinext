@@ -35,7 +35,9 @@ const PROTECTED_PATHS = [
   "/bar/secret",
   "/report.json",
   "/archive/2024-07-10",
-  "/codes/abac",
+  "/codes/ABCD",
+  "/shared/abac",
+  "/mixed/a1z9",
 ] as const;
 
 async function assertAuthGuard(baseUrl: string): Promise<void> {
@@ -270,6 +272,8 @@ describe("unsafe middleware matcher rejection", () => {
     ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
     ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
     ["/:path((?:a+){10})", /contains nested repetition/],
+    [`/:path(${"(?:a+)".repeat(10)})`, /contains overlapping sequential repetition/],
+    [`/:path(${"(?:a|aa)".repeat(26)})`, /contains ambiguous sequence expansion/],
     ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
     ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
   ] as const)(

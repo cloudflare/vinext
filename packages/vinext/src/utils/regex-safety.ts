@@ -16,11 +16,14 @@ type RegexNode =
 
 type RegexSymbol =
   | { kind: "literal"; key: string; value: string }
+  | { kind: "class"; key: string; values: ReadonlySet<string> }
   | { kind: "opaque"; key: string; pattern: string; ignoreCase: boolean };
 
 export type RegexSafetyIssue =
   | "nested repetition"
   | "ambiguous alternatives under repetition"
+  | "ambiguous sequence expansion"
+  | "overlapping sequential repetition"
   | "analysis budget exceeded";
 
 const MAX_NODES = 16_384;
@@ -29,6 +32,7 @@ const MAX_PATTERN_LENGTH = 65_536;
 const MAX_WORDS = 4_096;
 const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
+const MAX_SEQUENCE_EXPANSIONS = 256;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -43,6 +47,40 @@ function canonicalizeIgnoreCase(character: string): string {
 function literalSymbol(character: string, ignoreCase: boolean): RegexSymbol {
   const key = ignoreCase ? canonicalizeIgnoreCase(character) : character;
   return { kind: "literal", key, value: character };
+}
+
+function simpleAsciiClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null {
+  const end = raw.length - 1;
+  if (raw[0] !== "[" || raw[end] !== "]" || raw[1] === "^") return null;
+  const values = new Set<string>();
+
+  const add = (character: string): boolean => {
+    if (character.charCodeAt(0) > 0x7f) return false;
+    values.add(ignoreCase ? canonicalizeIgnoreCase(character) : character);
+    return true;
+  };
+
+  for (let index = 1; index < end; index++) {
+    const start = raw[index];
+    if (start === "\\") return null;
+    if (index + 2 < end && raw[index + 1] === "-") {
+      const rangeEnd = raw[index + 2];
+      if (rangeEnd === "\\") return null;
+      const startCode = start.charCodeAt(0);
+      const endCode = rangeEnd.charCodeAt(0);
+      if (startCode > endCode || endCode > 0x7f) return null;
+      for (let code = startCode; code <= endCode; code++) {
+        if (!add(String.fromCharCode(code))) return null;
+      }
+      index += 2;
+    } else if (!add(start)) {
+      return null;
+    }
+  }
+
+  if (values.size === 0) return null;
+  const key = [...values].sort().join("");
+  return { kind: "class", key: `class:${key}`, values };
 }
 
 class RegexParser {
@@ -182,7 +220,9 @@ class RegexParser {
     const raw = this.pattern.slice(start, this.index);
     return this.node({
       kind: "atom",
-      symbol: { kind: "opaque", key: raw, pattern: raw, ignoreCase: this.ignoreCase },
+      symbol:
+        simpleAsciiClassSymbol(raw, this.ignoreCase) ??
+        ({ kind: "opaque", key: raw, pattern: raw, ignoreCase: this.ignoreCase } as const),
       fixedWidth: true,
     });
   }
@@ -415,11 +455,12 @@ type TrieEdge = { symbol: RegexSymbol; node: TrieNode };
 type TrieNode = {
   terminal: boolean;
   literals: Map<string, TrieEdge>;
+  classes: TrieEdge[];
   opaque: TrieEdge[];
 };
 
 function createTrieNode(): TrieNode {
-  return { terminal: false, literals: new Map(), opaque: [] };
+  return { terminal: false, literals: new Map(), classes: [], opaque: [] };
 }
 
 function opaqueMatchesLiteral(opaque: RegexSymbol, literal: RegexSymbol): boolean {
@@ -429,6 +470,29 @@ function opaqueMatchesLiteral(opaque: RegexSymbol, literal: RegexSymbol): boolea
   } catch {
     return true;
   }
+}
+
+function symbolsMayOverlap(left: RegexSymbol, right: RegexSymbol): boolean {
+  if (left.kind === "literal" && right.kind === "literal") return left.key === right.key;
+  if (left.kind === "class" && right.kind === "literal") return left.values.has(right.key);
+  if (left.kind === "literal" && right.kind === "class") return right.values.has(left.key);
+  if (left.kind === "class" && right.kind === "class") {
+    const [smaller, larger] =
+      left.values.size <= right.values.size
+        ? [left.values, right.values]
+        : [right.values, left.values];
+    for (const value of smaller) {
+      if (larger.has(value)) return true;
+    }
+    return false;
+  }
+  if (left.kind === "opaque" && right.kind === "literal") {
+    return opaqueMatchesLiteral(left, right);
+  }
+  if (left.kind === "literal" && right.kind === "opaque") {
+    return opaqueMatchesLiteral(right, left);
+  }
+  return true;
 }
 
 function insertPrefixFreeWord(
@@ -442,6 +506,10 @@ function insertPrefixFreeWord(
     let edge: TrieEdge | undefined;
     if (symbol.kind === "literal") {
       edge = node.literals.get(symbol.key);
+      for (const classEdge of node.classes) {
+        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
+        if (symbolsMayOverlap(classEdge.symbol, symbol)) return false;
+      }
       for (const opaque of node.opaque) {
         if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
         if (opaqueMatchesLiteral(opaque.symbol, symbol)) return false;
@@ -450,11 +518,28 @@ function insertPrefixFreeWord(
         edge = { symbol, node: createTrieNode() };
         node.literals.set(symbol.key, edge);
       }
+    } else if (symbol.kind === "class") {
+      for (const literal of node.literals.values()) {
+        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
+        if (symbolsMayOverlap(symbol, literal.symbol)) return false;
+      }
+      edge = node.classes.find((candidate) => candidate.symbol.key === symbol.key);
+      for (const classEdge of node.classes) {
+        if (classEdge === edge) continue;
+        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
+        if (symbolsMayOverlap(symbol, classEdge.symbol)) return false;
+      }
+      if (node.opaque.length > 0) return false;
+      if (!edge) {
+        edge = { symbol, node: createTrieNode() };
+        node.classes.push(edge);
+      }
     } else {
       for (const literal of node.literals.values()) {
         if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
         if (opaqueMatchesLiteral(symbol, literal.symbol)) return false;
       }
+      if (node.classes.length > 0) return false;
       edge = node.opaque.find((candidate) => candidate.symbol.key === symbol.key);
       if (!edge && node.opaque.length > 0) return false;
       if (!edge) {
@@ -464,15 +549,26 @@ function insertPrefixFreeWord(
     }
     node = edge.node;
   }
-  if (node.terminal || node.literals.size > 0 || node.opaque.length > 0) return false;
+  if (
+    node.terminal ||
+    node.literals.size > 0 ||
+    node.classes.length > 0 ||
+    node.opaque.length > 0
+  ) {
+    return false;
+  }
   node.terminal = true;
   return true;
 }
 
-function hasPrefixFreeFiniteLanguage(node: RegexNode): { safe: boolean; budgetExceeded: boolean } {
+function hasPrefixFreeFiniteLanguage(node: RegexNode): {
+  safe: boolean;
+  budgetExceeded: boolean;
+  wordCount: number;
+} {
   const budget: WordBudget = { words: 0, symbols: 0, exceeded: false };
   const words = fixedWords(node, budget);
-  if (!words) return { safe: false, budgetExceeded: budget.exceeded };
+  if (!words) return { safe: false, budgetExceeded: budget.exceeded, wordCount: 0 };
   const root = createTrieNode();
   const comparisons = { count: 0 };
   for (const word of words) {
@@ -480,10 +576,170 @@ function hasPrefixFreeFiniteLanguage(node: RegexNode): { safe: boolean; budgetEx
       return {
         safe: false,
         budgetExceeded: comparisons.count > MAX_OPAQUE_COMPARISONS,
+        wordCount: words.length,
       };
     }
   }
-  return { safe: true, budgetExceeded: false };
+  return { safe: true, budgetExceeded: false, wordCount: words.length };
+}
+
+function ambiguousExpansionFactor(node: RegexNode): number {
+  switch (node.kind) {
+    case "atom":
+    case "assertion":
+      return 1;
+    case "alternation": {
+      const result = hasPrefixFreeFiniteLanguage(node);
+      if (result.safe) return 1;
+      if (result.budgetExceeded || result.wordCount === 0) return MAX_SEQUENCE_EXPANSIONS + 1;
+      return result.wordCount;
+    }
+    case "sequence": {
+      let factor = 1;
+      for (const child of node.children) {
+        factor *= ambiguousExpansionFactor(child);
+        if (factor > MAX_SEQUENCE_EXPANSIONS) return factor;
+      }
+      return factor;
+    }
+    case "repeat": {
+      if (node.min !== node.max || !Number.isFinite(node.max)) return 1;
+      const childFactor = ambiguousExpansionFactor(node.child);
+      let factor = 1;
+      for (let count = 0; count < node.max; count++) {
+        factor *= childFactor;
+        if (factor > MAX_SEQUENCE_EXPANSIONS) return factor;
+      }
+      return factor;
+    }
+  }
+}
+
+function isNullable(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+      return !node.fixedWidth;
+    case "assertion":
+      return true;
+    case "sequence":
+      return node.children.every(isNullable);
+    case "alternation":
+      return node.branches.some(isNullable);
+    case "repeat":
+      return node.min === 0 || isNullable(node.child);
+  }
+}
+
+function firstSymbols(node: RegexNode): RegexSymbol[] | null {
+  switch (node.kind) {
+    case "atom":
+      return node.symbol ? [node.symbol] : null;
+    case "assertion":
+      return [];
+    case "repeat":
+      return firstSymbols(node.child);
+    case "alternation": {
+      const symbols: RegexSymbol[] = [];
+      for (const branch of node.branches) {
+        const branchSymbols = firstSymbols(branch);
+        if (!branchSymbols) return null;
+        symbols.push(...branchSymbols);
+      }
+      return symbols;
+    }
+    case "sequence": {
+      const symbols: RegexSymbol[] = [];
+      for (const child of node.children) {
+        const childSymbols = firstSymbols(child);
+        if (!childSymbols) return null;
+        symbols.push(...childSymbols);
+        if (!isNullable(child)) break;
+      }
+      return symbols;
+    }
+  }
+}
+
+function lastSymbols(node: RegexNode): RegexSymbol[] | null {
+  switch (node.kind) {
+    case "atom":
+      return node.symbol ? [node.symbol] : null;
+    case "assertion":
+      return [];
+    case "repeat":
+      return lastSymbols(node.child);
+    case "alternation": {
+      const symbols: RegexSymbol[] = [];
+      for (const branch of node.branches) {
+        const branchSymbols = lastSymbols(branch);
+        if (!branchSymbols) return null;
+        symbols.push(...branchSymbols);
+      }
+      return symbols;
+    }
+    case "sequence": {
+      const symbols: RegexSymbol[] = [];
+      for (let index = node.children.length - 1; index >= 0; index--) {
+        const child = node.children[index];
+        const childSymbols = lastSymbols(child);
+        if (!childSymbols) return null;
+        symbols.push(...childSymbols);
+        if (!isNullable(child)) break;
+      }
+      return symbols;
+    }
+  }
+}
+
+function boundariesMayOverlap(
+  left: RegexSymbol[] | null,
+  right: RegexSymbol[] | null,
+  comparisons: { count: number },
+): boolean {
+  if (!left || !right) return true;
+  for (const leftSymbol of left) {
+    for (const rightSymbol of right) {
+      if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return true;
+      if (symbolsMayOverlap(leftSymbol, rightSymbol)) return true;
+    }
+  }
+  return false;
+}
+
+function findSequenceIssue(
+  node: Extract<RegexNode, { kind: "sequence" }>,
+): RegexSafetyIssue | null {
+  if (ambiguousExpansionFactor(node) > MAX_SEQUENCE_EXPANSIONS) {
+    return "ambiguous sequence expansion";
+  }
+
+  let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
+  const comparisons = { count: 0 };
+  let boundaryExpansion = 1;
+  for (const child of node.children) {
+    const variableRepetition =
+      child.kind === "repeat" && (child.min !== child.max || !Number.isFinite(child.max));
+    if (variableRepetition) {
+      const starts = firstSymbols(child);
+      const overlappingBoundaries = pendingRepetitionEnds.filter((ends) =>
+        boundariesMayOverlap(ends, starts, comparisons),
+      ).length;
+      if (overlappingBoundaries > 0) {
+        boundaryExpansion *= 2 ** overlappingBoundaries;
+      } else if (!isNullable(child)) {
+        boundaryExpansion = 1;
+      }
+      if (boundaryExpansion > MAX_SEQUENCE_EXPANSIONS) {
+        return "overlapping sequential repetition";
+      }
+      const ends = lastSymbols(child);
+      pendingRepetitionEnds = isNullable(child) ? [...pendingRepetitionEnds, ends] : [ends];
+    } else if (!isNullable(child)) {
+      pendingRepetitionEnds = [];
+      boundaryExpansion = 1;
+    }
+  }
+  return null;
 }
 
 function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
@@ -492,12 +748,15 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       return null;
     case "assertion":
       return findSafetyIssue(node.child);
-    case "sequence":
+    case "sequence": {
+      const sequenceIssue = findSequenceIssue(node);
+      if (sequenceIssue) return sequenceIssue;
       for (const child of node.children) {
         const issue = findSafetyIssue(child);
         if (issue) return issue;
       }
       return null;
+    }
     case "alternation":
       for (const branch of node.branches) {
         const issue = findSafetyIssue(branch);
@@ -506,7 +765,6 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       return null;
     case "repeat": {
       const nestedRepetition = containsConsumingRepetition(node.child);
-      if (node.max === Infinity && nestedRepetition) return "nested repetition";
       if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
@@ -545,14 +803,5 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   const leftSymbol = leftWords[0][0];
   const rightSymbol = rightWords[0][0];
   if (!leftSymbol || !rightSymbol) return true;
-  if (leftSymbol.kind === "literal" && rightSymbol.kind === "literal") {
-    return leftSymbol.key === rightSymbol.key;
-  }
-  if (leftSymbol.kind === "opaque" && rightSymbol.kind === "literal") {
-    return opaqueMatchesLiteral(leftSymbol, rightSymbol);
-  }
-  if (leftSymbol.kind === "literal" && rightSymbol.kind === "opaque") {
-    return opaqueMatchesLiteral(rightSymbol, leftSymbol);
-  }
-  return true;
+  return symbolsMayOverlap(leftSymbol, rightSymbol);
 }

@@ -17,7 +17,9 @@ export const config = {
     "/(foo.*|bar)/:path*",
     "/report{.:ext}",
     "/archive/:date(\\d{4}(?:-\\d{2}){2})",
-    "/codes/:value((?:ab|ac)+)",
+    "/codes/:value((?:[A-Z]{2})+)",
+    "/shared/:value((?:ab|ac)+)",
+    "/mixed/:value((?:[a-z]|[0-9])+)",
     {
       source: "/conditioned",
       has: [
