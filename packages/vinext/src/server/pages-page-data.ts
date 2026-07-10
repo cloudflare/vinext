@@ -484,10 +484,18 @@ export function resolvePagesRedirectLocation(
   redirect: ResolvedPagesRedirect,
   configuredBasePath = "",
 ): string {
+  let destination = redirect.destination;
   if (configuredBasePath && redirect.basePath !== false && redirect.destination.startsWith("/")) {
-    return `${configuredBasePath}${redirect.destination}`;
+    destination = `${configuredBasePath}${redirect.destination}`;
   }
-  return redirect.destination;
+  if (!destination.startsWith("/")) return destination;
+
+  const urlParts = destination.split("?");
+  const urlNoQuery = urlParts[0];
+  return (
+    urlNoQuery.replace(/\\/g, "/").replace(/\/\/+/g, "/") +
+    (urlParts[1] ? `?${urlParts.slice(1).join("?")}` : "")
+  );
 }
 
 export function buildPagesRedirectProps(

@@ -103,6 +103,7 @@ import {
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { getDeploymentId } from "../utils/deployment-id.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1316,6 +1317,12 @@ export function createSSRHandler(
             });
             res.setHeader(NEXTJS_CACHE_HEADER, state);
             res.setHeader("Cache-Control", cacheControl);
+            if (isDataReq) {
+              const deploymentId = getDeploymentId();
+              if (deploymentId) {
+                res.setHeader(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+              }
+            }
           };
 
           if (
@@ -1454,7 +1461,8 @@ export function createSSRHandler(
             (cachedValue === null ||
               cachedRedirect !== null ||
               isLegacyCachedNotFound ||
-              cachedValue?.kind === "PAGES")
+              (cachedValue?.kind === "PAGES" &&
+                (isDataReq || !cachedValue.generatedFromDataRequest)))
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cachedValue?.kind === "PAGES" ? cachedValue : null;
@@ -1738,6 +1746,12 @@ export function createSSRHandler(
               }
             }
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
+            if (isDataReq) {
+              const deploymentId = getDeploymentId();
+              if (deploymentId) {
+                staleHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+              }
+            }
             if (cachedValue === null || isLegacyCachedNotFound) {
               for (const [name, value] of Object.entries(staleHeaders)) {
                 res.setHeader(name, value);

@@ -124,6 +124,7 @@ const projectServers = {
       port: 4175,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+      env: { NEXT_DEPLOYMENT_ID: "pages-production-deployment" },
     },
   },
   "pages-scroll-restoration": {

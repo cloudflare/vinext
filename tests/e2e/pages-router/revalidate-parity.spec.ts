@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const DATA_URL = "/_next/data/test-build-id/revalidate-parity-target.json";
+
 test("dev revalidation replaces a numeric ISR page with notFound immediately", async ({
   request,
 }) => {
@@ -184,5 +186,73 @@ test("dev validates permanent and conflicting redirect metadata", async ({ reque
     );
     expect(await failed.json()).toEqual({ revalidated: false });
     expect(await (await request.get("/revalidate-parity-target")).text()).toBe(previous);
+  }
+});
+
+test("dev renders HTML after redirect data regeneration produces a data-only entry", async ({
+  request,
+}) => {
+  await request.get("/api/revalidate-parity?mode=redirect&revalidate=1");
+  const redirectData = await request.get(DATA_URL);
+  expect(await redirectData.json()).toMatchObject({
+    pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
+  });
+
+  await request.get("/api/revalidate-parity?mode=content&revalidate=1&setOnly=1");
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleRedirectData = await request.get(DATA_URL);
+  expect(staleRedirectData.headers()["x-nextjs-cache"]).toBe("STALE");
+  expect(await staleRedirectData.json()).toMatchObject({
+    pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
+  });
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(DATA_URL);
+      const body = await response.json();
+      return {
+        cache: response.headers()["x-nextjs-cache"],
+        hasContent: typeof body.pageProps?.renderedAt === "number",
+      };
+    })
+    .toEqual({ cache: "HIT", hasContent: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const html = await request.get("/revalidate-parity-target");
+  expect(html.status()).toBe(200);
+  expect(await html.text()).toMatch(/rendered at: (?:<!-- -->)?\d+/);
+
+  const dataHit = await request.get(DATA_URL);
+  expect(dataHit.headers()["x-nextjs-cache"]).toBe("HIT");
+  expect(await dataHit.json()).toMatchObject({ pageProps: { renderedAt: expect.any(Number) } });
+});
+
+test("dev cached and stale data representations carry the deployment ID", async ({ request }) => {
+  const deploymentId = "pages-dev-deployment";
+  await request.get(`/api/deployment-id?value=${deploymentId}`);
+
+  try {
+    for (const mode of ["content", "redirect", "notFound"] as const) {
+      await request.get(`/api/revalidate-parity?mode=${mode}&revalidate=1`);
+      const hit = await request.get(DATA_URL);
+      expect(hit.headers()["x-nextjs-cache"]).toBe("HIT");
+      expect(hit.headers()["x-nextjs-deployment-id"]).toBe(deploymentId);
+
+      if (mode === "content") {
+        const html = await request.get("/revalidate-parity-target");
+        expect(html.headers()["x-nextjs-deployment-id"]).toBeUndefined();
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const stale = await request.get(DATA_URL);
+      expect(stale.headers()["x-nextjs-cache"]).toBe("STALE");
+      expect(stale.headers()["x-nextjs-deployment-id"]).toBe(deploymentId);
+
+      await expect
+        .poll(async () => (await request.get(DATA_URL)).headers()["x-nextjs-cache"])
+        .toBe("HIT");
+    }
+  } finally {
+    await request.get("/api/deployment-id");
   }
 });

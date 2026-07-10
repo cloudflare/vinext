@@ -14,11 +14,7 @@ export function getStaticProps({ params }: { params?: { slug?: string } }) {
         ? "https://example.com/a//b\\c?keep=//query\\value"
         : "/hello";
   return {
-    redirect: {
-      destination,
-      permanent: true,
-      ...(params?.slug === "no-base" ? { basePath: false } : {}),
-    },
+    redirect: { destination, permanent: true },
     revalidate: 60,
   };
 }

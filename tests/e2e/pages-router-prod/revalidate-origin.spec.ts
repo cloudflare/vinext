@@ -208,6 +208,73 @@ test("on-demand revalidation synchronously replaces non-expiring content, notFou
   expect(redirect.headers().location).toBe("/about");
 });
 
+test("production renders HTML after redirect data regeneration produces a data-only entry", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const target = `${origin}/revalidate-parity-target`;
+  const dataUrl = `${origin}/_next/data/test-build-id/revalidate-parity-target.json`;
+
+  await request.get(`${origin}/api/revalidate-parity?mode=redirect&revalidate=1`);
+  const redirectData = await request.get(dataUrl);
+  expect(await redirectData.json()).toMatchObject({
+    pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
+  });
+
+  await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=1&setOnly=1`);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleRedirectData = await request.get(dataUrl);
+  expect(staleRedirectData.headers()["x-nextjs-cache"]).toBe("STALE");
+  expect(await staleRedirectData.json()).toMatchObject({
+    pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
+  });
+
+  await expect
+    .poll(async () => {
+      const response = await request.get(dataUrl);
+      const body = await response.json();
+      return {
+        cache: response.headers()["x-nextjs-cache"],
+        hasContent: typeof body.pageProps?.renderedAt === "number",
+      };
+    })
+    .toEqual({ cache: "HIT", hasContent: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const html = await request.get(target);
+  expect(html.status()).toBe(200);
+  expect(await html.text()).toMatch(/rendered at: (?:<!-- -->)?\d+/);
+});
+
+test("production cached and stale data representations carry the deployment ID", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const dataUrl = `${origin}/_next/data/test-build-id/revalidate-parity-target.json`;
+  const deploymentId = "pages-production-deployment";
+
+  for (const mode of ["content", "redirect", "notFound"] as const) {
+    await request.get(`${origin}/api/revalidate-parity?mode=${mode}&revalidate=1`);
+    const hit = await request.get(dataUrl);
+    expect(hit.headers()["x-nextjs-cache"]).toBe("HIT");
+    expect(hit.headers()["x-nextjs-deployment-id"]).toBe(deploymentId);
+
+    if (mode === "content") {
+      const html = await request.get(`${origin}/revalidate-parity-target`);
+      expect(html.headers()["x-nextjs-deployment-id"]).toBeUndefined();
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await request.get(dataUrl);
+    expect(stale.headers()["x-nextjs-cache"]).toBe("STALE");
+    expect(stale.headers()["x-nextjs-deployment-id"]).toBe(deploymentId);
+
+    await expect
+      .poll(async () => (await request.get(dataUrl)).headers()["x-nextjs-cache"])
+      .toBe("HIT");
+  }
+});
+
 // Next.js source: packages/next/src/server/render.tsx and
 // packages/next/src/server/route-modules/pages/pages-handler.ts.
 test("production revalidation stores the current content and notFound lifetime", async ({

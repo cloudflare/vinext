@@ -88,3 +88,27 @@ test("soft navigates with basePath module URLs after ISR regeneration", async ({
   expect(moduleRequests).not.toContain("/pages/isr-basepath.tsx?import");
   expect(moduleRequests.every((moduleRequest) => moduleRequest.startsWith("/docs/"))).toBe(true);
 });
+
+test("normalizes local redirect paths after basePath without changing data or external URLs", async ({
+  request,
+}) => {
+  const local = await request.get("/docs/basepath-redirect/slashes", { maxRedirects: 0 });
+  expect(local.status()).toBe(308);
+  expect(local.headers().location).toBe("/docs/hello/world/deep?keep=//query\\value");
+  expect(local.headers().refresh).toBe("0;url=/docs/hello/world/deep?keep=//query\\value");
+
+  const data = await request.get(
+    "/docs/_next/data/basepath-dev-build/basepath-redirect/slashes.json",
+  );
+  expect(await data.json()).toMatchObject({
+    pageProps: {
+      __N_REDIRECT: "/hello//world\\deep?keep=//query\\value",
+      __N_REDIRECT_STATUS: 308,
+    },
+  });
+
+  const external = await request.get("/docs/basepath-redirect/external", {
+    maxRedirects: 0,
+  });
+  expect(external.headers().location).toBe("https://example.com/a//b\\c?keep=//query\\value");
+});

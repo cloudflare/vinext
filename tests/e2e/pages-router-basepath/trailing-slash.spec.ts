@@ -54,4 +54,33 @@ test.describe("basePath + trailingSlash", () => {
     expect(withoutBasePath.headers().location).toBe("/hello");
     expect(withoutBasePath.headers().refresh).toBe("0;url=/hello");
   });
+
+  test("normalizes local redirect paths after basePath without changing data or external URLs", async ({
+    request,
+  }) => {
+    const local = await request.get(`${BASE}/docs/basepath-redirect/slashes/`, {
+      maxRedirects: 0,
+    });
+    expect(local.status()).toBe(308);
+    expect(local.headers().location).toBe("/docs/hello/world/deep?keep=//query\\value");
+    expect(local.headers().refresh).toBe("0;url=/docs/hello/world/deep?keep=//query\\value");
+
+    const homeHtml = await (await request.get(`${BASE}/docs/`)).text();
+    const buildId = homeHtml.match(/"buildId":"([^"]+)"/)?.[1];
+    expect(buildId).toBeDefined();
+    const data = await request.get(
+      `${BASE}/docs/_next/data/${buildId}/basepath-redirect/slashes.json`,
+    );
+    expect(await data.json()).toMatchObject({
+      pageProps: {
+        __N_REDIRECT: "/hello//world\\deep?keep=//query\\value",
+        __N_REDIRECT_STATUS: 308,
+      },
+    });
+
+    const external = await request.get(`${BASE}/docs/basepath-redirect/external/`, {
+      maxRedirects: 0,
+    });
+    expect(external.headers().location).toBe("https://example.com/a//b\\c?keep=//query\\value");
+  });
 });
