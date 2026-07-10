@@ -45,6 +45,8 @@ export type ExecutionContextLike = {
    * CDN cache adapters that know the concrete shape narrow it themselves.
    */
   cache?: unknown;
+  /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
+  trustedRevalidateOrigin?: string;
 };
 
 // ---------------------------------------------------------------------------

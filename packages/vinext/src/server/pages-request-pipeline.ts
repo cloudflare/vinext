@@ -41,6 +41,7 @@ import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pa
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -256,6 +257,9 @@ export async function runPagesRequest(
   const url = new URL(request.url);
   let pathname = url.pathname;
   const search = url.search;
+  const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+    request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  );
 
   // Step 1: Reconstruct basePathState
   const basePathState: BasePathMatchState = { basePath, hadBasePath };
@@ -326,7 +330,10 @@ export async function runPagesRequest(
     return served ? { type: "handled" } : null;
   };
 
-  if (typeof deps.runMiddleware === "function") {
+  // Next.js skips middleware for authenticated on-demand revalidation. Besides
+  // parity, this keeps the internal credential out of user middleware and any
+  // external destination it may choose.
+  if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
 
     // Bubble waitUntil promises

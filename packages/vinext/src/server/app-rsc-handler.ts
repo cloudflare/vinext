@@ -57,6 +57,7 @@ import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
@@ -615,9 +616,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
+  const runMiddleware = isOnDemandRevalidateRequest(
+    request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  )
+    ? undefined
+    : options.runMiddleware;
 
-  if (options.runMiddleware) {
-    const middlewareResult = await options.runMiddleware({
+  if (runMiddleware) {
+    const middlewareResult = await runMiddleware({
       cleanPathname,
       context: middlewareContext,
       hadBasePath,
@@ -1024,7 +1030,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (pagesDataRequest) {
     options.clearRequestContext();
     if (
-      options.runMiddleware &&
+      runMiddleware &&
       (middlewareContext.status === null ||
         middlewareContext.status === 200 ||
         middlewareContext.status === 404)

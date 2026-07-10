@@ -31,6 +31,10 @@ import {
 } from "./app-rsc-render-mode.js";
 import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
 import type { RenderObservation } from "./cache-proof.js";
+import {
+  PRERENDER_REVALIDATE_HEADER,
+  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
+} from "../utils/protocol-headers.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -51,7 +55,7 @@ export { normalizeMountedSlotsHeader };
  * isolates) with a constant-time comparison, and only the matching value (sent
  * by our own `res.revalidate()`) is honored.
  */
-export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+export { PRERENDER_REVALIDATE_HEADER };
 
 /**
  * Companion header to {@link PRERENDER_REVALIDATE_HEADER}. When set,
@@ -61,7 +65,7 @@ export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
  * (`x-prerender-revalidate-if-generated`) — see
  * `.nextjs-ref/packages/next/src/lib/constants.ts`.
  */
-export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";
+export { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER };
 
 /**
  * Build-time secret that authenticates on-demand revalidation requests, the

@@ -27,3 +27,9 @@ export const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
 
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
+
+/** Authenticates an internal Pages Router on-demand revalidation request. */
+export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+
+/** Restricts on-demand revalidation to paths that were already generated. */
+export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";

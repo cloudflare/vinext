@@ -15,6 +15,8 @@ import type {
 import {
   MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
+  PRERENDER_REVALIDATE_HEADER,
+  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -1418,6 +1420,11 @@ export async function proxyExternalRequest(
   // used only by vinext's own prerender pipeline.
   headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
   headers.delete(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
+  // On-demand revalidation is an internal authenticated request. Config and
+  // middleware rewrites may legitimately proxy ordinary requests externally,
+  // but the credential and its companion control header must remain local.
+  headers.delete(PRERENDER_REVALIDATE_HEADER);
+  headers.delete(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER);
   // Internal App Router dev middleware context must never leave the dev server.
   headers.delete(VINEXT_MW_CTX_HEADER);
 

@@ -1,4 +1,5 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 
@@ -142,7 +143,7 @@ export async function renderPagesFallback(
       pagesRequest,
       pagesUrl,
       undefined,
-      new URL(pagesRequest.url).origin,
+      getRequestExecutionContext()?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
     );
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
