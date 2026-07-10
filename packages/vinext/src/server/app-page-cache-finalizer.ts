@@ -49,7 +49,6 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
-  interceptionContext?: string | null;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -152,12 +151,10 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
-  const rscKey = options.isrRscKey(
-    options.cleanPathname,
-    null,
-    undefined,
-    options.interceptionContext,
-  );
+  // A document request always renders the direct page. Its captured Flight
+  // by-product therefore belongs to the direct RSC variant regardless of any
+  // client-supplied interception header on the HTML request.
+  const rscKey = options.isrRscKey(options.cleanPathname, null, undefined, null);
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {

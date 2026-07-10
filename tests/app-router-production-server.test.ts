@@ -532,6 +532,82 @@ describe("App Router Production server (startProdServer)", () => {
     expect(interceptCss).toContain("scroll-padding-top:20px");
   });
 
+  it("does not let a malformed interception context replace the direct RSC cache entry", async () => {
+    const target = "/interception-cache-target/malformed";
+    const flightHeaders = {
+      Accept: "text/x-component",
+      RSC: "1",
+    };
+
+    const prime = await fetch(`${baseUrl}${target}.rsc`, { headers: flightHeaders });
+    expect(prime.status).toBe(200);
+    expect(await prime.text()).toContain("FULL_PAGE:malformed");
+
+    // The vulnerable path requires a stale entry: a forged source value is
+    // matched as /interception-cache-source during regeneration while its ISR
+    // key collapses onto the direct variant.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const attacker = await fetch(`${baseUrl}${target}.rsc`, {
+      headers: {
+        ...flightHeaders,
+        "X-Vinext-Interception-Context": "//interception-cache-source",
+      },
+    });
+    expect(attacker.status).toBe(200);
+    await attacker.arrayBuffer();
+
+    let settledPayload = "";
+    await waitForCondition(async () => {
+      const settled = await fetch(`${baseUrl}${target}.rsc`, {
+        headers: {
+          ...flightHeaders,
+          "X-Vinext-Interception-Context": "//interception-cache-source",
+        },
+      });
+      settledPayload = await settled.text();
+      return settled.headers.get("x-vinext-cache") === "HIT";
+    });
+    expect(settledPayload).toContain("FULL_PAGE:malformed");
+    expect(settledPayload).not.toContain("INTERCEPTED_MODAL:malformed");
+
+    const victim = await fetch(`${baseUrl}${target}.rsc`, { headers: flightHeaders });
+    expect(victim.status).toBe(200);
+    const victimPayload = await victim.text();
+    expect(victimPayload).toContain("FULL_PAGE:malformed");
+    expect(victimPayload).not.toContain("INTERCEPTED_MODAL:malformed");
+  });
+
+  it("does not let an HTML request populate an intercepted RSC cache variant", async () => {
+    const target = "/interception-cache-target/html";
+    const source = "/interception-cache-source";
+
+    const attacker = await fetch(`${baseUrl}${target}`, {
+      headers: { "X-Vinext-Interception-Context": source },
+    });
+    expect(attacker.status).toBe(200);
+    expect(await attacker.text()).toContain("FULL_PAGE:html");
+
+    // An HTML HIT proves the finalizer's Promise.all completed, including the
+    // captured RSC by-product write, before the victim navigation starts.
+    await waitForCondition(async () => {
+      const settled = await fetch(`${baseUrl}${target}`);
+      await settled.arrayBuffer();
+      return settled.headers.get("x-vinext-cache") === "HIT";
+    });
+
+    const victim = await fetch(`${baseUrl}${target}.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        RSC: "1",
+        "X-Vinext-Interception-Context": source,
+      },
+    });
+    expect(victim.status).toBe(200);
+    const victimPayload = await victim.text();
+    expect(victimPayload).toContain("INTERCEPTED_MODAL:html");
+    expect(victimPayload).not.toContain("FULL_PAGE:html");
+  });
+
   it("does not reuse cached HTML across requests with different CSP nonces", async () => {
     const firstRes = await fetch(`${baseUrl}/revalidate-test?csp-nonce=first`);
     expect(firstRes.status).toBe(200);

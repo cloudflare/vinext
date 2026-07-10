@@ -791,6 +791,22 @@ describe("App Router integration", () => {
     expect(rscPayload.includes(`route:/photos/42${nul}/feed`)).toBe(false);
   });
 
+  it("does not intercept malformed source context pathnames", async () => {
+    for (const interceptionContext of ["//feed", "/feed?tab=popular", "/feed#modal"]) {
+      const res = await fetch(`${baseUrl}/photos/42.rsc`, {
+        headers: {
+          Accept: "text/x-component",
+          "X-Vinext-Interception-Context": interceptionContext,
+        },
+      });
+      expect(res.status).toBe(200);
+
+      const rscPayload = await res.text();
+      expect(rscPayload).toContain("Full photo view");
+      expect(rscPayload).not.toContain("photo-modal");
+    }
+  });
+
   // --- Intercepting routes with dynamic source route ---
   // Regression: pickRouteParams must extract actual URL param values
   // (e.g. "42") from the request pathname, not the literal pattern strings

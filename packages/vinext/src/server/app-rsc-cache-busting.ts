@@ -66,10 +66,6 @@ function encodeBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-function normalizeHeaderValue(value: string | null): string {
-  return value ?? "0";
-}
-
 function normalizeCompatibilityId(value: string | null | undefined): string | null {
   return value && value.length > 0 ? value : null;
 }
@@ -174,8 +170,8 @@ function createCacheBustingInput(
   headers: Headers,
   options: CreateCacheBustingInputOptions = {},
 ): string | null {
-  // The order of these values determines the hash. Changing it is a breaking
-  // cache-key change and requires accepting the previous hash during rollout.
+  // The order of these values determines the hash. Older clients are safely
+  // redirected to the current canonical URL when this encoding changes.
   const values = [
     headers.get(NEXT_ROUTER_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
@@ -192,7 +188,11 @@ function createCacheBustingInput(
     return null;
   }
 
-  return values.map(normalizeHeaderValue).join(",");
+  // JSON array serialization is injective for this string/null tuple: field
+  // boundaries cannot be forged with commas, null remains distinct from the
+  // literal string "0", and six-field compatibility inputs cannot alias the
+  // seven-field canonical form.
+  return JSON.stringify(values);
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {

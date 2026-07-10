@@ -435,4 +435,32 @@ test.describe("Next.js compat: client cache", () => {
     expect(await navigateTo(page, "#client-cache-none", "2")).toBe(refreshed);
     expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
   });
+
+  test("HTML request headers cannot replace an intercepted navigation payload", async ({
+    page,
+  }) => {
+    // Next.js hard navigations render the direct target while soft navigation
+    // from an intercepting source renders the modal branch:
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/parallel-routes-and-interception
+    const source = "/interception-cache-source";
+    const target = "/interception-cache-target/html-browser";
+
+    await page.setExtraHTTPHeaders({ "X-Vinext-Interception-Context": source });
+    await page.goto(target);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("interception-cache-full-page")).toHaveText(
+      "FULL_PAGE:html-browser",
+    );
+
+    await page.setExtraHTTPHeaders({});
+    await page.goto(source);
+    await waitForAppRouterHydration(page);
+    await page.click("#interception-cache-browser-link");
+
+    await expect(page).toHaveURL(target);
+    await expect(page.getByTestId("interception-cache-modal")).toHaveText(
+      "INTERCEPTED_MODAL:html-browser",
+    );
+    await expect(page.getByTestId("interception-cache-full-page")).not.toBeVisible();
+  });
 });

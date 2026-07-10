@@ -4,6 +4,7 @@ import {
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
+import { normalizeInterceptionContextPathname } from "./app-interception-context-header.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 
 /**
@@ -137,9 +138,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       // header for the rewrite to gate on, so we render the direct route.
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
       if (sourcePathname === null) return null;
+      const normalizedSourcePathname = normalizeInterceptionContextPathname(sourcePathname);
+      if (normalizedSourcePathname === null) return null;
 
       const urlParts = appRscPathnameParts(pathname);
-      const sourceParts = appRscPathnameParts(sourcePathname);
+      const sourceParts = appRscPathnameParts(normalizedSourcePathname);
       const matchedSourceRoute = trieMatch(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {

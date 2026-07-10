@@ -500,6 +500,29 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/showcase/multi/slug")).toBeNull();
     });
 
+    it("uses the same canonical source pathname as the ISR cache identity", () => {
+      const matcher = createAppRscRouteMatcher([
+        route("/feed", ["feed"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["layout"],
+                page: "modal-photo",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ]);
+
+      expect(matcher.findIntercept("/photos/42", "/unused/%2e%2e//feed")).not.toBeNull();
+      for (const invalid of ["//feed", "/feed?tab=popular", "/feed#modal"]) {
+        expect(matcher.findIntercept("/photos/42", invalid)).toBeNull();
+      }
+    });
+
     it("accepts descendants of the intercepting route as valid sources", () => {
       // Header regex appends `(?:/.*)?` to allow any descendant of the
       // intercepting route to trigger the rewrite.

@@ -1,6 +1,7 @@
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { AppElementsWire, type AppElementsInterception } from "./app-elements.js";
-import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
+import { normalizeInterceptionContextPathname } from "./app-interception-context-header.js";
+import { normalizePath } from "./normalize-path.js";
 
 type AppPageRenderIdentityInput = {
   displayPathname: string;
@@ -29,8 +30,7 @@ function normalizeAppPageRenderMatchedPathname(pathname: string): string {
 }
 
 export function normalizeAppPageInterceptionProofPathname(pathname: string | null): string | null {
-  if (pathname === null || !isInterceptionMatchedUrlPath(pathname)) return null;
-  return normalizeAppPageRenderMatchedPathname(pathname);
+  return pathname === null ? null : normalizeInterceptionContextPathname(pathname);
 }
 
 export function createAppPageRenderIdentity(

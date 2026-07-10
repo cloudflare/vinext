@@ -304,6 +304,25 @@ describe("normalizeRscRequest — interception context sanitization", () => {
     expect(result.interceptionContextHeader).toBe("/feed/photos/42");
   });
 
+  it("canonicalizes interception context before matching and cache keying", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req("/page", { "X-Vinext-Interception-Context": "/unused/%2e%2e//feed/" }),
+        "",
+      ),
+    );
+    expect(result.interceptionContextHeader).toBe("/feed");
+  });
+
+  it("rejects interception context values that are not path-only URLs", () => {
+    for (const value of ["//feed", "/feed?tab=popular", "/feed#modal"]) {
+      const result = normalized(
+        normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": value }), ""),
+      );
+      expect(result.interceptionContextHeader).toBeNull();
+    }
+  });
+
   it("strips null bytes from interception context header to prevent header injection", () => {
     // new Request() rejects \0 in header values, so construct a structural fake.
     const request = {

@@ -108,6 +108,25 @@ describe("App Router RSC cache-busting", () => {
     expect(feedHash).not.toBe(galleryHash);
   });
 
+  it("uses an injective encoding for absent, literal, and delimiter-bearing headers", async () => {
+    const absent = createRscRequestHeaders();
+    absent.set("next-router-state-tree", "tree");
+    const literalZero = new Headers(absent);
+    literalZero.set("next-url", "0");
+    const splitFields = new Headers(absent);
+    splitFields.set("next-url", "/feed");
+    splitFields.set("x-vinext-interception-context", "/photos/42");
+    const commaSpliced = new Headers(absent);
+    commaSpliced.set("next-url", "/feed,/photos/42");
+
+    await expect(computeRscCacheBustingSearchParam(absent)).resolves.not.toBe(
+      await computeRscCacheBustingSearchParam(literalZero),
+    );
+    await expect(computeRscCacheBustingSearchParam(splitFields)).resolves.not.toBe(
+      await computeRscCacheBustingSearchParam(commaSpliced),
+    );
+  });
+
   it("varies loading-shell prefetch payloads from normal navigations", async () => {
     const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
     const prefetchShellHash = await computeRscCacheBustingSearchParam(
@@ -234,7 +253,9 @@ describe("App Router RSC cache-busting", () => {
 
   it("accepts legacy FNV cache-busting params during rolling upgrades", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-    const legacyHash = fnv1a64("0,0,0,0,0,slot:modal:/");
+    const legacyHash = fnv1a64(
+      JSON.stringify([null, null, null, null, null, "slot:modal:/", null]),
+    );
     const request = new Request(`https://example.com/photos/42.rsc?_rsc=${legacyHash}`, {
       headers,
     });
@@ -246,7 +267,9 @@ describe("App Router RSC cache-busting", () => {
 
   it("accepts previous SHA cache-busting params after adding a varying header", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/");
+    const previousHash = await sha256CacheBustingHash(
+      JSON.stringify([null, null, null, null, null, "slot:modal:/"]),
+    );
     const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
       headers,
     });
@@ -254,6 +277,21 @@ describe("App Router RSC cache-busting", () => {
     await expect(
       resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
     ).resolves.toBeNull();
+  });
+
+  it("redirects hashes from the ambiguous pre-upgrade encoding", async () => {
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const ambiguousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/,0");
+    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${ambiguousHash}`, {
+      headers,
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).not.toContain(ambiguousHash);
   });
 
   it("ignores non-RSC and mutating requests", async () => {

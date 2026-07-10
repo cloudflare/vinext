@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import vinext from "../packages/vinext/src/index.js";
+import { computeRscCacheBustingSearchParam } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -30,7 +31,8 @@ function createWorkersLikeEdge(handler: AppHandler) {
       return originRequests;
     },
     async fetch(request: Request): Promise<Response> {
-      const cacheKey = new URL(request.url).pathname;
+      const url = new URL(request.url);
+      const cacheKey = `${url.pathname}${url.search}`;
       const cached = entries.get(cacheKey);
       if (cached) return cached.clone();
 
@@ -187,6 +189,39 @@ describe("App Router production responses with a CDN-managed cache", () => {
     expect(firstRsc.headers.get("cdn-cache-control")).toMatch(/public, max-age=31536000/);
     await rscEdge.fetch(rscRequest());
     expect(rscEdge.originRequests).toBe(1);
+  });
+
+  it("rejects a different RSC variant at an intercepted navigation's CDN cache URL", async () => {
+    const edge = createWorkersLikeEdge(handler);
+    const victimHeaders = new Headers({
+      accept: "text/x-component",
+      rsc: "1",
+      "x-vinext-interception-context": "/interception-source",
+    });
+    const victimHash = await computeRscCacheBustingSearchParam(victimHeaders);
+    const victimUrl = `https://example.com/interception-target.rsc?_rsc=${victimHash}`;
+
+    // With the old comma-joined fingerprint, this six-field compatibility
+    // input is byte-identical to the victim's seven-field input. It must be
+    // canonicalized rather than rendered and stored at the victim's URL.
+    const attacker = await edge.fetch(
+      new Request(victimUrl, {
+        headers: {
+          accept: "text/x-component",
+          rsc: "1",
+          "next-url": "0,/interception-source",
+        },
+      }),
+    );
+    expect(attacker.status).toBe(307);
+    expect(attacker.headers.get("location")).not.toContain(`_rsc=${victimHash}`);
+
+    const victim = await edge.fetch(new Request(victimUrl, { headers: victimHeaders }));
+    expect(victim.status).toBe(200);
+    const victimPayload = await victim.text();
+    expect(victimPayload).toContain("CDN_INTERCEPTED_MODAL");
+    expect(victimPayload).not.toContain("CDN_FULL_PAGE");
+    expect(edge.originRequests).toBe(2);
   });
 
   it("returns a streaming no-store response when verification exceeds its deadline", async () => {

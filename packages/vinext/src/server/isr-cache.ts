@@ -410,12 +410,18 @@ export function appIsrRscKey(
   interceptionContext?: string | null,
 ): string {
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
-  const sourceVariant =
+  const normalizedInterceptionContext =
     interceptionContext === undefined || interceptionContext === null
       ? null
       : normalizeInterceptionContextForCacheKey(interceptionContext);
+  const sourceVariant =
+    interceptionContext === undefined || interceptionContext === null
+      ? null
+      : normalizedInterceptionContext === null
+        ? `source-invalid:${fnv1a64(interceptionContext)}`
+        : `source:${fnv1a64(normalizedInterceptionContext)}`;
   const variant = [
-    sourceVariant ? `source:${fnv1a64(sourceVariant)}` : null,
+    sourceVariant,
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
   ]

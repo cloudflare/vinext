@@ -434,12 +434,7 @@ export async function readAppPageCacheResponse(
             // computed lazily so a deduped (skipped) regen pays nothing.
             options.isRscRequest
               ? isrKey
-              : options.isrRscKey(
-                  options.cleanPathname,
-                  null,
-                  options.renderMode,
-                  options.interceptionContext,
-                ),
+              : options.isrRscKey(options.cleanPathname, null, options.renderMode, null),
             buildAppPageCacheValue(
               "",
               revalidatedPage.rscData,

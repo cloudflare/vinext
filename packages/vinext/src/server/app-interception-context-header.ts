@@ -1,3 +1,6 @@
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
+
 /**
  * Normalize the `x-vinext-interception-context` header from inbound requests.
  *
@@ -30,6 +33,17 @@
 /** Hard cap on the byte length of the interception-context header value. */
 const MAX_INTERCEPTION_CONTEXT_LENGTH = 1024;
 
+/**
+ * Return the canonical pathname used by both interception matching and cache
+ * identity, or null when the value cannot be a browser-produced pathname.
+ */
+export function normalizeInterceptionContextPathname(value: string): string | null {
+  if (!isInterceptionMatchedUrlPath(value)) return null;
+
+  const normalized = normalizePath(normalizePathnameForRouteMatch(value));
+  return isInterceptionMatchedUrlPath(normalized) ? normalized : null;
+}
+
 export function normalizeInterceptionContextHeader(raw: string | null | undefined): string | null {
   if (!raw) return null;
   // Strip null bytes first so length bounds can't be evaded by padding with \0.
@@ -41,5 +55,5 @@ export function normalizeInterceptionContextHeader(raw: string | null | undefine
   if (!stripped.startsWith("/")) return null;
   // Raw whitespace is not legitimate inside a pathname.
   if (/\s/.test(stripped)) return null;
-  return stripped;
+  return normalizeInterceptionContextPathname(stripped);
 }
