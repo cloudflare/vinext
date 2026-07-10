@@ -55,7 +55,11 @@ const projectServers = {
   },
   "app-router-client-cache": {
     testDir: "./tests/e2e/app-router/nextjs-compat",
-    testMatch: ["client-cache.spec.ts", "segment-cache-client-params.spec.ts"],
+    testMatch: [
+      "client-cache.spec.ts",
+      "segment-cache-client-params.spec.ts",
+      "streaming-head-insertion.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4191" },
     server: {
       command:

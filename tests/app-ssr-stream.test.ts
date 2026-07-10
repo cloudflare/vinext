@@ -262,6 +262,8 @@ async function runTransform(
 async function runDelayedTransform(
   chunks: string[],
   options: {
+    injectHTML?: string;
+    injectAfterHeadOpenHTML?: string;
     inlineCss?: Record<string, string>;
   } = {},
 ): Promise<string> {
@@ -284,7 +286,12 @@ async function runDelayedTransform(
 
   return new Response(
     source.pipeThrough(
-      createTickBufferedTransform(createNoopRscEmbedTransform(), "", "", options.inlineCss),
+      createTickBufferedTransform(
+        createNoopRscEmbedTransform(),
+        options.injectHTML ?? "",
+        options.injectAfterHeadOpenHTML ?? "",
+        options.inlineCss,
+      ),
     ),
   ).text();
 }
@@ -388,6 +395,224 @@ describe("createTickBufferedTransform pre-head splice", () => {
     expect(endIdx).toBeLessThan(closeIdx);
   });
 
+  it("does not treat </head> inside a beforeInteractive script as the insertion point", async () => {
+    const script = '<script id="theme">self.theme = "</head><img data-payload src=x>";</script>';
+    const out = await runDelayedTransform(["<html><head>", "</head><body></body></html>"], {
+      injectHTML: '<meta data-end-of-head="true">',
+      injectAfterHeadOpenHTML: script,
+    });
+
+    expect(out).toContain(`${script}<meta data-end-of-head="true"></head>`);
+  });
+
+  it("preserves document-close text inside a beforeInteractive script", async () => {
+    const script = '<script id="theme">self.theme = "</body></html>";</script>';
+    const transform = createTickBufferedTransform(
+      createNoopRscEmbedTransform(),
+      '<meta data-end-of-head="true">',
+      script,
+    );
+    const source = new TransformStream<Uint8Array, Uint8Array>();
+    const reader = source.readable.pipeThrough(transform).getReader();
+    const writer = source.writable.getWriter();
+    const firstRead = reader.read();
+
+    await writer.write(new TextEncoder().encode("<html><head>"));
+    const first = await firstRead;
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value)).toContain(script);
+
+    const remainderPromise = (async () => {
+      let remainder = "";
+      while (true) {
+        const result = await reader.read();
+        if (result.done) return remainder;
+        remainder += new TextDecoder().decode(result.value);
+      }
+    })();
+    await writer.write(new TextEncoder().encode("</head><body></body></html>"));
+    await writer.close();
+    const remainder = await remainderPromise;
+
+    expect(remainder).toContain('<meta data-end-of-head="true"></head>');
+  });
+
+  it.each([
+    ["script data", '<script>self.value = "</head>";</script>'],
+    ["style data", '<style>.x::after { content: "</head>"; }</style>'],
+    ["title data", "<title>before </head> after</title>"],
+    ["comment", "<!-- before </head> after -->"],
+    ["attribute", '<meta content="before </head> after">'],
+    ["template contents", "<template><div>before </head> after</div></template>"],
+  ])("ignores closing-head text in %s", async (_label, context) => {
+    const out = await runTransform([`<html><head>${context}</head><body></body></html>`], {
+      injectHTML: '<meta data-end-of-head="true">',
+    });
+
+    expect(out).toContain(`${context}<meta data-end-of-head="true"></head>`);
+  });
+
+  it("tracks script double-escaped data before finding the real head close", async () => {
+    const script = "<script><!--<script></head></script>--></script>";
+    const out = await runTransform([`<html><head>${script}</head><body></body></html>`], {
+      injectHTML: '<meta data-end-of-head="true">',
+    });
+
+    expect(out).toContain(`${script}<meta data-end-of-head="true"></head>`);
+  });
+
+  it("skips over large raw-text bodies without lowercasing each character", async () => {
+    const toLowerCaseDescriptor = Object.getOwnPropertyDescriptor(String.prototype, "toLowerCase");
+    if (!toLowerCaseDescriptor) throw new Error("String.prototype.toLowerCase is unavailable");
+    const originalToLowerCase = toLowerCaseDescriptor.value as (this: string) => string;
+    let singleCharacterCalls = 0;
+    Object.defineProperty(String.prototype, "toLowerCase", {
+      ...toLowerCaseDescriptor,
+      value: function (this: string): string {
+        if (this.length === 1) singleCharacterCalls++;
+        return Reflect.apply(originalToLowerCase, this, []);
+      },
+    });
+
+    let out: string;
+    try {
+      const scriptBody = "a".repeat(5 * 1024 * 1024);
+      out = await runTransform(
+        [`<html><head><script>${scriptBody}</script></head><body></body></html>`],
+        { injectHTML: '<meta data-end-of-head="true">' },
+      );
+    } finally {
+      Object.defineProperty(String.prototype, "toLowerCase", toLowerCaseDescriptor);
+    }
+
+    expect(out).toContain('</script><meta data-end-of-head="true"></head>');
+    // Tag parsing still lowercases a bounded number of individual characters.
+    // Raw-text scanning must not make that count proportional to the script.
+    expect(singleCharacterCalls).toBeGreaterThan(0);
+    expect(singleCharacterCalls).toBeLessThan(1_000);
+  });
+
+  it.each([
+    [
+      "script data",
+      [
+        "<html><head><scr",
+        'ipt>self.value = "</he',
+        'ad>";</scr',
+        "ipt></he",
+        "ad><body></body></html>",
+      ],
+      '<script>self.value = "</head>";</script>',
+    ],
+    [
+      "comment",
+      ["<html><head><!-", "- before </he", "ad> after --", "></head><body></body></html>"],
+      "<!-- before </head> after -->",
+    ],
+    [
+      "abruptly closed comment",
+      ["<html><head><!-", "--></he", "ad><body></body></html>"],
+      "<!--->",
+    ],
+    [
+      "comment ending in --!>",
+      ["<html><head><!-- before --", "!></he", "ad><body></body></html>"],
+      "<!-- before --!>",
+    ],
+    [
+      "quoted attribute",
+      ['<html><head><meta content="before </he', 'ad> after">', "</head><body></body></html>"],
+      '<meta content="before </head> after">',
+    ],
+    [
+      "template contents",
+      [
+        "<html><head><temp",
+        "late><div>before </he",
+        "ad> after</div></temp",
+        "late></head><body></body></html>",
+      ],
+      "<template><div>before </head> after</div></template>",
+    ],
+    [
+      "double-escaped script data",
+      [
+        "<html><head><script><!",
+        "--<scr",
+        "ipt></he",
+        "ad></scr",
+        "ipt>--></scr",
+        "ipt></head><body></body></html>",
+      ],
+      "<script><!--<script></head></script>--></script>",
+    ],
+  ])("retains %s scanner state across flush ticks", async (_label, chunks, context) => {
+    const out = await runDelayedTransform(chunks, {
+      injectHTML: '<meta data-end-of-head="true">',
+    });
+
+    expect(out).toContain(`${context}<meta data-end-of-head="true"></head>`);
+  });
+
+  it("finds a real closing head tag split across flush ticks", async () => {
+    const out = await runDelayedTransform(
+      ["<html><head><title>x</title></he", "ad><body></body></html>"],
+      { injectHTML: '<meta data-end-of-head="true">' },
+    );
+
+    expect(out).toContain('<title>x</title><meta data-end-of-head="true"></head>');
+  });
+
+  it.each([
+    ["uppercase", "</HEAD>"],
+    ["whitespace", "</head >"],
+    ["end-tag attributes", '</head data-marker=">">'],
+  ])("recognizes a browser-valid %s closing head tag", async (_label, closeTag) => {
+    const out = await runTransform(
+      [`<html><head><title>x</title>${closeTag}<body></body></html>`],
+      {
+        injectHTML: '<meta data-end-of-head="true">',
+      },
+    );
+
+    expect(out).toContain(`<title>x</title><meta data-end-of-head="true">${closeTag}`);
+  });
+
+  it("recognizes a browser-valid closing head tag split inside its attributes", async () => {
+    const out = await runDelayedTransform(
+      ["<html><head><title>x</title></HE", 'AD data-marker=">', '"><body></body></html>'],
+      { injectHTML: '<meta data-end-of-head="true">' },
+    );
+
+    expect(out).toContain('<title>x</title><meta data-end-of-head="true"></HEAD data-marker=">">');
+  });
+
+  it("continues streaming safe head content before later input arrives", async () => {
+    const transform = createTickBufferedTransform(
+      createNoopRscEmbedTransform(),
+      '<meta data-end-of-head="true">',
+    );
+    const source = new TransformStream<Uint8Array, Uint8Array>();
+    const reader = source.readable.pipeThrough(transform).getReader();
+    const writer = source.writable.getWriter();
+    const firstRead = reader.read();
+
+    await writer.write(new TextEncoder().encode("<html><head><meta name=first>"));
+    const first = await firstRead;
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value)).toBe("<html><head><meta name=first>");
+
+    await writer.write(new TextEncoder().encode("</head><body></body></html>"));
+    await writer.close();
+    let remainder = "";
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      remainder += new TextDecoder().decode(result.value);
+    }
+    expect(remainder).toContain('<meta data-end-of-head="true"></head>');
+  });
+
   it("handles <head> with attributes", async () => {
     const html = '<!DOCTYPE html><html><head class="dark"></head><body></body></html>';
     const out = await runTransform([html], {
@@ -431,6 +656,36 @@ describe("createTickBufferedTransform pre-head splice", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   // (regression for #1532)
   describe("</body></html> suffix is the last thing in the stream", () => {
+    it("preserves document-close text in body scripts across flush ticks", async () => {
+      const transform = createTickBufferedTransform(createNoopRscEmbedTransform());
+      const source = new TransformStream<Uint8Array, Uint8Array>();
+      const reader = source.readable.pipeThrough(transform).getReader();
+      const writer = source.writable.getWriter();
+      let out = "";
+      const readPromise = (async () => {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) return;
+          out += new TextDecoder().decode(result.value);
+        }
+      })();
+
+      await writer.write(new TextEncoder().encode("<html><head></head><body>"));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await writer.write(
+        new TextEncoder().encode('<script>self.value = "</body></html>";</script>'),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await writer.write(new TextEncoder().encode("</body></ht"));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await writer.write(new TextEncoder().encode("ml>"));
+      await writer.close();
+      await readPromise;
+
+      expect(out).toContain('<script>self.value = "</body></html>";</script>');
+      expect(out.endsWith("</body></html>")).toBe(true);
+    });
+
     it("moves the </body></html> suffix to the end after trailing scripts and RSC chunks", async () => {
       // Simulate React Fizz emitting the closing tags BEFORE flush appends
       // trailing flight chunks / preinit scripts.
@@ -451,6 +706,26 @@ describe("createTickBufferedTransform pre-head splice", () => {
       expect(out.slice(0, -suffix.length)).not.toContain(suffix);
       // Trailing scripts land before the suffix, not after it.
       expect(out).toContain('<script id="trailing-rsc">rsc()</script></body></html>');
+    });
+
+    it.each([
+      ["uppercase", "</BODY></HTML>"],
+      ["whitespace", "</body >\n</html >"],
+      ["end-tag attributes", '</body data-marker=">"></html data-marker=">">'],
+    ])("moves a browser-valid %s document suffix", async (_label, suffix) => {
+      const rsc = {
+        flush: () => "",
+        finalize: async () => '<script id="trailing-rsc">rsc()</script>',
+        getRawBuffer: async () => new ArrayBuffer(0),
+      };
+      const transform = createTickBufferedTransform(rsc);
+      const out = await new Response(
+        createTextStream([`<html><head></head><body>content${suffix}`]).pipeThrough(transform),
+      ).text();
+
+      expect(out).not.toContain(suffix);
+      expect(out).toContain('content<script id="trailing-rsc">rsc()</script></body></html>');
+      expect(out.endsWith("</body></html>")).toBe(true);
     });
 
     it("ensures the suffix is at the end even when injectHTML fallback fires", async () => {
