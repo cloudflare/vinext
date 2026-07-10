@@ -103,7 +103,12 @@ const nextConfig: NextConfig = {
           destination: "/encoded-parity/page/:path*",
         },
         // Used by Vitest: app-router.test.ts
-        { source: "/rewrite-about", destination: "/about" },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/rewrite-about"
+            : "/rewrite-about",
+          destination: "/about",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",

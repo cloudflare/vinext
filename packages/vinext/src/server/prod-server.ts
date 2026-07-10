@@ -1772,6 +1772,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
       const hadBasePath = !basePath || hasBasePath(pathname, basePath);
+      let configMatchPathname = stripBasePath(rawPagesPathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
@@ -1807,6 +1808,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         );
         url = pagePathname + qs;
         pathname = pagePathname;
+        configMatchPathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
@@ -1845,6 +1847,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
+        configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the

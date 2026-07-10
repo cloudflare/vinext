@@ -71,6 +71,7 @@ import {
 import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
+import { stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -4776,6 +4777,7 @@ export const loadServerActionClient = ${
                   middlewareUrl = (middlewarePathname.slice(bp.length) || "/") + middlewareQs;
                 }
               }
+              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], bp);
 
               if (nextConfig) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -4831,6 +4833,7 @@ export const loadServerActionClient = ${
                   url = pagePathname + qs;
                   middlewareUrl = url;
                   pathname = pagePathname;
+                  configMatchPathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
@@ -5051,6 +5054,7 @@ export const loadServerActionClient = ${
                 hasMiddleware: capturedMiddlewarePath !== null,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
+                configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n

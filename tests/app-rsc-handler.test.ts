@@ -1090,6 +1090,39 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("does not match config redirects through percent-encoded literal aliases", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about", permanent: false }],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/%6Fld-about"), null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("preserves raw encoding when substituting repeated config redirect captures", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [
+        {
+          source: "/legacy/:id",
+          destination: "/target/:id/:id",
+          permanent: false,
+        },
+      ],
+    });
+
+    const response = await handler(new Request("https://example.test/docs/legacy/a%252Fb"), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/target/a%252Fb/a%252Fb");
+  });
+
   it("does not prepend basePath to opt-out redirects outside basePath", async () => {
     const handler = createHandler({
       configHeaders: [],
@@ -2083,6 +2116,24 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ cleanPathname: "/about" }),
     );
+  });
+
+  it("does not match config rewrites through percent-encoded literal aliases", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/%61lias"), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("propagates rewritten query parameters to App pages", async () => {

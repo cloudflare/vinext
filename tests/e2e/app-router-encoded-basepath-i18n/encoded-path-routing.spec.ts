@@ -1,13 +1,21 @@
 import { expect, test } from "@playwright/test";
 import { request as httpRequest } from "node:http";
 
-function getRawPath(path: string): Promise<{ body: string; status: number }> {
+function getRawPath(path: string): Promise<{ body: string; location?: string; status: number }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "localhost", path, port: 4196 }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => (body += chunk));
-      res.on("end", () => resolve({ body, status: res.statusCode ?? 0 }));
+      res.on("end", () =>
+        resolve({
+          body,
+          location: Array.isArray(res.headers.location)
+            ? res.headers.location[0]
+            : res.headers.location,
+          status: res.statusCode ?? 0,
+        }),
+      );
     });
     req.on("error", reject);
     req.end();
@@ -49,4 +57,29 @@ test("honors encoded middleware rewrites behind basePath and i18n", async () => 
   const response = await getRawPath("/docs/%61dmin");
   expect(response.status).toBe(200);
   expect(response.body).toContain("Protected admin content");
+});
+
+test("keeps config source literals distinct behind basePath and i18n", async () => {
+  const literalRewrite = await getRawPath("/docs/rewrite-about");
+  expect(literalRewrite.status).toBe(200);
+  expect(literalRewrite.body).toContain("About");
+
+  const encodedRewrite = await getRawPath("/docs/%72ewrite-about");
+  expect(encodedRewrite.status).toBe(404);
+  expect(encodedRewrite.body).not.toContain("About");
+
+  const literalRedirect = await getRawPath("/docs/old-about");
+  expect(literalRedirect.status).toBe(308);
+  expect(literalRedirect.location).toBe("/docs/about");
+
+  const encodedRedirect = await getRawPath("/docs/%6Fld-about");
+  expect(encodedRedirect.status).toBe(404);
+  expect(encodedRedirect.location).toBeUndefined();
+});
+
+test("preserves raw redirect captures behind basePath and i18n", async () => {
+  const response = await getRawPath("/docs/repeat-redirect/a%252Fb");
+
+  expect(response.status).toBe(307);
+  expect(response.location).toBe("/docs/blog/a%252Fb/a%252Fb");
 });

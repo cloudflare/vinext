@@ -388,14 +388,16 @@ async function applyRewrite(
     request: Request;
     requestContext: RequestContext;
     rewrites: NextRewrite[];
+    /** Raw pathname identity used for config source matching and capture substitution. */
     paramsPathname?: string;
   },
   cleanPathname: string,
 ): Promise<Response | string | null> {
   if (!options.rewrites.length) return null;
 
+  const sourcePathname = options.paramsPathname ?? cleanPathname;
   const rewritten = matchRewrite(
-    cleanPathname,
+    sourcePathname,
     options.rewrites,
     options.requestContext,
     options.basePathState,
@@ -586,7 +588,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
 
-  const redirectPathname = matchPathname(stripRscSuffix(pathname));
+  // Config sources match the request's raw encoded identity. Internal route
+  // matching uses the normalized pathname separately, but decoding literal
+  // source segments here would make aliases such as `/%72ewrite` match
+  // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
+  // original percent-encoding for Location substitution.
+  const redirectPathname = matchPathname(requestCleanPathname);
   const redirect = matchRedirect(
     redirectPathname,
     options.configRedirects,
