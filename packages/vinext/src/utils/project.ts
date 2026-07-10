@@ -320,11 +320,23 @@ export type ProjectInfo = {
   nativeModulesToStub: string[];
 };
 
+/**
+ * Resolve the JSON/JSONC Wrangler config path in the given directory, preferring
+ * `wrangler.jsonc`. Returns null when neither exists. `wrangler.toml` is not a
+ * parse target here; callers that handle TOML do so separately.
+ */
+export function resolveWranglerJsonPath(root: string): string | null {
+  return (
+    ["wrangler.jsonc", "wrangler.json"]
+      .map((fileName) => path.join(root, fileName))
+      .find((candidate) => fs.existsSync(candidate)) ?? null
+  );
+}
+
 /** Check whether a wrangler config file exists in the given directory. */
 export function hasWranglerConfig(root: string): boolean {
   return (
-    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
-    fs.existsSync(path.join(root, "wrangler.json")) ||
+    resolveWranglerJsonPath(root) !== null ||
     fs.existsSync(path.join(root, "wrangler.toml")) ||
     fs.existsSync(path.join(root, "cloudflare.config.ts"))
   );

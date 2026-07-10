@@ -220,6 +220,15 @@ async function runInitExpectExit(dir: string, opts: Partial<InitOptions> = {}): 
   }
 }
 
+async function expectInitRejectsWithoutMutation(dir: string, message: string): Promise<void> {
+  const before = snapshotProject(dir);
+  const exec = vi.fn();
+
+  await expect(runInit(dir, { _exec: exec })).rejects.toThrow(message);
+  expect(exec).not.toHaveBeenCalled();
+  expect(snapshotProject(dir)).toBe(before);
+}
+
 beforeEach(() => {
   tmpDir = createTmpDir();
 });
@@ -761,43 +770,279 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(config).toContain('prerender: { routes: "*" }');
   });
 
-  it("rejects Wrangler TOML", async () => {
+  it("reuses an existing Wrangler TOML config instead of generating JSONC", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(
       tmpDir,
       "wrangler.toml",
       'name = "existing"\nimages = { binding = "CUSTOM_IMAGES" }\n',
     );
-    const before = snapshotProject(tmpDir);
 
-    await expect(runInit(tmpDir)).rejects.toThrow("wrangler.toml is not supported");
-    expect(snapshotProject(tmpDir)).toBe(before);
+    const { result, output } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    expect(wrangler).toContain('name = "existing"');
+    expect(wrangler).toContain('images = { binding = "CUSTOM_IMAGES" }');
+    expect(wrangler).toContain("cache = { enabled = true }");
+    expect(wrangler).toContain("[[kv_namespaces]]");
+    expect(wrangler).toContain('binding = "VINEXT_KV_CACHE"');
+    expect(wrangler).toContain('id = "<your-kv-namespace-id>"');
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'images: { optimizer: imagesOptimizer({ binding: "CUSTOM_IMAGES" }) }',
+    );
+    expect(output).toContain(
+      "2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in wrangler.toml:",
+    );
+  });
+
+  it("honors table-form Wrangler TOML fields during Cloudflare init", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "existing"
+
+[images]
+binding = "CUSTOM_IMAGES"
+
+[cache]
+enabled = false
+
+[[kv_namespaces]]
+binding = "VINEXT_KV_CACHE"
+id = "existing-id"
+`,
+    );
+
+    const { result, output } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    expect(fs.existsSync(path.join(tmpDir, "wrangler.jsonc"))).toBe(false);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    expect(wrangler).toContain('[images]\nbinding = "CUSTOM_IMAGES"');
+    expect(wrangler).toContain("[cache]\nenabled = true");
+    expect(wrangler.match(/binding = "VINEXT_KV_CACHE"/g)).toHaveLength(1);
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'images: { optimizer: imagesOptimizer({ binding: "CUSTOM_IMAGES" }) }',
+    );
+    expect(output).not.toContain(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+    );
+  });
+
+  it("honors quoted Wrangler TOML owned keys during Cloudflare init", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "existing"
+"cache" = { "enabled" = false }
+"images" = { "binding" = "CUSTOM_IMAGES" }
+
+[[ "kv_namespaces" ]]
+"binding" = "VINEXT_KV_CACHE"
+"id" = "existing-id"
+`,
+    );
+
+    const { result, output } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    expect(wrangler).toContain('"cache" = { "enabled" = true }');
+    expect(wrangler).toContain('"images" = { "binding" = "CUSTOM_IMAGES" }');
+    expect(wrangler.match(/VINEXT_KV_CACHE/g)).toHaveLength(1);
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'images: { optimizer: imagesOptimizer({ binding: "CUSTOM_IMAGES" }) }',
+    );
+    expect(output).not.toContain(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+    );
+  });
+
+  it("honors quoted Wrangler TOML tables during Cloudflare init", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "existing"
+
+[ "images" ]
+binding = "CUSTOM_IMAGES"
+
+[ "cache" ]
+enabled = false
+
+[[ "kv_namespaces" ]]
+binding = "VINEXT_KV_CACHE"
+id = "existing-id"
+`,
+    );
+
+    const { result, output } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    expect(wrangler).toContain('[ "images" ]\nbinding = "CUSTOM_IMAGES"');
+    expect(wrangler).toContain('[ "cache" ]\nenabled = true');
+    expect(wrangler.match(/VINEXT_KV_CACHE/g)).toHaveLength(1);
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'images: { optimizer: imagesOptimizer({ binding: "CUSTOM_IMAGES" }) }',
+    );
+    expect(output).not.toContain(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+    );
+  });
+
+  it("ignores section-like lines inside Wrangler TOML multiline strings", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `name = "existing"
+
+[vars]
+BASIC_BANNER = """
+[cache]
+enabled = false
+[images]
+binding = "FAKE_IMAGES"
+"""
+LITERAL_BANNER = '''
+[[kv_namespaces]]
+binding = "VINEXT_KV_CACHE"
+id = "fake-id"
+'''
+`,
+    );
+
+    const { result, output } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    const viteConfig = readFile(tmpDir, "vite.config.ts");
+    const varsStart = wrangler.indexOf("[vars]");
+    const basicBannerStart = `BASIC_BANNER = """`;
+    const literalBannerStart = "LITERAL_BANNER = '''";
+    const basicBannerClose = wrangler.indexOf(
+      `"""`,
+      wrangler.indexOf(basicBannerStart) + basicBannerStart.length,
+    );
+    const literalBannerClose = wrangler.indexOf(
+      "'''",
+      wrangler.indexOf(literalBannerStart) + literalBannerStart.length,
+    );
+    const realKvNamespace = wrangler.indexOf("[[kv_namespaces]]", literalBannerClose);
+    const cacheConfig = wrangler.indexOf("cache = { enabled = true }");
+    const imagesConfig = wrangler.indexOf('images = { binding = "IMAGES" }');
+
+    expect(varsStart).toBeGreaterThanOrEqual(0);
+    expect(basicBannerClose).toBeGreaterThanOrEqual(0);
+    expect(literalBannerClose).toBeGreaterThanOrEqual(0);
+    expect(cacheConfig).toBeGreaterThanOrEqual(0);
+    expect(imagesConfig).toBeGreaterThanOrEqual(0);
+    expect(cacheConfig).toBeLessThan(varsStart);
+    expect(imagesConfig).toBeLessThan(varsStart);
+    expect(realKvNamespace).toBeGreaterThan(literalBannerClose);
+    expect(wrangler.slice(realKvNamespace)).toContain('binding = "VINEXT_KV_CACHE"');
+    expect(wrangler.slice(realKvNamespace)).toContain('id = "<your-kv-namespace-id>"');
+    expect(wrangler.slice(wrangler.indexOf("[vars]"), basicBannerClose)).not.toContain(
+      "enabled = true",
+    );
+    expect(viteConfig).toContain("imagesOptimizer()");
+    expect(viteConfig).not.toContain("FAKE_IMAGES");
+    expect(output).toContain("Cloudflare setup is incomplete until you finish KV configuration:");
+  });
+
+  it("replaces an owned inline TOML key holding an unexpected value type instead of duplicating it", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      'name = "existing"\ncache = { enabled = 1 }\nimages = { binding = 42 }\n',
+    );
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.toml"]);
+    const wrangler = readFile(tmpDir, "wrangler.toml");
+    expect(wrangler).not.toContain("enabled = 1");
+    expect(wrangler).toContain("cache = { enabled = true }");
+    expect(wrangler).not.toContain("binding = 42");
+    expect(wrangler).toContain('images = { binding = "IMAGES" }');
+  });
+
+  it.each([
+    ["scalar images config", 'name = "existing"\nimages = "IMAGES"\n'],
+    ["dotted images config", 'name = "existing"\nimages.binding = "CUSTOM_IMAGES"\n'],
+    ["dotted cache config", 'name = "existing"\ncache.enabled = false\n'],
+    ["dotted cache table", 'name = "existing"\n\n[cache.foo]\nbar = "baz"\n'],
+    [
+      "quoted dotted images table",
+      'name = "existing"\n\n[ "images" . "foo" ]\nbinding = "CUSTOM_IMAGES"\n',
+    ],
+    [
+      "dotted KV namespace array table",
+      'name = "existing"\n\n[[kv_namespaces.foo]]\nbinding = "VINEXT_KV_CACHE"\nid = "existing-id"\n',
+    ],
+    [
+      "inline KV namespace array",
+      'name = "existing"\nkv_namespaces = [{ binding = "VINEXT_KV_CACHE", id = "existing-id" }]\n',
+    ],
+    [
+      "multiline table images binding",
+      `name = "existing"
+cache = { enabled = false }
+
+[images]
+binding = """
+CUSTOM_IMAGES
+"""
+`,
+    ],
+    [
+      "triple-quoted inline images binding",
+      "name = \"existing\"\nimages = { binding = '''CUSTOM_IMAGES''' }\n",
+    ],
+    [
+      "multiline KV namespace binding",
+      `name = "existing"
+
+[[kv_namespaces]]
+binding = """
+VINEXT_KV_CACHE
+"""
+id = "existing-id"
+`,
+    ],
+    ["malformed images inline table", 'name = "existing"\nimages = { binding = "IMAGES"\n'],
+  ])("rejects unsupported Wrangler TOML %s before mutating the project", async (_name, toml) => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.toml", toml);
+
+    await expectInitRejectsWithoutMutation(
+      tmpDir,
+      "Could not update the existing Wrangler TOML config",
+    );
   });
 
   it("rejects malformed Wrangler JSONC before mutating the project", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "wrangler.jsonc", `{ "name": "broken",\n`);
-    const before = snapshotProject(tmpDir);
-    const exec = vi.fn();
 
-    await expect(runInit(tmpDir, { _exec: exec })).rejects.toThrow(
+    await expectInitRejectsWithoutMutation(
+      tmpDir,
       "Could not parse the existing Wrangler JSON/JSONC config",
     );
-    expect(exec).not.toHaveBeenCalled();
-    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("rejects unsupported Vite config structures before mutating the project", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", `const config = getConfig(); export default config;\n`);
-    const before = snapshotProject(tmpDir);
-    const exec = vi.fn();
 
-    await expect(runInit(tmpDir, { _exec: exec })).rejects.toThrow(
-      "Could not find a static Vite config object",
-    );
-    expect(exec).not.toHaveBeenCalled();
-    expect(snapshotProject(tmpDir)).toBe(before);
+    await expectInitRejectsWithoutMutation(tmpDir, "Could not find a static Vite config object");
   });
 
   it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {
