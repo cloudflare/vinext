@@ -501,6 +501,7 @@ describe("app route handler execution helpers", () => {
         throw { digest: "NEXT_REDIRECT;replace;%2Ftarget;308" };
       },
       isAutoHead: false,
+      isDraftMode: true,
       isProduction: true,
       isrRouteKey(pathname) {
         return "route:" + pathname;
@@ -523,6 +524,9 @@ describe("app route handler execution helpers", () => {
 
     expect(redirectResponse.status).toBe(308);
     expect(redirectResponse.headers.get("location")).toBe("https://example.com/target");
+    expect(redirectResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(reportedErrors).toEqual([]);
 
     const errorResponse = await executeAppRouteHandler({

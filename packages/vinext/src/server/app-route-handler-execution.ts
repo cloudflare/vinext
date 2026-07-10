@@ -92,7 +92,7 @@ type RunAppRouteHandlerResult = {
   response: Response;
 };
 
-function applyDraftModeCachePolicy(response: Response, isDraftMode: boolean): Response {
+export function applyDraftModeCachePolicy(response: Response, isDraftMode: boolean): Response {
   if (!isDraftMode) return response;
 
   const headers = new Headers(response.headers);
@@ -296,25 +296,31 @@ export async function executeAppRouteHandler(
 
     if (specialError) {
       if (specialError.kind === "redirect") {
-        return applyRouteHandlerMiddlewareContext(
-          finalizeRouteHandlerResponse(
-            new Response(null, {
-              status: specialError.statusCode,
-              headers: { Location: specialError.location },
-            }),
-            {
-              pendingCookies,
-              draftCookie,
-              isHead: options.isAutoHead,
-            },
+        return applyDraftModeCachePolicy(
+          applyRouteHandlerMiddlewareContext(
+            finalizeRouteHandlerResponse(
+              new Response(null, {
+                status: specialError.statusCode,
+                headers: { Location: specialError.location },
+              }),
+              {
+                pendingCookies,
+                draftCookie,
+                isHead: options.isAutoHead,
+              },
+            ),
+            options.middlewareContext,
           ),
-          options.middlewareContext,
+          options.isDraftMode === true,
         );
       }
 
-      return applyRouteHandlerMiddlewareContext(
-        new Response(null, { status: specialError.statusCode }),
-        options.middlewareContext,
+      return applyDraftModeCachePolicy(
+        applyRouteHandlerMiddlewareContext(
+          new Response(null, { status: specialError.statusCode }),
+          options.middlewareContext,
+        ),
+        options.isDraftMode === true,
       );
     }
 
@@ -333,9 +339,12 @@ export async function executeAppRouteHandler(
       },
     );
 
-    return applyRouteHandlerMiddlewareContext(
-      new Response(null, { status: 500 }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        new Response(null, { status: 500 }),
+        options.middlewareContext,
+      ),
+      options.isDraftMode === true,
     );
   } finally {
     options.setHeadersAccessPhase(previousHeadersPhase);

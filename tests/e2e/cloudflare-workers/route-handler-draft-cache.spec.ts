@@ -52,6 +52,13 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   });
 
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {
+    const forged = await request.get(`${BASE_URL}/api/draft-isr/forged-${Date.now()}`, {
+      headers: { Cookie: "__prerender_bypass=forged" },
+    });
+    expect(forged.status()).toBe(200);
+    expect(await forged.json()).toMatchObject({ draftMode: false });
+    expect(forged.headers()["cache-control"]).not.toContain("no-store");
+
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;
     const draftFirst = await readDraftIsrRoute(request, draftFirstScenario);

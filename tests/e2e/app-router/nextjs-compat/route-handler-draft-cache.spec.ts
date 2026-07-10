@@ -30,6 +30,35 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
 // Extended from Next.js: test/e2e/app-dir/draft-mode/draft-mode.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/draft-mode/draft-mode.test.ts
 test.describe("production route-handler draft-mode cache isolation", () => {
+  test("does not accept a forged draft cookie", async ({ request }) => {
+    const response = await request.get(`${BASE}/nextjs-compat/api/draft-isr/forged-${Date.now()}`, {
+      headers: { Cookie: "__prerender_bypass=forged" },
+    });
+
+    expect(response.status()).toBe(200);
+    expect((await response.json()) as DraftIsrPayload).toMatchObject({ draftMode: false });
+    expect(response.headers()["cache-control"]).not.toContain("no-store");
+  });
+
+  test("applies the draft cache policy to route-handler redirects", async ({ request }) => {
+    await setDraftMode(request, true);
+
+    try {
+      const response = await request.post(`${BASE}/nextjs-compat/api/post-form-redirect`, {
+        headers: { "x-test-draft-cache-policy": "1" },
+        maxRedirects: 0,
+      });
+
+      expect(response.status()).toBe(307);
+      expect(response.headers()["cache-control"]).toContain("no-store");
+      expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+      expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+      expect(response.headers()["cache-tag"]).toBeUndefined();
+    } finally {
+      await setDraftMode(request, false);
+    }
+  });
+
   test("does not publish a draft response to anonymous requests", async ({ request }) => {
     await setDraftMode(request, true);
     const scenario = `draft-first-${Date.now()}`;

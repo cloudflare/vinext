@@ -74,6 +74,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.headers.set("x-mw-has-session", "true");
   }
 
+  if (
+    pathname === "/nextjs-compat/api/post-form-redirect" &&
+    request.headers.get("x-test-draft-cache-policy") === "1"
+  ) {
+    response.headers.set("cdn-cache-control", "public, s-maxage=60");
+    response.headers.set("cloudflare-cdn-cache-control", "public, s-maxage=60");
+    response.headers.set("cache-tag", "draft-redirect");
+  }
+
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
   if (pathname === "/middleware-redirect") {

@@ -28,6 +28,7 @@ import {
 } from "./app-route-handler-policy.js";
 import { readAppRouteHandlerCacheResponse } from "./app-route-handler-cache.js";
 import {
+  applyDraftModeCachePolicy,
   executeAppRouteHandler,
   type AppRouteDebugLogger,
   type AppRouteHandlerFunction,
@@ -164,9 +165,12 @@ export async function dispatchAppRouteHandler(
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
   if (!isValidHTTPMethod(method)) {
     options.clearRequestContext();
-    return applyRouteHandlerMiddlewareContext(
-      new Response(null, { status: 400 }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        new Response(null, { status: 400 }),
+        options.middlewareContext,
+      ),
+      isDraftMode,
     );
   }
 
@@ -175,12 +179,15 @@ export async function dispatchAppRouteHandler(
 
   if (shouldAutoRespondToOptions) {
     options.clearRequestContext();
-    return applyRouteHandlerMiddlewareContext(
-      new Response(null, {
-        status: 204,
-        headers: { Allow: allowHeaderForOptions },
-      }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        new Response(null, {
+          status: 204,
+          headers: { Allow: allowHeaderForOptions },
+        }),
+        options.middlewareContext,
+      ),
+      isDraftMode,
     );
   }
 
@@ -306,10 +313,13 @@ export async function dispatchAppRouteHandler(
   }
 
   options.clearRequestContext();
-  return applyRouteHandlerMiddlewareContext(
-    new Response(null, {
-      status: 405,
-    }),
-    options.middlewareContext,
+  return applyDraftModeCachePolicy(
+    applyRouteHandlerMiddlewareContext(
+      new Response(null, {
+        status: 405,
+      }),
+      options.middlewareContext,
+    ),
+    isDraftMode,
   );
 }
