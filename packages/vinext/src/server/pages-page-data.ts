@@ -136,6 +136,20 @@ type PagesRenderProps = Record<string, unknown> & {
   pageProps?: unknown;
 };
 
+/**
+ * Merge gSP/gSSP data into the custom App's raw pageProps value.
+ *
+ * Next.js deliberately uses Object.assign rather than object spread, so
+ * enumerable keys from arrays and primitive wrapper objects are retained.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+ */
+export function mergePagesDataProps(
+  appPageProps: unknown,
+  dataProps: unknown,
+): Record<string, unknown> {
+  return Object.assign({}, appPageProps, dataProps) as Record<string, unknown>;
+}
+
 export type PagesPageModule = {
   default?: unknown;
   getStaticPaths?: (context: {
@@ -1118,10 +1132,7 @@ export async function resolvePagesPageData(
       // before serialising; otherwise pageProps would be a Promise and the
       // rendered page would receive empty props. See
       // packages/next/src/server/render.tsx (deferredContent).
-      pageProps = {
-        ...pageProps,
-        ...((await Promise.resolve(result.props)) as Record<string, unknown>),
-      };
+      pageProps = mergePagesDataProps(renderProps.pageProps, await Promise.resolve(result.props));
       renderProps = { ...renderProps, pageProps };
     }
 
@@ -1225,7 +1236,7 @@ export async function resolvePagesPageData(
 
             if (freshResult.props === undefined) return;
             const resolvedFreshProps = await Promise.resolve(freshResult.props);
-            freshPageProps = { ...freshPageProps, ...resolvedFreshProps };
+            freshPageProps = mergePagesDataProps(freshRenderProps.pageProps, resolvedFreshProps);
             freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
             if (options.validatePropsSerialization !== false) {
               isSerializableProps(options.routePattern, "getStaticProps", freshPageProps);
@@ -1464,7 +1475,7 @@ export async function resolvePagesPageData(
     }
 
     if (result?.props !== undefined) {
-      pageProps = { ...pageProps, ...(await Promise.resolve(result.props)) };
+      pageProps = mergePagesDataProps(renderProps.pageProps, await Promise.resolve(result.props));
       renderProps = { ...renderProps, pageProps };
     }
 

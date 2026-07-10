@@ -141,6 +141,18 @@ for (const mode of ["development", "production"] as const) {
     await expect(page.locator("#has-page-props")).toHaveText("true");
     await expect(page.locator("#page-content")).toHaveText("from-page");
 
+    // Next.js merges data props with Object.assign({}, appPageProps, dataProps).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+    await page.locator("#to-gsp-string").click();
+    await expect(page).toHaveURL(`${baseUrl}/gsp-string`);
+    await expect(page.locator("#page-props-json")).toHaveText('{"0":"h","1":"i","fromData":"gsp"}');
+    await expect(page.locator("#app-router-pathname")).toHaveText("/gsp-string");
+    await page.locator("#to-gssp-array").click();
+    await expect(page).toHaveURL(`${baseUrl}/gssp-array`);
+    await expect(page.locator("#page-props-json")).toHaveText(
+      '{"0":"first","1":"second","fromData":"gssp"}',
+    );
+
     // Navigate back to another omitted-pageProps result. The unchanged initial
     // document marker proves these transitions stayed in the client router.
     await page.locator("#to-missing-two").click();

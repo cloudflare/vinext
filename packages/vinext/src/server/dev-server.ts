@@ -71,6 +71,7 @@ import {
   getPagesRouteParams,
   isCachedPagesRepresentationHeader,
   matchesPagesStaticPath,
+  mergePagesDataProps,
   normalizePagesRenderProps,
   resolvePagesRedirect,
   resolvePagesRedirectLocation,
@@ -1143,10 +1144,10 @@ export function createSSRHandler(
             // it before serialising; otherwise pageProps would be a Promise
             // and the rendered page would receive empty props. See
             // packages/next/src/server/render.tsx (deferredContent).
-            pageProps = {
-              ...pageProps,
-              ...(await Promise.resolve(result.props)),
-            };
+            pageProps = mergePagesDataProps(
+              renderProps.pageProps,
+              await Promise.resolve(result.props),
+            );
             renderProps = { ...renderProps, pageProps };
           }
           if (result && "redirect" in result) {
@@ -1597,10 +1598,10 @@ export function createSSRHandler(
                   }
                   if (freshResult && "props" in freshResult) {
                     if (revalidate > 0) {
-                      freshPageProps = {
-                        ...freshPageProps,
-                        ...(await Promise.resolve(freshResult.props)),
-                      };
+                      freshPageProps = mergePagesDataProps(
+                        freshRenderProps.pageProps,
+                        await Promise.resolve(freshResult.props),
+                      );
                       freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
 
                       if (!cachedPage || cachedPage.generatedFromDataRequest || !cachedHtml) {
@@ -1864,10 +1865,10 @@ export function createSSRHandler(
             pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
           }
           if (result && "props" in result) {
-            pageProps = {
-              ...pageProps,
-              ...(await Promise.resolve(result.props)),
-            };
+            pageProps = mergePagesDataProps(
+              renderProps.pageProps,
+              await Promise.resolve(result.props),
+            );
             renderProps = { ...renderProps, pageProps };
           }
           if (result && "redirect" in result) {
@@ -2260,6 +2261,7 @@ export function createSSRHandler(
             ? createElement(AppComponent, {
                 ...renderProps,
                 Component: pageModule.default,
+                router: routerShim.default,
               })
             : createElement(pageModule.default, pageProps);
           if (wrapWithRouterContext) isrElement = wrapWithRouterContext(isrElement);
@@ -2323,6 +2325,7 @@ export function createSSRHandler(
               enhancedElement = createElement(FinalApp, {
                 ...renderProps,
                 Component: FinalComp,
+                router: routerShim.default,
               });
             } else {
               enhancedElement = createElement(FinalComp, pageProps);
@@ -2353,15 +2356,18 @@ export function createSSRHandler(
         });
         _renderEnd = now();
 
-        // Clear SSR context after rendering
-        if (typeof routerShim.setSSRContext === "function") {
-          routerShim.setSSRContext(null);
-        }
-
         // If ISR is enabled, we need the full HTML for caching.
         // For ISR, re-render synchronously to get the complete HTML string.
         // This runs after the stream is already sent, so it doesn't affect TTFB.
-        if (!isOnDemandRevalidate) await persistRenderedIsr();
+        try {
+          if (!isOnDemandRevalidate) await persistRenderedIsr();
+        } finally {
+          // The ISR persistence render uses the same request-scoped router as
+          // the streamed render. Clear it only after both renders complete.
+          if (typeof routerShim.setSSRContext === "function") {
+            routerShim.setSSRContext(null);
+          }
+        }
       } catch (e) {
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
         // when using ModuleRunner — no stack trace fixup is needed here.
