@@ -95,7 +95,7 @@ test.afterAll(async () => {
 });
 
 for (const mode of ["development", "production"] as const) {
-  test(`preserves custom App own pageProps semantics through ${mode} hydration and navigation`, async ({
+  test(`matches custom App own pageProps semantics through ${mode} hydration and navigation`, async ({
     page,
     consoleErrors: _consoleErrors,
   }) => {
@@ -126,6 +126,15 @@ for (const mode of ["development", "production"] as const) {
       .poll(() => latestAppPropsRecord(page))
       .toEqual({ pathname: "/with-page-props", hasPageProps: true });
 
+    // Next.js clones pageProps with Object.assign on successful transitions.
+    // That turns null into {} and a string into an object with indexed keys.
+    await page.locator("#to-null-page-props").click();
+    await expect(page).toHaveURL(`${baseUrl}/null-page-props`);
+    await expect(page.locator("#page-props-json")).toHaveText("{}");
+    await page.locator("#to-string-page-props").click();
+    await expect(page).toHaveURL(`${baseUrl}/string-page-props`);
+    await expect(page.locator("#page-props-json")).toHaveText('{"0":"h","1":"i"}');
+
     // A page-level getInitialProps remains wrapped in pageProps by App.getInitialProps.
     await page.locator("#to-page-gip").click();
     await expect(page).toHaveURL(`${baseUrl}/page-gip`);
@@ -137,10 +146,11 @@ for (const mode of ["development", "production"] as const) {
     await page.locator("#to-missing-two").click();
     await expect(page).toHaveURL(`${baseUrl}/missing-two`);
     expect(await page.evaluate(() => (window as any).__APP_PROPS_BOOT_MARKER__)).toBe(bootMarker);
-    await expect(page.locator("#has-page-props")).toHaveText("false");
+    await expect(page.locator("#has-page-props")).toHaveText("true");
+    await expect(page.locator("#page-props-json")).toHaveText("{}");
     await expect(page.locator("#page-content")).toHaveText("missing pageProps again");
     await expect
       .poll(() => latestAppPropsRecord(page))
-      .toEqual({ pathname: "/missing-two", hasPageProps: false });
+      .toEqual({ pathname: "/missing-two", hasPageProps: true });
   });
 }

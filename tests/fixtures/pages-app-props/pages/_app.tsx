@@ -32,9 +32,26 @@ function App(props: any) {
         </button>{" "}
         <button id="to-page-gip" type="button" onClick={() => props.router.push("/page-gip")}>
           page getInitialProps
+        </button>{" "}
+        <button
+          id="to-null-page-props"
+          type="button"
+          onClick={() => props.router.push("/null-page-props")}
+        >
+          null pageProps
+        </button>{" "}
+        <button
+          id="to-string-page-props"
+          type="button"
+          onClick={() => props.router.push("/string-page-props")}
+        >
+          string pageProps
         </button>
       </nav>
       <div id="has-page-props">{String(hasPageProps)}</div>
+      <div id="page-props-json">
+        {hasPageProps ? (JSON.stringify(props.pageProps) ?? "undefined") : "absent"}
+      </div>
       <div id="app-extra">{props.appExtra}</div>
       <Component {...(props.pageProps ?? {})} />
     </>
@@ -44,6 +61,12 @@ function App(props: any) {
 App.getInitialProps = async ({ Component, ctx }: any) => {
   if (ctx.pathname === "/missing" || ctx.pathname === "/missing-two") {
     return { appExtra: "custom-extra" };
+  }
+  if (ctx.pathname === "/null-page-props") {
+    return { appExtra: "custom-extra", pageProps: null };
+  }
+  if (ctx.pathname === "/string-page-props") {
+    return { appExtra: "custom-extra", pageProps: "hi" };
   }
 
   const pageProps = Component.getInitialProps

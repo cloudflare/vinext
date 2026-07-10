@@ -1563,6 +1563,8 @@ importers:
 
   tests/fixtures/og-font-package: {}
 
+  tests/fixtures/pages-app-props: {}
+
   tests/fixtures/pages-basepath-trailing-slash:
     dependencies:
       react:

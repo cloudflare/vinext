@@ -8619,6 +8619,18 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(pageHtml).toContain('<div id="has-page-props">true</div>');
       expect(pageHtml).toContain('<div id="app-extra">custom-extra</div>');
       expect(pageHtml).toContain('<div id="page-content">from-page</div>');
+
+      const nullResponse = await fetch(`${baseUrl}/null-page-props`);
+      expect(nullResponse.status).toBe(200);
+      const nullHtml = await nullResponse.text();
+      expect(nullHtml).toContain('<div id="has-page-props">true</div>');
+      expect(nullHtml).toContain('<div id="page-props-json">null</div>');
+
+      const stringResponse = await fetch(`${baseUrl}/string-page-props`);
+      expect(stringResponse.status).toBe(200);
+      const stringHtml = await stringResponse.text();
+      expect(stringHtml).toContain('<div id="has-page-props">true</div>');
+      expect(stringHtml).toContain('<div id="page-props-json">&quot;hi&quot;</div>');
     });
   }
 });
