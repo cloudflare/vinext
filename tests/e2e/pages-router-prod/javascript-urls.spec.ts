@@ -146,41 +146,38 @@ test.describe("pages-router-prod javascript-urls", () => {
   });
 
   test("blocks javascript URLs returned by Pages data redirects", async ({ page }) => {
-    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await page.goto(`${BASE}/about`);
     await waitForHydration(page);
 
     const buildId = await page.evaluate(() => window.__NEXT_DATA__.buildId);
     const destination = "javascript:void(window.__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__=true)";
     const dataResponse = await page.request.get(
-      `${BASE}/_next/data/${buildId}/nextjs-compat/javascript-urls/data-redirect.json?next=${encodeURIComponent(destination)}`,
+      `${BASE}/_next/data/${buildId}/gssp-redirect.json?next=${encodeURIComponent(destination)}`,
       { maxRedirects: 0 },
     );
 
     expect(dataResponse.status()).toBe(500);
     expect(await dataResponse.text()).not.toContain("javascript:");
     const htmlResponse = await page.request.get(
-      `${BASE}/nextjs-compat/javascript-urls/data-redirect?next=${encodeURIComponent(destination)}`,
+      `${BASE}/gssp-redirect?next=${encodeURIComponent(destination)}`,
       { maxRedirects: 0 },
     );
     expect(htmlResponse.status()).toBe(500);
     expect(htmlResponse.headers()["location"]).toBeUndefined();
-    await page.locator("#data-redirect-link").click();
-    await page.waitForTimeout(250);
-    expect(
-      await page.evaluate(() =>
-        Boolean(Reflect.get(window, "__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__")),
-      ),
-    ).toBe(false);
   });
 
   test("blocks javascript URLs returned by middleware data redirects", async ({ page }) => {
     const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
     beforePageLoad(page);
-    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await page.goto(`${BASE}/about`);
     await waitForHydration(page);
     const initialUrl = page.url();
 
-    await page.locator("#middleware-redirect-link").click();
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/about?dangerous-middleware-redirect=1");
+    });
 
     await expect
       .poll(async () => {

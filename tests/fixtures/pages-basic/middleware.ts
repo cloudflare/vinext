@@ -42,7 +42,8 @@ export function middleware(request: NextRequest) {
   }
 
   if (
-    url.pathname === "/nextjs-compat/javascript-urls/middleware-dangerous-redirect" &&
+    url.pathname === "/about" &&
+    url.searchParams.has("dangerous-middleware-redirect") &&
     request.__isData
   ) {
     return new Response(null, {
