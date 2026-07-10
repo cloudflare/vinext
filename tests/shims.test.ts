@@ -7613,6 +7613,8 @@ describe("middleware matcher patterns", () => {
       "/bracket-shorthand/:value((?:[\\d]|[a-z])+)",
       "/space-or-word/:value((?:\\s|[a-z])+)",
       "/digit-or-not/:value((?:\\d|\\D)+)",
+      "/two-repeats/:value((?:a+)(?:a+))",
+      "/disjoint-repeats/:value((?:a+)(?:b+)(?:a+))",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -7637,7 +7639,7 @@ describe("middleware matcher patterns", () => {
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
     const expandingChoices = `/:path(${"(?:a|aa)".repeat(26)})`;
 
-    for (const count of [8, 9, 10]) {
+    for (const count of [3, 6, 7, 8, 9, 10]) {
       const adjacentRepetitions = `/:path(${"(?:a+)".repeat(count)})`;
       expect(
         compileMiddlewareMatcherPattern(adjacentRepetitions),

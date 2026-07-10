@@ -32,12 +32,25 @@ for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
 }
 
 for (const matcher of [
-  ...[8, 9, 10].map((count) => `/:path(${"(?:a+)".repeat(count)})`),
+  ...[6, 7, 8, 9, 10].map((count) => `/:path(${"(?:a+)".repeat(count)})`),
   `/:path(${"(?:a|aa)".repeat(26)})`,
 ]) {
   if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
     throw new Error(`Unsafe bounded sequence did not fail closed: ${matcher}`);
   }
+}
+
+// A single overlapping boundary is kept for common two-repeat matchers, and
+// non-overlapping repetitions do not compound the partition search.
+for (const pattern of ["(?:a+)(?:a+)", "(?:a+)(?:b+)(?:a+)", "[^/]+.*"]) {
+  const issue = analyzeRegexSafety(pattern, { ignoreCase: true });
+  if (issue) throw new Error(`Safe sequence was rejected: ${pattern} (${issue})`);
+}
+if (!matchPattern(`/${"a".repeat(3_000)}`, "/:path((?:a+)(?:a+))")) {
+  throw new Error("Safe two-repeat matcher did not match");
+}
+if (matchPattern(`/${"a".repeat(3_000)}b`, "/:path((?:a+)(?:a+))")) {
+  throw new Error("Safe two-repeat matcher matched a near miss");
 }
 
 // Keep the analysis itself linear for large, disjoint literal alternations.

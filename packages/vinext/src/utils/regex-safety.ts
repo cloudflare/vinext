@@ -40,7 +40,7 @@ const MAX_WORDS = 4_096;
 const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
-const MAX_OVERLAPPING_VARIABLE_BOUNDARIES = 7;
+const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
 
 function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
@@ -808,10 +808,11 @@ function findSequenceIssue(
       } else if (!isNullable(child)) {
         overlappingBoundaryCount = 0;
       }
-      // Seven overlapping boundaries already create a degree-seven partition
-      // search over the pathname length. Reject that chain before compiling a
-      // request-facing expression; shorter common pairs remain valid.
-      if (overlappingBoundaryCount >= MAX_OVERLAPPING_VARIABLE_BOUNDARIES) {
+      // One overlapping boundary has linearly many partitions over the input
+      // length. A second makes that search quadratic, and every additional
+      // boundary raises the degree again. Preserve common two-repeat patterns,
+      // but reject longer overlapping chains before compiling them.
+      if (overlappingBoundaryCount > MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES) {
         return "overlapping sequential repetition";
       }
       const ends = lastSymbols(child);
