@@ -433,7 +433,6 @@ const _renderPage = __createPagesPageHandler({
       ? React.createElement(AppComponent, {
           ...props,
           Component: PageComponent,
-          pageProps: rawPageProps,
           router: Router,
         })
       : React.createElement(PageComponent, pageProps);
@@ -451,7 +450,6 @@ const _renderPage = __createPagesPageHandler({
       ? React.createElement(FinalApp, {
           ...props,
           Component: FinalComp,
-          pageProps: rawPageProps,
           router: Router,
         })
       : React.createElement(FinalComp, pageProps);

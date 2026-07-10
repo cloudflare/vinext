@@ -1071,7 +1071,6 @@ export function createSSRHandler(
               const appTree = React.createElement(AppComponent, {
                 ...appTreeProps,
                 Component: PageComponent,
-                pageProps: appTreeProps.pageProps,
                 router: routerShim.default,
               });
               return typeof routerShim.wrapWithRouterContext === "function"
@@ -2078,7 +2077,6 @@ export function createSSRHandler(
           element = createElement(AppComponent, {
             ...renderProps,
             Component: PageComponent,
-            pageProps: renderProps.pageProps,
             router: routerShim.default,
           });
         } else {
@@ -2264,7 +2262,6 @@ export function createSSRHandler(
             ? createElement(AppComponent, {
                 ...renderProps,
                 Component: pageModule.default,
-                pageProps,
               })
             : createElement(pageModule.default, pageProps);
           if (wrapWithRouterContext) isrElement = wrapWithRouterContext(isrElement);
@@ -2328,7 +2325,6 @@ export function createSSRHandler(
               enhancedElement = createElement(FinalApp, {
                 ...renderProps,
                 Component: FinalComp,
-                pageProps,
               });
             } else {
               enhancedElement = createElement(FinalComp, pageProps);
