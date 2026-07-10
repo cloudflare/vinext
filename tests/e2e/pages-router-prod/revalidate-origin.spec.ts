@@ -401,7 +401,7 @@ test("cached notFound renders the custom 404 per request and stays consistent wi
     { headers: { "x-viewer": "carol" } },
   );
   expect(data.status()).toBe(404);
-  expect(await data.json()).toEqual({});
+  expect(await data.json()).toEqual({ notFound: true });
 });
 
 test("cached redirect uses the same canonical representation for HTML and data requests", async ({
@@ -422,6 +422,79 @@ test("cached redirect uses the same canonical representation for HTML and data r
   expect(await data.json()).toMatchObject({
     pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
   });
+});
+
+test("cached content keeps the full data envelope during client navigation", async ({
+  page,
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=false`);
+  const warmed = await request.get(`${origin}/revalidate-parity-target`);
+  expect(warmed.headers()["x-nextjs-cache"]).toBe("HIT");
+
+  const directData = await request.get(
+    `${origin}/_next/data/test-build-id/revalidate-parity-target.json`,
+  );
+  expect(await directData.json()).toMatchObject({
+    pageProps: { renderedAt: expect.any(Number) },
+  });
+
+  await page.goto(`${origin}/about`);
+  const dataResponsePromise = page.waitForResponse((response) =>
+    response.url().includes("/_next/data/test-build-id/revalidate-parity-target.json"),
+  );
+  await page.evaluate(() => (window as any).next.router.push("/revalidate-parity-target"));
+  const dataResponse = await dataResponsePromise;
+  expect(await dataResponse.json()).toMatchObject({
+    pageProps: { renderedAt: expect.any(Number) },
+  });
+  await expect(page.locator("#rendered-at")).toContainText("rendered at:");
+  await expect(page).toHaveURL(`${origin}/revalidate-parity-target`);
+});
+
+test("preserves permanent and basePath redirect metadata in cached HTML and data", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const target = `${origin}/revalidate-parity-target`;
+
+  await request.get(`${origin}/api/revalidate-parity?mode=permanentRedirect&revalidate=false`);
+  const permanent = await request.get(target, { maxRedirects: 0 });
+  expect(permanent.status()).toBe(308);
+  expect(permanent.headers().location).toBe("/about");
+  expect(permanent.headers().refresh).toBe("0;url=/about");
+  expect(await permanent.text()).toBe("/about");
+
+  await request.get(`${origin}/api/revalidate-parity?mode=basePathFalseRedirect&revalidate=false`);
+  const data = await request.get(
+    `${origin}/_next/data/test-build-id/revalidate-parity-target.json`,
+  );
+  expect(await data.json()).toMatchObject({
+    pageProps: {
+      __N_REDIRECT: "/about",
+      __N_REDIRECT_STATUS: 307,
+      __N_REDIRECT_BASE_PATH: false,
+    },
+  });
+});
+
+test("rejects invalid redirect metadata without replacing cached content", async ({ request }) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const target = `${origin}/revalidate-parity-target`;
+  await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=false`);
+  const previous = await (await request.get(target)).text();
+
+  for (const mode of ["conflictingRedirect", "invalidStatusRedirect"]) {
+    await request.get(`${origin}/api/revalidate-parity?mode=${mode}&setOnly=1`);
+    const regeneration = await request.get(
+      `${origin}/api/revalidate-reason?path=${encodeURIComponent("/revalidate-parity-target")}`,
+    );
+    expect(await regeneration.json()).toEqual({ revalidated: false });
+    const retained = await request.get(target);
+    expect(retained.headers()["x-nextjs-cache"]).toBe("HIT");
+    expect(await retained.text()).toBe(previous);
+  }
 });
 
 test("rejects invalid revalidate values without replacing the previous representation", async ({

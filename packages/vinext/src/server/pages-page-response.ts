@@ -639,7 +639,10 @@ export async function renderPagesPageResponse(
     const cacheWriteOptions = {
       cacheKey,
       expireSeconds: options.expireSeconds,
-      pageData: options.pageProps,
+      // The Pages data route serializes the complete App props envelope, not
+      // the pageProps object by itself. Keeping the same shape in the ISR
+      // entry makes HTML-first and data-first cache population equivalent.
+      pageData: options.props ?? { pageProps: options.pageProps },
       revalidateSeconds: options.isrRevalidateSeconds,
       routePattern: options.routePattern,
       setCache: options.isrSet,

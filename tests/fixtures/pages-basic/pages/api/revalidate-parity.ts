@@ -30,6 +30,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     mode === "content" ||
     mode === "notFound" ||
     mode === "redirect" ||
+    mode === "permanentRedirect" ||
+    mode === "basePathFalseRedirect" ||
+    mode === "conflictingRedirect" ||
+    mode === "invalidStatusRedirect" ||
     mode === "externalRedirect" ||
     mode === "promised" ||
     mode === "concurrent" ||

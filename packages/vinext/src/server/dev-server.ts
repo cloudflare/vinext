@@ -66,12 +66,19 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
+  buildPagesRedirectProps,
+  getCachedPagesRedirect,
   getPagesRouteParams,
   isCachedPagesRepresentationHeader,
   matchesPagesStaticPath,
+  normalizePagesRenderProps,
+  resolvePagesRedirect,
+  resolvePagesRedirectLocation,
   resolvePagesRevalidateSeconds,
+  type PagesRedirectResult,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
+import { sanitizeDestination } from "../config/config-matchers.js";
 import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
 import { getManifestFilesForModule } from "./pages-asset-tags.js";
@@ -301,17 +308,24 @@ async function collectDevInitialStylesheetHeadHTML(
  */
 function writeGsspRedirect(
   res: ServerResponse,
-  redirect: { destination: string; statusCode?: number; permanent?: boolean },
+  redirect: PagesRedirectResult,
   isDataReq: boolean,
   props: Record<string, unknown>,
+  options: {
+    basePath: string;
+    method: "getStaticProps" | "getServerSideProps";
+    routeUrl: string;
+  },
 ): void {
-  const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-  // Sanitize destination to prevent open redirect via protocol-relative URLs.
-  // Also normalize backslashes — browsers treat \ as / in URL contexts.
-  let dest = redirect.destination;
-  if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
-    dest = dest.replace(/^[\\/]+/, "/");
-  }
+  const resolved = resolvePagesRedirect(redirect, {
+    method: options.method,
+    routeUrl: options.routeUrl,
+    sanitizeDestination,
+  });
+  const redirectProps = buildPagesRedirectProps(resolved, {
+    ...props,
+    pageProps: props.pageProps,
+  });
 
   if (isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
@@ -324,19 +338,18 @@ function writeGsspRedirect(
     res.writeHead(200, dataHeaders);
     res.end(
       JSON.stringify({
-        ...props,
-        pageProps: {
-          ...(isUnknownRecord(props.pageProps) ? props.pageProps : {}),
-          __N_REDIRECT: dest,
-          __N_REDIRECT_STATUS: status,
-        },
+        ...redirectProps,
       }),
     );
     return;
   }
 
-  res.writeHead(status, { Location: dest });
-  res.end();
+  const location = resolvePagesRedirectLocation(resolved, options.basePath);
+  res.writeHead(resolved.statusCode, {
+    Location: location,
+    ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
+  });
+  res.end(location);
 }
 
 /** Body placeholder used to split the document shell for streaming. */
@@ -984,7 +997,7 @@ export function createSSRHandler(
               };
               if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
               res.writeHead(404, notFoundHeaders);
-              res.end("{}");
+              res.end('{"notFound":true}');
               return;
             }
             await renderErrorPage(
@@ -1137,7 +1150,11 @@ export function createSSRHandler(
             renderProps = { ...renderProps, pageProps };
           }
           if (result && "redirect" in result) {
-            writeGsspRedirect(res, result.redirect, isDataReq, renderProps);
+            writeGsspRedirect(res, result.redirect, isDataReq, renderProps, {
+              basePath,
+              method: "getServerSideProps",
+              routeUrl: url,
+            });
             return;
           }
           if (result && "notFound" in result && result.notFound) {
@@ -1152,7 +1169,7 @@ export function createSSRHandler(
               };
               if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
               res.writeHead(404, notFoundHeaders);
-              res.end("{}");
+              res.end('{"notFound":true}');
               return;
             }
             await renderErrorPage(
@@ -1281,6 +1298,97 @@ export function createSSRHandler(
                   previewData,
                 };
 
+          const cachedValue = cached?.value.value;
+          const isLegacyCachedNotFound =
+            cachedValue?.kind === "PAGES" &&
+            cachedValue.status === 404 &&
+            patternToNextFormat(route.pattern) !== "/404" &&
+            patternToNextFormat(route.pattern) !== "/_error";
+          const cachedRedirect = getCachedPagesRedirect(cachedValue);
+          const applyCachedRepresentationHeaders = (state: "HIT" | "STALE") => {
+            const revalidateSecs =
+              cached?.value.cacheControl?.revalidate ?? getRevalidateDuration(cacheKey) ?? 60;
+            const { cacheControl } = decideIsr({
+              cacheState: state,
+              kind: "dev",
+              revalidateSeconds: revalidateSecs,
+              cacheControlMeta: cached?.value.cacheControl,
+            });
+            res.setHeader(NEXTJS_CACHE_HEADER, state);
+            res.setHeader("Cache-Control", cacheControl);
+          };
+
+          if (
+            !isOnDemandRevalidate &&
+            cached &&
+            !cached.isStale &&
+            !scriptNonce &&
+            previewData === false
+          ) {
+            if (cachedValue === null || isLegacyCachedNotFound) {
+              applyCachedRepresentationHeaders("HIT");
+              applyDevPagesPreviewResponse(res, requestPreview);
+              if (isDataReq) {
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end('{"notFound":true}');
+                return;
+              }
+              await renderErrorPage(
+                server,
+                runner,
+                req,
+                res,
+                url,
+                pagesDir,
+                404,
+                routerShim.wrapWithRouterContext,
+                undefined,
+                undefined,
+                reactStrictMode,
+              );
+              return;
+            }
+            if (cachedRedirect) {
+              applyCachedRepresentationHeaders("HIT");
+              const cachedProps = normalizePagesRenderProps(
+                cachedRedirect.props as Record<string, unknown>,
+              );
+              const redirectPageProps = isUnknownRecord(cachedProps.pageProps)
+                ? cachedProps.pageProps
+                : {};
+              if (typeof redirectPageProps.__N_REDIRECT !== "string") {
+                throw new Error("Invalid cached Pages redirect: missing __N_REDIRECT");
+              }
+              writeGsspRedirect(
+                res,
+                {
+                  destination: redirectPageProps.__N_REDIRECT,
+                  statusCode:
+                    typeof redirectPageProps.__N_REDIRECT_STATUS === "number"
+                      ? redirectPageProps.__N_REDIRECT_STATUS
+                      : undefined,
+                  ...(redirectPageProps.__N_REDIRECT_BASE_PATH === undefined
+                    ? {}
+                    : { basePath: redirectPageProps.__N_REDIRECT_BASE_PATH as boolean }),
+                },
+                isDataReq,
+                cachedProps,
+                { basePath, method: "getStaticProps", routeUrl: url },
+              );
+              return;
+            }
+            if (isDataReq && cachedValue?.kind === "PAGES") {
+              applyCachedRepresentationHeaders("HIT");
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(
+                safeJsonStringify(
+                  normalizePagesRenderProps(cachedValue.pageData as Record<string, unknown>),
+                ),
+              );
+              return;
+            }
+          }
+
           if (
             !isOnDemandRevalidate &&
             cached &&
@@ -1341,15 +1449,16 @@ export function createSSRHandler(
             !isOnDemandRevalidate &&
             cached &&
             cached.isStale &&
-            cached.value.value?.kind === "PAGES" &&
-            !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq &&
-            previewData === false
+            previewData === false &&
+            (cachedValue === null ||
+              cachedRedirect !== null ||
+              isLegacyCachedNotFound ||
+              cachedValue?.kind === "PAGES")
           ) {
             // Stale hit — serve stale immediately, trigger background regen
-            const cachedPage = cached.value.value as CachedPagesValue;
-            const cachedHtml = cachedPage.html;
+            const cachedPage = cachedValue?.kind === "PAGES" ? cachedValue : null;
+            const cachedHtml = cachedPage?.html ?? "";
 
             // Trigger background regeneration: re-run getStaticProps,
             // re-render the page, and cache the fresh HTML.
@@ -1456,36 +1565,24 @@ export function createSSRHandler(
                   });
                   const revalidate = resolvePagesRevalidateSeconds(freshResult);
                   if (freshResult && "notFound" in freshResult && freshResult.notFound) {
-                    await isrSet(
-                      cacheKey,
-                      {
-                        kind: "PAGES",
-                        html: "",
-                        pageData: {},
-                        headers: undefined,
-                        status: 404,
-                      },
-                      revalidate,
-                    );
+                    await isrSet(cacheKey, null, revalidate);
                     setRevalidateDuration(cacheKey, revalidate);
                     return;
                   }
                   if (freshResult && "redirect" in freshResult) {
-                    const status =
-                      freshResult.redirect.statusCode ??
-                      (freshResult.redirect.permanent ? 308 : 307);
-                    let destination = freshResult.redirect.destination;
-                    if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
-                      destination = destination.replace(/^[\\/]+/, "/");
-                    }
+                    const redirect = resolvePagesRedirect(freshResult.redirect, {
+                      method: "getStaticProps",
+                      routeUrl: url,
+                      sanitizeDestination,
+                    });
                     await isrSet(
                       cacheKey,
                       {
-                        kind: "PAGES",
-                        html: "",
-                        pageData: freshRenderProps,
-                        headers: { Location: destination },
-                        status,
+                        kind: "REDIRECT",
+                        props: buildPagesRedirectProps(redirect, {
+                          ...freshRenderProps,
+                          pageProps: freshPageProps,
+                        }),
                       },
                       revalidate,
                     );
@@ -1494,8 +1591,28 @@ export function createSSRHandler(
                   }
                   if (freshResult && "props" in freshResult) {
                     if (revalidate > 0) {
-                      freshPageProps = { ...freshPageProps, ...freshResult.props };
+                      freshPageProps = {
+                        ...freshPageProps,
+                        ...(await Promise.resolve(freshResult.props)),
+                      };
                       freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
+
+                      if (!cachedPage || cachedPage.generatedFromDataRequest || !cachedHtml) {
+                        await isrSet(
+                          cacheKey,
+                          {
+                            kind: "PAGES",
+                            html: "",
+                            pageData: freshRenderProps,
+                            generatedFromDataRequest: true,
+                            headers: undefined,
+                            status: undefined,
+                          },
+                          revalidate,
+                        );
+                        setRevalidateDuration(cacheKey, revalidate);
+                        return;
+                      }
 
                       if (typeof routerShim.setSSRContext === "function") {
                         routerShim.setSSRContext({
@@ -1599,7 +1716,8 @@ export function createSSRHandler(
               },
             );
 
-            const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+            const revalidateSecs =
+              cached.value.cacheControl?.revalidate ?? getRevalidateDuration(cacheKey) ?? 60;
             // Deliberate parity fix: dev STALE now emits s-maxage=0, stale-while-revalidate
             // matching prod Pages Router and the canonical buildCachedRevalidateCacheControl
             // helper. Previously emitted s-maxage=<secs> which was a dev/prod divergence.
@@ -1613,16 +1731,21 @@ export function createSSRHandler(
               ...buildCacheStateHeaders("STALE"),
               "Cache-Control": staleCacheControl,
             };
-            if (cachedPage.headers) {
+            if (cachedPage?.headers) {
               for (const [name, value] of Object.entries(cachedPage.headers)) {
                 if (!isCachedPagesRepresentationHeader(name)) continue;
                 staleHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
               }
             }
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
-            if (cachedPage.status === 404) {
+            if (cachedValue === null || isLegacyCachedNotFound) {
               for (const [name, value] of Object.entries(staleHeaders)) {
                 res.setHeader(name, value);
+              }
+              if (isDataReq) {
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end('{"notFound":true}');
+                return;
               }
               await renderErrorPage(
                 server,
@@ -1639,6 +1762,50 @@ export function createSSRHandler(
               );
               return;
             }
+            if (cachedRedirect) {
+              for (const [name, value] of Object.entries(staleHeaders)) {
+                res.setHeader(name, value);
+              }
+              const cachedProps = normalizePagesRenderProps(
+                cachedRedirect.props as Record<string, unknown>,
+              );
+              const redirectPageProps = isUnknownRecord(cachedProps.pageProps)
+                ? cachedProps.pageProps
+                : {};
+              if (typeof redirectPageProps.__N_REDIRECT !== "string") {
+                throw new Error("Invalid cached Pages redirect: missing __N_REDIRECT");
+              }
+              writeGsspRedirect(
+                res,
+                {
+                  destination: redirectPageProps.__N_REDIRECT,
+                  statusCode:
+                    typeof redirectPageProps.__N_REDIRECT_STATUS === "number"
+                      ? redirectPageProps.__N_REDIRECT_STATUS
+                      : undefined,
+                  ...(redirectPageProps.__N_REDIRECT_BASE_PATH === undefined
+                    ? {}
+                    : { basePath: redirectPageProps.__N_REDIRECT_BASE_PATH as boolean }),
+                },
+                isDataReq,
+                cachedProps,
+                { basePath, method: "getStaticProps", routeUrl: url },
+              );
+              return;
+            }
+            if (isDataReq && cachedPage) {
+              res.writeHead(200, {
+                ...staleHeaders,
+                "Content-Type": "application/json",
+              });
+              res.end(
+                safeJsonStringify(
+                  normalizePagesRenderProps(cachedPage.pageData as Record<string, unknown>),
+                ),
+              );
+              return;
+            }
+            if (!cachedPage) return;
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             res.writeHead(cachedPage.status ?? 200, staleHeaders);
             res.end(transformedHtml);
@@ -1693,50 +1860,44 @@ export function createSSRHandler(
             renderProps = { ...renderProps, pageProps };
           }
           if (result && "redirect" in result) {
-            if (isOnDemandRevalidate && previewData === false && !isDataReq) {
-              const status = result.redirect.statusCode ?? (result.redirect.permanent ? 308 : 307);
-              let destination = result.redirect.destination;
-              if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
-                destination = destination.replace(/^[\\/]+/, "/");
-              }
+            if (previewData === false) {
+              const redirect = resolvePagesRedirect(result.redirect, {
+                method: "getStaticProps",
+                routeUrl: url,
+                sanitizeDestination,
+              });
               const revalidateSeconds = resolvePagesRevalidateSeconds(result);
               await isrSet(
                 cacheKey,
                 {
-                  kind: "PAGES",
-                  html: "",
-                  pageData: renderProps,
-                  headers: { Location: destination },
-                  status,
+                  kind: "REDIRECT",
+                  props: buildPagesRedirectProps(redirect, {
+                    ...renderProps,
+                    pageProps,
+                  }),
                 },
                 revalidateSeconds,
               );
               setRevalidateDuration(cacheKey, revalidateSeconds);
-              res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
+              if (isOnDemandRevalidate) res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
             }
-            writeGsspRedirect(res, result.redirect, isDataReq, renderProps);
+            writeGsspRedirect(res, result.redirect, isDataReq, renderProps, {
+              basePath,
+              method: "getStaticProps",
+              routeUrl: url,
+            });
             return;
           }
           if (result && "notFound" in result && result.notFound) {
             const revalidateSeconds = resolvePagesRevalidateSeconds(result);
+            if (previewData === false) {
+              // Persist a not-found marker, not rendered error HTML. The
+              // custom 404 is rendered per request, matching Next.js and
+              // avoiding caching request-specific `_app`/404 props.
+              await isrSet(cacheKey, null, revalidateSeconds);
+              setRevalidateDuration(cacheKey, revalidateSeconds);
+            }
             if (isOnDemandRevalidate) {
-              if (previewData === false && !isDataReq) {
-                // Persist a not-found marker, not rendered error HTML. The
-                // custom 404 is rendered per request, matching Next.js and
-                // avoiding caching request-specific `_app`/404 props.
-                await isrSet(
-                  cacheKey,
-                  {
-                    kind: "PAGES",
-                    html: "",
-                    pageData: {},
-                    headers: undefined,
-                    status: 404,
-                  },
-                  revalidateSeconds,
-                );
-                setRevalidateDuration(cacheKey, revalidateSeconds);
-              }
               res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
             }
             applyDevPagesPreviewResponse(res, requestPreview);
@@ -1750,7 +1911,7 @@ export function createSSRHandler(
               };
               if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
               res.writeHead(404, notFoundHeaders);
-              res.end("{}");
+              res.end('{"notFound":true}');
               return;
             }
             await renderErrorPage(
@@ -2098,7 +2259,7 @@ export function createSSRHandler(
           );
           const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
-          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
+          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, renderProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         };
 

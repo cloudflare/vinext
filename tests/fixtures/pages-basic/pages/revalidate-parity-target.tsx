@@ -18,6 +18,22 @@ export async function getStaticProps() {
   if (mode === "redirect") {
     return withRevalidate({ redirect: { destination: "/about", permanent: false } });
   }
+  if (mode === "permanentRedirect") {
+    return withRevalidate({ redirect: { destination: "/about", permanent: true } });
+  }
+  if (mode === "basePathFalseRedirect") {
+    return withRevalidate({
+      redirect: { destination: "/about", permanent: false, basePath: false },
+    });
+  }
+  if (mode === "conflictingRedirect") {
+    return withRevalidate({
+      redirect: { destination: "/about", permanent: true, statusCode: 308 },
+    });
+  }
+  if (mode === "invalidStatusRedirect") {
+    return withRevalidate({ redirect: { destination: "/about", statusCode: 304 } });
+  }
   if (mode === "externalRedirect") {
     return withRevalidate({
       redirect: { destination: "https://example.com/revalidated", permanent: false },

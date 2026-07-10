@@ -28,4 +28,30 @@ test.describe("basePath + trailingSlash", () => {
     await page.goForward();
     await expect(page.locator("#something-else-page")).toBeVisible({ timeout: 5_000 });
   });
+
+  // Ported from Next.js: test/e2e/gssp-redirect-base-path/gssp-redirect-base-path.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/gssp-redirect-base-path/gssp-redirect-base-path.test.ts
+  test("applies basePath and permanent redirect headers to cached gSP redirects", async ({
+    request,
+  }) => {
+    const target = `${BASE}/docs/basepath-redirect/cached/`;
+    const first = await request.get(target, { maxRedirects: 0 });
+    expect(first.status()).toBe(308);
+    expect(first.headers().location).toBe("/docs/hello");
+    expect(first.headers().refresh).toBe("0;url=/docs/hello");
+    expect(await first.text()).toBe("/docs/hello");
+
+    const cached = await request.get(target, { maxRedirects: 0 });
+    expect(cached.status()).toBe(308);
+    expect(cached.headers()["x-nextjs-cache"]).toBe("HIT");
+    expect(cached.headers().location).toBe("/docs/hello");
+    expect(cached.headers().refresh).toBe("0;url=/docs/hello");
+
+    const withoutBasePath = await request.get(`${BASE}/docs/basepath-redirect/no-base/`, {
+      maxRedirects: 0,
+    });
+    expect(withoutBasePath.status()).toBe(308);
+    expect(withoutBasePath.headers().location).toBe("/hello");
+    expect(withoutBasePath.headers().refresh).toBe("0;url=/hello");
+  });
 });

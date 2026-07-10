@@ -242,7 +242,7 @@ describe("pages page response", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining("<div>live-body</div>"),
-        pageData: { title: "hello" },
+        pageData: { pageProps: { title: "hello" } },
       }),
       60,
       undefined,

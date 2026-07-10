@@ -497,7 +497,7 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
   it("returns JSON 404 envelope for data requests when getStaticProps returns notFound", async () => {
@@ -518,7 +518,7 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
   it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
@@ -539,7 +539,7 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
   // Refs #1543: a crawler/bot UA hitting an unlisted `fallback: true` path

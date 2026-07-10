@@ -657,6 +657,7 @@ export function createPagesPageHandler(
           isDataReq,
           err: err instanceof Error ? err : undefined,
           applyRequestContexts: applySSRContext,
+          basePath: vinextConfig.basePath,
           buildId,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           htmlLimitedBots: vinextConfig.htmlLimitedBots,

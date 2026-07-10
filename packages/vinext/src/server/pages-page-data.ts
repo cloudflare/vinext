@@ -34,11 +34,20 @@ import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
-type PagesRedirectResult = {
+export type PagesRedirectResult = {
   destination: string;
   permanent?: boolean;
   statusCode?: number;
+  basePath?: boolean;
 };
+
+export type ResolvedPagesRedirect = {
+  destination: string;
+  statusCode: number;
+  basePath?: boolean;
+};
+
+const ALLOWED_PAGES_REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
 
 /** Headers that are part of a cached Pages representation, never request state. */
 export function isCachedPagesRepresentationHeader(name: string): boolean {
@@ -197,6 +206,7 @@ type RenderPagesIsrHtmlOptions = {
 
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
+  basePath?: string;
   buildId: string | null;
   /**
    * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
@@ -345,16 +355,15 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataNotFoundResult;
 
 function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
-  // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
-  // application/json with an empty object body so clients can call
-  // `res.json()` without throwing before inspecting the status code.
+  // Next.js preserves the canonical notFound representation for data requests
+  // so the client router can distinguish it from an unknown data route.
   // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
   // `_next/data` notFound exits so the client can detect a new deployment.
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (deploymentId) {
     headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
   }
-  return new Response("{}", {
+  return new Response('{"notFound":true}', {
     status: 404,
     headers,
   });
@@ -421,11 +430,87 @@ function buildCachedPagesNotFoundResult(
   };
 }
 
-function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
+export function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
 }
 
-function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
+/** Validate and normalize the redirect metadata returned by gSP/gSSP. */
+export function resolvePagesRedirect(
+  redirect: PagesRedirectResult,
+  options: {
+    method: "getStaticProps" | "getServerSideProps";
+    routeUrl: string;
+    sanitizeDestination: (destination: string) => string;
+  },
+): ResolvedPagesRedirect {
+  const errors: string[] = [];
+  const hasPermanent = redirect.permanent !== undefined;
+  const hasStatusCode = redirect.statusCode !== undefined;
+
+  if (hasPermanent && hasStatusCode) {
+    errors.push("`permanent` and `statusCode` can not both be provided");
+  } else if (hasPermanent && typeof redirect.permanent !== "boolean") {
+    errors.push("`permanent` must be `true` or `false`");
+  } else if (
+    hasStatusCode &&
+    !ALLOWED_PAGES_REDIRECT_STATUS_CODES.has(redirect.statusCode as number)
+  ) {
+    errors.push(
+      `\`statusCode\` must undefined or one of ${[...ALLOWED_PAGES_REDIRECT_STATUS_CODES].join(", ")}`,
+    );
+  }
+  if (typeof redirect.destination !== "string") {
+    errors.push(`\`destination\` should be string but received ${typeof redirect.destination}`);
+  }
+  if (redirect.basePath !== undefined && typeof redirect.basePath !== "boolean") {
+    errors.push(
+      `\`basePath\` should be undefined or a false, received ${typeof redirect.basePath}`,
+    );
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `Invalid redirect object returned from ${options.method} for ${options.routeUrl}\n${errors.join(" and ")}\nSee more info here: https://nextjs.org/docs/messages/invalid-redirect-gssp`,
+    );
+  }
+
+  return {
+    destination: options.sanitizeDestination(redirect.destination),
+    statusCode: resolvePagesRedirectStatus(redirect),
+    ...(redirect.basePath === undefined ? {} : { basePath: redirect.basePath }),
+  };
+}
+
+export function resolvePagesRedirectLocation(
+  redirect: ResolvedPagesRedirect,
+  configuredBasePath = "",
+): string {
+  if (configuredBasePath && redirect.basePath !== false && redirect.destination.startsWith("/")) {
+    return `${configuredBasePath}${redirect.destination}`;
+  }
+  return redirect.destination;
+}
+
+export function buildPagesRedirectProps(
+  redirect: ResolvedPagesRedirect,
+  props: PagesRenderProps,
+): PagesRenderProps {
+  return {
+    ...props,
+    pageProps: {
+      ...(isUnknownRecord(props.pageProps) ? props.pageProps : {}),
+      __N_REDIRECT: redirect.destination,
+      __N_REDIRECT_STATUS: redirect.statusCode,
+      ...(redirect.basePath === undefined ? {} : { __N_REDIRECT_BASE_PATH: redirect.basePath }),
+    },
+  };
+}
+
+export function normalizePagesRenderProps(props: Record<string, unknown>): PagesRenderProps {
+  if (!("pageProps" in props)) {
+    // Legacy vinext PAGES entries stored pageProps directly. Accept those
+    // during the migration window while all new writes use the full envelope.
+    return { pageProps: props };
+  }
   return {
     ...props,
     pageProps: props.pageProps,
@@ -528,11 +613,22 @@ function buildPagesRedirectResponse(
   redirect: PagesRedirectResult,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "isDataReq" | "sanitizeDestination" | "safeJsonStringify" | "deploymentId"
+    | "isDataReq"
+    | "sanitizeDestination"
+    | "safeJsonStringify"
+    | "deploymentId"
+    | "basePath"
+    | "routeUrl"
   >,
   props: PagesRenderProps = { pageProps: {} },
+  method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
 ): Response {
-  const destination = options.sanitizeDestination(redirect.destination);
+  const resolved = resolvePagesRedirect(redirect, {
+    method,
+    routeUrl: options.routeUrl,
+    sanitizeDestination: options.sanitizeDestination,
+  });
+  const redirectProps = buildPagesRedirectProps(resolved, props);
 
   if (options.isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
@@ -541,23 +637,16 @@ function buildPagesRedirectResponse(
     if (options.deploymentId) {
       init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
     }
-    return buildNextDataPropsJsonResponse(
-      {
-        ...props,
-        pageProps: {
-          ...(isUnknownRecord(props.pageProps) ? props.pageProps : {}),
-          __N_REDIRECT: destination,
-          __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
-        },
-      },
-      options.safeJsonStringify,
-      init,
-    );
+    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, init);
   }
 
-  return new Response(null, {
-    status: resolvePagesRedirectStatus(redirect),
-    headers: { Location: destination },
+  const location = resolvePagesRedirectLocation(resolved, options.basePath);
+  return new Response(location, {
+    status: resolved.statusCode,
+    headers: {
+      Location: location,
+      ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
+    },
   });
 }
 
@@ -565,13 +654,19 @@ function buildCachedPagesRedirectResponse(
   cached: CachedRedirectValue,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "isDataReq" | "sanitizeDestination" | "safeJsonStringify" | "deploymentId"
+    | "isDataReq"
+    | "sanitizeDestination"
+    | "safeJsonStringify"
+    | "deploymentId"
+    | "basePath"
+    | "routeUrl"
   >,
 ): Response {
   const props = normalizePagesRenderProps(cached.props as Record<string, unknown>);
   const pageProps = isUnknownRecord(props.pageProps) ? props.pageProps : {};
   const destination = pageProps.__N_REDIRECT;
   const statusCode = pageProps.__N_REDIRECT_STATUS;
+  const redirectBasePath = pageProps.__N_REDIRECT_BASE_PATH;
   if (typeof destination !== "string") {
     throw new Error("Invalid cached Pages redirect: missing __N_REDIRECT");
   }
@@ -579,10 +674,42 @@ function buildCachedPagesRedirectResponse(
     {
       destination,
       ...(typeof statusCode === "number" ? { statusCode } : {}),
+      ...(redirectBasePath === undefined ? {} : { basePath: redirectBasePath as boolean }),
     },
     options,
     props,
   );
+}
+
+export function getCachedPagesRedirect(
+  cached: CacheHandlerValue["value"] | undefined,
+): CachedRedirectValue | null {
+  if (cached?.kind === "REDIRECT") return cached;
+  if (cached?.kind !== "PAGES") return null;
+
+  const locationHeader = cached.headers
+    ? Object.entries(cached.headers).find(([name]) => name.toLowerCase() === "location")?.[1]
+    : undefined;
+  const destination = Array.isArray(locationHeader) ? locationHeader[0] : locationHeader;
+  if (
+    typeof destination !== "string" ||
+    typeof cached.status !== "number" ||
+    !ALLOWED_PAGES_REDIRECT_STATUS_CODES.has(cached.status)
+  ) {
+    return null;
+  }
+
+  // Legacy vinext entries stored redirects as empty PAGES responses. Their
+  // Location value was already final and never received configured basePath
+  // processing, so retain that behavior with the explicit opt-out marker.
+  const props = normalizePagesRenderProps(cached.pageData as Record<string, unknown>);
+  return {
+    kind: "REDIRECT",
+    props: buildPagesRedirectProps(
+      { destination, statusCode: cached.status, basePath: false },
+      props,
+    ),
+  };
 }
 
 /**
@@ -988,7 +1115,12 @@ export async function resolvePagesPageData(
     if (result?.redirect) {
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options, renderProps),
+        response: buildPagesRedirectResponse(
+          result.redirect,
+          options,
+          renderProps,
+          "getServerSideProps",
+        ),
       };
     }
 
@@ -1027,6 +1159,7 @@ export async function resolvePagesPageData(
       cachedValue.status === 404 &&
       options.routePattern !== "/404" &&
       options.routePattern !== "/_error";
+    const cachedRedirect = getCachedPagesRedirect(cachedValue);
 
     const scheduleStaleRegeneration = () => {
       options.triggerBackgroundRegeneration(
@@ -1054,20 +1187,16 @@ export async function resolvePagesPageData(
             const expireSeconds = resolvePagesExpireSeconds(freshResult, options.expireSeconds);
 
             if (freshResult.redirect) {
-              const destination = options.sanitizeDestination(freshResult.redirect.destination);
-              const redirectPageProps = {
-                ...freshPageProps,
-                __N_REDIRECT: destination,
-                __N_REDIRECT_STATUS: resolvePagesRedirectStatus(freshResult.redirect),
-              };
+              const redirect = resolvePagesRedirect(freshResult.redirect, {
+                method: "getStaticProps",
+                routeUrl: options.routeUrl,
+                sanitizeDestination: options.sanitizeDestination,
+              });
               await options.isrSet(
                 cacheKey,
                 {
                   kind: "REDIRECT",
-                  props: {
-                    ...freshRenderProps,
-                    pageProps: redirectPageProps,
-                  },
+                  props: buildPagesRedirectProps(redirect, freshRenderProps),
                 },
                 revalidateSeconds,
                 undefined,
@@ -1149,11 +1278,11 @@ export async function resolvePagesPageData(
       if (isLegacyCachedNotFound) {
         return buildCachedPagesNotFoundResult(options, cached.value, "HIT");
       }
-      if (cachedValue?.kind === "REDIRECT") {
+      if (cachedRedirect) {
         return {
           kind: "response",
           response: applyCachedPagesRepresentationHeaders(
-            buildCachedPagesRedirectResponse(cachedValue, options),
+            buildCachedPagesRedirectResponse(cachedRedirect, options),
             "HIT",
             cached.value,
             options,
@@ -1220,7 +1349,7 @@ export async function resolvePagesPageData(
       !options.scriptNonce &&
       previewData === false &&
       (cachedValue === null ||
-        cachedValue?.kind === "REDIRECT" ||
+        cachedRedirect !== null ||
         isLegacyCachedNotFound ||
         options.isDataReq)
     ) {
@@ -1230,11 +1359,11 @@ export async function resolvePagesPageData(
       if (isLegacyCachedNotFound) {
         return buildCachedPagesNotFoundResult(options, cached.value, "STALE");
       }
-      if (cachedValue?.kind === "REDIRECT") {
+      if (cachedRedirect) {
         return {
           kind: "response",
           response: applyCachedPagesRepresentationHeaders(
-            buildCachedPagesRedirectResponse(cachedValue, options),
+            buildCachedPagesRedirectResponse(cachedRedirect, options),
             "STALE",
             cached.value,
             options,
@@ -1317,7 +1446,7 @@ export async function resolvePagesPageData(
         });
 
     if (generatedPageData) {
-      renderProps = generatedPageData as PagesRenderProps;
+      renderProps = normalizePagesRenderProps(generatedPageData);
       pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
     }
 
@@ -1331,19 +1460,16 @@ export async function resolvePagesPageData(
       if (previewData === false) {
         const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
         const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
-        const destination = options.sanitizeDestination(result.redirect.destination);
+        const redirect = resolvePagesRedirect(result.redirect, {
+          method: "getStaticProps",
+          routeUrl: options.routeUrl,
+          sanitizeDestination: options.sanitizeDestination,
+        });
         await options.isrSet(
           cacheKey,
           {
             kind: "REDIRECT",
-            props: {
-              ...renderProps,
-              pageProps: {
-                ...pageProps,
-                __N_REDIRECT: destination,
-                __N_REDIRECT_STATUS: resolvePagesRedirectStatus(result.redirect),
-              },
-            },
+            props: buildPagesRedirectProps(redirect, renderProps),
           },
           revalidateSeconds,
           undefined,
