@@ -748,7 +748,6 @@ export function createPagesPageHandler(
           if (isOnDemandRevalidate && isStaticPropsRoute && previewData === false) {
             const body = await notFoundResponse.text();
             const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
-            const previous = await isrGet(cacheKey);
             await isrSet(
               cacheKey,
               {
@@ -758,7 +757,7 @@ export function createPagesPageHandler(
                 headers: cacheableResponseHeaders(notFoundResponse.headers),
                 status: 404,
               },
-              previous?.value.cacheControl?.revalidate ?? 31_536_000,
+              pageDataResult.revalidateSeconds ?? 31_536_000,
               undefined,
               vinextConfig.expireTime,
             );

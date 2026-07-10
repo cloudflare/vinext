@@ -8,6 +8,7 @@ type RevalidateParityMode =
 
 type RevalidateParityState = {
   mode: RevalidateParityMode;
+  revalidate: number | false | undefined;
   capturedCookie: string | null;
   capturedToken: string | null;
   generationCount: number;
@@ -21,14 +22,20 @@ const fixtureGlobal = globalThis as typeof globalThis & {
 export function getRevalidateParityState(): RevalidateParityState {
   return (fixtureGlobal[stateKey] ??= {
     mode: "content",
+    revalidate: undefined,
     capturedCookie: null,
     capturedToken: null,
     generationCount: 0,
   });
 }
 
-export function setRevalidateParityMode(mode: RevalidateParityMode): void {
-  getRevalidateParityState().mode = mode;
+export function setRevalidateParityMode(
+  mode: RevalidateParityMode,
+  revalidate?: number | false,
+): void {
+  const state = getRevalidateParityState();
+  state.mode = mode;
+  state.revalidate = revalidate;
 }
 
 export function resetRevalidateParityGenerationCount(): void {

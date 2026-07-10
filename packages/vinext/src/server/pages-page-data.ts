@@ -64,8 +64,26 @@ type PagesPagePropsResult = {
   props?: Record<string, unknown>;
   redirect?: PagesRedirectResult;
   notFound?: boolean;
-  revalidate?: number;
+  revalidate?: number | boolean;
 };
+
+/**
+ * Next.js normalizes an omitted/false Pages `revalidate` result to its
+ * one-year sentinel when the response is persisted in the incremental cache.
+ * Regeneration must use the value returned by the current invocation rather
+ * than inheriting the previous entry's lifetime.
+ *
+ * Next.js source:
+ * - packages/next/src/server/render.tsx (`metadata.cacheControl`)
+ * - packages/next/src/server/route-modules/pages/pages-handler.ts
+ */
+export function resolvePagesRevalidateSeconds(result: PagesPagePropsResult): number {
+  if (result.revalidate === true) return 1;
+  if (typeof result.revalidate === "number" && result.revalidate > 0) {
+    return result.revalidate;
+  }
+  return 31_536_000;
+}
 
 type PagesMutableGsspResponse = {
   headersSent: boolean;
@@ -286,6 +304,8 @@ type ResolvePagesPageDataResponseResult = {
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** Current getStaticProps cache lifetime, when this is an SSG result. */
+  revalidateSeconds?: number;
 };
 
 type ResolvePagesPageDataResult =
@@ -311,6 +331,7 @@ function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
 
 function buildPagesNotFoundResult(
   options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
+  revalidateSeconds?: number,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
@@ -319,7 +340,7 @@ function buildPagesNotFoundResult(
     };
   }
 
-  return { kind: "notFound" };
+  return { kind: "notFound", revalidateSeconds };
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
@@ -984,10 +1005,9 @@ export async function resolvePagesPageData(
               freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
             }
 
-            const freshRevalidateSeconds =
-              typeof freshResult?.revalidate === "number" && freshResult.revalidate > 0
-                ? freshResult.revalidate
-                : cached.value.cacheControl?.revalidate;
+            const freshRevalidateSeconds = freshResult
+              ? resolvePagesRevalidateSeconds(freshResult)
+              : undefined;
 
             if (freshResult?.props && freshRevalidateSeconds && freshRevalidateSeconds > 0) {
               const freshHtml = await renderPagesIsrHtml({
@@ -1083,10 +1103,7 @@ export async function resolvePagesPageData(
     if (result?.redirect) {
       const response = buildPagesRedirectResponse(result.redirect, options, renderProps);
       if (options.isOnDemandRevalidate && previewData === false) {
-        const revalidateSeconds =
-          typeof result.revalidate === "number" && result.revalidate > 0
-            ? result.revalidate
-            : (cached?.value.cacheControl?.revalidate ?? 31_536_000);
+        const revalidateSeconds = resolvePagesRevalidateSeconds(result);
         await options.isrSet(
           cacheKey,
           {
@@ -1108,7 +1125,7 @@ export async function resolvePagesPageData(
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      return buildPagesNotFoundResult(options, resolvePagesRevalidateSeconds(result));
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -1127,10 +1144,9 @@ export async function resolvePagesPageData(
       isrRevalidateSeconds = result.revalidate;
     } else if (previewData === false && options.isOnDemandRevalidate) {
       // `revalidate: false` (and an omitted `revalidate`) still participates in
-      // on-demand regeneration. Preserve the previous cache lifetime where
-      // available; the long-lived fallback matches vinext's existing
-      // representation for non-expiring fallback entries.
-      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+      // on-demand regeneration. Persist the current invocation's normalized
+      // lifetime instead of inheriting stale metadata from the previous entry.
+      isrRevalidateSeconds = result ? resolvePagesRevalidateSeconds(result) : 31_536_000;
     } else if (
       previewData === false &&
       cachedValue?.kind === "PAGES" &&

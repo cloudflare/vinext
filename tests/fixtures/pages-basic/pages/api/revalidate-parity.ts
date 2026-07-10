@@ -7,6 +7,15 @@ import {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const mode = req.query.mode;
+  const requestedRevalidate = Array.isArray(req.query.revalidate)
+    ? req.query.revalidate[0]
+    : req.query.revalidate;
+  const revalidate =
+    requestedRevalidate === "false"
+      ? false
+      : requestedRevalidate !== undefined && /^\d+$/.test(requestedRevalidate)
+        ? Number(requestedRevalidate)
+        : undefined;
   if (
     mode === "content" ||
     mode === "notFound" ||
@@ -15,7 +24,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     mode === "concurrent" ||
     mode === "error"
   ) {
-    setRevalidateParityMode(mode);
+    setRevalidateParityMode(mode, revalidate);
   }
 
   if (req.query.reset === "1") {

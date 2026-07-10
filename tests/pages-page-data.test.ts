@@ -965,7 +965,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
+      31_536_000,
       undefined,
       300,
     );
@@ -976,7 +976,7 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
+      31_536_000,
       undefined,
       300,
     );

@@ -9,19 +9,19 @@ export default function RevalidateParityTarget({ renderedAt }: { renderedAt: num
 
 export async function getStaticProps() {
   incrementRevalidateParityGenerationCount();
-  const { mode } = getRevalidateParityState();
+  const { mode, revalidate } = getRevalidateParityState();
+  const withRevalidate = <T extends Record<string, unknown>>(result: T) =>
+    revalidate === undefined ? result : { ...result, revalidate };
   await new Promise((resolve) => setTimeout(resolve, mode === "concurrent" ? 300 : 50));
   if (mode === "error") throw new Error("intentional revalidation failure");
-  if (mode === "notFound") return { notFound: true };
+  if (mode === "notFound") return withRevalidate({ notFound: true });
   if (mode === "redirect") {
-    return { redirect: { destination: "/about", permanent: false } };
+    return withRevalidate({ redirect: { destination: "/about", permanent: false } });
   }
   if (mode === "externalRedirect") {
-    return {
+    return withRevalidate({
       redirect: { destination: "https://example.com/revalidated", permanent: false },
-    };
+    });
   }
-  // Deliberately omit `revalidate`: Next.js still lets res.revalidate()
-  // replace this non-expiring SSG entry.
-  return { props: { renderedAt: Date.now() } };
+  return withRevalidate({ props: { renderedAt: Date.now() } });
 }

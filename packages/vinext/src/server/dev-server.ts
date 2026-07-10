@@ -69,6 +69,7 @@ import {
   getPagesRouteParams,
   isCachedPagesRepresentationHeader,
   matchesPagesStaticPath,
+  resolvePagesRevalidateSeconds,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
@@ -1293,7 +1294,6 @@ export function createSSRHandler(
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
-            const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const { cacheControl: hitCacheControl } = decideIsr({
               cacheState: "HIT",
@@ -1312,6 +1312,26 @@ export function createSSRHandler(
               }
             }
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
+            if (cachedPage.status === 404) {
+              for (const [name, value] of Object.entries(hitHeaders)) {
+                res.setHeader(name, value);
+              }
+              await renderErrorPage(
+                server,
+                runner,
+                req,
+                res,
+                url,
+                pagesDir,
+                404,
+                routerShim.wrapWithRouterContext,
+                undefined,
+                undefined,
+                reactStrictMode,
+              );
+              return;
+            }
+            const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             res.writeHead(cachedPage.status ?? 200, hitHeaders);
             res.end(transformedHtml);
             return;
@@ -1330,7 +1350,6 @@ export function createSSRHandler(
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
-            const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
 
             // Trigger background regeneration: re-run getStaticProps,
             // re-render the page, and cache the fresh HTML.
@@ -1435,11 +1454,45 @@ export function createSSRHandler(
                     // Next.js `render.tsx`'s `revalidateReason` resolution.
                     revalidateReason: "stale",
                   });
+                  const revalidate = resolvePagesRevalidateSeconds(freshResult);
+                  if (freshResult && "notFound" in freshResult && freshResult.notFound) {
+                    await isrSet(
+                      cacheKey,
+                      {
+                        kind: "PAGES",
+                        html: "",
+                        pageData: {},
+                        headers: undefined,
+                        status: 404,
+                      },
+                      revalidate,
+                    );
+                    setRevalidateDuration(cacheKey, revalidate);
+                    return;
+                  }
+                  if (freshResult && "redirect" in freshResult) {
+                    const status =
+                      freshResult.redirect.statusCode ??
+                      (freshResult.redirect.permanent ? 308 : 307);
+                    let destination = freshResult.redirect.destination;
+                    if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
+                      destination = destination.replace(/^[\\/]+/, "/");
+                    }
+                    await isrSet(
+                      cacheKey,
+                      {
+                        kind: "PAGES",
+                        html: "",
+                        pageData: freshRenderProps,
+                        headers: { Location: destination },
+                        status,
+                      },
+                      revalidate,
+                    );
+                    setRevalidateDuration(cacheKey, revalidate);
+                    return;
+                  }
                   if (freshResult && "props" in freshResult) {
-                    const revalidate =
-                      typeof freshResult.revalidate === "number"
-                        ? freshResult.revalidate
-                        : (cached.value.cacheControl?.revalidate ?? 0);
                     if (revalidate > 0) {
                       freshPageProps = { ...freshPageProps, ...freshResult.props };
                       freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
@@ -1560,8 +1613,34 @@ export function createSSRHandler(
               ...buildCacheStateHeaders("STALE"),
               "Cache-Control": staleCacheControl,
             };
+            if (cachedPage.headers) {
+              for (const [name, value] of Object.entries(cachedPage.headers)) {
+                if (!isCachedPagesRepresentationHeader(name)) continue;
+                staleHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
+              }
+            }
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
-            res.writeHead(200, staleHeaders);
+            if (cachedPage.status === 404) {
+              for (const [name, value] of Object.entries(staleHeaders)) {
+                res.setHeader(name, value);
+              }
+              await renderErrorPage(
+                server,
+                runner,
+                req,
+                res,
+                url,
+                pagesDir,
+                404,
+                routerShim.wrapWithRouterContext,
+                undefined,
+                undefined,
+                reactStrictMode,
+              );
+              return;
+            }
+            const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
+            res.writeHead(cachedPage.status ?? 200, staleHeaders);
             res.end(transformedHtml);
             return;
           }
@@ -1620,10 +1699,7 @@ export function createSSRHandler(
               if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
                 destination = destination.replace(/^[\\/]+/, "/");
               }
-              const revalidateSeconds =
-                typeof result.revalidate === "number" && result.revalidate > 0
-                  ? result.revalidate
-                  : (cached?.value.cacheControl?.revalidate ?? 31_536_000);
+              const revalidateSeconds = resolvePagesRevalidateSeconds(result);
               await isrSet(
                 cacheKey,
                 {
@@ -1642,24 +1718,19 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            const revalidateSeconds = resolvePagesRevalidateSeconds(result);
             if (isOnDemandRevalidate) {
               if (previewData === false && !isDataReq) {
-                // Replace any previous 200 representation before returning the
-                // 404. This prevents the next dev request from hitting stale
-                // numeric ISR content after a successful `res.revalidate()`.
-                const defaultNotFound = buildDefaultPagesNotFoundResponse();
-                const revalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+                // Persist a not-found marker, not rendered error HTML. The
+                // custom 404 is rendered per request, matching Next.js and
+                // avoiding caching request-specific `_app`/404 props.
                 await isrSet(
                   cacheKey,
                   {
                     kind: "PAGES",
-                    html: await defaultNotFound.text(),
+                    html: "",
                     pageData: {},
-                    headers: Object.fromEntries(
-                      [...defaultNotFound.headers.entries()].filter(([name]) =>
-                        isCachedPagesRepresentationHeader(name),
-                      ),
-                    ),
+                    headers: undefined,
                     status: 404,
                   },
                   revalidateSeconds,
@@ -1716,7 +1787,7 @@ export function createSSRHandler(
           ) {
             isrRevalidateSeconds = result.revalidate;
           } else if (previewData === false && isOnDemandRevalidate) {
-            isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+            isrRevalidateSeconds = result ? resolvePagesRevalidateSeconds(result) : 31_536_000;
           } else if (
             previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
