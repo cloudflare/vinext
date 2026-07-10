@@ -38,4 +38,18 @@ test.describe("generated App param case parity in dev", () => {
       expect(response.status(), region).toBe(404);
     }
   });
+
+  test("chains generated parent params through route groups", async ({ request }) => {
+    const exact = await request.get("/nextjs-compat/static-param-parent-chain/EU/En");
+    expect(exact.status()).toBe(200);
+    expect(await exact.text()).toContain("Parent chain: <!-- -->EU<!-- -->/<!-- -->En");
+
+    for (const pathname of [
+      "/nextjs-compat/static-param-parent-chain/eu/En",
+      "/nextjs-compat/static-param-parent-chain/EU/en",
+      "/nextjs-compat/static-param-parent-chain/EU/Fr",
+    ]) {
+      expect((await request.get(pathname)).status(), pathname).toBe(404);
+    }
+  });
 });

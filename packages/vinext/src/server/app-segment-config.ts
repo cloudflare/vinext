@@ -142,9 +142,10 @@ function resolveDynamicParamsConfig(
     return dynamicParamsConfig;
   }
 
+  const routeSegments = options.routeSegments;
   let lastDynamicPosition = -1;
-  for (let index = options.routeSegments.length - 1; index >= 0; index--) {
-    if (isDynamicSegment(options.routeSegments[index])) {
+  for (let index = routeSegments.length - 1; index >= 0; index--) {
+    if (isDynamicSegment(routeSegments[index])) {
       lastDynamicPosition = index;
       break;
     }
@@ -158,7 +159,7 @@ function resolveDynamicParamsConfig(
 
   layouts.forEach((layout, index) => {
     const ownerPosition = resolveSegmentConfigOwnerPosition(
-      options.routeSegments,
+      routeSegments,
       layoutPositions[index] ?? 0,
     );
     if (ownerPosition !== lastDynamicPosition) return;
@@ -175,7 +176,7 @@ function resolveDynamicParamsConfig(
 
   for (const branch of options.parallelBranches ?? []) {
     if (!branch) continue;
-    const branchStartPosition = options.routeSegments.length - (branch.routeSegments?.length ?? 0);
+    const branchStartPosition = routeSegments.length - (branch.routeSegments?.length ?? 0);
     const checkSegment = (
       segment: AppRouteSegmentConfigModule | null | undefined,
       ownerPosition: number,

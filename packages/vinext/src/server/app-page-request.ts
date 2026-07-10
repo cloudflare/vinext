@@ -15,7 +15,14 @@ type GenerateStaticParamsModule = {
 };
 
 type GenerateStaticParamsSource = {
+  /**
+   * Primary loader-tree sources execute top-down as one chain. Each source
+   * receives the complete params object produced by the sources before it.
+   */
+  chained?: true;
   generateStaticParams: GenerateStaticParams;
+  /** Route-level params owned and validated by an independent parallel branch. */
+  independentParamNames?: readonly string[];
   paramAliases?: Readonly<Record<string, string>>;
   paramPatternParts?: readonly string[];
   routePatternParts?: readonly string[];
@@ -295,6 +302,7 @@ export function resolveAppPageGenerateStaticParamsSources(
     if (typeof layout?.generateStaticParams !== "function") return;
 
     sources.push({
+      chained: true,
       generateStaticParams: layout.generateStaticParams,
       parentParamNames: collectParentParamNames(
         options.routeSegments,
@@ -308,6 +316,7 @@ export function resolveAppPageGenerateStaticParamsSources(
 
   if (typeof options.page?.generateStaticParams === "function") {
     sources.push({
+      chained: true,
       generateStaticParams: options.page.generateStaticParams,
       parentParamNames: collectParentParamNames(
         options.routeSegments,
@@ -331,6 +340,15 @@ export function resolveAppPageGenerateStaticParamsSources(
           : [];
       }),
     );
+    const branchParamNames = new Set(
+      (parallelBranch.routeSegments ?? []).flatMap((segment) => {
+        const name = getAppPageSegmentParamName(segment);
+        return name ? [name] : [];
+      }),
+    );
+    const independentParamNames = routeParamNames.filter((routeParamName, index) =>
+      branchParamNames.has(slotParamNames[index] ?? routeParamName),
+    );
     const addParallelSource = (
       module: GenerateStaticParamsModule | null | undefined,
       boundaryPosition: number,
@@ -338,6 +356,7 @@ export function resolveAppPageGenerateStaticParamsSources(
       if (typeof module?.generateStaticParams !== "function") return;
       sources.push({
         generateStaticParams: module.generateStaticParams,
+        ...(independentParamNames.length > 0 ? { independentParamNames } : {}),
         ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
         ...(parallelBranch.patternParts ? { paramPatternParts: parallelBranch.patternParts } : {}),
         ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
@@ -371,6 +390,7 @@ export function resolveAppPageGenerateStaticParamsSources(
 function areStaticParamsAllowed(
   params: AppPageParams,
   staticParams: readonly Record<string, unknown>[],
+  allowMissingValues = true,
 ): boolean {
   const paramKeys = Object.keys(params);
   // Next.js compares the request pathname against generated encoded pathnames
@@ -387,7 +407,7 @@ function areStaticParamsAllowed(
       // Parent params may not appear in the leaf route's returned set because
       // Next.js passes them top-down through nested generateStaticParams calls.
       if (staticValue === undefined) {
-        return true;
+        return allowMissingValues;
       }
 
       if (Array.isArray(value)) {
@@ -413,6 +433,39 @@ function areStaticParamsAllowed(
       return JSON.stringify(value) === JSON.stringify(staticValue);
     }),
   );
+}
+
+async function generateChainedStaticParams(
+  sources: readonly GenerateStaticParamsSource[],
+): Promise<Record<string, unknown>[]> {
+  let generatedParams: Record<string, unknown>[] = [];
+
+  for (const source of sources) {
+    const hasParentParams = generatedParams.length > 0;
+    const parents = hasParentParams ? generatedParams : [{}];
+    const nextParams: Record<string, unknown>[] = [];
+
+    for (const parentParams of parents) {
+      const result = await runWithFetchDedupe(() =>
+        source.generateStaticParams({ params: parentParams as AppPageParams }),
+      );
+      if (Array.isArray(result) && result.length > 0) {
+        for (const item of result) {
+          if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+            nextParams.push({ ...parentParams, ...(item as Record<string, unknown>) });
+          }
+        }
+      } else if (hasParentParams) {
+        // Match Next's non-PPR generation: an empty child result preserves
+        // each already-generated parent combination.
+        nextParams.push(parentParams);
+      }
+    }
+
+    generatedParams = nextParams;
+  }
+
+  return generatedParams;
 }
 
 function normalizeGenerateStaticParams(
@@ -448,7 +501,28 @@ export async function validateAppPageDynamicParams(
     return notFoundResponse();
   }
 
+  const chainedSources = generateStaticParamsSources.filter((source) => source.chained);
+  if (chainedSources.length > 0) {
+    // Next walks the loader-tree segments top-down. Route groups are real
+    // loader-tree segments even though they do not appear in the URL, so a
+    // generateStaticParams exported by a grouped layout receives everything
+    // generated by its parent layouts.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+    const staticParams = await generateChainedStaticParams(chainedSources);
+    const independentParamNames = new Set(
+      generateStaticParamsSources.flatMap((source) => source.independentParamNames ?? []),
+    );
+    const chainedRequestParams = Object.fromEntries(
+      Object.entries(options.params).filter(([name]) => !independentParamNames.has(name)),
+    );
+    if (!areStaticParamsAllowed(chainedRequestParams, staticParams, false)) {
+      options.clearRequestContext();
+      return notFoundResponse();
+    }
+  }
+
   for (const source of generateStaticParamsSources) {
+    if (source.chained) continue;
     const sourceParams = remapRouteParams(options.params, source);
     const staticParams = await runWithFetchDedupe(() =>
       source.generateStaticParams({
