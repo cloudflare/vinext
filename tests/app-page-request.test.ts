@@ -148,6 +148,24 @@ describe("app page request helpers", () => {
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
+  it("ignores route groups when finding a layout generateStaticParams boundary", async () => {
+    const generateStaticParams = vi.fn(() => [{ region: "SE" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        layouts: [null, { generateStaticParams }],
+        layoutTreePositions: [0, 2],
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+      isDynamicRoute: true,
+      params: { region: "SE" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
   it("enforces generateStaticParams from a parallel page", async () => {
     const response = await validateAppPageDynamicParams({
       clearRequestContext() {},

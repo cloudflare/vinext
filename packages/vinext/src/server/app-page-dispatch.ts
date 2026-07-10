@@ -786,7 +786,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  if (options.skipStaticParamsValidation !== true) {
+  // Next.js' production force-dynamic routes are absent from the prerender
+  // manifest, so they never enter its generated-path fallback gate. Dev still
+  // resolves and exact-matches generateStaticParams for the same route.
+  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
     const dynamicParamsResponse = await validateAppPageDynamicParams({
       clearRequestContext: options.clearRequestContext,
       enforceStaticParamsOnly: options.dynamicParamsConfig === false,

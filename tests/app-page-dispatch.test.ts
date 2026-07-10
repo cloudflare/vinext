@@ -1955,12 +1955,11 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
-  // Ported from Next.js: test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
-  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-prefetch-static/app-prefetch-static.test.ts
-  it("admits generated params using default case-insensitive route matching", async () => {
-    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+  it("rejects generated scalar params with different casing", async () => {
     const { options } = createDispatchOptions({
-      buildPageElement,
+      async buildPageElement() {
+        throw new Error("case-mismatched static params should not render the page");
+      },
       async generateStaticParams() {
         return [{ region: "SE" }, { region: "DE" }];
       },
@@ -1973,21 +1972,14 @@ describe("app page dispatch", () => {
       dynamicParamsConfig: false,
     });
 
-    expect(response.status).toBe(200);
-    expect(buildPageElement).toHaveBeenCalledWith(
-      expect.anything(),
-      { region: "se" },
-      undefined,
-      expect.any(URLSearchParams),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(response.status).toBe(404);
   });
 
-  it("admits generated catch-all params using default case-insensitive route matching", async () => {
-    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+  it("rejects generated catch-all params with different casing", async () => {
     const { options } = createDispatchOptions({
-      buildPageElement,
+      async buildPageElement() {
+        throw new Error("case-mismatched static params should not render the page");
+      },
       async generateStaticParams() {
         return [{ slug: ["Docs", "Getting-Started"] }];
       },
@@ -1999,6 +1991,25 @@ describe("app page dispatch", () => {
       ...options,
       dynamicParamsConfig: false,
     });
+
+    expect(response.status).toBe(404);
+  });
+
+  it('skips generated-param enforcement for production dynamic = "force-dynamic" routes', async () => {
+    const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      dynamicConfig: "force-dynamic",
+      dynamicParamsConfig: false,
+      async generateStaticParams() {
+        return [{ region: "SE" }, { region: "DE" }];
+      },
+      isProduction: true,
+      params: { region: "FR" },
+      route: createRoute({ isDynamic: true, params: ["region"] }),
+    });
+
+    const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
     expect(buildPageElement).toHaveBeenCalled();
