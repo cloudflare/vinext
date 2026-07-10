@@ -47,6 +47,26 @@ test("keeps raw Pages route, middleware, slash, and header identity in dev", asy
   expect(slash.location).toBe("/%61bout");
 });
 
+test("canonicalizes WHATWG dot segments before Pages dev routing and config", async () => {
+  const page = await getRawPath("/%2e/about");
+  expect(page.status).toBe(200);
+  expect(page.headers["x-mw-pathname"]).toBe("/about");
+  expect(page.headers["x-page-header"]).toBe("about-page");
+  expect(page.body).toContain("About");
+
+  const redirect = await getRawPath("/x/%2e%2e/old-about");
+  expect(redirect.status).toBe(308);
+  expect(redirect.location).toBe("/about");
+
+  const rewrite = await getRawPath("/x/%2e%2e/before-rewrite");
+  expect(rewrite.status).toBe(200);
+  expect(rewrite.body).toContain("About");
+
+  for (const escapedDelimiter of ["%2f", "%5c", "%252f"]) {
+    expect((await getRawPath(`/x/${escapedDelimiter}/about`)).status).toBe(404);
+  }
+});
+
 test("decodes Pages dynamic params exactly once in dev", async () => {
   const encodedPercent = await getRawPath("/posts/a%2561");
   expect(encodedPercent.status).toBe(200);

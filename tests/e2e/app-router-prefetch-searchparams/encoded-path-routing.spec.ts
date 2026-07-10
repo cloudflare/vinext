@@ -60,6 +60,25 @@ test("keeps encoded static aliases out of slash and config-header identity", asy
   expect(slash.location).toBe("/%61bout");
 });
 
+test("canonicalizes WHATWG dot segments before App production routing and config", async () => {
+  const page = await getRawPath("/%2e/about");
+  expect(page.status).toBe(200);
+  expect(page.headers["x-page-header"]).toBe("about-page");
+  expect(page.body).toContain("About");
+
+  const redirect = await getRawPath("/x/%2e%2e/old-about");
+  expect(redirect.status).toBe(308);
+  expect(redirect.location).toBe("/about");
+
+  const rewrite = await getRawPath("/x/%2e%2e/rewrite-about");
+  expect(rewrite.status).toBe(200);
+  expect(rewrite.body).toContain("About");
+
+  for (const escapedDelimiter of ["%2f", "%5c", "%252f"]) {
+    expect((await getRawPath(`/x/${escapedDelimiter}/about`)).status).toBe(404);
+  }
+});
+
 test("server action rerenders preserve encoded request route identity", async ({ page }) => {
   await page.goto("/nextjs-compat/action-revalidate");
   await expect(page.locator("#revalidate")).toBeVisible();

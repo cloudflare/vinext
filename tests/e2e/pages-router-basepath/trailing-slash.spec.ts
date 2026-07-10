@@ -39,6 +39,19 @@ test.describe("basePath + trailingSlash", () => {
     expect(alias.body).not.toContain("Hello");
   });
 
+  test("canonicalizes dot segments before basePath and trailing-slash handling", async () => {
+    const redirect = await getRawPath("/docs/x/%2e%2e/hello");
+    expect(redirect.status).toBe(308);
+    expect(redirect.location).toBe("/docs/hello/");
+
+    const page = await getRawPath("/docs/%2e/hello/");
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("hello page");
+
+    const outside = await getRawPath("/docs/%2e%2e/hello/");
+    expect(outside.status).toBe(404);
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });

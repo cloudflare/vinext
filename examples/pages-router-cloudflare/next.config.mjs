@@ -34,7 +34,10 @@ export default {
   async rewrites() {
     return {
       beforeFiles: [],
-      afterFiles: [{ source: "/nav-test", destination: "/about" }],
+      afterFiles: [
+        { source: "/nav-test", destination: "/about" },
+        { source: "/rewrite-about", destination: "/about" },
+      ],
       fallback: [],
     };
   },

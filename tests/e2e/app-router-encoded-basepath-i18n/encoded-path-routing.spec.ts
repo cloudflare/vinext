@@ -74,6 +74,28 @@ test("keeps encoded aliases out of slash and config-header identity behind baseP
   expect(slash.location).toBe("/docs/%61bout");
 });
 
+test("canonicalizes dot segments before App basePath, i18n, and config handling", async () => {
+  const page = await getRawPath("/docs/%2e/about");
+  expect(page.status).toBe(200);
+  expect(page.headers["x-page-header"]).toBe("about-page");
+  expect(page.body).toContain("About");
+
+  const redirect = await getRawPath("/docs/x/%2e%2e/old-about");
+  expect(redirect.status).toBe(308);
+  expect(redirect.location).toBe("/docs/about");
+
+  const rewrite = await getRawPath("/docs/x/%2e%2e/rewrite-about");
+  expect(rewrite.status).toBe(200);
+  expect(rewrite.body).toContain("About");
+
+  const outside = await getRawPath("/docs/%2e%2e/about");
+  expect(outside.status).toBe(404);
+
+  for (const escapedDelimiter of ["%2f", "%5c", "%252f"]) {
+    expect((await getRawPath(`/docs/x/${escapedDelimiter}/about`)).status).toBe(404);
+  }
+});
+
 test("honors encoded middleware rewrites behind basePath and i18n", async () => {
   const response = await getRawPath("/docs/%61dmin");
   expect(response.status).toBe(200);

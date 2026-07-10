@@ -102,6 +102,7 @@ import {
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
+  canonicalizeRequestUrlPathname,
   filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
@@ -4706,6 +4707,19 @@ export const loadServerActionClient = ${
                 return;
               }
 
+              // Preserve the pre-Vite URL for middleware/config identity, but
+              // first apply the same WHATWG dot-segment canonicalization as the
+              // Request constructor. Other percent escapes remain untouched.
+              const originalEncodedUrl = req.__vinextOriginalEncodedUrl ?? url;
+              const originalEncodedPathname = originalEncodedUrl.split("?")[0];
+              if (isOpenRedirectShaped(originalEncodedPathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+              const canonicalOriginalUrl = canonicalizeRequestUrlPathname(originalEncodedUrl);
+              url = canonicalizeRequestUrlPathname(url);
+
               // Vite's built-in middleware may rewrite "/" to "/index.html".
               // Normalize it back so our router can match correctly.
               const rawPathname = url.split("?")[0];
@@ -4719,7 +4733,7 @@ export const loadServerActionClient = ${
               // Preserve the original request URL for NextRequest. Vite may
               // rewrite extensionless paths to `.html`, while an actual
               // `.html` request must remain distinguishable to middleware.
-              let middlewareUrl = req.__vinextOriginalEncodedUrl ?? url;
+              let middlewareUrl = canonicalOriginalUrl;
               let routeUrl = middlewareUrl;
               {
                 const routePathname = routeUrl.split("?")[0];

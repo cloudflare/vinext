@@ -35,7 +35,11 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
+import {
+  canonicalizeRequestPathname,
+  filterInternalHeaders,
+  isOpenRedirectShaped,
+} from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
@@ -1643,7 +1647,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // normalize the decoded path for adapter-owned asset/internal checks.
     // Request routing keeps a separate raw encoded pathname: static filesystem
     // identity is compared before decoding, while dynamic captures decode once.
-    const rawPagesPathname = rawPagesPathnameBeforeNormalize.replaceAll("\\", "/");
+    const rawPagesPathname = canonicalizeRequestPathname(
+      rawPagesPathnameBeforeNormalize.replaceAll("\\", "/"),
+    );
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
     let requestPathname = normalizePath(rawPagesPathname);
     let pathname: string;
