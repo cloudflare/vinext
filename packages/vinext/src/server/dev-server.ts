@@ -18,6 +18,7 @@ import {
   isrSet,
   isrCacheKey,
   buildPagesCacheValue,
+  coalesceOnDemandRevalidation,
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
@@ -66,6 +67,7 @@ import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import {
   getPagesRouteParams,
+  isCachedPagesRepresentationHeader,
   matchesPagesStaticPath,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
@@ -1305,11 +1307,7 @@ export function createSSRHandler(
             };
             if (cachedPage.headers) {
               for (const [name, value] of Object.entries(cachedPage.headers)) {
-                if (
-                  name.toLowerCase() === NEXTJS_CACHE_HEADER ||
-                  name.toLowerCase() === "cache-control"
-                )
-                  continue;
+                if (!isCachedPagesRepresentationHeader(name)) continue;
                 hitHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
               }
             }
@@ -1597,7 +1595,13 @@ export function createSSRHandler(
           if (!generatedPageData && (await loadAppInitialProps())) {
             return;
           }
-          const result = generatedPageData ? null : await pageModule.getStaticProps(context);
+          const result = generatedPageData
+            ? null
+            : isOnDemandRevalidate
+              ? await coalesceOnDemandRevalidation(cacheKey, () =>
+                  pageModule.getStaticProps(context),
+                )
+              : await pageModule.getStaticProps(context);
           if (generatedPageData) {
             renderProps = generatedPageData;
             pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
@@ -1638,7 +1642,32 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
-            if (isOnDemandRevalidate) res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
+            if (isOnDemandRevalidate) {
+              if (previewData === false && !isDataReq) {
+                // Replace any previous 200 representation before returning the
+                // 404. This prevents the next dev request from hitting stale
+                // numeric ISR content after a successful `res.revalidate()`.
+                const defaultNotFound = buildDefaultPagesNotFoundResponse();
+                const revalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
+                await isrSet(
+                  cacheKey,
+                  {
+                    kind: "PAGES",
+                    html: await defaultNotFound.text(),
+                    pageData: {},
+                    headers: Object.fromEntries(
+                      [...defaultNotFound.headers.entries()].filter(([name]) =>
+                        isCachedPagesRepresentationHeader(name),
+                      ),
+                    ),
+                    status: 404,
+                  },
+                  revalidateSeconds,
+                );
+                setRevalidateDuration(cacheKey, revalidateSeconds);
+              }
+              res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
+            }
             applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on

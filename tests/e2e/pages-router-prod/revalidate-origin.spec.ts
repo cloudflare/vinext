@@ -227,3 +227,60 @@ test("production revalidation forwards configured headers without forwarding coo
     capturedToken: "allowed-token",
   });
 });
+
+// Next.js 16.2.7 source references:
+// packages/next/src/server/api-utils/node/api-resolver.ts
+// packages/next/src/server/response-cache/index.ts
+test("distinguishes regenerated redirects from config redirects", async ({ request }) => {
+  const external = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-parity?mode=externalRedirect`,
+  );
+  expect(external.status()).toBe(200);
+
+  const cachedRedirect = await request.get(
+    `http://localhost:${APP_PORT}/revalidate-parity-target`,
+    { maxRedirects: 0 },
+  );
+  expect(cachedRedirect.status()).toBe(307);
+  expect(cachedRedirect.headers().location).toBe("https://example.com/revalidated");
+  expect(cachedRedirect.headers()["x-nextjs-cache"]).toBe("HIT");
+
+  const configRedirect = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-reason?path=${encodeURIComponent("/old-about")}`,
+  );
+  expect(configRedirect.status()).toBe(200);
+  expect(await configRedirect.json()).toEqual({ revalidated: false });
+});
+
+test("coalesces concurrent same-path on-demand revalidations", async () => {
+  await requestWithHost(`localhost:${APP_PORT}`, "/api/revalidate-parity?reset=1");
+
+  const responses = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      requestWithHost(`localhost:${APP_PORT}`, "/api/revalidate-parity?mode=concurrent"),
+    ),
+  );
+  for (const response of responses) expect(response.status).toBe(200);
+
+  const inspected = await requestWithHost(
+    `localhost:${APP_PORT}`,
+    "/api/revalidate-parity?inspect=1",
+  );
+  expect(JSON.parse(inspected.body)).toMatchObject({ generationCount: 1 });
+});
+
+test("clears failed on-demand batches so the next revalidation can succeed", async ({
+  request,
+}) => {
+  await request.get(`http://localhost:${APP_PORT}/api/revalidate-parity?mode=error&setOnly=1`);
+  const failed = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-reason?path=${encodeURIComponent("/revalidate-parity-target")}`,
+  );
+  expect(await failed.json()).toEqual({ revalidated: false });
+
+  await request.get(`http://localhost:${APP_PORT}/api/revalidate-parity?mode=content&setOnly=1`);
+  const recovered = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-reason?path=${encodeURIComponent("/revalidate-parity-target")}`,
+  );
+  expect(await recovered.json()).toEqual({ revalidated: true });
+});

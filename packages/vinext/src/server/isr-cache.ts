@@ -251,6 +251,37 @@ const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise
   Promise<void>
 >;
 
+// Keep on-demand work in a distinct batch from ordinary/stale regeneration.
+// This mirrors Next.js ResponseCache's `{ key, isOnDemandRevalidate }` batch
+// key: concurrent `res.revalidate()` calls for the same page share one render,
+// while normal traffic remains free to read the existing representation.
+const _PENDING_ON_DEMAND_REGEN_KEY = Symbol.for("vinext.isrCache.pendingOnDemandRegenerations");
+const pendingOnDemandRegenerations = (_g[_PENDING_ON_DEMAND_REGEN_KEY] ??= new Map<
+  string,
+  Promise<unknown>
+>()) as Map<string, Promise<unknown>>;
+
+/** Coalesce same-key synchronous on-demand revalidations. */
+export function coalesceOnDemandRevalidation<T>(
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  const pending = pendingOnDemandRegenerations.get(key) as Promise<T> | undefined;
+  if (pending) return pending;
+
+  // Defer invocation until after the promise is registered, matching Next.js's
+  // response-cache scheduler and closing the same-tick stampede window.
+  const promise = Promise.resolve()
+    .then(renderFn)
+    .finally(() => {
+      if (pendingOnDemandRegenerations.get(key) === promise) {
+        pendingOnDemandRegenerations.delete(key);
+      }
+    });
+  pendingOnDemandRegenerations.set(key, promise);
+  return promise;
+}
+
 /**
  * Trigger a background regeneration for a cache key.
  *

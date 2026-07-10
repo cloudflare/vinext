@@ -23,7 +23,7 @@ import {
   PAGES_PREVIEW_CACHE_CONTROL,
   type PagesPreviewState,
 } from "./pages-preview.js";
-import { resolvePagesPageData } from "./pages-page-data.js";
+import { isCachedPagesRepresentationHeader, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
@@ -46,6 +46,7 @@ import {
   isrGet,
   isrSet,
   isrCacheKey,
+  coalesceOnDemandRevalidation,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -88,7 +89,7 @@ function cacheableResponseHeaders(headers: Headers): Record<string, string> {
   return Object.fromEntries(
     [...headers.entries()].filter(([name]) => {
       const key = name.toLowerCase();
-      return key === "location" || key === "content-type";
+      return isCachedPagesRepresentationHeader(key);
     }),
   );
 }
@@ -238,6 +239,8 @@ type RenderPageOptions = {
   renderErrorPageOnMiss?: boolean;
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
+  /** Internal recursion guard while a top-level on-demand request owns the batch. */
+  __skipOnDemandCoalesce?: boolean;
   err?: unknown;
 };
 
@@ -466,6 +469,34 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
+    const shouldCoalesceOnDemand =
+      !options?.__skipOnDemandCoalesce &&
+      !options?.__forcedRoute &&
+      typeof route.module.getStaticProps === "function" &&
+      isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
+    if (shouldCoalesceOnDemand) {
+      const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
+      const snapshot = await coalesceOnDemandRevalidation(cacheKey, async () => {
+        const response = await renderPage(request, url, manifest, middlewareHeaders, {
+          ...options,
+          __skipOnDemandCoalesce: true,
+        });
+        return {
+          body:
+            request.method === "HEAD" || response.status === 204 || response.status === 304
+              ? null
+              : new Uint8Array(await response.arrayBuffer()),
+          headers: [...response.headers.entries()] as Array<[string, string]>,
+          status: response.status,
+          statusText: response.statusText,
+        };
+      });
+      return new Response(snapshot.body?.slice() ?? null, {
+        headers: snapshot.headers,
+        status: snapshot.status,
+        statusText: snapshot.statusText,
+      });
+    }
     const routerAsPath = i18nConfig
       ? extractLocaleFromUrl(renderAsPath ?? routeUrl, i18nConfig, locale).url
       : (renderAsPath ?? routeUrl);

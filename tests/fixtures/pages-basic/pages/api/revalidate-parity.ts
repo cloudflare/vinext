@@ -1,10 +1,38 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { getRevalidateParityState, setRevalidateParityMode } from "../../revalidate-parity-state";
+import {
+  getRevalidateParityState,
+  resetRevalidateParityGenerationCount,
+  setRevalidateParityMode,
+} from "../../revalidate-parity-state";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const mode = req.query.mode;
-  if (mode === "content" || mode === "notFound" || mode === "redirect") {
+  if (
+    mode === "content" ||
+    mode === "notFound" ||
+    mode === "redirect" ||
+    mode === "externalRedirect" ||
+    mode === "concurrent" ||
+    mode === "error"
+  ) {
     setRevalidateParityMode(mode);
+  }
+
+  if (req.query.reset === "1") {
+    resetRevalidateParityGenerationCount();
+    res.json({ revalidated: false, generationCount: 0 });
+    return;
+  }
+
+  if (req.query.inspect === "1") {
+    const state = getRevalidateParityState();
+    res.json({ revalidated: false, generationCount: state.generationCount });
+    return;
+  }
+
+  if (req.query.setOnly === "1") {
+    res.json({ revalidated: false });
+    return;
   }
 
   const target =

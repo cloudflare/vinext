@@ -35,6 +35,12 @@ type PagesRedirectResult = {
   statusCode?: number;
 };
 
+/** Headers that are part of a cached Pages representation, never request state. */
+export function isCachedPagesRepresentationHeader(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return lowerName === "location" || lowerName === "content-type";
+}
+
 // Next.js allows `paths` entries to be either an object with a `params` key
 // or a raw string path. We keep a local variant of `StaticPathsEntry` here
 // because at request time we compare against the actual request `params`
@@ -582,7 +588,7 @@ function buildPagesCacheResponse(
       // Pages cache values can originate from custom handlers. Only restore
       // the representation headers needed by cached redirects/not-found
       // responses; never replay Set-Cookie or other request-specific headers.
-      if (lowerName !== "location" && lowerName !== "content-type") continue;
+      if (!isCachedPagesRepresentationHeader(lowerName)) continue;
       if (Array.isArray(value)) {
         headers.delete(name);
         for (const item of value) headers.append(name, item);

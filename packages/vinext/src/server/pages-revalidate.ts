@@ -27,8 +27,6 @@ import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { normalizeDomainHostname } from "../utils/domain-locale.js";
 
-const MAX_REVALIDATE_REDIRECTS = 10;
-
 export type RevalidateOptions = {
   /**
    * Only revalidate the path if it was already generated (cached). Mirrors
@@ -95,7 +93,7 @@ export async function performOnDemandRevalidate(
   //
   // `unstable_onlyGenerated` misses return 404 + REVALIDATED as a successful
   // no-op, matching Next.js. Ordinary successful regenerations return 200.
-  const cacheHeader = res.headers.get(NEXTJS_CACHE_HEADER);
+  const cacheHeader = res.headers.get("x-vercel-cache") ?? res.headers.get(NEXTJS_CACHE_HEADER);
   const ok =
     cacheHeader?.toUpperCase() === "REVALIDATED" ||
     res.status === 200 ||
@@ -128,45 +126,18 @@ async function fetchRevalidateTarget(
   headers: Record<string, string>,
   dispatchRevalidate?: (request: Request) => Promise<Response>,
 ): Promise<Response> {
-  const origin = initialTarget.origin;
-  let target = initialTarget;
-
-  // Next.js lets fetch handle this request, but vinext follows same-origin
-  // redirects manually so the revalidate secret is never forwarded off-origin.
-  for (let redirects = 0; ; redirects++) {
-    const request = new Request(target, { method: "HEAD", headers, redirect: "manual" });
-    // Worker runtimes dispatch this request back through vinext's in-process
-    // request pipeline. A global same-origin fetch can bypass the Worker and
-    // reach the zone origin unless global_fetch_strictly_public is enabled,
-    // which would expose the baked revalidation credential. Node keeps the
-    // upstream-compatible HTTP loopback when no dispatcher is installed.
-    const res = dispatchRevalidate ? await dispatchRevalidate(request) : await fetch(request);
-    if (!isRedirectStatus(res.status)) {
-      return res;
-    }
-
-    const location = res.headers.get("location");
-    if (!location) {
-      return res;
-    }
-
-    const nextTarget = new URL(location, target);
-    if (nextTarget.origin !== origin) {
-      throw new Error(
-        `Failed to revalidate ${initialTarget.pathname}: redirect resolved outside application origin`,
-      );
-    }
-    if (redirects >= MAX_REVALIDATE_REDIRECTS) {
-      break;
-    }
-    target = nextTarget;
-  }
-
-  throw new Error(`Failed to revalidate ${initialTarget.pathname}: too many redirects`);
-}
-
-function isRedirectStatus(status: number): boolean {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+  const request = new Request(initialTarget, { method: "HEAD", headers, redirect: "manual" });
+  // Worker runtimes dispatch this request back through vinext's in-process
+  // request pipeline. A global same-origin fetch can bypass the Worker and
+  // reach the zone origin unless global_fetch_strictly_public is enabled,
+  // which would expose the baked revalidation credential. Node keeps the
+  // upstream-compatible HTTP loopback when no dispatcher is installed.
+  //
+  // Do not follow redirects here. A redirect produced by getStaticProps is a
+  // terminal regenerated representation and carries `REVALIDATED`; a config
+  // redirect does not and must make `res.revalidate()` fail. Following either
+  // would both erase that distinction and risk forwarding the secret.
+  return dispatchRevalidate ? await dispatchRevalidate(request) : await fetch(request);
 }
 
 function createRevalidateTarget(

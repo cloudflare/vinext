@@ -188,42 +188,39 @@ describe("performOnDemandRevalidate", () => {
     expect(dispatchPagesRevalidate).not.toHaveBeenCalled();
   });
 
-  it("follows same-origin redirects without dropping revalidation headers", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 307,
-          headers: { location: "/redirected-page" },
-        }),
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const headers = new Headers({ host: "app.local:3000" });
-
-    await performOnDemandRevalidate(headers, "/fixed-page");
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
-    expect(fetchUrlAt(fetchMock, 1).href).toBe("http://app.local:3000/redirected-page");
-    expect(fetchRequestAt(fetchMock, 1).redirect).toBe("manual");
-    expect(fetchHeadersAt(fetchMock, 1)[PRERENDER_REVALIDATE_HEADER]).toMatch(/^[a-f0-9]{64}$/);
-  });
-
-  it("does not follow cross-origin redirects with the revalidation secret", async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(null, {
-          status: 307,
-          headers: { location: "http://127.0.0.1:9999/leak" },
-        }),
+  it("does not follow config redirects and rejects their non-revalidated status", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(null, {
+        status: 307,
+        headers: { location: "/redirected-page" },
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const headers = new Headers({ host: "app.local:3000" });
 
     await expect(performOnDemandRevalidate(headers, "/fixed-page")).rejects.toThrow(
-      "redirect resolved outside application origin",
+      "Failed to revalidate /fixed-page: 307",
     );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
+  });
+
+  it("accepts a terminal external GSP redirect marked REVALIDATED without following it", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            location: "https://outside.example/destination",
+            "x-nextjs-cache": "REVALIDATED",
+          },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const headers = new Headers({ host: "app.local:3000" });
+
+    await performOnDemandRevalidate(headers, "/fixed-page");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
