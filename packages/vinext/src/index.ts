@@ -96,6 +96,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./server/headers.js";
 import { logRequest, now } from "./server/request-log.js";
@@ -118,6 +119,7 @@ import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
+import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
@@ -4713,9 +4715,22 @@ export const loadServerActionClient = ${
                 res.end("Forbidden");
                 return;
               }
+              let revalidationHostname: string | null = null;
+              if (req.headers[VINEXT_REVALIDATE_HOST_HEADER] !== undefined) {
+                const revalidationHeaders = new Headers();
+                for (const [name, value] of Object.entries(req.headers)) {
+                  if (value === undefined || name.startsWith(":")) continue;
+                  revalidationHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+                }
+                revalidationHostname = readTrustedRevalidationHostname(
+                  revalidationHeaders,
+                  nextConfig?.i18n,
+                );
+              }
               const requestHost =
-                (Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
-                "localhost";
+                revalidationHostname ??
+                ((Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host) ||
+                  "localhost");
               const requestOrigin = `http://${requestHost}`;
               const getUrlHostname = (requestUrl: string) => new URL(requestUrl).hostname;
 
@@ -4944,6 +4959,7 @@ export const loadServerActionClient = ${
               // Both the middleware Request (built below) and the SSR handler
               // (which reads req.headers directly) must see clean headers.
               const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
+              if (revalidationHostname) nodeRequestHeaders.set("host", revalidationHostname);
               for (const header of INTERNAL_HEADERS) {
                 delete req.headers[header];
               }

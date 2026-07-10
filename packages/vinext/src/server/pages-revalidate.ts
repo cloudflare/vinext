@@ -21,9 +21,11 @@ import {
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   getRevalidateSecret,
+  isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
-import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { normalizeDomainHostname } from "../utils/domain-locale.js";
 
 const MAX_REVALIDATE_REDIRECTS = 10;
 
@@ -49,11 +51,19 @@ export async function performOnDemandRevalidate(
     );
   }
 
+  if (isSourceRevalidationRequest(source)) {
+    throw new Error(`Cannot revalidate ${urlPath} from an internal revalidation request`);
+  }
+
   const target = createRevalidateTarget(source, urlPath, trustedOrigin);
 
   const headers: Record<string, string> = {
     [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret(),
   };
+  if (trustedOrigin) {
+    const logicalHostname = normalizeDomainHostname(resolveRequestHost(source, "localhost"));
+    if (logicalHostname) headers[VINEXT_REVALIDATE_HOST_HEADER] = logicalHostname;
+  }
   if (opts.unstable_onlyGenerated) {
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
@@ -82,6 +92,17 @@ export async function performOnDemandRevalidate(
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
   }
+}
+
+function isSourceRevalidationRequest(source: IncomingMessage | Headers): boolean {
+  const headerValue = isWebHeaders(source)
+    ? source.get(PRERENDER_REVALIDATE_HEADER)
+    : source.headers[PRERENDER_REVALIDATE_HEADER];
+  return isOnDemandRevalidateRequest(headerValue);
+}
+
+function isWebHeaders(source: IncomingMessage | Headers): source is Headers {
+  return typeof (source as Headers).get === "function";
 }
 
 async function fetchRevalidateTarget(

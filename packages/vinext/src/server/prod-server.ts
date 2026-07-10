@@ -86,6 +86,8 @@ import {
   parseAcceptedEncodings,
   selectContentEncoding,
 } from "./accept-encoding.js";
+import type { NextI18nConfig } from "../config/next-config.js";
+import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -834,13 +836,20 @@ function nodeToWebRequest(
   req: IncomingMessage,
   urlOverride?: string,
   prerenderSecret?: string,
+  i18nConfig?: NextI18nConfig | null,
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean,
 ): Request {
   const proto = resolveRequestProtocol(req);
-  const host = resolveHost(req, "localhost");
+  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
+  const revalidationHostname = readTrustedRevalidationHostname(
+    rawHeaders,
+    i18nConfig,
+    authorizeOnDemandRevalidate,
+  );
+  const host = revalidationHostname ?? resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
     rawHeaders,
     prerenderSecret,
@@ -852,6 +861,7 @@ function nodeToWebRequest(
     rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
+  if (revalidationHostname) headers.set("host", revalidationHostname);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
     prerenderRouteParamsPayload,
   );
@@ -1285,6 +1295,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
   const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
+  const appRouterI18nConfig: NextI18nConfig | null = rscModule.__i18nConfig ?? null;
+  const appRouterAuthorizeOnDemandRevalidate =
+    typeof rscModule.authorizeOnDemandRevalidate === "function"
+      ? rscModule.authorizeOnDemandRevalidate
+      : undefined;
   const appImageAllowedWidths: number[] = Array.isArray(rscModule.__imageAllowedWidths)
     ? rscModule.__imageAllowedWidths
     : [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -1468,7 +1483,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const normalizedUrl = pathname + qs;
 
       // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
+      const request = nodeToWebRequest(
+        req,
+        normalizedUrl,
+        prerenderSecret,
+        appRouterI18nConfig,
+        appRouterAuthorizeOnDemandRevalidate,
+      );
       const response = await rscHandler(
         request,
         createNodeExecutionContext(resolveTrustedNodeRevalidateOrigin(req, host, port)),
@@ -1851,6 +1872,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
+      const revalidationHostname = readTrustedRevalidationHostname(
+        rawReqHeaders,
+        i18nConfig,
+        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      );
       // Only a successfully parsed `/_next/data/...json` URL is a data
       // request. The inbound x-nextjs-data header is internal and must not let
       // callers opt normal URLs into the data redirect protocol.
@@ -1858,9 +1884,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
+      if (revalidationHostname) reqHeaders.set("host", revalidationHostname);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      const webRequest = new Request(`${protocol}://${revalidationHostname ?? hostHeader}${url}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,

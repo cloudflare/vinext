@@ -119,3 +119,53 @@ test("only-generated revalidation does not generate an unseen blocking fallback 
   const cachedPageResponse = await request.get(`http://localhost:${APP_PORT}${pathname}`);
   expect(cachedPageResponse.headers()["x-nextjs-cache"]).toBe("HIT");
 });
+
+test("rejects a nested revalidation from an authenticated loopback", async () => {
+  const result = await requestWithHost(
+    `localhost:${APP_PORT}`,
+    `/api/revalidate-reason?path=${encodeURIComponent("/api/nested-revalidate")}`,
+  );
+
+  expect(result.status).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ revalidated: false });
+});
+
+test("does not reject a forged revalidation-header presence as an internal loopback", async () => {
+  const result = await new Promise<{ body: string; status: number }>((resolve, reject) => {
+    const request = sendHttpRequest(
+      {
+        hostname: "127.0.0.1",
+        port: APP_PORT,
+        path: "/api/nested-revalidate",
+        headers: {
+          host: `localhost:${APP_PORT}`,
+          "x-prerender-revalidate": "forged",
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({
+            body: Buffer.concat(chunks).toString("utf8"),
+            status: response.statusCode ?? 0,
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+
+  expect(result.status).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ nestedRejected: false });
+});
+
+test("bounds a self-targeting revalidation loop", async () => {
+  const startedAt = Date.now();
+  const result = await requestWithHost(`localhost:${APP_PORT}`, "/api/nested-revalidate?self=1");
+
+  expect(result.status).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ nestedRejected: true });
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+});

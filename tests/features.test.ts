@@ -1522,6 +1522,37 @@ describe("i18n domain routing (Pages Router)", () => {
     );
   });
 
+  it("revalidates the dev ISR entry owned by the request domain", async () => {
+    const before = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    const beforeRenderedAt = before.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1];
+
+    const revalidate = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidate?path=%2Fisr-about",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    expect(JSON.parse(revalidate.body)).toEqual({ revalidated: true });
+
+    const after = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body.match(/<p id="renderedAt">([^<]+)<\/p>/)?.[1]).not.toBe(beforeRenderedAt);
+  });
+
+  it("does not trust or expose a forged logical revalidation hostname", async () => {
+    const response = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": "not-the-secret",
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+
+    expect(JSON.parse(response.body)).toEqual({ host: "example.com", logicalHost: null });
+  });
+
   it("uses the dynamic route pattern for locale-prefixed data responses in dev", async () => {
     const res = await requestNodeServerWithHost(
       domainPort,

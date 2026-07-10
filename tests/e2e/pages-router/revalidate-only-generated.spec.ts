@@ -22,3 +22,23 @@ test("only-generated revalidation leaves an unseen blocking fallback path ungene
   const cachedPage = await request.get(pathname);
   expect(cachedPage.headers()["x-nextjs-cache"]).toBe("HIT");
 });
+
+test("rejects nested and self-targeting dev revalidation", async ({ request }) => {
+  const nested = await request.get(
+    `/api/revalidate-reason?path=${encodeURIComponent("/api/nested-revalidate")}`,
+  );
+  expect(await nested.json()).toEqual({ revalidated: false });
+
+  const startedAt = Date.now();
+  const selfTarget = await request.get("/api/nested-revalidate?self=1");
+  expect(await selfTarget.json()).toEqual({ nestedRejected: true });
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+});
+
+test("does not reject forged revalidation-header presence in dev", async ({ request }) => {
+  const response = await request.get("/api/nested-revalidate", {
+    headers: { "x-prerender-revalidate": "forged" },
+  });
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toEqual({ nestedRejected: false });
+});

@@ -77,3 +77,27 @@ test("revalidates inside the Worker without sending its credential to the reques
     await closeServer(outsideServer);
   }
 });
+
+test("rejects nested Worker revalidation without contaminating concurrent requests", async ({
+  request,
+}) => {
+  const [nested, ...concurrent] = await Promise.all([
+    request.get(`${BASE}/api/revalidate?path=${encodeURIComponent("/api/nested-revalidate")}`),
+    ...Array.from({ length: 4 }, () =>
+      request.get(`${BASE}/api/revalidate?path=${encodeURIComponent("/revalidate-target")}`),
+    ),
+  ]);
+
+  expect(nested.status()).toBe(500);
+  expect(await nested.json()).toEqual({ revalidated: false });
+  for (const response of concurrent) {
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ revalidated: true });
+  }
+
+  const startedAt = Date.now();
+  const selfTarget = await request.get(`${BASE}/api/nested-revalidate?self=1`);
+  expect(selfTarget.status()).toBe(200);
+  expect(await selfTarget.json()).toEqual({ nestedRejected: true });
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+});

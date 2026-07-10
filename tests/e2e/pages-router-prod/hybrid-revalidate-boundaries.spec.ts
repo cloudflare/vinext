@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 
 type CapturedRequest = {
+  logicalHostHeader: string | undefined;
   revalidateHeader: string | undefined;
   revalidateOnlyGeneratedHeader: string | undefined;
   url: string;
@@ -59,7 +60,7 @@ export default async function handler(
 ) {
   const target = typeof req.query.target === "string" ? req.query.target : "/revalidate-target";
   try {
-    await res.revalidate(target, { unstable_onlyGenerated: true });
+    await res.revalidate(target, { unstable_onlyGenerated: req.query.onlyGenerated === "1" });
     res.json({ revalidated: true });
   } catch {
     res.json({ revalidated: false });
@@ -67,16 +68,32 @@ export default async function handler(
 }
 `,
   );
-  const pageSource = `export async function getStaticProps() {
-  return { props: { renderedAt: Date.now() }, revalidate: 3600 };
+  const pageSource = `export async function getStaticProps({ locale, defaultLocale }) {
+  return { props: { locale, defaultLocale, renderedAt: Date.now() }, revalidate: 3600 };
 }
 
-export default function Page({ renderedAt }: { renderedAt: number }) {
-  return <main>{renderedAt}</main>;
+export default function Page({ locale, defaultLocale, renderedAt }) {
+  return <main><p id="locale">{locale}</p><p id="defaultLocale">{defaultLocale}</p><p id="rendered-at">{renderedAt}</p></main>;
 }
 `;
   await writeFile(path.join(root, "pages/revalidate-target.tsx"), pageSource);
   await writeFile(path.join(root, "pages/middleware-target.tsx"), pageSource);
+  await writeFile(
+    path.join(root, "pages/api/nested-revalidate.ts"),
+    `import type { NextApiRequest, NextApiResponse } from "next";
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const selfTarget = req.query.self === "1";
+  try {
+    await res.revalidate(selfTarget ? "/api/nested-revalidate?self=1" : "/revalidate-target");
+    res.status(200).json({ nestedRejected: false });
+  } catch {
+    const isInternal = typeof req.headers["x-prerender-revalidate"] === "string";
+    res.status(isInternal ? 409 : 200).json({ nestedRejected: true });
+  }
+}
+`,
+  );
   await writeFile(
     path.join(root, "middleware.ts"),
     `import { NextResponse, type NextRequest } from "next/server";
@@ -92,6 +109,14 @@ export function middleware(request: NextRequest) {
   await writeFile(
     path.join(root, "next.config.mjs"),
     `export default {
+  i18n: {
+    locales: ["en", "fr"],
+    defaultLocale: "en",
+    domains: [
+      { domain: "example.com", defaultLocale: "en" },
+      { domain: "example.fr", defaultLocale: "fr", http: true },
+    ],
+  },
   async rewrites() {
     return [
       {
@@ -146,6 +171,33 @@ async function requestRevalidate(
   });
 }
 
+async function requestApp(
+  path: string,
+  host = `127.0.0.1:${appPort}`,
+): Promise<{ body: string; status: number }> {
+  return new Promise((resolve, reject) => {
+    const request = sendHttpRequest(
+      { hostname: "127.0.0.1", port: appPort, path, headers: { host } },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({
+            body: Buffer.concat(chunks).toString("utf8"),
+            status: response.statusCode ?? 0,
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function renderedAt(body: string): string | undefined {
+  return body.match(/<p id="rendered-at">([^<]+)<\/p>/)?.[1];
+}
+
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
@@ -153,7 +205,11 @@ test.beforeAll(async () => {
   outsideServer = createServer((request, response) => {
     const header = request.headers["x-prerender-revalidate"];
     const onlyGeneratedHeader = request.headers["x-prerender-revalidate-if-generated"];
+    const logicalHostHeader = request.headers["x-vinext-revalidate-host"];
     capturedRequests.push({
+      logicalHostHeader: Array.isArray(logicalHostHeader)
+        ? logicalHostHeader[0]
+        : logicalHostHeader,
       revalidateHeader: Array.isArray(header) ? header[0] : header,
       revalidateOnlyGeneratedHeader: Array.isArray(onlyGeneratedHeader)
         ? onlyGeneratedHeader[0]
@@ -225,14 +281,41 @@ test("authenticated revalidation bypasses middleware", async () => {
 });
 
 test("external config rewrites do not receive revalidation credentials", async () => {
-  const result = await requestRevalidate("/config-target");
+  const result = await requestRevalidate("/config-target", "example.fr");
 
   expect(result).toEqual({ revalidated: true });
   expect(capturedRequests).toEqual([
     {
+      logicalHostHeader: undefined,
       revalidateHeader: undefined,
       revalidateOnlyGeneratedHeader: undefined,
       url: "/config-capture",
     },
   ]);
+});
+
+test("hybrid revalidation preserves domain-locale cache identity", async () => {
+  const before = await requestApp("/revalidate-target", "example.fr");
+  expect(before.body).toContain('<p id="locale">fr</p>');
+  const beforeEn = await requestApp("/revalidate-target", "example.com");
+
+  const result = await requestRevalidate("/revalidate-target", "example.fr");
+  expect(result).toEqual({ revalidated: true });
+
+  const after = await requestApp("/revalidate-target", "example.fr");
+  expect(after.body).toContain('<p id="locale">fr</p>');
+  expect(renderedAt(after.body)).not.toBe(renderedAt(before.body));
+  const afterEn = await requestApp("/revalidate-target", "example.com");
+  expect(renderedAt(afterEn.body)).toBe(renderedAt(beforeEn.body));
+});
+
+test("hybrid loopbacks reject nested and self-targeting revalidation", async () => {
+  const nested = await requestRevalidate("/api/nested-revalidate");
+  expect(nested).toEqual({ revalidated: false });
+
+  const startedAt = Date.now();
+  const selfTarget = await requestApp("/api/nested-revalidate?self=1");
+  expect(selfTarget.status).toBe(200);
+  expect(JSON.parse(selfTarget.body)).toEqual({ nestedRejected: true });
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
 });
