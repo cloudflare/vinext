@@ -444,7 +444,7 @@ function buildCachedPagesNotFoundResult(
   };
 }
 
-export function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
+function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
 }
 
