@@ -69,6 +69,8 @@ export async function appRouteGraph(
     const graph = await buildAppRouteGraph(appDir, matcher);
     // A watcher may invalidate while the async filesystem scan is still in
     // flight. Retry instead of returning or caching that obsolete snapshot.
+    // Watcher invalidations arrive in finite bursts, so intentionally wait for
+    // a quiescent scan rather than bounding retries and publishing stale routes.
     if (scanGeneration !== cacheGeneration) continue;
 
     cachedGraph = graph;
