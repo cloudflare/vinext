@@ -2044,7 +2044,6 @@ async function renderPagesNavigationTarget(
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: Router,
     });
   } else {
@@ -2411,7 +2410,6 @@ async function navigateClientHtml(
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: Router,
     });
   } else {

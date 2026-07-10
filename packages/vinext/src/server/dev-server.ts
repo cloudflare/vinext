@@ -1528,7 +1528,6 @@ export function createSSRHandler(
                         const appTree = React.createElement(RegenApp, {
                           ...appTreeProps,
                           Component: pageModule.default,
-                          pageProps: appTreeProps.pageProps,
                           router: routerShim.default,
                         });
                         return typeof routerShim.wrapWithRouterContext === "function"
@@ -1651,7 +1650,6 @@ export function createSSRHandler(
                         ? React.createElement(RegenApp, {
                             ...freshRenderProps,
                             Component: pageModule.default,
-                            pageProps: freshRenderProps.pageProps,
                             router: routerShim.default,
                           })
                         : React.createElement(pageModule.default, freshPageProps);
