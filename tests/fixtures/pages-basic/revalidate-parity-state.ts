@@ -3,12 +3,13 @@ type RevalidateParityMode =
   | "notFound"
   | "redirect"
   | "externalRedirect"
+  | "promised"
   | "concurrent"
   | "error";
 
 type RevalidateParityState = {
   mode: RevalidateParityMode;
-  revalidate: number | false | undefined;
+  revalidate: unknown;
   capturedCookie: string | null;
   capturedToken: string | null;
   generationCount: number;
@@ -29,10 +30,7 @@ export function getRevalidateParityState(): RevalidateParityState {
   });
 }
 
-export function setRevalidateParityMode(
-  mode: RevalidateParityMode,
-  revalidate?: number | false,
-): void {
+export function setRevalidateParityMode(mode: RevalidateParityMode, revalidate?: unknown): void {
   const state = getRevalidateParityState();
   state.mode = mode;
   state.revalidate = revalidate;

@@ -10,8 +10,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const requestedRevalidate = Array.isArray(req.query.revalidate)
     ? req.query.revalidate[0]
     : req.query.revalidate;
-  const revalidate =
-    requestedRevalidate === "false"
+  const invalidRevalidate = Array.isArray(req.query.invalid)
+    ? req.query.invalid[0]
+    : req.query.invalid;
+  const revalidate: unknown = invalidRevalidate
+    ? invalidRevalidate === "zero"
+      ? 0
+      : invalidRevalidate === "fractional"
+        ? 1.5
+        : invalidRevalidate === "infinity"
+          ? Infinity
+          : "invalid"
+    : requestedRevalidate === "false"
       ? false
       : requestedRevalidate !== undefined && /^\d+$/.test(requestedRevalidate)
         ? Number(requestedRevalidate)
@@ -21,6 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     mode === "notFound" ||
     mode === "redirect" ||
     mode === "externalRedirect" ||
+    mode === "promised" ||
     mode === "concurrent" ||
     mode === "error"
   ) {

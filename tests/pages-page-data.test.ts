@@ -967,7 +967,7 @@ describe("pages page data", () => {
       }),
       31_536_000,
       undefined,
-      300,
+      undefined,
     );
     expect(isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -978,7 +978,7 @@ describe("pages page data", () => {
       }),
       31_536_000,
       undefined,
-      300,
+      undefined,
     );
   });
 
@@ -1067,6 +1067,7 @@ describe("pages page data", () => {
         },
       }),
     );
+    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
     expect(regeneratedCacheValue?.html).toContain('"appProp":"from-app"');
     expect(regeneratedCacheValue?.html).toContain('"pageProp":"from-page"');
     expect(regeneratedCacheValue?.html).toContain('"page":"/posts/[slug]"');
@@ -1254,6 +1255,7 @@ describe("pages page data", () => {
 
     expect(isrSet).toHaveBeenCalledOnce();
     const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
+    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
     expect(regeneratedCacheValue?.html).toContain("<main>fresh 404</main>");
     expect(regeneratedCacheValue?.html).toContain('"__vinext"');
     expect(regeneratedCacheValue?.html).toContain('"pageModuleUrl":"/assets/pages/404.js"');
@@ -1319,6 +1321,7 @@ describe("pages page data", () => {
       kind: "render",
       documentReqRes: null,
       gsspRes: null,
+      isrExpireSeconds: 300,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
       props: { pageProps: { title: "hello" } },

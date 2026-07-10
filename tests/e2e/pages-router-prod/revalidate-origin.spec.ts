@@ -218,10 +218,13 @@ test("production revalidation stores the current content and notFound lifetime",
   await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=2`);
   const numericContent = await request.get(`${origin}/revalidate-parity-target`);
   expect(numericContent.headers()["cache-control"]).toContain("s-maxage=2");
+  expect(numericContent.headers()["cache-control"]).toContain("stale-while-revalidate=31535998");
 
   await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=false`);
   const nonExpiringContent = await request.get(`${origin}/revalidate-parity-target`);
-  expect(nonExpiringContent.headers()["cache-control"]).toContain("s-maxage=31536000");
+  expect(nonExpiringContent.headers()["cache-control"]).toBe(
+    "s-maxage=31536000, stale-while-revalidate",
+  );
 
   await request.get(`${origin}/api/revalidate-parity?mode=redirect&revalidate=2`);
   const numericRedirect = await request.get(`${origin}/revalidate-parity-target`, {
@@ -328,4 +331,115 @@ test("clears failed on-demand batches so the next revalidation can succeed", asy
     `http://localhost:${APP_PORT}/api/revalidate-reason?path=${encodeURIComponent("/revalidate-parity-target")}`,
   );
   expect(await recovered.json()).toEqual({ revalidated: true });
+});
+
+// Ported from the Pages response-cache representation contract in Next.js:
+// packages/next/src/server/route-modules/pages/pages-handler.ts
+test("natural stale regeneration persists content, redirect, and notFound transitions", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const target = `${origin}/revalidate-parity-target`;
+
+  await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=1`);
+  const initial = await request.get(target);
+  expect(initial.status()).toBe(200);
+
+  await request.get(`${origin}/api/revalidate-parity?mode=redirect&revalidate=1&setOnly=1`);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleContent = await request.get(target, { maxRedirects: 0 });
+  expect(staleContent.status()).toBe(200);
+  expect(staleContent.headers()["x-nextjs-cache"]).toBe("STALE");
+  await expect
+    .poll(async () => (await request.get(target, { maxRedirects: 0 })).status())
+    .toBe(307);
+
+  await request.get(`${origin}/api/revalidate-parity?mode=notFound&revalidate=1&setOnly=1`);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleRedirect = await request.get(target, { maxRedirects: 0 });
+  expect(staleRedirect.status()).toBe(307);
+  expect(staleRedirect.headers()["x-nextjs-cache"]).toBe("STALE");
+  await expect.poll(async () => (await request.get(target)).status()).toBe(404);
+
+  await request.get(`${origin}/api/revalidate-parity?mode=promised&revalidate=1&setOnly=1`);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleNotFound = await request.get(target);
+  expect(staleNotFound.status()).toBe(404);
+  expect(staleNotFound.headers()["x-nextjs-cache"]).toBe("STALE");
+  await expect
+    .poll(async () => {
+      const response = await request.get(target);
+      return (
+        response.status() === 200 && /rendered at: (?:<!-- -->)?\d+/.test(await response.text())
+      );
+    })
+    .toBe(true);
+});
+
+test("cached notFound renders the custom 404 per request and stays consistent with data requests", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  await request.get(`${origin}/api/revalidate-parity?mode=notFound&revalidate=false`);
+
+  const alice = await request.get(`${origin}/revalidate-parity-target`, {
+    headers: { "x-viewer": "alice-secret" },
+  });
+  expect(alice.status()).toBe(404);
+  expect(await alice.text()).toContain("alice-secret");
+
+  const bob = await request.get(`${origin}/revalidate-parity-target`, {
+    headers: { "x-viewer": "bob" },
+  });
+  const bobHtml = await bob.text();
+  expect(bob.status()).toBe(404);
+  expect(bobHtml).toContain("bob");
+  expect(bobHtml).not.toContain("alice-secret");
+
+  const data = await request.get(
+    `${origin}/_next/data/test-build-id/revalidate-parity-target.json`,
+    { headers: { "x-viewer": "carol" } },
+  );
+  expect(data.status()).toBe(404);
+  expect(await data.json()).toEqual({});
+});
+
+test("cached redirect uses the same canonical representation for HTML and data requests", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  await request.get(`${origin}/api/revalidate-parity?mode=redirect&revalidate=false`);
+
+  const html = await request.get(`${origin}/revalidate-parity-target`, { maxRedirects: 0 });
+  expect(html.status()).toBe(307);
+  expect(html.headers().location).toBe("/about");
+  expect(html.headers()["x-nextjs-cache"]).toBe("HIT");
+
+  const data = await request.get(
+    `${origin}/_next/data/test-build-id/revalidate-parity-target.json`,
+  );
+  expect(data.status()).toBe(200);
+  expect(await data.json()).toMatchObject({
+    pageProps: { __N_REDIRECT: "/about", __N_REDIRECT_STATUS: 307 },
+  });
+});
+
+test("rejects invalid revalidate values without replacing the previous representation", async ({
+  request,
+}) => {
+  const origin = `http://localhost:${APP_PORT}`;
+  const target = `${origin}/revalidate-parity-target`;
+  await request.get(`${origin}/api/revalidate-parity?mode=content&revalidate=false`);
+  const previous = await (await request.get(target)).text();
+
+  for (const invalid of ["zero", "fractional", "infinity", "string"]) {
+    await request.get(`${origin}/api/revalidate-parity?mode=content&invalid=${invalid}&setOnly=1`);
+    const regeneration = await request.get(
+      `${origin}/api/revalidate-reason?path=${encodeURIComponent("/revalidate-parity-target")}`,
+    );
+    expect(await regeneration.json()).toEqual({ revalidated: false });
+    const retained = await request.get(target);
+    expect(retained.headers()["x-nextjs-cache"]).toBe("HIT");
+    expect(await retained.text()).toBe(previous);
+  }
 });

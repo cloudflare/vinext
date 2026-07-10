@@ -23,5 +23,8 @@ export async function getStaticProps() {
       redirect: { destination: "https://example.com/revalidated", permanent: false },
     });
   }
+  if (mode === "promised") {
+    return withRevalidate({ props: Promise.resolve({ renderedAt: Date.now() }) });
+  }
   return withRevalidate({ props: { renderedAt: Date.now() } });
 }

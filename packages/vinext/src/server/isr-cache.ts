@@ -162,7 +162,7 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
   const result = await getCdnCacheAdapter().get(key);
-  if (!result || !result.value) return null;
+  if (!result) return null;
   // Built-in handlers hard-delete expired entries and return null, but custom
   // CacheHandler implementations may surface expiry explicitly.
   if (result.cacheState === "expired") return null;
@@ -178,7 +178,7 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
  */
 export async function isrSet(
   key: string,
-  data: IncrementalCacheValue,
+  data: IncrementalCacheValue | null,
   revalidateSeconds: number,
   tags?: string[],
   expireSeconds?: number,

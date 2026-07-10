@@ -23,7 +23,7 @@ import {
   PAGES_PREVIEW_CACHE_CONTROL,
   type PagesPreviewState,
 } from "./pages-preview.js";
-import { isCachedPagesRepresentationHeader, resolvePagesPageData } from "./pages-page-data.js";
+import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
@@ -75,7 +75,7 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
   });
 }
 
-function withPagesCacheState(response: Response, state: "REVALIDATED"): Response {
+function withPagesCacheState(response: Response, state: "HIT" | "STALE" | "REVALIDATED"): Response {
   const headers = new Headers(response.headers);
   headers.set(NEXTJS_CACHE_HEADER, state);
   return new Response(response.body, {
@@ -83,15 +83,6 @@ function withPagesCacheState(response: Response, state: "REVALIDATED"): Response
     status: response.status,
     statusText: response.statusText,
   });
-}
-
-function cacheableResponseHeaders(headers: Headers): Record<string, string> {
-  return Object.fromEntries(
-    [...headers.entries()].filter(([name]) => {
-      const key = name.toLowerCase();
-      return isCachedPagesRepresentationHeader(key);
-    }),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -745,30 +736,13 @@ export function createPagesPageHandler(
             notFoundResponse = buildDefaultPagesNotFoundResponse();
           }
 
-          if (isOnDemandRevalidate && isStaticPropsRoute && previewData === false) {
-            const body = await notFoundResponse.text();
-            const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
-            await isrSet(
-              cacheKey,
-              {
-                kind: "PAGES",
-                html: body,
-                pageData: {},
-                headers: cacheableResponseHeaders(notFoundResponse.headers),
-                status: 404,
-              },
-              pageDataResult.revalidateSeconds ?? 31_536_000,
-              undefined,
-              vinextConfig.expireTime,
-            );
-            notFoundResponse = new Response(body, {
-              headers: notFoundResponse.headers,
-              status: 404,
-              statusText: notFoundResponse.statusText,
-            });
-          }
           if (isOnDemandRevalidate) {
             notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
+          } else if (pageDataResult.cacheState) {
+            notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
+            if (pageDataResult.cacheControl) {
+              notFoundResponse.headers.set("Cache-Control", pageDataResult.cacheControl);
+            }
           }
           return finalizePagesPreviewResponse(notFoundResponse, preview);
         }
@@ -796,6 +770,7 @@ export function createPagesPageHandler(
             ? null
             : (pageDataResult.documentReqRes ?? createPageReqRes());
         const isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+        const isrExpireSeconds = pageDataResult.isrExpireSeconds;
         const isFallbackRender = pageDataResult.isFallback === true;
 
         // Republish SSR context with isFallback flipped on so `useRouter().isFallback`
@@ -926,7 +901,7 @@ export function createPagesPageHandler(
             documentReqRes,
             gsspRes,
             isrCacheKey: pageIsrCacheKey,
-            expireSeconds: vinextConfig.expireTime,
+            expireSeconds: isrExpireSeconds,
             isrRevalidateSeconds,
             isOnDemandRevalidate,
             isStaticPropsRoute,
