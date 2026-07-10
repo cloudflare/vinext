@@ -7,6 +7,7 @@ import { expect, test as base } from "../fixtures";
 import { waitForHydration } from "../helpers";
 
 type ProductionApp = { baseUrl: string };
+const BASE_PATH = "/app";
 
 async function closeServer(server: Server): Promise<void> {
   const closed = new Promise<void>((resolve) => server.close(() => resolve()));
@@ -79,7 +80,7 @@ test("hydrates an ISR page from shared query state before publishing the browser
   consoleErrors,
 }) => {
   const attackerToken = "ATTACKER_HYDRATION_QUERY_CONTEXT_TOKEN";
-  const attacker = await fetch(`${productionApp.baseUrl}/hydrate?utm=${attackerToken}`);
+  const attacker = await fetch(`${productionApp.baseUrl}${BASE_PATH}/hydrate?utm=${attackerToken}`);
   const attackerHtml = await attacker.text();
   expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
   expect(attackerHtml).not.toContain(attackerToken);
@@ -87,9 +88,10 @@ test("hydrates an ISR page from shared query state before publishing the browser
   expect(attackerHtml).toContain('<p id="ready">false</p>');
 
   const victimToken = "VICTIM_HYDRATION_QUERY_CONTEXT_TOKEN";
-  const response = await page.goto(`${productionApp.baseUrl}/hydrate?utm=${victimToken}`, {
-    waitUntil: "load",
-  });
+  const response = await page.goto(
+    `${productionApp.baseUrl}${BASE_PATH}/hydrate?utm=${victimToken}`,
+    { waitUntil: "load" },
+  );
 
   expect(response?.status()).toBe(200);
   expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
@@ -126,11 +128,13 @@ test("publishes a queryless browser URL over query-seeded shared ISR HTML", asyn
   productionApp,
   consoleErrors,
 }) => {
-  const attacker = await fetch(`${productionApp.baseUrl}/hydrate?utm=attacker`);
+  const attacker = await fetch(`${productionApp.baseUrl}${BASE_PATH}/hydrate?utm=attacker`);
   expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
   await attacker.text();
 
-  const response = await page.goto(`${productionApp.baseUrl}/hydrate`, { waitUntil: "load" });
+  const response = await page.goto(`${productionApp.baseUrl}${BASE_PATH}/hydrate`, {
+    waitUntil: "load",
+  });
 
   expect(response?.status()).toBe(200);
   expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
@@ -167,14 +171,16 @@ test("publishes dynamic params after hydrating query-seeded shared ISR HTML", as
   consoleErrors,
 }) => {
   const attackerToken = "ATTACKER_DYNAMIC_QUERY_CONTEXT_TOKEN";
-  const attacker = await fetch(`${productionApp.baseUrl}/dynamic/known?utm=${attackerToken}`);
+  const attacker = await fetch(
+    `${productionApp.baseUrl}${BASE_PATH}/dynamic/known?utm=${attackerToken}`,
+  );
   const attackerHtml = await attacker.text();
   expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
   expect(attackerHtml).not.toContain(attackerToken);
   expect(attackerHtml).toContain('<p id="ready">false</p>');
   expect(attackerHtml).toContain('<p id="navigation-params">null</p>');
 
-  const response = await page.goto(`${productionApp.baseUrl}/dynamic/known`, {
+  const response = await page.goto(`${productionApp.baseUrl}${BASE_PATH}/dynamic/known`, {
     waitUntil: "load",
   });
   expect(response?.status()).toBe(200);
@@ -183,6 +189,85 @@ test("publishes dynamic params after hydrating query-seeded shared ISR HTML", as
   await expect(page.locator("#ready")).toHaveText("true");
   await expect(page.locator("#query")).toHaveText(JSON.stringify({ slug: "known" }));
   await expect(page.locator("#as-path")).toHaveText("/dynamic/known");
+  await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/known");
   await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "known" }));
+  expect(consoleErrors).toEqual([]);
+});
+
+test("hydrates a localized dynamic GSP with locale-free navigation state", async ({
+  page,
+  productionApp,
+  consoleErrors,
+}) => {
+  const attackerToken = "LOCALIZED_ISR_ATTACKER_TOKEN";
+  const attacker = await fetch(
+    `${productionApp.baseUrl}${BASE_PATH}/nl/dynamic/known?utm=${attackerToken}`,
+  );
+  const attackerHtml = await attacker.text();
+  expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
+  expect(attackerHtml).not.toContain(attackerToken);
+  expect(attackerHtml).toContain('<p id="query">{&quot;slug&quot;:&quot;known&quot;}</p>');
+  expect(attackerHtml).toContain('<p id="as-path">/dynamic/known</p>');
+  expect(attackerHtml).toContain('<p id="navigation-pathname">/dynamic/known</p>');
+  expect(attackerHtml).toContain('<p id="navigation-params">null</p>');
+
+  const victimToken = "LOCALIZED_ISR_VICTIM_TOKEN";
+  const response = await page.goto(
+    `${productionApp.baseUrl}${BASE_PATH}/nl/dynamic/known?utm=${victimToken}`,
+    { waitUntil: "load" },
+  );
+
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForHydration(page);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_NAVIGATION_PATHNAME__?: string | null })
+          .__INITIAL_NAVIGATION_PATHNAME__,
+    ),
+  ).toBe("/dynamic/known");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_NAVIGATION_PARAMS__?: string })
+          .__INITIAL_NAVIGATION_PARAMS__,
+    ),
+  ).toBe("null");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_QUERY__?: string }).__INITIAL_ROUTER_QUERY__,
+    ),
+  ).toBe(JSON.stringify({ slug: "known" }));
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_AS_PATH__?: string })
+          .__INITIAL_ROUTER_AS_PATH__,
+    ),
+  ).toBe("/dynamic/known");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_READY__?: boolean }).__INITIAL_ROUTER_READY__,
+    ),
+  ).toBe(false);
+
+  await expect(page.locator("#ready")).toHaveText("true");
+  await expect(page.locator("#query")).toHaveText(
+    JSON.stringify({ utm: victimToken, slug: "known" }),
+  );
+  await expect(page.locator("#as-path")).toHaveText(`/dynamic/known?utm=${victimToken}`);
+  await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/known");
+  await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "known" }));
+
+  await page.locator("#navigate-clean").click();
+  await expect(page).toHaveURL(`${productionApp.baseUrl}${BASE_PATH}/nl/dynamic/clean?via=client`);
+  await expect(page.locator("#ready")).toHaveText("true");
+  await expect(page.locator("#query")).toHaveText(JSON.stringify({ via: "client", slug: "clean" }));
+  await expect(page.locator("#as-path")).toHaveText("/dynamic/clean?via=client");
+  await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/clean");
+  await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "clean" }));
   expect(consoleErrors).toEqual([]);
 });
