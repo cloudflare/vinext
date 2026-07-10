@@ -4715,6 +4715,9 @@ export const loadServerActionClient = ${
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
+              // Preserve the original request URL for NextRequest. Vite may
+              // rewrite extensionless paths to `.html`, while an actual
+              // `.html` request must remain distinguishable to middleware.
               let middlewareUrl = req.__vinextOriginalEncodedUrl ?? url;
               let pathname = url.split("?")[0];
 

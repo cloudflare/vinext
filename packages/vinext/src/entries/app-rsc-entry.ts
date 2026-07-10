@@ -903,7 +903,7 @@ export default createAppRscHandler({
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
@@ -912,7 +912,7 @@ export default createAppRscHandler({
         }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
-        const __activeIntercept = findIntercept(cleanPathname, interceptionContext);
+        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
         return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
