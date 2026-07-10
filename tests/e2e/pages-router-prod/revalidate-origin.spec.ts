@@ -83,3 +83,39 @@ test("on-demand revalidation keeps path inputs on the production server origin",
     );
   }
 });
+
+test("authenticated on-demand revalidation bypasses Pages middleware", async () => {
+  const result = await requestWithHost(
+    `localhost:${APP_PORT}`,
+    `/api/revalidate-reason?path=${encodeURIComponent("/revalidate-middleware-sentinel")}`,
+  );
+
+  expect(result.status).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ revalidated: true });
+});
+
+// Ported from Next.js: test/e2e/prerender.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+test("only-generated revalidation does not generate an unseen blocking fallback path", async ({
+  request,
+}) => {
+  const slug = `unseen-${Date.now()}`;
+  const pathname = `/revalidate-only-generated/${slug}`;
+  const result = await requestWithHost(
+    `localhost:${APP_PORT}`,
+    `/api/revalidate-reason?path=${encodeURIComponent(pathname)}&onlyGenerated=1`,
+  );
+
+  expect(result.status).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ revalidated: true });
+
+  const firstPageResponse = await request.get(`http://localhost:${APP_PORT}${pathname}`);
+  expect(firstPageResponse.status()).toBe(200);
+  expect(firstPageResponse.headers()["x-nextjs-cache"]).toBe("MISS");
+  const firstPageHtml = await firstPageResponse.text();
+  expect(firstPageHtml).toContain("Generated");
+  expect(firstPageHtml).toContain(slug);
+
+  const cachedPageResponse = await request.get(`http://localhost:${APP_PORT}${pathname}`);
+  expect(cachedPageResponse.headers()["x-nextjs-cache"]).toBe("HIT");
+});

@@ -115,6 +115,14 @@ export type PagesPipelineDeps = {
   // would otherwise be truncated as a fragment). Falls back to url.search when omitted.
   rawSearch?: string;
 
+  /**
+   * Validate an on-demand revalidation credential using the runtime's
+   * authoritative build secret. Production adapters must inject the verifier
+   * exported by the generated server entry so this early middleware decision
+   * uses the same baked secret as the eventual page renderer.
+   */
+  authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
+
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
   runMiddleware?:
@@ -257,9 +265,10 @@ export async function runPagesRequest(
   const url = new URL(request.url);
   let pathname = url.pathname;
   const search = url.search;
-  const isOnDemandRevalidate = isOnDemandRevalidateRequest(
-    request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  );
+  const revalidateHeader = request.headers.get(PRERENDER_REVALIDATE_HEADER);
+  const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
+    ? deps.authorizeOnDemandRevalidate(revalidateHeader)
+    : isOnDemandRevalidateRequest(revalidateHeader);
 
   // Step 1: Reconstruct basePathState
   const basePathState: BasePathMatchState = { basePath, hadBasePath };

@@ -58,6 +58,7 @@ type PagesWorkerExecutionContext = {
 };
 
 const {
+  authorizeOnDemandRevalidate,
   handleApiRoute,
   hasMiddleware,
   matchPageRoute,
@@ -179,6 +180,8 @@ async function handleRequest(
       isDataRequest: isDataReq,
       hasMiddleware,
       ctx,
+      authorizeOnDemandRevalidate:
+        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"

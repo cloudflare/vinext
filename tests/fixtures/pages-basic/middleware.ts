@@ -4,6 +4,13 @@ import type { NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  if (
+    url.pathname === "/revalidate-middleware-sentinel" &&
+    request.headers.has("x-prerender-revalidate")
+  ) {
+    return new Response("middleware must not observe on-demand revalidation", { status: 418 });
+  }
+
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");

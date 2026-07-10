@@ -7,6 +7,7 @@ import {
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
+import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 
 // Helpers
 
@@ -43,6 +44,50 @@ function makeRenderPage(status = 200, body = "ok") {
       new Response(body, { status }),
   );
 }
+
+describe("on-demand revalidation middleware bypass", () => {
+  it("uses the runtime adapter's authoritative credential verifier", async () => {
+    const runMiddleware = makeMiddleware({});
+    const authorizeOnDemandRevalidate = vi.fn((value: string | null) => value === "build-secret");
+    const request = makeRequest("/revalidate-target", {
+      [PRERENDER_REVALIDATE_HEADER]: "build-secret",
+    });
+
+    const result = await runPagesRequest(
+      request,
+      baseDeps({
+        authorizeOnDemandRevalidate,
+        hasMiddleware: true,
+        renderPage: makeRenderPage(),
+        runMiddleware,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(authorizeOnDemandRevalidate).toHaveBeenCalledWith("build-secret");
+    expect(runMiddleware).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass middleware when the authoritative verifier rejects the header", async () => {
+    const runMiddleware = makeMiddleware({});
+    const authorizeOnDemandRevalidate = vi.fn(() => false);
+    const request = makeRequest("/revalidate-target", {
+      [PRERENDER_REVALIDATE_HEADER]: "forged-secret",
+    });
+
+    await runPagesRequest(
+      request,
+      baseDeps({
+        authorizeOnDemandRevalidate,
+        hasMiddleware: true,
+        renderPage: makeRenderPage(),
+        runMiddleware,
+      }),
+    );
+
+    expect(runMiddleware).toHaveBeenCalledOnce();
+  });
+});
 
 // 1. Trailing-slash: /foo/ with trailingSlash: false → {type:"response"} with status 308
 describe("trailing slash normalization", () => {

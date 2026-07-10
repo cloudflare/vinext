@@ -64,10 +64,8 @@ export async function performOnDemandRevalidate(
   // the cache header reports REVALIDATED, the status is 200, or the path was
   // not generated and the caller opted into `unstable_onlyGenerated`.
   //
-  // NOTE: vinext's Pages ISR path only ever emits HIT/MISS/STALE on
-  // `x-nextjs-cache`, never REVALIDATED, so in practice the happy path is the
-  // 200 branch. The REVALIDATED branch is kept for parity with Next.js and to
-  // stay correct if that header is emitted in the future.
+  // `unstable_onlyGenerated` misses return 404 + REVALIDATED as a successful
+  // no-op, matching Next.js. Ordinary successful regenerations return 200.
   const cacheHeader = res.headers.get(NEXTJS_CACHE_HEADER);
   const ok =
     cacheHeader?.toUpperCase() === "REVALIDATED" ||

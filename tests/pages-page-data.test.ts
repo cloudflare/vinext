@@ -677,6 +677,62 @@ describe("pages page data", () => {
     expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
   });
 
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  it("does not generate a missing fallback path when only-generated revalidation is requested", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "generated" }, revalidate: 60 }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        revalidateOnlyGenerated: true,
+        isrGet: vi.fn().mockResolvedValue(null),
+        pageModule: {
+          getStaticPaths() {
+            return { paths: [], fallback: "blocking" };
+          },
+          getStaticProps,
+        },
+        route: { isDynamic: true },
+        routePattern: "/blocking-fallback/[slug]",
+        routeUrl: "/blocking-fallback/unseen",
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(getStaticProps).not.toHaveBeenCalled();
+  });
+
+  it("regenerates an existing fallback path when only-generated revalidation is requested", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "regenerated" }, revalidate: 60 }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        revalidateOnlyGenerated: true,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            cacheControl: { revalidate: 60 },
+            lastModified: 1,
+            value: {
+              kind: "PAGES",
+              html: "<html>cached</html>",
+              pageData: { pageProps: { slug: "cached" } },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: { getStaticProps },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+    expect(getStaticProps).toHaveBeenCalledOnce();
+  });
+
   it("reruns getStaticProps when generated fallback data is stale", async () => {
     const getStaticProps = vi.fn(async () => ({ props: { slug: "regenerated" }, revalidate: 60 }));
     const result = await resolvePagesPageData(

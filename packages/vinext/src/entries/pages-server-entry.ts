@@ -26,6 +26,7 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
+const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 
 async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
   const source = await readFile(filePath, "utf8");
@@ -233,10 +234,16 @@ import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_p
 import { normalizePagesDataRequest as __normalizePagesDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
+import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
 ${instrumentationInitCode}
+
+// The outer Node production pipeline runs outside this generated bundle, so
+// it cannot safely validate against its own development fallback secret. Give
+// it a verifier closed over this entry's build-time-baked secret instead.
+export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};

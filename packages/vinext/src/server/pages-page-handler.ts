@@ -48,6 +48,7 @@ import {
   isrCacheKey,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
+  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
@@ -470,6 +471,8 @@ export function createPagesPageHandler(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
+        const revalidateOnlyGenerated =
+          isOnDemandRevalidate && request.headers.has(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER);
         const supportsPreview =
           isStaticPropsRoute || typeof pageModule.getServerSideProps === "function";
         const preview = supportsPreview
@@ -645,6 +648,7 @@ export function createPagesPageHandler(
           // external client from forcing synchronous regeneration via an
           // arbitrary header value (cache-stampede/DoS vector).
           isOnDemandRevalidate,
+          revalidateOnlyGenerated,
           previewData,
           pageModule,
           AppComponent,

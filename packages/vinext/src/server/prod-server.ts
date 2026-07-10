@@ -1588,6 +1588,7 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
  * - handleApiRoute(request, url, ctx?, trustedRevalidateOrigin?) — API route handling
  *   (ctx optional; pass for ctx.waitUntil() on Workers)
+ * - authorizeOnDemandRevalidate(header) — validates against the bundled build secret
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1602,6 +1603,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const {
     renderPage,
     handleApiRoute: handleApi,
+    authorizeOnDemandRevalidate,
     runMiddleware,
     vinextConfig,
     buildId: pagesBuildId,
@@ -1881,6 +1883,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
+        authorizeOnDemandRevalidate:
+          typeof authorizeOnDemandRevalidate === "function"
+            ? authorizeOnDemandRevalidate
+            : undefined,
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the

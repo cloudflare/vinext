@@ -24,7 +24,7 @@ import {
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
 import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
-import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -197,6 +197,12 @@ export type ResolvePagesPageDataOptions = {
    * presence — see the security note in `isr-cache.ts`.
    */
   isOnDemandRevalidate?: boolean;
+  /**
+   * When true alongside an authenticated on-demand request, return a
+   * successful 404 no-op if no cache entry exists instead of generating a new
+   * fallback path. Mirrors Next.js `unstable_onlyGenerated`.
+   */
+  revalidateOnlyGenerated?: boolean;
   previewData?: PagesPreviewData | false;
   /**
    * The deployment ID used for deployment-skew protection. When set, it is
@@ -686,6 +692,7 @@ export async function resolvePagesPageData(
   // hydrate the page after the fallback shell ships.
   let isFallback = false;
   let shouldPersistFallbackData = false;
+  let onDemandPreviousCacheEntry: ISRCacheEntry | null | undefined;
   const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
@@ -722,6 +729,24 @@ export async function resolvePagesPageData(
       isFallback = true;
     }
     shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
+  }
+
+  if (
+    typeof options.pageModule.getStaticProps === "function" &&
+    options.isOnDemandRevalidate &&
+    options.revalidateOnlyGenerated
+  ) {
+    const pathname = options.routeUrl.split("?")[0];
+    onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
+    if (!onDemandPreviousCacheEntry) {
+      return {
+        kind: "response",
+        response: new Response("This page could not be found", {
+          status: 404,
+          headers: { [NEXTJS_CACHE_HEADER]: "REVALIDATED" },
+        }),
+      };
+    }
   }
 
   let pageProps: Record<string, unknown> = {};
@@ -846,7 +871,10 @@ export async function resolvePagesPageData(
   if (typeof options.pageModule.getStaticProps === "function") {
     const pathname = options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
-    const cached = await options.isrGet(cacheKey);
+    const cached =
+      onDemandPreviousCacheEntry !== undefined
+        ? onDemandPreviousCacheEntry
+        : await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
 
     // On-demand revalidation (`res.revalidate()`) must regenerate the entry
