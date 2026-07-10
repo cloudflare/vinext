@@ -942,6 +942,7 @@ export function createSSRHandler(
         let renderProps: Record<string, unknown> = { pageProps };
         if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
         let isrRevalidateSeconds: number | null = null;
+        let isOnDemandRevalidate = false;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
         // shell render below: `getStaticProps`/`getServerSideProps` are skipped
@@ -1251,7 +1252,7 @@ export function createSSRHandler(
           // mirrors Next.js's `checkIsOnDemandRevalidate`, so an external client
           // sending an arbitrary `x-prerender-revalidate` value cannot force
           // synchronous regeneration (cache-stampede/DoS vector).
-          const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+          isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
           if (
@@ -1302,8 +1303,18 @@ export function createSSRHandler(
               ...buildCacheStateHeaders("HIT"),
               "Cache-Control": hitCacheControl,
             };
+            if (cachedPage.headers) {
+              for (const [name, value] of Object.entries(cachedPage.headers)) {
+                if (
+                  name.toLowerCase() === NEXTJS_CACHE_HEADER ||
+                  name.toLowerCase() === "cache-control"
+                )
+                  continue;
+                hitHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
+              }
+            }
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
-            res.writeHead(200, hitHeaders);
+            res.writeHead(cachedPage.status ?? 200, hitHeaders);
             res.end(transformedHtml);
             return;
           }
@@ -1599,10 +1610,35 @@ export function createSSRHandler(
             renderProps = { ...renderProps, pageProps };
           }
           if (result && "redirect" in result) {
+            if (isOnDemandRevalidate && previewData === false && !isDataReq) {
+              const status = result.redirect.statusCode ?? (result.redirect.permanent ? 308 : 307);
+              let destination = result.redirect.destination;
+              if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
+                destination = destination.replace(/^[\\/]+/, "/");
+              }
+              const revalidateSeconds =
+                typeof result.revalidate === "number" && result.revalidate > 0
+                  ? result.revalidate
+                  : (cached?.value.cacheControl?.revalidate ?? 31_536_000);
+              await isrSet(
+                cacheKey,
+                {
+                  kind: "PAGES",
+                  html: "",
+                  pageData: renderProps,
+                  headers: { Location: destination },
+                  status,
+                },
+                revalidateSeconds,
+              );
+              setRevalidateDuration(cacheKey, revalidateSeconds);
+              res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
+            }
             writeGsspRedirect(res, result.redirect, isDataReq, renderProps);
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isOnDemandRevalidate) res.setHeader(NEXTJS_CACHE_HEADER, "REVALIDATED");
             applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
@@ -1650,6 +1686,8 @@ export function createSSRHandler(
             result.revalidate > 0
           ) {
             isrRevalidateSeconds = result.revalidate;
+          } else if (previewData === false && isOnDemandRevalidate) {
+            isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
           } else if (
             previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
@@ -1928,7 +1966,11 @@ export function createSSRHandler(
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
             extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);
-            Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
+            if (isOnDemandRevalidate) {
+              extraHeaders[NEXTJS_CACHE_HEADER] = "REVALIDATED";
+            } else {
+              Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
+            }
           }
         }
         applyDevPagesPreviewHeaders(extraHeaders, requestPreview);
@@ -1940,6 +1982,30 @@ export function createSSRHandler(
             .map((p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`)
             .join(", ");
         }
+
+        const persistRenderedIsr = async () => {
+          if (scriptNonce || isrRevalidateSeconds === null || isrRevalidateSeconds <= 0) return;
+          let isrElement = AppComponent
+            ? createElement(AppComponent, {
+                ...renderProps,
+                Component: pageModule.default,
+                pageProps,
+              })
+            : createElement(pageModule.default, pageProps);
+          if (wrapWithRouterContext) isrElement = wrapWithRouterContext(isrElement);
+          const isrBodyHtml = await renderIsrPassToStringAsync(
+            withScriptNonce(isrElement, scriptNonce),
+          );
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
+          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
+          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+        };
+
+        // Next.js waits for its mocked response stream before resolving
+        // `res.revalidate()`. Persist first in dev so the API promise has the
+        // same immediate-read guarantee.
+        if (isOnDemandRevalidate) await persistRenderedIsr();
 
         // Stream the page using progressive SSR.
         // The shell (layouts, non-suspended content) arrives immediately.
@@ -2026,25 +2092,7 @@ export function createSSRHandler(
         // If ISR is enabled, we need the full HTML for caching.
         // For ISR, re-render synchronously to get the complete HTML string.
         // This runs after the stream is already sent, so it doesn't affect TTFB.
-        if (!scriptNonce && isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-          let isrElement = AppComponent
-            ? createElement(AppComponent, {
-                ...renderProps,
-                Component: pageModule.default,
-                pageProps,
-              })
-            : createElement(pageModule.default, pageProps);
-          if (wrapWithRouterContext) {
-            isrElement = wrapWithRouterContext(isrElement);
-          }
-          const isrBodyHtml = await renderIsrPassToStringAsync(
-            withScriptNonce(isrElement, scriptNonce),
-          );
-          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
-          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
-          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
-          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
-        }
+        if (!isOnDemandRevalidate) await persistRenderedIsr();
       } catch (e) {
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
         // when using ModuleRunner — no stack trace fixup is needed here.

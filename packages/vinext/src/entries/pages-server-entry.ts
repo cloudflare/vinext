@@ -122,6 +122,7 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys ?? [],
     cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     htmlLimitedBots: nextConfig?.htmlLimitedBots,
     i18n: nextConfig?.i18n ?? null,

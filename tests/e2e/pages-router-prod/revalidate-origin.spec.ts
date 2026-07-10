@@ -169,3 +169,61 @@ test("bounds a self-targeting revalidation loop", async () => {
   expect(JSON.parse(result.body)).toEqual({ nestedRejected: true });
   expect(Date.now() - startedAt).toBeLessThan(2_000);
 });
+
+// Ported from Next.js: test/e2e/prerender.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+test("on-demand revalidation synchronously replaces non-expiring content, notFound, and redirects", async ({
+  request,
+}) => {
+  const target = `http://localhost:${APP_PORT}/revalidate-parity-target`;
+  const initial = await request.get(target);
+  expect(initial.status()).toBe(200);
+  const initialBody = await initial.text();
+
+  const contentRevalidate = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-parity?mode=content`,
+  );
+  expect(contentRevalidate.status()).toBe(200);
+  const immediate = await request.get(target);
+  expect(immediate.status()).toBe(200);
+  expect(immediate.headers()["x-nextjs-cache"]).toBe("HIT");
+  expect(await immediate.text()).not.toBe(initialBody);
+
+  const notFoundRevalidate = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-parity?mode=notFound`,
+  );
+  expect(notFoundRevalidate.status()).toBe(200);
+  const notFound = await request.get(target);
+  expect(notFound.status()).toBe(404);
+  expect(notFound.headers()["x-nextjs-cache"]).toBe("HIT");
+  expect(await notFound.text()).toContain("404 - Page Not Found");
+
+  const redirectRevalidate = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-parity?mode=redirect`,
+  );
+  expect(redirectRevalidate.status()).toBe(200);
+  const redirect = await request.get(target, { maxRedirects: 0 });
+  expect(redirect.status()).toBe(307);
+  expect(redirect.headers()["x-nextjs-cache"]).toBe("HIT");
+  expect(redirect.headers().location).toBe("/about");
+});
+
+test("production revalidation forwards configured headers without forwarding cookies by default", async ({
+  request,
+}) => {
+  const response = await request.get(
+    `http://localhost:${APP_PORT}/api/revalidate-parity?headers=1`,
+    {
+      headers: {
+        cookie: "private-session=secret",
+        "x-revalidate-token": "allowed-token",
+      },
+    },
+  );
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toEqual({
+    revalidated: true,
+    capturedCookie: null,
+    capturedToken: "allowed-token",
+  });
+});

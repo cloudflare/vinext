@@ -5,6 +5,9 @@ const nextConfig = {
   env: {
     CUSTOM_VAR: "hello-from-config",
   },
+  experimental: {
+    allowedRevalidateHeaderKeys: ["x-revalidate-token"],
+  },
   async redirects() {
     return [
       {

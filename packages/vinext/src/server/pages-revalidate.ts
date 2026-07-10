@@ -44,6 +44,8 @@ export async function performOnDemandRevalidate(
   urlPath: string,
   opts: RevalidateOptions = {},
   trustedOrigin?: string,
+  allowedRevalidateHeaderKeys: readonly string[] = [],
+  dev = false,
 ): Promise<void> {
   if (typeof urlPath !== "string" || !urlPath.startsWith("/")) {
     throw new Error(
@@ -70,6 +72,16 @@ export async function performOnDemandRevalidate(
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
 
+  const allowedHeaders = new Set(allowedRevalidateHeaderKeys.map((key) => key.toLowerCase()));
+  // Next.js forwards cookies automatically in development so local auth-gated
+  // pages can be revalidated. Production credentials remain excluded unless
+  // the application explicitly opts in through allowedRevalidateHeaderKeys.
+  if (dev) allowedHeaders.add("cookie");
+  for (const key of allowedHeaders) {
+    const value = readSourceHeader(source, key);
+    if (value !== undefined) headers[key] = value;
+  }
+
   if (dispatchRevalidate && executionContext.isInternalPagesRevalidation) {
     throw new Error(`Cannot revalidate ${urlPath} from an internal revalidation request`);
   }
@@ -92,6 +104,12 @@ export async function performOnDemandRevalidate(
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
   }
+}
+
+function readSourceHeader(source: IncomingMessage | Headers, key: string): string | undefined {
+  if (isWebHeaders(source)) return source.get(key) ?? undefined;
+  const value = source.headers[key];
+  return Array.isArray(value) ? value.join(", ") : value;
 }
 
 function isSourceRevalidationRequest(source: IncomingMessage | Headers): boolean {

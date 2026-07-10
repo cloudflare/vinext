@@ -5234,6 +5234,7 @@ export const loadServerActionClient = ${
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
                     trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
+                    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                   },
                 );

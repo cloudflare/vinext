@@ -294,6 +294,8 @@ function enhanceApiObjects(
   query: Record<string, string | string[]>,
   body: unknown,
   trustedRevalidateOrigin?: string,
+  allowedRevalidateHeaderKeys: readonly string[] = [],
+  dev = false,
 ): { apiReq: NextApiRequest; apiRes: NextApiResponse } {
   const apiReq = Object.assign(req, {
     body,
@@ -354,7 +356,14 @@ function enhanceApiObjects(
     // success detection stay identical to the dev/Node-compat path. See
     // `pages-revalidate.ts`.
     async revalidate(this: NextApiResponse, urlPath: string, opts?: RevalidateOptions) {
-      await performOnDemandRevalidate(req, urlPath, opts, trustedRevalidateOrigin);
+      await performOnDemandRevalidate(
+        req,
+        urlPath,
+        opts,
+        trustedRevalidateOrigin,
+        allowedRevalidateHeaderKeys,
+        dev,
+      );
     },
   }) as NextApiResponse;
   attachPagesPreviewApi(
@@ -379,6 +388,7 @@ export async function handleApiRoute(
     basePath?: string;
     i18n?: NextI18nConfig | null;
     trustedRevalidateOrigin?: string;
+    allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
   },
 ): Promise<boolean> {
@@ -457,6 +467,8 @@ export async function handleApiRoute(
       query,
       body,
       nextConfig?.trustedRevalidateOrigin,
+      nextConfig?.allowedRevalidateHeaderKeys,
+      true,
     );
 
     // Call the handler

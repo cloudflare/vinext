@@ -67,6 +67,7 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
+  allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
   query: PagesRequestQuery;
   request: Request;
@@ -259,6 +260,7 @@ class PagesResponseStream extends Writable {
     private readonly rejectResponse: (error: Error) => void,
     private readonly requestHeaders: Headers,
     private readonly trustedRevalidateOrigin?: string,
+    private readonly allowedRevalidateHeaderKeys: readonly string[] = [],
   ) {
     super();
     this.once("error", (err) => {
@@ -365,6 +367,7 @@ class PagesResponseStream extends Writable {
       urlPath,
       opts,
       this.trustedRevalidateOrigin,
+      this.allowedRevalidateHeaderKeys,
     );
   }
 
@@ -538,6 +541,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     // platform-provided Request URL origin and deliberately ignore any raw Host
     // header carried in request.headers.
     options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
+    options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
   attachPagesPreviewApi(req, res);
 

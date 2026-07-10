@@ -98,6 +98,7 @@ type HandlePagesApiRouteOptions = {
   url: string;
   nextConfig?: {
     basePath?: string;
+    allowedRevalidateHeaderKeys?: readonly string[];
     i18n?: NextI18nConfig | null;
     trailingSlash?: boolean;
   };
@@ -190,6 +191,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       : undefined;
 
     const { req, res, responsePromise } = createPagesReqRes({
+      allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       query,
       request: options.request,

@@ -116,6 +116,29 @@ describe("performOnDemandRevalidate", () => {
     expect(firstFetchHeaders(fetchMock)[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER]).toBe("1");
   });
 
+  it("forwards configured headers without forwarding production credentials by default", async () => {
+    const fetchMock = stubFetch();
+    const headers = new Headers({
+      host: "app.local:3000",
+      cookie: "session=private",
+      "x-revalidate-token": "allowed",
+    });
+
+    await performOnDemandRevalidate(headers, "/fixed-page", {}, undefined, ["x-revalidate-token"]);
+
+    expect(firstFetchHeaders(fetchMock)["x-revalidate-token"]).toBe("allowed");
+    expect(firstFetchHeaders(fetchMock).cookie).toBeUndefined();
+  });
+
+  it("forwards cookies automatically in development", async () => {
+    const fetchMock = stubFetch();
+    const headers = new Headers({ host: "app.local:3000", cookie: "session=local" });
+
+    await performOnDemandRevalidate(headers, "/fixed-page", {}, undefined, [], true);
+
+    expect(firstFetchHeaders(fetchMock).cookie).toBe("session=local");
+  });
+
   it("uses the Worker in-process dispatcher instead of global fetch", async () => {
     const fetchMock = stubFetch();
     const dispatchPagesRevalidate = vi.fn(

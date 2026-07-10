@@ -57,7 +57,7 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
-import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
@@ -72,6 +72,25 @@ function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewS
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+function withPagesCacheState(response: Response, state: "REVALIDATED"): Response {
+  const headers = new Headers(response.headers);
+  headers.set(NEXTJS_CACHE_HEADER, state);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function cacheableResponseHeaders(headers: Headers): Record<string, string> {
+  return Object.fromEntries(
+    [...headers.entries()].filter(([name]) => {
+      const key = name.toLowerCase();
+      return key === "location" || key === "content-type";
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -683,21 +702,51 @@ export function createPagesPageHandler(
 
         if (pageDataResult.kind === "notFound") {
           const notFoundRoute = findNotFoundRoute();
+          let notFoundResponse: Response;
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            return finalizePagesPreviewResponse(
-              await renderPage(request, url, manifest, middlewareHeaders, {
-                statusCode: 404,
-                asPath: routerAsPath,
-                renderErrorPageOnMiss: false,
-                __forcedRoute: notFoundRoute,
-              }),
-              preview,
-            );
+            notFoundResponse = await renderPage(request, url, manifest, middlewareHeaders, {
+              statusCode: 404,
+              asPath: routerAsPath,
+              renderErrorPageOnMiss: false,
+              __forcedRoute: notFoundRoute,
+            });
+          } else {
+            notFoundResponse = buildDefaultPagesNotFoundResponse();
           }
-          return finalizePagesPreviewResponse(buildDefaultPagesNotFoundResponse(), preview);
+
+          if (isOnDemandRevalidate && isStaticPropsRoute && previewData === false) {
+            const body = await notFoundResponse.text();
+            const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
+            const previous = await isrGet(cacheKey);
+            await isrSet(
+              cacheKey,
+              {
+                kind: "PAGES",
+                html: body,
+                pageData: {},
+                headers: cacheableResponseHeaders(notFoundResponse.headers),
+                status: 404,
+              },
+              previous?.value.cacheControl?.revalidate ?? 31_536_000,
+              undefined,
+              vinextConfig.expireTime,
+            );
+            notFoundResponse = new Response(body, {
+              headers: notFoundResponse.headers,
+              status: 404,
+              statusText: notFoundResponse.statusText,
+            });
+          }
+          if (isOnDemandRevalidate) {
+            notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
+          }
+          return finalizePagesPreviewResponse(notFoundResponse, preview);
         }
         if (pageDataResult.kind === "response") {
-          return finalizePagesPreviewResponse(pageDataResult.response, preview);
+          const response = isOnDemandRevalidate
+            ? withPagesCacheState(pageDataResult.response, "REVALIDATED")
+            : pageDataResult.response;
+          return finalizePagesPreviewResponse(response, preview);
         }
 
         let pageProps = pageDataResult.pageProps;
@@ -849,6 +898,7 @@ export function createPagesPageHandler(
             isrCacheKey: pageIsrCacheKey,
             expireSeconds: vinextConfig.expireTime,
             isrRevalidateSeconds,
+            isOnDemandRevalidate,
             isStaticPropsRoute,
             isrSet,
             i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),

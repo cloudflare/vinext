@@ -551,6 +551,7 @@ function buildPagesCacheResponse(
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
   status?: number,
+  cachedHeaders?: Record<string, string | string[]>,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -574,6 +575,21 @@ function buildPagesCacheResponse(
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
+  }
+  if (cachedHeaders) {
+    for (const [name, value] of Object.entries(cachedHeaders)) {
+      const lowerName = name.toLowerCase();
+      // Pages cache values can originate from custom handlers. Only restore
+      // the representation headers needed by cached redirects/not-found
+      // responses; never replay Set-Cookie or other request-specific headers.
+      if (lowerName !== "location" && lowerName !== "content-type") continue;
+      if (Array.isArray(value)) {
+        headers.delete(name);
+        for (const item of value) headers.append(name, item);
+      } else {
+        headers.set(name, value);
+      }
+    }
   }
 
   return new Response(html, {
@@ -901,6 +917,7 @@ export async function resolvePagesPageData(
         options.expireSeconds,
         cached.value.cacheControl,
         cachedValue.status,
+        cachedValue.headers,
       );
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
       // for bot UAs so they are consistent with fresh-MISS bot responses (which
@@ -1007,6 +1024,7 @@ export async function resolvePagesPageData(
         options.expireSeconds,
         cached.value.cacheControl,
         cachedValue.status,
+        cachedValue.headers,
       );
       // Bot / crawler ETag consistency: same as the HIT branch — attach an
       // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
@@ -1057,9 +1075,29 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
+      const response = buildPagesRedirectResponse(result.redirect, options, renderProps);
+      if (options.isOnDemandRevalidate && previewData === false) {
+        const revalidateSeconds =
+          typeof result.revalidate === "number" && result.revalidate > 0
+            ? result.revalidate
+            : (cached?.value.cacheControl?.revalidate ?? 31_536_000);
+        await options.isrSet(
+          cacheKey,
+          {
+            kind: "PAGES",
+            html: "",
+            pageData: renderProps,
+            headers: Object.fromEntries(response.headers.entries()),
+            status: response.status,
+          },
+          revalidateSeconds,
+          undefined,
+          options.expireSeconds,
+        );
+      }
       return {
         kind: "response",
-        response: buildPagesRedirectResponse(result.redirect, options, renderProps),
+        response,
       };
     }
 
@@ -1081,6 +1119,12 @@ export async function resolvePagesPageData(
 
     if (previewData === false && typeof result?.revalidate === "number" && result.revalidate > 0) {
       isrRevalidateSeconds = result.revalidate;
+    } else if (previewData === false && options.isOnDemandRevalidate) {
+      // `revalidate: false` (and an omitted `revalidate`) still participates in
+      // on-demand regeneration. Preserve the previous cache lifetime where
+      // available; the long-lived fallback matches vinext's existing
+      // representation for non-expiring fallback entries.
+      isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
     } else if (
       previewData === false &&
       cachedValue?.kind === "PAGES" &&

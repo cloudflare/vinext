@@ -317,6 +317,8 @@ export type NextConfig = {
      * values are clamped to Number.MAX_SAFE_INTEGER.
      */
     prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
+    /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
+    allowedRevalidateHeaderKeys?: string[];
     [key: string]: unknown;
   };
   /**
@@ -422,6 +424,8 @@ export type ResolvedNextConfig = {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
+  allowedRevalidateHeaderKeys: string[];
   /** Packages whose barrel imports should be optimized (from experimental.optimizePackageImports). */
   optimizePackageImports: string[];
   /** Packages explicitly requested for server/client transpilation. */
@@ -1549,6 +1553,7 @@ export async function resolveNextConfig(
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      allowedRevalidateHeaderKeys: [],
       optimizePackageImports: [],
       transpilePackages: [],
       turbopackTranspilePackages: [...DEFAULT_TRANSPILED_PACKAGES],
@@ -1883,6 +1888,11 @@ export async function resolveNextConfig(
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    allowedRevalidateHeaderKeys: Array.isArray(experimental?.allowedRevalidateHeaderKeys)
+      ? (experimental.allowedRevalidateHeaderKeys as unknown[])
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.toLowerCase())
+      : [],
     optimizePackageImports,
     transpilePackages,
     turbopackTranspilePackages,

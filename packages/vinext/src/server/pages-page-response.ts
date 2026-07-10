@@ -27,6 +27,7 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { NEXTJS_CACHE_HEADER } from "./headers.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -187,6 +188,8 @@ type RenderPagesPageResponseOptions = {
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
   isrRevalidateSeconds: number | null;
+  /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
+  isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (
     key: string,
@@ -417,7 +420,7 @@ async function reportPagesIsrCacheWriteError(
   }
 }
 
-function schedulePagesIsrCacheWrite(options: {
+async function writePagesIsrCache(options: {
   cacheKey: string;
   expireSeconds?: number;
   pageData: Record<string, unknown>;
@@ -428,27 +431,27 @@ function schedulePagesIsrCacheWrite(options: {
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
-}): void {
-  const cacheWritePromise = readStreamAsText(options.stream)
-    .then((bodyHtml) =>
-      options.setCache(
-        options.cacheKey,
-        {
-          kind: "PAGES",
-          html: options.shellPrefix + bodyHtml + options.shellSuffix,
-          pageData: options.pageData,
-          headers: undefined,
-          status: options.status,
-        },
-        options.revalidateSeconds,
-        undefined,
-        options.expireSeconds,
-      ),
-    )
-    .catch((error: unknown) =>
-      reportPagesIsrCacheWriteError(error, options.cacheKey, options.routePattern),
-    );
+}): Promise<void> {
+  const bodyHtml = await readStreamAsText(options.stream);
+  await options.setCache(
+    options.cacheKey,
+    {
+      kind: "PAGES",
+      html: options.shellPrefix + bodyHtml + options.shellSuffix,
+      pageData: options.pageData,
+      headers: undefined,
+      status: options.status,
+    },
+    options.revalidateSeconds,
+    undefined,
+    options.expireSeconds,
+  );
+}
 
+function schedulePagesIsrCacheWrite(options: Parameters<typeof writePagesIsrCache>[0]): void {
+  const cacheWritePromise = writePagesIsrCache(options).catch((error: unknown) =>
+    reportPagesIsrCacheWriteError(error, options.cacheKey, options.routePattern),
+  );
   getRequestExecutionContext()?.waitUntil(cacheWritePromise);
 }
 
@@ -633,7 +636,7 @@ export async function renderPagesPageResponse(
     const isrPathname = options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", isrPathname);
 
-    schedulePagesIsrCacheWrite({
+    const cacheWriteOptions = {
       cacheKey,
       expireSeconds: options.expireSeconds,
       pageData: options.pageProps,
@@ -644,7 +647,15 @@ export async function renderPagesPageResponse(
       shellSuffix,
       status: finalStatus,
       stream: cacheBodyStream,
-    });
+    };
+    if (options.isOnDemandRevalidate) {
+      // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
+      // Do the equivalent here so `await res.revalidate()` cannot resolve
+      // before the regenerated HTML is fully rendered and persisted.
+      await writePagesIsrCache(cacheWriteOptions);
+    } else {
+      schedulePagesIsrCacheWrite(cacheWriteOptions);
+    }
   }
 
   const compositeStream = await buildPagesCompositeStream(
@@ -674,7 +685,11 @@ export async function renderPagesPageResponse(
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
     });
-    setCacheStateHeaders(responseHeaders, "MISS");
+    if (options.isOnDemandRevalidate) {
+      responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
+    } else {
+      setCacheStateHeaders(responseHeaders, "MISS");
+    }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
   } else if (options.gsspRes && !userSetCacheControl) {
