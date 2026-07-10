@@ -189,6 +189,10 @@ export function middleware(request: NextRequest) {
     return res;
   }
 
+  if (url.pathname === "/middleware-protected-data") {
+    return new Response("Access Denied", { status: 403 });
+  }
+
   // Return a binary response (PNG 1x1 pixel) to test binary body preservation
   if (url.pathname === "/binary-response") {
     const pixel = new Uint8Array([

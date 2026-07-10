@@ -1552,6 +1552,15 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
   return Array.isArray(value) && value.every(isPagesServerEntryPageRoute) ? value : undefined;
 }
 
+function urlParserCreatesPagesDataPath(pathname: string): boolean {
+  const parsedPathname = pathname.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "");
+  return (
+    pathname !== parsedPathname &&
+    !isNextDataPathname(pathname) &&
+    isNextDataPathname(parsedPathname)
+  );
+}
+
 /**
  * Start the Pages Router production server.
  *
@@ -1785,6 +1794,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           url = stripped + qs;
           pathname = stripped;
         }
+      }
+      // WHATWG URL parsing removes TAB, LF, and CR. Do not let that transform
+      // an otherwise ordinary path into the internal Pages data namespace.
+      if (urlParserCreatesPagesDataPath(pathname)) {
+        res.writeHead(404);
+        res.end("This page could not be found");
+        return;
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
