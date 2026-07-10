@@ -645,7 +645,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    if (middlewareResult.rewritten) cleanPathnameIsRequestPathname = false;
+    if (cleanPathname !== normalized.cleanPathname) cleanPathnameIsRequestPathname = false;
     didMiddlewareRewrite = middlewareResult.rewritten;
     didMiddlewareRewritePathname = cleanPathname !== normalized.cleanPathname;
     if (middlewareResult.search !== null) {
