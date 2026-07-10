@@ -1,4 +1,4 @@
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import type { Rolldown } from "vite";
 
 /**
@@ -47,7 +47,7 @@ type EmitRestoredCssUrlAsset = (asset: { fileName: string; source: BundleAsset["
 // --- small URL/path helpers -------------------------------------------------
 
 function basename(value: string): string {
-  const normalized = value.replaceAll("\\", "/");
+  const normalized = toSlash(value);
   const slash = normalized.lastIndexOf("/");
   return slash === -1 ? normalized : normalized.slice(slash + 1);
 }
@@ -180,7 +180,7 @@ export function rebaseCssUrlAssetReferences(
     if (!CSS_ASSET_EXT_RE.test(lower) || lower.endsWith(".css")) return null;
 
     const absolutePath = path.resolve(sourceDirectory, parts.path);
-    let rebasedPath = path.relative(targetDirectory, absolutePath).replaceAll("\\", "/");
+    let rebasedPath = path.relative(targetDirectory, absolutePath);
     if (!rebasedPath.startsWith(".")) rebasedPath = `./${rebasedPath}`;
     return joinUrl({ ...parts, path: rebasedPath });
   });

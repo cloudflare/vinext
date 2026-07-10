@@ -132,6 +132,37 @@ function dynamic() {
 }
 
 describe("App Router dynamic requests", () => {
+  it("natively filters source that cannot contain dynamic requests", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const codeFilter = transform.filter?.code;
+    if (!(codeFilter instanceof RegExp)) {
+      throw new Error("dynamic request code filter not found");
+    }
+
+    expect(codeFilter.test('import value from "package";')).toBe(false);
+    expect(codeFilter.test("export const value = getValue();")).toBe(false);
+    expect(codeFilter.test("require(request)")).toBe(true);
+    expect(codeFilter.test(String.raw`requ\u0069re(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`\u{72}equire(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`\u{00072}equire(request)`)).toBe(true);
+    expect(codeFilter.test(String.raw`const label = "caf\u00e9";`)).toBe(false);
+    expect(codeFilter.test("require /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import(request)")).toBe(true);
+    expect(codeFilter.test("import /* comment */ (request)")).toBe(true);
+    expect(codeFilter.test("import\n// comment\n(request)")).toBe(true);
+  });
+
+  it("transforms escaped require identifiers", () => {
+    const transformed = _transformVeryDynamicRequests(
+      String.raw`const request = getRequest(); requ\u0069re(request);`,
+      "/app/page.tsx",
+    );
+    expect(transformed?.code).toContain("MODULE_NOT_FOUND");
+  });
+
   it("matches Next.js environment scoping", () => {
     const transform = createIgnoreDynamicRequestsPlugin(() => [
       "transpiled",

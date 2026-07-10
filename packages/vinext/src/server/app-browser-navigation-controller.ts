@@ -906,10 +906,13 @@ export function createAppBrowserNavigationController(
       }
 
       if (latestApproval.approvedCommit) {
-        dispatchSynchronousVisibleCommit(latestApproval.approvedCommit);
+        const approvedRevalidationCommit = latestApproval.approvedCommit;
+        startTransition(() => {
+          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
+        });
         syncHistoryStatePreviousNextUrl(
-          latestApproval.approvedCommit.previousNextUrl,
-          latestApproval.approvedCommit.action.bfcacheIds,
+          approvedRevalidationCommit.previousNextUrl,
+          approvedRevalidationCommit.action.bfcacheIds,
         );
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);

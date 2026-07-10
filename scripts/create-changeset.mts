@@ -108,15 +108,55 @@ export function affectedPackages(
   return [...affected].sort();
 }
 
-/** Compare semver-ish strings (major.minor.patch, ignores prerelease). */
+type ParsedVersion = {
+  core: [number, number, number];
+  prerelease: string[];
+};
+
+function parseVersion(version: string): ParsedVersion {
+  const value = String(version);
+  const buildIndex = value.indexOf("+");
+  const withoutBuild = buildIndex === -1 ? value : value.slice(0, buildIndex);
+  const prereleaseIndex = withoutBuild.indexOf("-");
+  const corePart = prereleaseIndex === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseIndex);
+  const prereleasePart = prereleaseIndex === -1 ? "" : withoutBuild.slice(prereleaseIndex + 1);
+  const core = corePart.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  return {
+    core: [core[0] ?? 0, core[1] ?? 0, core[2] ?? 0],
+    prerelease: prereleasePart ? prereleasePart.split(".") : [],
+  };
+}
+
+/** Compare SemVer versions, including prerelease precedence and build metadata. */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-  const parse = (v: string) => v.split(/[.+-]/).map((n) => Number.parseInt(n, 10) || 0);
-  const pa = parse(String(a));
-  const pb = parse(String(b));
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
   for (let i = 0; i < 3; i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
+    const x = pa.core[i];
+    const y = pb.core[i];
     if (x !== y) return x > y ? 1 : -1;
+  }
+
+  if (pa.prerelease.length === 0 || pb.prerelease.length === 0) {
+    if (pa.prerelease.length === pb.prerelease.length) return 0;
+    return pa.prerelease.length === 0 ? 1 : -1;
+  }
+
+  const length = Math.max(pa.prerelease.length, pb.prerelease.length);
+  for (let i = 0; i < length; i++) {
+    const x = pa.prerelease[i];
+    const y = pb.prerelease[i];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    if (x === y) continue;
+
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) {
+      if (x.length !== y.length) return x.length > y.length ? 1 : -1;
+      return x > y ? 1 : -1;
+    }
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x > y ? 1 : -1;
   }
   return 0;
 }

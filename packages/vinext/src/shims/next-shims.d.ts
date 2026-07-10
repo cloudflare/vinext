@@ -8,17 +8,51 @@
 
 declare module "next" {
   import type { IncomingMessage, ServerResponse } from "node:http";
-  export type NextApiRequest = {
-    query: Record<string, string | string[]>;
-    body: unknown;
-    cookies: Record<string, string>;
-  } & IncomingMessage;
-  export type NextApiResponse<T = unknown> = {
-    status(code: number): NextApiResponse<T>;
-    json(data: T): void;
-    send(data: T): void;
-    redirect(statusOrUrl: number | string, url?: string): void;
-  } & ServerResponse;
+  import type { ParsedUrlQuery } from "node:querystring";
+  import type { ComponentType } from "react";
+  export type NextPageContext = {
+    err?: (Error & { statusCode?: number }) | null;
+    req?: IncomingMessage;
+    res?: ServerResponse;
+    pathname: string;
+    query: ParsedUrlQuery;
+    asPath?: string;
+    locale?: string;
+    locales?: readonly string[];
+    defaultLocale?: string;
+    AppTree: ComponentType<{ pageProps: unknown; [name: string]: unknown }>;
+  };
+  type Env = { [key: string]: string | undefined };
+  export type PreviewData = string | false | object | undefined;
+  // oxlint-disable-next-line typescript/consistent-type-definitions
+  export interface NextApiRequest extends IncomingMessage {
+    query: Partial<{ [key: string]: string | string[] }>;
+    cookies: Partial<{ [key: string]: string }>;
+    body: any;
+    env: Env;
+    draftMode?: boolean;
+    preview?: boolean;
+    previewData?: PreviewData;
+  }
+  export type NextApiResponse<Data = any> = ServerResponse & {
+    send: (body: Data) => void;
+    json: (body: Data) => void;
+    status: (statusCode: number) => NextApiResponse<Data>;
+    redirect(url: string): NextApiResponse<Data>;
+    redirect(status: number, url: string): NextApiResponse<Data>;
+    setDraftMode: (options: { enable: boolean }) => NextApiResponse<Data>;
+    setPreviewData(
+      data: object | string,
+      options?: { maxAge?: number; path?: string },
+    ): NextApiResponse<Data>;
+    clearPreviewData(options?: { path?: string }): NextApiResponse<Data>;
+    revalidate(urlPath: string, opts?: { unstable_onlyGenerated?: boolean }): Promise<void>;
+  };
+  export type NextApiHandler<T = any> = (
+    req: NextApiRequest,
+    res: NextApiResponse<T>,
+    // oxlint-disable-next-line typescript/no-redundant-type-constituents
+  ) => unknown | Promise<unknown>;
 }
 
 declare module "next/router" {
@@ -410,16 +444,37 @@ declare module "next/legacy/image" {
 }
 
 declare module "next/error" {
+  import type { IncomingMessage, ServerResponse } from "node:http";
+  import type { ParsedUrlQuery } from "node:querystring";
+  import * as React from "react";
   import { ComponentType, ReactNode } from "react";
 
-  type ErrorProps = {
+  type ErrorPageContext = {
+    err?: (Error & { statusCode?: number }) | null;
+    req?: IncomingMessage;
+    res?: ServerResponse;
+    pathname: string;
+    query: ParsedUrlQuery;
+    asPath?: string;
+    locale?: string;
+    locales?: readonly string[];
+    defaultLocale?: string;
+    AppTree: ComponentType<{ pageProps: unknown; [name: string]: unknown }>;
+  };
+
+  export type ErrorProps = {
     statusCode: number;
+    hostname?: string;
     title?: string;
     withDarkMode?: boolean;
   };
 
-  const ErrorComponent: ComponentType<ErrorProps>;
-  export default ErrorComponent;
+  export default class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
+    static displayName: string;
+    static getInitialProps: (context: ErrorPageContext) => ErrorProps | Promise<ErrorProps>;
+    static origGetInitialProps: (context: ErrorPageContext) => ErrorProps | Promise<ErrorProps>;
+    render(): React.ReactNode;
+  }
 
   export type ErrorInfo = {
     error: unknown;

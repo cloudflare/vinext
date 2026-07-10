@@ -293,6 +293,7 @@ type CreateDispatchOptionsOverrides = {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   pprFallbackCacheShells?: DispatchOptions["pprFallbackCacheShells"];
+  pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
@@ -386,6 +387,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     pprFallbackCacheShells: overrides.pprFallbackCacheShells,
+    pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
@@ -569,6 +571,42 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it("disables streaming metadata while producing prerendered HTML", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({ buildPageElement });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: false,
+    });
+  });
+
+  it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: true,
+    });
+  });
+
   it("does not run a speculative connection() page probe for HTML renders", async () => {
     const probePage = vi.fn(async () => {
       await connection();
@@ -2089,7 +2127,7 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("regenerates stale intercepted RSC cache entries from the source route", async () => {
+  it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
     const currentRoute = createRoute({
       params: ["id"],
@@ -2172,20 +2210,15 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-    await expect(response.text()).resolves.toBe("stale-flight");
-    expect(typeof scheduledRender).toBe("function");
-    if (typeof scheduledRender !== "function") {
-      throw new Error("expected stale intercepted RSC response to schedule regeneration");
-    }
-
-    await scheduledRender();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight");
+    expect(scheduledRender).toBeNull();
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
     expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
-    expect(searchParamsArg.toString()).toBe("");
+    expect(searchParamsArg.toString()).toBe("tab=popular");
     expect(optsArg).toMatchObject({
       interceptionContext: "/feed",
       interceptParams: { id: "123" },
@@ -2193,13 +2226,8 @@ describe("app page dispatch", () => {
       interceptSlotKey: "modal@app/feed/@modal",
       interceptSourceMatchedUrl: "/feed",
     });
-    expect(options.isrSet).toHaveBeenCalledWith(
-      "rsc:/photos/123:slot:modal:/feed:/feed",
-      expect.objectContaining({ kind: "APP_PAGE" }),
-      60,
-      expect.arrayContaining(["/photos/123", "_N_T_/feed/page"]),
-      undefined,
-    );
+    expect(options.isrGet).not.toHaveBeenCalled();
+    expect(options.isrSet).not.toHaveBeenCalled();
   });
 
   it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {
@@ -2417,7 +2445,11 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("popular");
     expect(buildOptions).toEqual([
-      { observeMetadataSearchParamsAccess: true, observePageSearchParamsAccess: true },
+      {
+        observeMetadataSearchParamsAccess: true,
+        observePageSearchParamsAccess: true,
+        serveStreamingMetadata: true,
+      },
     ]);
   });
 
@@ -2484,9 +2516,13 @@ describe("app page dispatch", () => {
     };
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocument: boolean | undefined;
+    let capturedServeStreamingMetadata: boolean | undefined;
     const isrSet = vi.fn(async () => {});
     const { options } = createDispatchOptions({
-      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      buildPageElement: async (_route, _params, _opts, _searchParams, _layout, buildOptions) => {
+        capturedServeStreamingMetadata = buildOptions?.serveStreamingMetadata;
+        return React.createElement("main", null, "fresh");
+      },
       cleanPathname: "/posts/hello",
       isProduction: true,
       isrGet: vi.fn(async () =>
@@ -2527,6 +2563,7 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
+    expect(capturedServeStreamingMetadata).toBe(false);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
   });
@@ -2777,14 +2814,9 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-    expect(typeof scheduledRender).toBe("function");
-    if (typeof scheduledRender !== "function") {
-      throw new Error("expected stale response to schedule regeneration");
-    }
-
-    await scheduledRender();
-
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight");
+    expect(scheduledRender).toBeNull();
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
     const [routeArg] = buildPageElement.mock.calls[0];
     expect(routeArg).toBe(targetRoute);

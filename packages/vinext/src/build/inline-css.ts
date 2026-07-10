@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { resolveAssetsDir, resolveAssetUrlPrefix } from "../utils/asset-prefix.js";
 
 type InlineCssManifest = Record<string, string>;
@@ -19,10 +19,6 @@ function collectCssFiles(directory: string): string[] {
   }
 
   return files;
-}
-
-function toUrlPath(filePath: string): string {
-  return filePath.split(path.sep).join("/");
 }
 
 function addPathnameAlias(manifest: InlineCssManifest, href: string, css: string): void {
@@ -45,7 +41,7 @@ export function collectInlineCssManifest(
   const manifest: InlineCssManifest = {};
 
   for (const filePath of collectCssFiles(assetsDir)) {
-    const relativePath = toUrlPath(path.relative(assetsDir, filePath));
+    const relativePath = path.relative(assetsDir, filePath);
     const href = `${urlPrefix}${relativePath}`;
     const css = fs.readFileSync(filePath, "utf8");
     manifest[href] = css;

@@ -1,8 +1,14 @@
 import http from "node:http";
 import fsp from "node:fs/promises";
+import path from "node:path";
 import { type ViteDevServer } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+
+const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/root-layout-not-found-redirect",
+);
 
 function decodeHtmlText(text: string): string {
   return text
@@ -1979,7 +1985,7 @@ describe("App Router integration", () => {
   });
 
   it("sets optimizeDeps.entries for rsc, ssr, and client environments so deps are discovered at startup", () => {
-    // Without optimizeDeps.entries, Vite only crawls build.rollupOptions.input
+    // Without optimizeDeps.entries, Vite only crawls build.rolldownOptions.input
     // for dependency discovery — but those are virtual modules that don't
     // import user dependencies. This causes lazy discovery, re-optimisation
     // cascades, and "Invalid hook call" errors on first load.
@@ -2265,5 +2271,146 @@ describe("App Router integration", () => {
   it("allows page requests without Origin header", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("App Router route-miss root layout redirects", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR, {
+      appRouter: true,
+    }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  // Faithfully combines two Next.js contracts:
+  // - route misses render the root not-found page inside the root layout:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts
+  // - redirect() thrown during an RSC document request becomes a 307 response:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  it("renders root not-found content for non-matching routes", async () => {
+    const res = await fetch(`${baseUrl}/random-content`);
+
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("Root Not Found");
+    expect(html).toContain('id="layout-nav"');
+  });
+
+  it("converts redirect() from the root layout during route-miss not-found rendering into a redirect response", async () => {
+    const res = await fetch(`${baseUrl}/random-content`, {
+      redirect: "manual",
+      headers: {
+        "x-vinext-root-layout-redirect": "1",
+      },
+    });
+
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(new URL(location!, baseUrl).pathname).toBe("/result");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  // A redirect() during an RSC navigation (RSC: 1) does not become a 307 — it
+  // rides inside the flight body as a 200 so the client router decodes the
+  // NEXT_REDIRECT digest. Pins the boundary path's RSC branch, where the
+  // redirect propagates through renderToReadableStream's onError into the
+  // lazily-consumed flight stream rather than the status line.
+  it("encodes a route-miss root layout redirect into the flight payload for RSC requests", async () => {
+    // vinext routes RSC navigations by the `.rsc` suffix (see
+    // app-rsc-request-normalization.ts), matching the existing rsc-redirect
+    // tests above.
+    const res = await fetch(`${baseUrl}/random-content.rsc`, {
+      redirect: "manual",
+      headers: {
+        "x-vinext-root-layout-redirect": "1",
+        Accept: "text/x-component",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+
+    const body = await res.text();
+    expect(body).toContain("NEXT_REDIRECT");
+    expect(body).toContain("/result");
+  });
+
+  // The RSC drain applies to every HTTP-access fallback, not only route misses.
+  // `/gated` is a *matched* route that calls notFound(); its route-level
+  // not-found boundary (app/gated/not-found.tsx) redirects on its own header.
+  // That boundary renders only during the not-found fallback — not the
+  // matched-route layout probe — so the async redirect is caught by the
+  // renderAppPageBoundaryElementResponse drain, the new code path, rather than
+  // the layout special-error path. (The layout-redirect header is intentionally
+  // NOT sent here, so the root layout renders normally and we actually reach
+  // the fallback.)
+  it("encodes a matched-route not-found boundary's async redirect into the RSC flight", async () => {
+    const res = await fetch(`${baseUrl}/gated.rsc`, {
+      redirect: "manual",
+      headers: {
+        "x-vinext-gated-notfound-redirect": "1",
+        Accept: "text/x-component",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+    const body = await res.text();
+    expect(body).toContain("NEXT_REDIRECT");
+    expect(body).toContain("/result");
+  });
+
+  // Guards the drain's cost side: a matched-route not-found with no redirect
+  // must still produce a normal 404 flight. The stream is now buffered before
+  // responding, so this proves buffering does not corrupt or drop the payload.
+  it("still returns a normal 404 flight for a matched-route not-found without a redirect", async () => {
+    const res = await fetch(`${baseUrl}/gated.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(res.headers.get("x-vinext-rsc-redirect")).toBeNull();
+    const body = await res.text();
+    expect(body).toContain("Gated Not Found");
+  });
+
+  // A generateMetadata() redirect from a fallback boundary must honor the same
+  // streaming-vs-blocking rule as matched pages: streaming-capable document
+  // requests get a 200 meta-refresh, html-limited bots get the blocking 307.
+  // Proves the fallback path threads serveStreamingMetadata (previously it
+  // always defaulted to streaming, even for bots).
+  it("serves a 200 meta-refresh for a fallback-boundary metadata redirect on streaming document requests", async () => {
+    const res = await fetch(`${baseUrl}/gated`, {
+      redirect: "manual",
+      headers: { "x-vinext-gated-metadata-redirect": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("/result");
+  });
+
+  it("serves a blocking 307 for a fallback-boundary metadata redirect to html-limited bots", async () => {
+    const res = await fetch(`${baseUrl}/gated`, {
+      redirect: "manual",
+      headers: {
+        "x-vinext-gated-metadata-redirect": "1",
+        "user-agent": "Bingbot/2.0",
+      },
+    });
+
+    expect(res.status).toBe(307);
+    expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe("/result");
   });
 });

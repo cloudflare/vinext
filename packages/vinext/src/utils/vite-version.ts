@@ -1,12 +1,10 @@
 /**
  * Vite major-version detection.
  *
- * Several vinext behaviors depend on whether the host project is running Vite 8
- * (Rolldown-based, with native `resolve.tsconfigPaths`, `oxc` transforms, and
- * `rolldownOptions`) or Vite 7 (Rollup/esbuild). This helper centralizes the
- * detection so the Vite-major gate is computed the same way everywhere.
+ * vinext requires Vite 8 or newer so it can rely on Rolldown-based build
+ * options, native `resolve.tsconfigPaths`, and OXC transforms.
  */
-import path from "node:path";
+import path from "pathslash";
 import { createRequire } from "node:module";
 
 export function serializeViteDefine(value: unknown): string {
@@ -16,19 +14,12 @@ export function serializeViteDefine(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
-export function getDepOptimizeNodeEnvOptions(
-  viteMajorVersion: number,
-  nodeEnvDefine: string,
-): {
+export function getDepOptimizeNodeEnvOptions(nodeEnvDefine: string): {
   rolldownOptions?: {
     transform: {
       define: Record<string, string>;
     };
     moduleTypes?: Record<string, "jsx">;
-  };
-  esbuildOptions?: {
-    define: Record<string, string>;
-    loader?: Record<string, "jsx">;
   };
 } {
   // Vite defaults keepProcessEnv to true for server-consumer environments,
@@ -38,7 +29,7 @@ export function getDepOptimizeNodeEnvOptions(
     "process.env.NODE_ENV": nodeEnvDefine,
   };
 
-  // The dep optimizer scanner and pre-bundler run their own Rolldown/esbuild
+  // The dep optimizer scanner and pre-bundler run their own Rolldown
   // pipeline that does NOT go through the `vinext:jsx-in-js` transform plugin
   // (which only runs in the Vite plugin pipeline). Next.js allows JSX in plain
   // `.js`/`.mjs` files, and the scanner crawls the app's source entries to
@@ -55,48 +46,115 @@ export function getDepOptimizeNodeEnvOptions(
   // what this option is verified to address; this only keeps the scan from
   // aborting on JSX-in-`.js`/`.mjs`.
   const jsxModuleTypes = { ".js": "jsx", ".mjs": "jsx" } as const;
-  return viteMajorVersion >= 8
-    ? {
-        rolldownOptions: {
-          transform: { define },
-          moduleTypes: jsxModuleTypes,
-        },
-      }
-    : {
-        esbuildOptions: { define, loader: jsxModuleTypes },
-      };
+  return {
+    rolldownOptions: {
+      transform: { define },
+      moduleTypes: jsxModuleTypes,
+    },
+  };
 }
 
 /**
- * Detect Vite major version at runtime by resolving from cwd.
- * The plugin may be installed in a workspace root with Vite 7 but used
- * by a project that has Vite 8 — so we resolve from cwd, not from
- * the plugin's own location.
+ * Detect the Vite toolchain version at runtime. Prefer the project cwd, then
+ * fall back to vinext's own dependency graph for tests and linked checkouts.
  */
-export function getViteMajorVersion(): number {
+type ViteToolchainVersion = {
+  vite: string;
+  rolldown?: string;
+};
+
+function getViteToolchainVersion(): ViteToolchainVersion {
   try {
-    const require = createRequire(path.join(process.cwd(), "package.json"));
-    const vitePkg = require("vite/package.json");
-
-    const viteMajor = parseInt(vitePkg?.version, 10);
-    if (vitePkg?.name === "vite" && Number.isFinite(viteMajor)) {
-      return viteMajor;
-    }
-
-    const bundledViteMajor = parseInt(vitePkg?.bundledVersions?.vite, 10);
-    if (Number.isFinite(bundledViteMajor)) {
-      return bundledViteMajor;
-    }
-
-    // npm aliases like `vite: npm:@voidzero-dev/vite-plus-core@...` expose the
-    // aliased package.json, whose own version is not Vite's version.
-    console.warn(
-      `[vinext] Could not determine Vite major version from ${vitePkg?.name ?? "vite/package.json"}; assuming Vite 7`,
+    return getViteToolchainVersionFromRequire(
+      createRequire(path.join(process.cwd(), "package.json")),
     );
-    return 7;
+  } catch (error) {
+    if (!isModuleNotFoundError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`[vinext] Vite 8 or newer is required, but ${message}`);
+    }
+  }
+
+  try {
+    return getViteToolchainVersionFromRequire(createRequire(import.meta.url));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`);
-    return 7;
+    throw new Error(
+      `[vinext] Vite 8 or newer is required, but vinext could not resolve vite/package.json (${message})`,
+    );
   }
+}
+
+function getViteToolchainVersionFromRequire(require: NodeRequire): ViteToolchainVersion {
+  const vitePkg = require("vite/package.json");
+  if (vitePkg?.name === "vite" && parseViteVersion(vitePkg.version)) {
+    return { vite: vitePkg.version };
+  }
+
+  const bundledViteVersion = vitePkg?.bundledVersions?.vite;
+  if (parseViteVersion(bundledViteVersion)) {
+    const bundledRolldownVersion = vitePkg?.bundledVersions?.rolldown;
+    return {
+      vite: bundledViteVersion,
+      rolldown: parseViteVersion(bundledRolldownVersion) ? bundledRolldownVersion : undefined,
+    };
+  }
+
+  throw new Error(`could not determine Vite version from ${vitePkg?.name ?? "vite/package.json"}`);
+}
+
+function parseViteVersion(
+  version: unknown,
+): [major: number, minor: number, patch: number, prerelease: boolean] | null {
+  if (typeof version !== "string") return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3]), !!match[4]];
+}
+
+function isModuleNotFoundError(error: unknown): boolean {
+  return (
+    !!error && typeof error === "object" && "code" in error && error.code === "MODULE_NOT_FOUND"
+  );
+}
+
+export function supportsNativeTypeofWindowFolding(
+  viteVersion: string,
+  bundledRolldownVersion?: string,
+): boolean {
+  if (bundledRolldownVersion !== undefined) {
+    return isVersionAtLeast(bundledRolldownVersion, 1, 1, 4);
+  }
+  return isVersionAtLeast(viteVersion, 8, 1, 4);
+}
+
+function isVersionAtLeast(
+  version: string,
+  requiredMajor: number,
+  requiredMinor: number,
+  requiredPatch: number,
+): boolean {
+  const parsedVersion = parseViteVersion(version);
+  if (!parsedVersion) return false;
+  const [major, minor, patch, prerelease] = parsedVersion;
+  if (major !== requiredMajor) return major > requiredMajor;
+  if (minor !== requiredMinor) return minor > requiredMinor;
+  if (patch !== requiredPatch) return patch > requiredPatch;
+  return !prerelease;
+}
+
+export function assertSupportedViteVersion(): {
+  supportsNativeTypeofWindowFolding: boolean;
+} {
+  const toolchainVersion = getViteToolchainVersion();
+  const [major] = parseViteVersion(toolchainVersion.vite)!;
+  if (major < 8) {
+    throw new Error(`[vinext] Vite 8 or newer is required. Detected Vite ${major}.`);
+  }
+  return {
+    supportsNativeTypeofWindowFolding: supportsNativeTypeofWindowFolding(
+      toolchainVersion.vite,
+      toolchainVersion.rolldown,
+    ),
+  };
 }

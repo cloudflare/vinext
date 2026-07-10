@@ -1,19 +1,11 @@
 import type { UserConfig } from "vite";
+import { toSlash } from "pathslash";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
   readonly names?: readonly string[];
   readonly originalFileName?: string;
   readonly originalFileNames?: readonly string[];
-};
-
-type RscFrameworkModuleInfo = {
-  importers: string[];
-  isEntry: boolean;
-};
-
-type RscFrameworkManualChunksMeta = {
-  getModuleInfo(id: string): RscFrameworkModuleInfo | null;
 };
 
 const ROUTE_OWNED_CLIENT_SHIMS = new Set([
@@ -79,7 +71,7 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const normalizedId = id.replaceAll("\\", "/");
+  const normalizedId = toSlash(id);
   const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
   const rest = normalizedId.slice(nmIdx + "node_modules/".length);
@@ -112,7 +104,7 @@ function getPackageName(id: string): string | null {
  *   mobile devices.
  * - No major Vite-based framework (Remix, SvelteKit, Astro, TanStack)
  *   uses per-package splitting. Next.js only isolates packages >160KB.
- * - Rollup's graph-based splitting already handles the common case
+ * - The bundler's graph-based splitting already handles the common case
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
@@ -128,16 +120,19 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       if (pkg === "react" || pkg === "react-dom" || pkg === "scheduler") {
         return "framework";
       }
-      // Let Rollup handle all other vendor code via its default
+      // Let the bundler handle all other vendor code via its default
       // graph-based splitting. This produces a reasonable number of
       // shared chunks (typically 5-15) based on actual import patterns,
       // with good compression efficiency.
       return undefined;
     }
 
-    if (id.startsWith(shimsDir)) {
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {
-        const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
         const extensionIndex = relativeId.lastIndexOf(".");
         const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
         if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
@@ -149,32 +144,11 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
   };
 }
 
-/**
- * Rollup output config with manualChunks for client code-splitting.
- * Used by both CLI builds and multi-environment builds.
- *
- * experimentalMinChunkSize merges tiny shared chunks (< 10KB) back into
- * their importers. This reduces HTTP request count and improves gzip
- * compression efficiency — small files restart the compression dictionary,
- * adding ~5-15% wire overhead vs fewer larger chunks.
- */
 export function createClientFileNameConfig(assetsDir: string) {
   const chunksDir = `${assetsDir}/chunks`;
   return {
     entryFileNames: `${chunksDir}/[name]-[hash].js`,
     chunkFileNames: `${chunksDir}/[name]-[hash].js`,
-  };
-}
-
-export function createClientOutputConfig(
-  clientManualChunks: (id: string) => string | undefined,
-  assetsDir: string,
-) {
-  return {
-    ...createClientFileNameConfig(assetsDir),
-    assetFileNames: createClientAssetFileNames(assetsDir),
-    manualChunks: clientManualChunks,
-    experimentalMinChunkSize: 10_000,
   };
 }
 
@@ -234,142 +208,54 @@ export function isRscFrameworkModule(id: string): boolean {
   return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
 }
 
-function isStaticallyReachableFromEntry(
-  id: string,
-  meta: RscFrameworkManualChunksMeta,
-  visited = new Set<string>(),
-): boolean {
-  if (visited.has(id)) return false;
-  visited.add(id);
-
-  const moduleInfo = meta.getModuleInfo(id);
-  if (!moduleInfo) return false;
-  if (moduleInfo.isEntry) return true;
-  return moduleInfo.importers.some((importer) =>
-    isStaticallyReachableFromEntry(importer, meta, visited),
-  );
-}
-
 /**
  * Output config that isolates React (and the RSC flight runtime) into a
- * dedicated "framework" chunk in the RSC server build. Returns the bundler-
- * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
- * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
- * motivation (issue #1549). Framework modules that are only reachable through
- * dynamic imports must stay out of the eager framework chunk (issue #2073).
+ * dedicated "framework" chunk in the RSC server build. See
+ * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
+ * modules that are only reachable through dynamic imports must stay out of the
+ * eager framework chunk (issue #2073).
  */
-export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
-  if (viteMajorVersion >= 8) {
-    return {
-      codeSplitting: {
-        groups: [
-          {
-            name: "framework",
-            test: RSC_FRAMEWORK_CHUNK_TEST,
-            // Split by the entries that use each module so lazy framework
-            // imports cannot become eager Worker-startup dependencies (#2073).
-            entriesAware: true,
-          },
-        ],
-      },
-    };
-  }
+export function createRscFrameworkChunkOutputConfig() {
   return {
-    manualChunks(id: string, meta: RscFrameworkManualChunksMeta): string | undefined {
-      return isRscFrameworkModule(id) && isStaticallyReachableFromEntry(id, meta)
-        ? "framework"
-        : undefined;
+    codeSplitting: {
+      groups: [
+        {
+          name: "framework",
+          test: RSC_FRAMEWORK_CHUNK_TEST,
+          // Split by the entries that use each module so lazy framework
+          // imports cannot become eager Worker-startup dependencies (#2073).
+          entriesAware: true,
+        },
+      ],
     },
   };
 }
 
 /**
- * Rollup treeshake configuration for production client builds.
- *
- * Uses the 'recommended' preset as a safe base, then overrides
- * moduleSideEffects to strip unused re-exports from npm packages.
- *
- * The 'no-external' value for moduleSideEffects means:
- * - Local project modules: preserve side effects (CSS imports, polyfills)
- * - node_modules packages: treat as side-effect-free unless exports are used
- *
- * This is the single highest-impact optimization for large barrel-exporting
- * libraries like mermaid, @mui/material, lucide-react, etc. These libraries
- * re-export hundreds of sub-modules through barrel files. Without this,
- * Rollup preserves every sub-module even when only a few exports are consumed.
- *
- * Why 'no-external' instead of false (global side-effect-free)?
- * - User code may rely on import-time side effects (e.g., `import './global.css'`)
- * - 'no-external' is safe for app code while still enabling aggressive DCE for deps
- *
- * Why not the 'smallest' preset?
- * - 'smallest' also sets propertyReadSideEffects: false and
- *   tryCatchDeoptimization: false, which can break specific libraries
- *   that rely on property access side effects or try/catch for feature detection
- * - 'recommended' + 'no-external' gives most of the benefit with less risk
- *
- * @deprecated Use getClientTreeshakeConfigForVite(viteMajorVersion) instead
- * for Vite version compatibility. Kept for backward compatibility.
- */
-export const clientTreeshakeConfig = {
-  preset: "recommended" as const,
-  moduleSideEffects: "no-external" as const,
-};
-
-/**
- * Returns treeshake configuration appropriate for the Vite version.
- *
- * Rollup (Vite 7) supports presets like "recommended" which set multiple
- * treeshake options at once. Rolldown (Vite 8+) doesn't support presets,
- * so we only return moduleSideEffects for Vite 8+.
- *
- * The Rollup "recommended" preset sets:
- * - annotations: true (Rolldown default is also true)
- * - manualPureFunctions: [] (Rolldown default is also [])
- * - propertyReadSideEffects: true (Rolldown equivalent is 'always', the default)
- * - unknownGlobalSideEffects: false (Rolldown default is true — this is a known acceptable
- *   divergence. Slightly less aggressive DCE on unknown globals, acceptable for client bundles)
- * - correctVarValueBeforeDeclaration and tryCatchDeoptimization (Rolldown handles these differently)
+ * Returns Rolldown treeshake configuration for production client builds.
  *
  * The key optimization is moduleSideEffects: "no-external", which is supported
- * by both bundlers and provides the DCE benefits for barrel-exporting libraries.
- * It treats node_modules as side-effect-free (enabling aggressive DCE) while
- * preserving side effects in local code.
+ * by Rolldown and provides the DCE benefits for barrel-exporting libraries. It
+ * treats node_modules as side-effect-free while preserving side effects in
+ * local code.
  */
-export function getClientTreeshakeConfigForVite(viteMajorVersion: number) {
-  if (viteMajorVersion >= 8) {
-    // Rolldown (Vite 8+) - no preset support, only specific options.
-    // Rolldown's built-in defaults already cover what Rollup's 'recommended'
-    // preset provides (annotations, correctContext, tryCatchDeoptimization).
-    return {
-      moduleSideEffects: "no-external" as const,
-    };
-  }
-  // Rollup (Vite 7) - supports presets for convenient option grouping
+export function getClientTreeshakeConfig() {
   return {
-    preset: "recommended" as const,
     moduleSideEffects: "no-external" as const,
   };
 }
 
 type VinextBuildConfig = NonNullable<UserConfig["build"]>;
 type VinextBuildBundlerOptions = NonNullable<VinextBuildConfig["rolldownOptions"]>;
-type VinextBuildConfigWithLegacy = VinextBuildConfig & {
-  rollupOptions?: VinextBuildBundlerOptions;
-};
 
 export function getBuildBundlerOptions(
   build: UserConfig["build"] | undefined,
 ): VinextBuildBundlerOptions | undefined {
-  const buildConfig = build as VinextBuildConfigWithLegacy | undefined;
-  return buildConfig?.rolldownOptions ?? buildConfig?.rollupOptions;
+  return build?.rolldownOptions;
 }
 
 export function withBuildBundlerOptions(
-  viteMajorVersion: number,
   bundlerOptions: VinextBuildBundlerOptions,
-): Partial<VinextBuildConfigWithLegacy> {
-  return viteMajorVersion >= 8
-    ? { rolldownOptions: bundlerOptions }
-    : { rollupOptions: bundlerOptions };
+): Partial<VinextBuildConfig> {
+  return { rolldownOptions: bundlerOptions };
 }

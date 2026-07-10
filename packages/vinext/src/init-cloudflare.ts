@@ -1,10 +1,12 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
+import { createRequire } from "node:module";
 import MagicString from "magic-string";
-import { parseSync } from "vite";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
+
+const require = createRequire(import.meta.url);
 
 export type CloudflareProjectInfo = {
   root: string;
@@ -17,7 +19,7 @@ export type CloudflareProjectInfo = {
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   dataCache: "kv",
-  cdnCache: "data-cache",
+  cdnCache: "workers-cache",
   imageOptimization: "cloudflare-images",
 };
 
@@ -507,7 +509,7 @@ export function generateAppRouterViteConfig(
     }),`);
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
+  // by the vinext plugin's native Vite support).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -550,7 +552,7 @@ export function generatePagesRouterViteConfig(
   }
 
   // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's Vite 8 native support / Vite 7 fallback).
+  // by the vinext plugin's native Vite support).
   let resolveBlock = "";
   const aliases: string[] = [];
 
@@ -580,6 +582,18 @@ type AstObject = ESTree.ObjectExpression & AstNode;
 type AstProperty = Extract<AstObject["properties"][number], { type: "Property" }>;
 
 function parseViteConfig(filePath: string, code: string): ESTree.Program {
+  let parseSync: typeof import("vite").parseSync;
+  try {
+    ({ parseSync } = require("vite") as typeof import("vite"));
+  } catch (error) {
+    const maybeNodeError = error as NodeJS.ErrnoException;
+    if (maybeNodeError.code === "MODULE_NOT_FOUND" && maybeNodeError.message.includes("vite")) {
+      throw new Error(
+        `Could not update ${path.basename(filePath)} because the "vite" package is not available to parse the existing config. Install dependencies first, or remove the existing Vite config and rerun vinext init.`,
+      );
+    }
+    throw error;
+  }
   const extension = path.extname(filePath).slice(1);
   const lang = extension === "ts" || extension === "mts" || extension === "cts" ? "ts" : "js";
   const parsed = parseSync(path.basename(filePath), code, {
@@ -1319,7 +1333,7 @@ export function updateViteConfigForCloudflare(
   const program = parseViteConfig(filePath, code);
   const cacheOptions = options.cache ?? {
     dataCache: "none",
-    cdnCache: "data-cache",
+    cdnCache: "workers-cache",
     imageOptimization: "cloudflare-images",
   };
   const config = findConfigObject(program);

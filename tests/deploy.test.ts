@@ -2,14 +2,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess, type spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   deploy,
   buildNodeCliInvocation,
+  buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
+  getZeroPercentStagingTraffic,
   parseDeployArgs,
+  resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
+  runWranglerKVBulkPut,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -30,6 +36,7 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
@@ -44,6 +51,7 @@ import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { toSlash } from "pathslash";
 import {
   buildPagesClientAssetsModule,
   writePagesClientAssetsModuleIfMissing,
@@ -54,7 +62,7 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
-import { domainCandidates, parseWranglerConfig } from "../packages/cloudflare/src/tpr.js";
+import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -73,6 +81,30 @@ function writeFile(dir: string, relativePath: string, content: string): void {
 
 function mkdir(dir: string, relativePath: string): void {
   fs.mkdirSync(path.join(dir, relativePath), { recursive: true });
+}
+
+function writeWranglerPackageForTest(
+  dir: string,
+  bin: string | Record<string, string> = { wrangler: "bin/wrangler.js" },
+) {
+  writeFile(dir, "node_modules/wrangler/package.json", JSON.stringify({ name: "wrangler", bin }));
+  writeFile(dir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+}
+
+function expectedWranglerBinForTest(dir: string): string {
+  return fs.realpathSync(path.join(dir, "node_modules", "wrangler", "bin", "wrangler.js"));
+}
+
+function createMockChildProcess(output = "", code = 0): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  const childStdout = new PassThrough();
+  child.stdout = childStdout;
+  child.stderr = new PassThrough();
+  queueMicrotask(() => {
+    if (output) childStdout.write(output);
+    child.emit("close", code, null);
+  });
+  return child;
 }
 
 function readVinextPackageExports(): Record<string, unknown> {
@@ -126,6 +158,20 @@ describe("buildWranglerDeployArgs", () => {
     });
   });
 
+  it("passes through explicit Worker names", () => {
+    expect(buildWranglerDeployArgs({ name: "custom-worker", env: "staging" })).toEqual({
+      args: ["deploy", "--name", "custom-worker", "--env", "staging"],
+      env: "staging",
+    });
+  });
+
+  it("passes through explicit Wrangler config paths", () => {
+    expect(buildWranglerDeployArgs({ config: "dist/server/wrangler.json" })).toEqual({
+      args: ["deploy", "--config", "dist/server/wrangler.json"],
+      env: undefined,
+    });
+  });
+
   it("prefers explicit env over --preview shorthand", () => {
     expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual({
       args: ["deploy", "--env", "qa"],
@@ -155,6 +201,61 @@ describe("buildWranglerDeployArgs", () => {
   it("rejects null bytes without imposing an artificial length limit", () => {
     expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
     expect(validateWranglerEnvName("a".repeat(1024))).toBe("a".repeat(1024));
+  });
+});
+
+describe("buildWranglerKVBulkPutArgs", () => {
+  it("uploads a bulk JSON file to the configured KV binding", () => {
+    expect(
+      buildWranglerKVBulkPutArgs({
+        binding: "VINEXT_KV_CACHE",
+        filePath: "/tmp/prerender-kv.json",
+      }),
+    ).toEqual({
+      args: [
+        "kv",
+        "bulk",
+        "put",
+        "/tmp/prerender-kv.json",
+        "--binding",
+        "VINEXT_KV_CACHE",
+        "--remote",
+      ],
+      env: undefined,
+    });
+  });
+
+  it("passes through the Wrangler environment when deploy targets one", () => {
+    expect(
+      buildWranglerKVBulkPutArgs({
+        binding: "VINEXT_KV_CACHE",
+        env: "staging",
+        filePath: "/tmp/prerender-kv.json",
+      }),
+    ).toEqual({
+      args: [
+        "kv",
+        "bulk",
+        "put",
+        "/tmp/prerender-kv.json",
+        "--binding",
+        "VINEXT_KV_CACHE",
+        "--remote",
+        "--env",
+        "staging",
+      ],
+      env: "staging",
+    });
+  });
+
+  it("rejects null bytes in Wrangler environment names", () => {
+    expect(() =>
+      buildWranglerKVBulkPutArgs({
+        binding: "VINEXT_KV_CACHE",
+        env: "preview\0prod",
+        filePath: "/tmp/prerender-kv.json",
+      }),
+    ).toThrow("null bytes");
   });
 });
 
@@ -294,16 +395,11 @@ describe("resolveWranglerBin", () => {
   function writeWranglerPackage(
     bin: string | Record<string, string> = { wrangler: "bin/wrangler.js" },
   ) {
-    writeFile(
-      tmpDir,
-      "node_modules/wrangler/package.json",
-      JSON.stringify({ name: "wrangler", bin }),
-    );
-    writeFile(tmpDir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+    writeWranglerPackageForTest(tmpDir, bin);
   }
 
   function expectedWranglerBin(): string {
-    return fs.realpathSync(path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"));
+    return expectedWranglerBinForTest(tmpDir);
   }
 
   it("resolves the JavaScript entrypoint from Wrangler's bin map", () => {
@@ -355,20 +451,50 @@ describe("resolveWranglerBin", () => {
     );
   });
 
-  it("executes Wrangler with shell disabled and literal metacharacters", () => {
+  it("executes Wrangler with shell disabled and literal metacharacters", async () => {
     writeWranglerPackage();
     const payload = "preview & whoami > vinext-pwned.txt & rem";
-    let observed: Parameters<typeof execFileSync> | undefined;
-    const execute = ((...args: Parameters<typeof execFileSync>) => {
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
       observed = args;
-      return "";
-    }) as typeof execFileSync;
+      const child = new EventEmitter() as ChildProcess;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    }) as typeof spawn;
 
-    runWranglerDeploy(tmpDir, { env: payload }, execute);
+    await runWranglerDeploy(tmpDir, { env: payload }, execute);
 
     expect(observed?.[0]).toBe(process.execPath);
     expect(observed?.[1]).toEqual([expectedWranglerBin(), "deploy", "--env", payload]);
     expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("streams Wrangler output before the process exits", async () => {
+    writeWranglerPackage();
+    const child = new EventEmitter() as ChildProcess;
+    const childStdout = new PassThrough();
+    const childStderr = new PassThrough();
+    child.stdout = childStdout;
+    child.stderr = childStderr;
+    const execute = vi.fn(() => child) as unknown as typeof spawn;
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const deployment = runWranglerDeploy(tmpDir, {}, execute);
+    childStdout.write("Uploading assets...\n");
+    childStderr.write("Uploaded 10/20 files\n");
+
+    expect(stdoutWrite).toHaveBeenCalledWith("Uploading assets...\n");
+    expect(stderrWrite).toHaveBeenCalledWith("Uploaded 10/20 files\n");
+
+    childStdout.write("https://app.example.workers.dev\n");
+    child.emit("close", 0, null);
+
+    await expect(deployment).resolves.toBe("https://app.example.workers.dev");
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
   });
 
   it("does not execute metacharacters in a real subprocess", () => {
@@ -390,6 +516,103 @@ describe("resolveWranglerBin", () => {
   });
 });
 
+describe("runWranglerKVBulkPut", () => {
+  it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
+    writeWranglerPackageForTest(tmpDir);
+    let observed: Parameters<typeof spawn> | undefined;
+    let bulkFilePath = "";
+    let bulkFileContent: unknown;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      const wranglerArgs = args[1] as string[];
+      bulkFilePath = wranglerArgs[4] ?? "";
+      bulkFileContent = JSON.parse(fs.readFileSync(bulkFilePath, "utf-8"));
+      return createMockChildProcess();
+    }) as typeof spawn;
+
+    await runWranglerKVBulkPut(
+      tmpDir,
+      {
+        binding: "VINEXT_KV_CACHE",
+        env: "staging",
+        pairs: [
+          {
+            key: "cache:app:build:/about:html",
+            value: '{"value":{"kind":"APP_PAGE"}}',
+            expiration_ttl: 86400,
+            metadata: { tags: ["/about"] },
+          },
+        ],
+        tempDir: tmpDir,
+      },
+      execute,
+      "node.exe",
+    );
+
+    expect(observed?.[0]).toBe("node.exe");
+    expect(observed?.[1]).toEqual([
+      expectedWranglerBinForTest(tmpDir),
+      "kv",
+      "bulk",
+      "put",
+      bulkFilePath,
+      "--binding",
+      "VINEXT_KV_CACHE",
+      "--remote",
+      "--env",
+      "staging",
+    ]);
+    expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
+    expect(bulkFileContent).toEqual([
+      {
+        key: "cache:app:build:/about:html",
+        value: '{"value":{"kind":"APP_PAGE"}}',
+        expiration_ttl: 86400,
+        metadata: { tags: ["/about"] },
+      },
+    ]);
+    expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
+  });
+
+  it("uploads prerender pairs in OpenNext-style chunks", async () => {
+    writeWranglerPackageForTest(tmpDir);
+    const bulkFileContents: unknown[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      const wranglerArgs = args[1] as string[];
+      bulkFileContents.push(JSON.parse(fs.readFileSync(wranglerArgs[4] ?? "", "utf-8")));
+      return createMockChildProcess();
+    }) as typeof spawn;
+
+    await runWranglerKVBulkPut(
+      tmpDir,
+      {
+        binding: "VINEXT_KV_CACHE",
+        pairs: Array.from({ length: 26 }, (_, i) => ({
+          key: `cache:app:build:/route-${i}:html`,
+          value: String(i),
+        })),
+        tempDir: tmpDir,
+      },
+      execute,
+      "node.exe",
+    );
+
+    expect(bulkFileContents).toHaveLength(2);
+    expect(bulkFileContents).toEqual([
+      Array.from({ length: 25 }, (_, i) => ({
+        key: `cache:app:build:/route-${i}:html`,
+        value: String(i),
+      })),
+      [
+        {
+          key: "cache:app:build:/route-25:html",
+          value: "25",
+        },
+      ],
+    ]);
+  });
+});
+
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parseDeployArgs", () => {
@@ -400,6 +623,8 @@ describe("parseDeployArgs", () => {
     expect(parsed.name).toBeUndefined();
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
+    expect(parsed.warmCdnCache).toBe(false);
+    expect(parsed.warmCdnStrict).toBe(false);
   });
 
   it("parses --env with space-separated value", () => {
@@ -416,6 +641,12 @@ describe("parseDeployArgs", () => {
 
   it("parses --name=value form", () => {
     expect(parseDeployArgs(["--name=my-app"]).name).toBe("my-app");
+  });
+
+  it("parses --config with space-separated value", () => {
+    expect(parseDeployArgs(["--config", "dist/server/wrangler.json"]).config).toBe(
+      "dist/server/wrangler.json",
+    );
   });
 
   it("parses boolean flags", () => {
@@ -462,6 +693,35 @@ describe("parseDeployArgs", () => {
   it("throws for zero --prerender-concurrency value", () => {
     expect(() => parseDeployArgs(["--prerender-concurrency=0"])).toThrow(
       '--prerender-concurrency expects a positive integer, but got "0".',
+    );
+  });
+
+  it("parses CDN warmup flags", () => {
+    const parsed = parseDeployArgs([
+      "--experimental-warm-cdn-cache",
+      "--warm-cdn-concurrency",
+      "6",
+      "--warm-cdn-timeout=1500",
+      "--warm-cdn-retries",
+      "0",
+      "--warm-cdn-strict",
+      "--warm-cdn-include-fallbacks",
+    ]);
+
+    expect(parsed.warmCdnCache).toBe(true);
+    expect(parsed.warmCdnConcurrency).toBe(6);
+    expect(parsed.warmCdnTimeout).toBe(1500);
+    expect(parsed.warmCdnRetries).toBe(0);
+    expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it("throws for invalid CDN warmup numeric flags", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-concurrency=0"])).toThrow(
+      '--warm-cdn-concurrency expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
+      '--warm-cdn-retries expects a non-negative integer, but got "-1".',
     );
   });
 
@@ -780,6 +1040,45 @@ describe("viteConfigHasCacheAdapter", () => {
 
   it("returns true (does not block) when there is no Vite config to inspect", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+});
+
+describe("resolveKvDataAdapterConfig", () => {
+  it("requires a Vite cache data descriptor even when a legacy worker handler exists", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setDataCacheHandler } from "vinext/shims/cache";
+       setDataCacheHandler(handler);`,
+    );
+
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+    expect(resolveKvDataAdapterConfig(undefined)).toBeNull();
+    expect(resolveKvDataAdapterConfig({})).toBeNull();
+  });
+
+  it("returns null for non-KV data adapters", () => {
+    expect(resolveKvDataAdapterConfig({ data: { adapter: "custom-adapter" } })).toBeNull();
+    expect(resolveKvDataAdapterConfig({ cdn: { adapter: "cdn-adapter" } })).toBeNull();
+  });
+
+  it("detects Cloudflare KV runtime descriptors and preserves options", () => {
+    expect(
+      resolveKvDataAdapterConfig({
+        data: {
+          adapter: "/project/node_modules/@vinext/cloudflare/dist/cache/kv-data-adapter.runtime.js",
+          options: { binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 },
+        },
+      }),
+    ).toEqual({ binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 });
+  });
+
+  it("uses the default KV binding when the adapter has no binding option", () => {
+    expect(
+      resolveKvDataAdapterConfig({
+        data: { adapter: "/x/cache/kv-data-adapter.runtime.js" },
+      }),
+    ).toEqual({ binding: "VINEXT_KV_CACHE" });
   });
 });
 
@@ -1105,9 +1404,13 @@ describe("readPagesRouterEntrySource", () => {
   it("exports internal deploy dependencies consumed by @vinext/cloudflare", () => {
     const exportsMap = readVinextPackageExports();
     expect(hasPackageExport(exportsMap, "./internal/build/run-prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/build/prerender-paths")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/dotenv")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/next-config")).toBe(true);
     expect(hasPackageExport(exportsMap, "./internal/config/prerender")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./internal/server/pregenerated-concrete-paths")).toBe(
+      true,
+    );
     expect(hasPackageExport(exportsMap, "./internal/utils/project")).toBe(true);
   });
 
@@ -2608,13 +2911,13 @@ describe("findInNodeModules", () => {
   it("finds a package in the immediate node_modules", () => {
     mkdir(tmpDir, "node_modules/@cloudflare/vite-plugin");
     const result = findInNodeModules(tmpDir, "@cloudflare/vite-plugin");
-    expect(result).toBe(path.join(tmpDir, "node_modules", "@cloudflare", "vite-plugin"));
+    expect(result).toBe(toSlash(path.join(tmpDir, "node_modules", "@cloudflare", "vite-plugin")));
   });
 
   it("finds a binary in node_modules/.bin", () => {
     writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
     const result = findInNodeModules(tmpDir, ".bin/wrangler");
-    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+    expect(result).toBe(toSlash(path.join(tmpDir, "node_modules", ".bin", "wrangler")));
   });
 
   it("returns null when not found anywhere", () => {
@@ -2627,7 +2930,7 @@ describe("findInNodeModules", () => {
     fs.mkdirSync(appDir, { recursive: true });
 
     const result = findInNodeModules(appDir, ".bin/wrangler");
-    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+    expect(result).toBe(toSlash(path.join(tmpDir, "node_modules", ".bin", "wrangler")));
   });
 
   it("prefers the closest node_modules when both app and root have the package", () => {
@@ -2636,7 +2939,7 @@ describe("findInNodeModules", () => {
     mkdir(appDir, "node_modules/@cloudflare/vite-plugin");
 
     const result = findInNodeModules(appDir, "@cloudflare/vite-plugin");
-    expect(result).toBe(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin"));
+    expect(result).toBe(toSlash(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin")));
   });
 });
 
@@ -2786,6 +3089,77 @@ describe("domainCandidates", () => {
 // ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
 
 describe("parseWranglerConfig — custom domain extraction", () => {
+  it("extracts Worker name", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.name).toBe("my-worker");
+  });
+
+  it("reads an explicit Wrangler config path", () => {
+    writeFile(tmpDir, "dist/server/wrangler.json", JSON.stringify({ name: "generated-worker" }));
+    const config = parseWranglerConfig(tmpDir, "dist/server/wrangler.json");
+    expect(config?.name).toBe("generated-worker");
+  });
+
+  it("uses an explicit Wrangler config path during TPR", async () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "source-worker" }));
+    writeFile(
+      tmpDir,
+      "dist/server/wrangler.json",
+      JSON.stringify({
+        name: "generated-worker",
+        custom_domains: ["app.example.com"],
+      }),
+    );
+
+    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = "token";
+    try {
+      const result = await runTPR({
+        root: tmpDir,
+        config: "dist/server/wrangler.json",
+        coverage: 90,
+        limit: 100,
+        window: 24,
+      });
+
+      expect(result.skipped).toBe("no VINEXT_KV_CACHE KV namespace configured");
+    } finally {
+      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
+    }
+  });
+
+  it("parses JSONC comments and trailing commas", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+        // Wrangler accepts JSONC comments and trailing commas.
+        "name": "my-worker",
+        "custom_domains": ["app.example.com",],
+        "kv_namespaces": [
+          { "binding": "VINEXT_KV_CACHE", "id": "abc123", },
+        ],
+        "env": {
+          "staging": {
+            "name": "my-worker-staging",
+            "custom_domains": ["staging.example.com",],
+          },
+        },
+      }`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.name).toBe("my-worker");
+    expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.kvNamespaceId).toBe("abc123");
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging",
+      customDomain: "staging.example.com",
+    });
+  });
+
   it("extracts custom domain from routes array (string form)", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -2814,5 +3188,134 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.kvNamespaceId).toBe("abc123");
+  });
+
+  it("extracts environment Worker names and custom domains", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        env: {
+          staging: {
+            name: "my-worker-staging-custom",
+            custom_domains: ["staging.example.com"],
+          },
+        },
+      }),
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging-custom",
+      customDomain: "staging.example.com",
+    });
+  });
+
+  it("extracts environment custom domains from TOML route arrays", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[env.staging]
+routes = ["staging.example.com/*"]
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging?.customDomain).toBe("staging.example.com");
+  });
+
+  it("extracts environment custom domains from TOML route blocks", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[env.staging]
+name = "my-worker-staging"
+
+[[env.staging.routes]]
+pattern = "staging.example.com/*"
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.env?.staging).toEqual({
+      name: "my-worker-staging",
+      customDomain: "staging.example.com",
+    });
+  });
+});
+
+// ─── CDN warmup Worker version overrides ───────────────────────────────────
+
+describe("resolveWorkerNameForVersionOverride", () => {
+  it("uses the top-level Worker name for production", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    expect(resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {})).toBe("my-worker");
+  });
+
+  it("uses the CLI Worker name exactly when provided", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "config-worker" }));
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), {
+        name: "cli-worker",
+        env: "staging",
+      }),
+    ).toBe("cli-worker");
+  });
+
+  it("appends the target environment for Wrangler legacy environments", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("my-worker-staging");
+  });
+
+  it("uses env-specific Worker names for Wrangler legacy environments", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        env: { staging: { name: "custom-staging-worker" } },
+      }),
+    );
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("custom-staging-worker");
+  });
+
+  it("keeps the service name for Wrangler service environments", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        legacy_env: false,
+        env: { staging: {} },
+      }),
+    );
+    expect(
+      resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
+    ).toBe("my-worker");
+  });
+});
+
+describe("getZeroPercentStagingTraffic", () => {
+  it("does not stage the uploaded version when it is already the current deployment", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBeNull();
   });
 });

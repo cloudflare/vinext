@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import type { PagesClientAssets } from "../server/pages-client-assets.js";
 
 export const PAGES_CLIENT_ASSETS_MODULE = "vinext-client-assets.js";

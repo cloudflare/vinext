@@ -251,13 +251,13 @@ export function scheduleAppPageRscCacheWrite(
   options: ScheduleAppPageRscCacheWriteOptions,
 ): boolean {
   const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild) {
+  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild || options.mountedSlotsHeader) {
     return false;
   }
 
   const rscKey = options.isrRscKey(
     options.cleanPathname,
-    options.mountedSlotsHeader,
+    null,
     options.renderMode,
     options.interceptionContext,
   );

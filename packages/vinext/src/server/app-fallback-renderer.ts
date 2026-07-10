@@ -15,6 +15,7 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
 import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -50,6 +51,7 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
     routePath: string,
   ) => AppPageBoundaryOnError;
   fontProviders: AppFallbackRendererFontProviders;
+  getAndClearPendingCookies?: () => string[];
   getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
   /** Whether experimental.globalNotFound is enabled for route-miss 404s. */
@@ -78,6 +80,13 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   basePath?: string;
   /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
   trailingSlash?: boolean;
+  /**
+   * Serialized next.config `htmlLimitedBots` regexp source. Used to decide, per
+   * request user-agent, whether a `generateMetadata()` redirect thrown from a
+   * fallback boundary should stream (200) or block (307) — matching the
+   * matched-page dispatch path via `shouldServeStreamingMetadata`.
+   */
+  htmlLimitedBots?: string;
   resolveChildSegments: (
     routeSegments: readonly string[],
     treePosition: number,
@@ -149,9 +158,11 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const {
     applyFileBasedMetadata,
     basePath = "",
+    htmlLimitedBots,
     clearRequestContext,
     createRscOnErrorHandler: buildRscOnErrorHandler,
     fontProviders,
+    getAndClearPendingCookies,
     getNavigationContext,
     globalErrorModule,
     globalNotFoundEnabled = false,
@@ -212,6 +223,14 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
       callContext,
     ) {
+      // Decide streaming-vs-blocking metadata redirect behavior per request,
+      // matching the matched-page dispatch path. Only affects generateMetadata()
+      // redirects thrown while rendering this fallback boundary.
+      const serveStreamingMetadata = shouldServeStreamingMetadata(
+        request.headers.get("user-agent") ?? "",
+        htmlLimitedBots,
+      );
+
       // global-not-found.tsx replaces the root layout for route-miss 404s.
       // Only applies when:
       //   - The user defined app/global-not-found.tsx
@@ -229,6 +248,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         if (globalNotFoundComponent) {
           return renderAppPageHttpAccessFallback({
             applyFileBasedMetadata,
+            basePath,
+            trailingSlash,
             boundaryComponent: globalNotFoundComponent,
             boundaryModule: globalNotFoundModule ?? null,
             buildFontLinkHeader: fontProviders.buildFontLinkHeader,
@@ -239,6 +260,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             getFontLinks: fontProviders.getFontLinks,
             getFontPreloads: fontProviders.getFontPreloads,
             getFontStyles: fontProviders.getFontStyles,
+            getAndClearPendingCookies,
             getNavigationContext,
             globalErrorModule: effectiveGlobalErrorModule,
             isEdgeRuntime: callContext?.isEdgeRuntime,
@@ -249,6 +271,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             matchedParams: opts?.matchedParams ?? {},
             middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
             metadataRoutes,
+            request,
             requestUrl: request.url,
             resolveChildSegments,
             rootForbiddenModule: null,
@@ -258,6 +281,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             route: null,
             renderToReadableStream: rscRenderer,
             scriptNonce,
+            serveStreamingMetadata,
             skipLayoutWrapping: true,
             statusCode,
           });
@@ -282,6 +306,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
+        getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
         isEdgeRuntime: callContext?.isEdgeRuntime,
@@ -292,6 +317,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         matchedParams: opts?.matchedParams ?? route?.params ?? {},
         middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
         metadataRoutes,
+        request,
         requestUrl: request.url,
         resolveChildSegments,
         rootForbiddenModule,
@@ -301,6 +327,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         route: useGlobalNotFound ? null : route,
         renderToReadableStream: rscRenderer,
         scriptNonce,
+        serveStreamingMetadata,
         skipLayoutWrapping: useGlobalNotFound,
         sourcePageSegments: callContext?.sourcePageSegments,
         statusCode,
@@ -353,6 +380,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
+        getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
         isEdgeRuntime: callContext?.isEdgeRuntime,
@@ -362,6 +390,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         matchedParams: matchedParams ?? route?.params ?? {},
         middlewareContext: middlewareContext ?? EMPTY_MW_CTX,
         metadataRoutes,
+        request,
         requestUrl: request.url,
         resolveChildSegments,
         rootLayouts,

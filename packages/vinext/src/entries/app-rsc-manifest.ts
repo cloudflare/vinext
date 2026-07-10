@@ -1,3 +1,4 @@
+import { toSlash } from "pathslash";
 import {
   computeAppRouteStaticSiblings,
   convertSegmentsToRouteParts,
@@ -5,7 +6,6 @@ import {
 } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
-import { normalizePathSeparators } from "../utils/path.js";
 
 type AppRscManifestCode = {
   imports: string[];
@@ -110,7 +110,7 @@ function createImportAllocator(): ImportAllocator {
       if (existing) return existing;
 
       const varName = `mod_${importIdx++}`;
-      const absPath = normalizePathSeparators(filePath);
+      const absPath = toSlash(filePath);
       imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
       importMap.set(filePath, varName);
       return varName;
@@ -120,7 +120,7 @@ function createImportAllocator(): ImportAllocator {
       if (existing) return existing;
 
       const varName = `load_${lazyIdx++}`;
-      const absPath = normalizePathSeparators(filePath);
+      const absPath = toSlash(filePath);
       // `filePath` is a trusted filesystem-scan result (route.pagePath /
       // route.routePath), the same input and trust model as the eager
       // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
@@ -511,7 +511,7 @@ export function buildAppRscManifestCode(
   // on `AppRscManifestCode.globalNotFoundImportSpecifier` for the chunk/CSS
   // isolation rationale. We emit a dynamic `import()` from the entry instead.
   const globalNotFoundImportSpecifier = options.globalNotFoundPath
-    ? JSON.stringify(normalizePathSeparators(options.globalNotFoundPath))
+    ? JSON.stringify(toSlash(options.globalNotFoundPath))
     : null;
 
   const dynamicMetadataRoutes = metadataRoutes.filter((r) => r.isDynamic);

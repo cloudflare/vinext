@@ -8,7 +8,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "vinext/server/fetch-handler",
   "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
   "assets": {
+    "directory": "dist/client",
     "not_found_handling": "none",
     "binding": "ASSETS",
   },

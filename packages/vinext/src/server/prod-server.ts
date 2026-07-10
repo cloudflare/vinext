@@ -22,7 +22,7 @@ import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import path from "pathslash";
 import zlib from "node:zlib";
 import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {
@@ -117,10 +117,9 @@ function resolveCanonicalServerEntry(entryPath: string): { href: string; mtime: 
  *
  * The first import of a given path uses the plain file:// URL with NO query
  * string. This is load-bearing: code-split builds emit lazy chunks that
- * import the entry back by bare specifier (default Vite builds on both
- * supported majors — Rollup on Vite 7 and Rolldown on Vite 8 — hoist modules
- * shared between the entry's static graph and lazy route chunks into the
- * entry chunk, which the chunks then import as e.g. "../../index.js").
+ * import the entry back by bare specifier (default Vite/Rolldown builds hoist
+ * modules shared between the entry's static graph and lazy route chunks into
+ * the entry chunk, which the chunks then import as e.g. "../../index.js").
  * Node keys its ESM cache on the full URL including the query string, so if
  * the server imported the entry as `index.js?t=<mtime>`, a chunk's bare
  * back-import would evaluate the entire server bundle a second time and
@@ -217,6 +216,10 @@ export type ProdServerOptions = {
   host?: string;
   /** Path to the build output directory */
   outDir?: string;
+  /** Explicit App Router RSC entry path. Defaults to `<outDir>/server/index.js`. */
+  rscEntryPath?: string;
+  /** Explicit Pages Router server entry path. Defaults to `<outDir>/server/entry.js`. */
+  serverEntryPath?: string;
   /** Disable compression (default: false) */
   noCompression?: boolean;
   /**
@@ -976,6 +979,8 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
     outDir = path.resolve("dist"),
+    rscEntryPath: explicitRscEntryPath,
+    serverEntryPath: explicitServerEntryPath,
     noCompression = false,
     purpose,
     silent = false,
@@ -987,8 +992,12 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   const clientDir = path.join(resolvedOutDir, "client");
 
   // Detect build type
-  const rscEntryPath = path.join(resolvedOutDir, "server", "index.js");
-  const serverEntryPath = path.join(resolvedOutDir, "server", "entry.js");
+  const rscEntryPath = explicitRscEntryPath
+    ? path.resolve(explicitRscEntryPath)
+    : path.join(resolvedOutDir, "server", "index.js");
+  const serverEntryPath = explicitServerEntryPath
+    ? path.resolve(explicitServerEntryPath)
+    : path.join(resolvedOutDir, "server", "entry.js");
   const isAppRouter = fs.existsSync(rscEntryPath);
 
   if (!isAppRouter && !fs.existsSync(serverEntryPath)) {

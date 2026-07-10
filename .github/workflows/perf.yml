@@ -198,7 +198,7 @@ jobs:
           done
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@35171c92dd08b67d5a9d3f2a4327800e58396f2a # v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: "24"
           cache: true
@@ -229,11 +229,15 @@ jobs:
             local project_roots=(
               packages/vinext
               packages/cloudflare
+              packages/create-vinext-app
               benchmarks/vinext
               benchmarks/nextjs
             )
             for relative_path in "${project_roots[@]}"; do
               local path="$root/$relative_path"
+              if [ ! -d "$path" ]; then
+                continue
+              fi
               sudo chmod +t "$path"
               sudo setfacl -m u:"$user":rwx "$path"
               sudo setfacl -m d:u:"$user":rwx,d:u:"$USER":rwx "$path"

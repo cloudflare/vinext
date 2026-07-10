@@ -310,6 +310,20 @@ describe("analyzeConfig", () => {
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
   });
 
+  it("detects cacheComponents as partially supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        cacheComponents: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const cacheComponentsItem = items.find((i) => i.name === "cacheComponents");
+    expect(cacheComponentsItem?.status).toBe("partial");
+    expect(cacheComponentsItem?.detail).toContain("experimental support");
+  });
+
   it("does not flag webpack when it only appears in a comment", () => {
     writeFile(
       "next.config.js",

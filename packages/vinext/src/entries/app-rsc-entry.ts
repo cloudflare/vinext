@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
+import { toSlash } from "pathslash";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -307,13 +307,13 @@ import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPending
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
   middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};
+    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
 import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
     : ""
 }
 ${
   instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
+    ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
@@ -547,6 +547,11 @@ export const __basePath = ${JSON.stringify(bp)};
 // thread the configured trailingSlash flag through canonical URL rendering.
 const __trailingSlash = ${JSON.stringify(ts)};
 
+// Hoisted above __createAppFallbackRenderer (which runs at module init) so the
+// fallback renderer can decide streaming-vs-blocking metadata redirects per
+// request user-agent. The later per-request references still read this const.
+const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
+
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
@@ -574,6 +579,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
   basePath: __basePath,
   trailingSlash: __trailingSlash,
+  htmlLimitedBots: __htmlLimitedBots,
   rootBoundaries: {
     rootForbiddenModule,
     rootLayouts,
@@ -596,6 +602,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   makeThenableParams,
   sanitizer: __sanitizeErrorForClient,
   rscRenderer: renderToReadableStream,
+  getAndClearPendingCookies,
   getNavigationContext: _getNavigationContext,
   resolveChildSegments: __resolveAppPageChildSegments,
   clearRequestContext() {
@@ -648,7 +655,6 @@ const __runtimeImageConfig = ${JSON.stringify(config?.imageConfig)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
-const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
 const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // Re-exported for the App Router prod-server to consume at startup —
@@ -802,6 +808,7 @@ export default createAppRscHandler({
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
@@ -1196,7 +1203,7 @@ export default createAppRscHandler({
       cleanPathname,
       context,
       hadBasePath,
-      filePath: ${JSON.stringify(middlewarePath ? normalizePathSeparators(middlewarePath) : "")},
+      filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
       i18nConfig: __i18nConfig,
       isDataRequest,
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},

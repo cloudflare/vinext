@@ -921,6 +921,7 @@ type SSRContext = {
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: VinextNextData["domainLocales"];
+  isPreview?: boolean;
   /**
    * True when rendering a `getStaticPaths` fallback shell for a path that
    * hasn't been pre-rendered yet (`fallback: true` + unlisted path). Mirrors
@@ -1264,10 +1265,11 @@ function getPathnameAndQuery(): {
     return { pathname: "/", query: {}, asPath: "/" };
   }
   const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const canonicalResolvedPath = removeNavigationLocalePrefix(resolvedPath);
   // In Next.js, router.pathname is the route pattern (e.g., "/posts/[id]"),
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
-  const pathname = window.__NEXT_DATA__?.page ?? resolvedPath;
+  const pathname = window.__NEXT_DATA__?.page ?? canonicalResolvedPath;
   const nextData = window.__NEXT_DATA__;
   const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
   // URL search params always reflect the current URL
@@ -1279,7 +1281,8 @@ function getPathnameAndQuery(): {
   const query = { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
-    getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
+    getCurrentHistoryAsPath() ??
+    canonicalResolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
 }
 
@@ -1289,15 +1292,19 @@ function getCurrentHistoryAsPath(): string | null {
 
   try {
     const browserUrl = new URL(window.location.href);
+    const stateLocale = state.options.locale === false ? undefined : state.options.locale;
+    const localizedStateAs = applyNavigationLocale(state.as, stateLocale);
     const stateUrl = new URL(
-      toBrowserNavigationHref(state.as, window.location.href, __basePath),
+      toBrowserNavigationHref(localizedStateAs, window.location.href, __basePath),
       window.location.href,
     );
     if (stateUrl.pathname !== browserUrl.pathname || stateUrl.search !== browserUrl.search) {
       return null;
     }
-    const stateAs = stripHash(state.as);
-    const visibleAs = `${stripBasePath(window.location.pathname, __basePath)}${window.location.search}`;
+    const stateAs = removeNavigationLocalePrefix(stripHash(state.as));
+    const visibleAs = `${removeNavigationLocalePrefix(
+      stripBasePath(window.location.pathname, __basePath),
+    )}${window.location.search}`;
     return `${stateAs || visibleAs}${window.location.hash}`;
   } catch {
     return null;
@@ -1366,13 +1373,14 @@ function markPagesRouterReady(): boolean {
   return true;
 }
 
-function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
+function initializePagesRouterReadyFromNextData(
+  nextData: VinextNextData,
+  forceReady = false,
+): void {
   if (typeof window === "undefined") return;
-  routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
-    nextData.page,
-    window.location.search,
-    nextData,
-  );
+  routerRuntimeState.pagesRouterReady =
+    forceReady ||
+    getPagesNavigationIsReadyFromSerializedState(nextData.page, window.location.search, nextData);
 }
 
 function markPagesRouterHydrated(): void {
@@ -1950,6 +1958,7 @@ function buildPagesNavigationNextData(
     query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
+    isPreview: props.__N_PREVIEW === true,
     ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
 }
@@ -2147,7 +2156,9 @@ async function navigateClientData(
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
       const dataFetch =
-        initialTarget.dataKind === "static" ? fetchStaticPagesData : dedupedPagesDataFetch;
+        initialTarget.dataKind === "static" && Router.isPreview !== true
+          ? fetchStaticPagesData
+          : dedupedPagesDataFetch;
       res = await dataFetch(initialTarget.dataHref, {
         headers,
         signal: controller.signal,
@@ -2222,6 +2233,9 @@ async function navigateClientData(
   const rawPageProps = props.pageProps;
   const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
   if (initialTarget.dataKind === "server") {
+    evictPagesDataCache(initialTarget.dataHref);
+  }
+  if (props.__N_PREVIEW === true || Router.isPreview === true) {
     evictPagesDataCache(initialTarget.dataHref);
   }
 
@@ -2734,7 +2748,8 @@ function buildRouterValue(
     defaultLocale,
     domainLocales,
     isReady,
-    isPreview: false,
+    isPreview:
+      typeof window !== "undefined" ? nextData?.isPreview === true : _ssrState?.isPreview === true,
     isFallback:
       typeof window !== "undefined"
         ? nextData?.isFallback === true
@@ -3875,7 +3890,13 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
         );
       },
     },
-    isPreview: { enumerable: true, value: false, writable: false },
+    isPreview: {
+      enumerable: true,
+      get(): boolean {
+        if (typeof window === "undefined") return _getSSRContext()?.isPreview === true;
+        return (window.__NEXT_DATA__ as VinextNextData | undefined)?.isPreview === true;
+      },
+    },
     isFallback: {
       enumerable: true,
       get(): boolean {

@@ -330,10 +330,15 @@ async function serveAppPageCachedHtml(
 export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
+  if (options.isRscRequest && options.mountedSlotsHeader) {
+    options.isrDebug?.("MISS (mounted slots RSC variant)", options.cleanPathname);
+    return null;
+  }
+
   const isrKey = options.isRscRequest
     ? options.isrRscKey(
         options.cleanPathname,
-        options.mountedSlotsHeader,
+        null,
         options.renderMode,
         options.interceptionContext,
       )
@@ -431,7 +436,7 @@ export async function readAppPageCacheResponse(
               ? isrKey
               : options.isrRscKey(
                   options.cleanPathname,
-                  options.mountedSlotsHeader,
+                  null,
                   options.renderMode,
                   options.interceptionContext,
                 ),

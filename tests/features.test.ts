@@ -25,7 +25,7 @@ import {
 } from "./helpers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -913,6 +913,106 @@ describe("i18n config parsing", () => {
     expect(config.i18n!.localeDetection).toBe(true);
   });
 
+  it("places the default locale first without mutating the input", async () => {
+    // Ported from Next.js: test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-catchall/i18n-support-catchall.test.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const locales = ["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"];
+    const config = await resolveNextConfig({
+      i18n: {
+        locales,
+        defaultLocale: "en-US",
+      },
+    });
+
+    expect(config.i18n!.locales).toEqual(["en-US", "nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en"]);
+    expect(locales).toEqual(["nl-NL", "nl-BE", "nl", "fr-BE", "fr", "en-US", "en"]);
+  });
+
+  it("rejects a default locale that is not included in locales", async () => {
+    // Ported from Next.js: packages/next/src/server/config.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/packages/next/src/server/config.ts
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+  });
+
+  it("validates i18n before invoking config callbacks", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const redirects = vi.fn(() => []);
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["fr"],
+          defaultLocale: "en",
+        },
+        redirects,
+      }),
+    ).rejects.toThrow(
+      "Specified i18n.defaultLocale should be included in i18n.locales.\nSee more info here: https://nextjs.org/docs/messages/invalid-i18n-config",
+    );
+    expect(redirects).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid locales before checking default locale membership", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: [42],
+          defaultLocale: "en",
+        },
+      } as never),
+    ).rejects.toThrow(
+      'Specified i18n.locales contains invalid values (42), locales must be valid locale tags provided as strings e.g. "en-US".',
+    );
+  });
+
+  it("rejects overlapping domain locales exposed by a malformed includes value", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.com", defaultLocale: "en", locales: ["fr"] },
+            { domain: "example.fr", defaultLocale: "fr", locales: "fr" },
+          ],
+        },
+      } as never),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
+  it("rejects duplicate domain default locales", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      resolveNextConfig({
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "french.example.com", defaultLocale: "fr" },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Invalid i18n.domains values:");
+  });
+
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
     const config = await resolveNextConfig({});
@@ -1097,16 +1197,19 @@ describe("i18n routing (Pages Router)", () => {
     // About page — uses getServerSideProps to expose locale
     await fsp.writeFile(
       path.join(i18nTmpDir, "pages", "about.tsx"),
-      `export function getServerSideProps({ locale, locales, defaultLocale }) {
+      `import { useRouter } from "next/router";
+export function getServerSideProps({ locale, locales, defaultLocale }) {
   return { props: { locale: locale || null, locales: locales || [], defaultLocale: defaultLocale || null } };
 }
 export default function About({ locale, locales, defaultLocale }) {
+  const router = useRouter();
   return (
     <div>
       <h1>About</h1>
       <p id="locale">{locale}</p>
       <p id="locales">{locales.join(",")}</p>
       <p id="defaultLocale">{defaultLocale}</p>
+      <p id="asPath">{router.asPath}</p>
     </div>
   );
 }`,
@@ -1199,6 +1302,16 @@ export default function About({ locale, locales, defaultLocale }) {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/<p id="locale">.*fr.*<\/p>/);
+  });
+
+  it("strips the locale prefix from router.asPath in dev SSR", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-fallback-rewrite/i18n-support-fallback-rewrite.test.ts
+    const res = await fetch(`${i18nBaseUrl}/fr/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="asPath">.*\/about\?hello=world.*<\/p>/);
   });
 
   it("passes correct locale to getServerSideProps for /de/about", async () => {
@@ -3893,7 +4006,7 @@ describe("instrumentation.ts support", () => {
     // Create a temp directory with an instrumentation.ts file. Production
     // always passes a forward-slash root (the config hook normalizes it), so
     // mirror that — findInstrumentationFile returns forward-slash paths.
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
@@ -3913,7 +4026,7 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
+    const tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),

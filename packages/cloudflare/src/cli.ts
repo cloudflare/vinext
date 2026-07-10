@@ -49,6 +49,12 @@ async function deployCommand(): Promise<void> {
     name: parsed.name,
     prerenderAll: parsed.prerenderAll,
     prerenderConcurrency: parsed.prerenderConcurrency,
+    warmCdnCache: parsed.warmCdnCache,
+    warmCdnConcurrency: parsed.warmCdnConcurrency,
+    warmCdnTimeout: parsed.warmCdnTimeout,
+    warmCdnRetries: parsed.warmCdnRetries,
+    warmCdnStrict: parsed.warmCdnStrict,
+    warmCdnIncludeFallbacks: parsed.warmCdnIncludeFallbacks,
     experimentalTPR: parsed.experimentalTPR,
     tprCoverage: parsed.tprCoverage,
     tprLimit: parsed.tprLimit,
@@ -69,7 +75,7 @@ if (command === "--help" || command === "-h" || !command) {
 switch (command) {
   case "deploy":
     deployCommand().catch((error) => {
-      console.error(error);
+      console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     });
     break;

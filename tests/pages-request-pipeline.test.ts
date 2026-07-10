@@ -987,7 +987,7 @@ describe("API routes", () => {
     const result = await runPagesRequest(req, baseDeps({ renderPage: makeRenderPage(200) }));
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.defaultContentType).toBe("text/html");
+    expect(result.defaultContentType).toBe("text/html; charset=utf-8");
   });
 
   it("matches /api exactly", async () => {

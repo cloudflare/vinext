@@ -1,14 +1,54 @@
 # vinext
 
-The Next.js API surface, reimplemented on Vite.
+Run Next.js applications on Vite, with Cloudflare Workers as the primary deployment target.
 
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 
-> 🚧 **Experimental — under heavy development.** This project is an experiment in AI-driven software development. The vast majority of the code, tests, and documentation are written by AI, with humans steering throughout: setting architecture and priorities, making design decisions, reviewing changes, triaging complex problems, and shipping fixes. There may be bugs, rough edges, or things that don't work. Use at your own risk.
+> **Under active development.** vinext supports substantial Next.js applications today, but it is not yet a drop-in replacement for every application or production workload. Expect compatibility gaps, especially in newer App Router features, and evaluate it against your own application before adopting it.
+
+vinext reimplements the Next.js API surface on Vite rather than consuming `next build` output. It supports both the App Router and Pages Router, React Server Components, Server Actions, middleware, route handlers, ISR, static export, and the most commonly used `next/*` modules. Cloudflare Workers has the deepest integration; Node.js and other platforms are available with different levels of support.
+
+## Project status
+
+### What works today
+
+- **App Router and Pages Router** in development and production builds
+- **React Server Components, Server Actions, route handlers, and middleware**
+- **Static generation, ISR, `output: "export"`, and standalone Node.js output**
+- **Core Next.js APIs and modules**, including `next/link`, `next/image`, `next/navigation`, `next/headers`, `next/cache`, and the Metadata API
+- **Cloudflare Workers deployment** with bindings, cache adapters, and image optimization support
+- **Migration tooling** through `vinext check`, `vinext init`, and the vinext Agent Skill
+
+### Known gaps we're working on
+
+These are active compatibility areas, not permanent exclusions:
+
+- **Cache Components and Partial Prerendering:** `"use cache"` is partially implemented, but full `cacheComponents` behavior is still incomplete. Cache profiles, tags, partial shells, resume behavior, prefetching, and some dev/build cache semantics do not yet match Next.js in every case.
+- **Build-time image and font optimization:** images can be optimized at request time on Cloudflare, but vinext does not yet reproduce Next.js's complete build-time image pipeline. Google Fonts are loaded from the CDN, and local font CSS is injected at runtime rather than extracted during the build.
+- **Native modules in App Router development:** packages such as `sharp`, `resvg`, `satori`, `lightningcss`, and `@napi-rs/canvas` can fail in Vite's RSC development environment. Production builds support more of these cases than development mode.
+- **Platform-specific and advanced Next.js behavior:** `runtime` and `preferredRegion` route config are currently ignored, and some recently introduced or undocumented Next.js behavior may not yet be reproduced.
+
+Run `vinext check` against an existing application before migrating. If a gap is not listed here, check the [open issues](https://github.com/cloudflare/vinext/issues) or file a focused reproduction.
 
 ## Quick start
 
-vinext includes an [Agent Skill](https://agentskills.io/home) that handles migration for you. It works with Claude Code, OpenCode, Cursor, Codex, and dozens of other AI coding tools. Install it, open your Next.js project, and tell the AI to migrate:
+**Use the official setup commands below.** They are the recommended way to create or migrate a vinext project because they configure dependencies, scripts, Vite, and your deployment target for you.
+
+Start a new project with `create-vinext-app`:
+
+```bash
+pnpm create vinext-app@latest my-app
+```
+
+Migrate an existing Next.js project with `vinext init`:
+
+```bash
+npx vinext init
+```
+
+### Optional: migrate with an AI agent
+
+Prefer `vinext init` for a direct, repeatable migration. If you want an AI agent to investigate compatibility issues and guide the migration, vinext also includes an optional [Agent Skill](https://agentskills.io/home). It works with Claude Code, OpenCode, Cursor, Codex, and dozens of other AI coding tools:
 
 ```sh
 npx skills add cloudflare/vinext
@@ -25,13 +65,15 @@ The skill handles compatibility checking, dependency installation, config genera
 ### Or do it manually
 
 ```bash
-npm install -D vinext vite @vitejs/plugin-react
+npm install vinext
+npm install -D vite @vitejs/plugin-react
 ```
 
 If you're using the App Router, also install:
 
 ```bash
-npm install -D @vitejs/plugin-rsc react-server-dom-webpack
+npm install react-server-dom-webpack
+npm install -D @vitejs/plugin-rsc
 ```
 
 Replace `next` with `vinext` in your scripts:
@@ -93,9 +135,15 @@ Environment variables: `PORT` (default `3000`), `HOST` (default `0.0.0.0`).
 
 ### Starting a new vinext project
 
-Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
+Use `create-vinext-app` for new projects. It creates a TypeScript App Router project
+with Tailwind CSS and then runs the same vinext init setup used for existing apps:
 
-In the future, we will have a proper `npm create vinext` new project workflow.
+```bash
+pnpm create vinext-app@latest my-app
+```
+
+The generated project is Cloudflare Workers-ready by default. Pass
+`--platform=node` if you want the Node target instead.
 
 ### Migrating an existing Next.js project
 
@@ -108,7 +156,7 @@ npx vinext init
 This will:
 
 1. Run `vinext check` to scan for compatibility issues
-2. Install `vite`, `@vitejs/plugin-react`, and App Router-only deps (`@vitejs/plugin-rsc`, `react-server-dom-webpack`) as devDependencies
+2. Install vinext runtime packages as dependencies and Vite/plugin tooling as devDependencies
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`
@@ -136,7 +184,7 @@ the compatibility report.
 
 Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
 
-vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes.
+vinext reimplements the Next.js API surface on Vite so existing Next.js applications can run on a different toolchain. The answer, so far, is that substantial applications can.
 
 vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
@@ -158,13 +206,13 @@ vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vin
 vinext is a Vite plugin that reimplements the public Next.js API — routing, server rendering, `next/*` module imports, the CLI — so you can run Next.js applications on Vite instead of the Next.js compiler toolchain. It can be deployed anywhere: Cloudflare Workers is the first natively supported target, with other platforms available via Nitro. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Is this a fork of Next.js?**
-No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers — it's an experiment in how far AI-driven development and Vite's toolchain can go in replicating an existing, well-defined API surface.
+No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers; it is to provide the same well-defined API surface on Vite's toolchain.
 
 **How is this different from OpenNext?**
-[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you're interested in experimenting with a lighter toolchain and don't need every Next.js API, vinext might be worth a look.
+[OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit.
 
 **Can I use this in production?**
-You can, with caution. This is experimental software with known bugs. It works well enough for demos and exploration, but it hasn't been battle-tested with real production traffic.
+You can, with caution. vinext has known compatibility gaps and has not yet been battle-tested across the full range of production Next.js workloads. Evaluate the features and deployment target your application relies on before adopting it.
 
 **Can I just self-host Next.js?**
 Yes. Next.js supports [self-hosting](https://nextjs.org/docs/app/building-your-application/deploying#self-hosting) on Node.js servers, Docker containers, and static exports. If you're happy with the Next.js toolchain and just want to run it somewhere other than Vercel, self-hosting is the simplest path.
@@ -176,7 +224,7 @@ The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This in
 A mix of humans and AI agents. Humans review PRs before they merge, focused on behavior, structure, and long-term direction. We lean heavily on agent-driven code review to catch issues at PR time and across the codebase. The test suite is the primary quality gate. Outside contributions and deeper human code review are very welcome.
 
 **Why Vite?**
-Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
+Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) plugin adds React Server Components support with multi-environment builds. vinext builds the Next.js developer experience on top of that infrastructure.
 
 **Does this support the Pages Router, App Router, or both?**
 Both. File-system routing, SSR, client hydration, and deployment to Cloudflare Workers work for both routers.
@@ -240,7 +288,7 @@ Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is short
 The init command also auto-detects and fixes common migration issues:
 
 - Adds `"type": "module"` to package.json if missing
-- Resolves tsconfig.json path aliases automatically (via `vite-tsconfig-paths`)
+- Resolves tsconfig.json path aliases automatically with Vite's native resolver
 - Detects MDX usage and configures `@mdx-js/rollup`
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
 - Detects native Node.js modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas) and auto-stubs them for Workers. If you encounter others that need stubbing, PRs are welcome.
@@ -600,26 +648,15 @@ vinext({
 
 ## What's NOT supported (and won't be)
 
-These are intentional exclusions. For things that are missing today but on the roadmap, see [Known limitations](#known-limitations) below.
+These are intentional exclusions. For things that are missing today but on the roadmap, see [Known gaps we're working on](#known-gaps-were-working-on) above.
 
 - **Vercel-specific features** — `@vercel/og` edge runtime, Vercel Analytics integration, Vercel KV/Blob/Postgres bindings. Use platform equivalents.
 - **AMP** — Deprecated since Next.js 13. `useAmp()` returns `false`.
 - **`next export` (legacy)** — Use `output: 'export'` in config instead.
 - **Turbopack/webpack configuration** — This runs on Vite. Use Vite plugins instead of webpack loaders/plugins.
 - **`next/jest`** — Use Vitest.
-- **`create-next-app` scaffolding** — Not a goal.
+- **`create-next-app` scaffolding** — Use `create-vinext-app` for new vinext projects.
 - **Bug-for-bug parity with undocumented behavior** — If it's not in the Next.js docs, we probably don't replicate it.
-
-## Known limitations
-
-These are gaps we'd like to close — distinct from the [intentional exclusions](#whats-not-supported-and-wont-be) above.
-
-- **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_next/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
-- **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
-- **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
-- **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
-- **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `@vinext/cloudflare deploy`.
-- **`next.config.ts` `baseUrl` bare imports require Vite 8.** A `next.config.ts` that imports a bare specifier resolved through `tsconfig.json`'s `compilerOptions.baseUrl` (e.g. `import { bar } from "bar"` resolving to a local `bar.ts`) relies on Vite 8's native `resolve.tsconfigPaths` (Rolldown/oxc-resolver). On Vite 7 there is no native equivalent, so these imports are not resolved. `compilerOptions.paths` aliases (e.g. `@/foo`) work on both Vite 7 and 8. Note that if a bare import matches both a `baseUrl`-local file and an installed package of the same name, the installed package wins (vinext keeps packages externalized so CJS config plugins like `@next/mdx` keep working).
 
 ## Benchmarks
 
@@ -642,7 +679,7 @@ Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. Se
 
 Analysis of the build output shows two main factors:
 
-1. **Tree-shaking**: Vite/Rollup produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rollup's more aggressive dead-code elimination accounts for roughly half the overall difference.
+1. **Tree-shaking**: Vite/Rolldown produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rolldown's more aggressive dead-code elimination accounts for roughly half the overall difference.
 2. **Framework overhead**: Next.js ships more client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling) than vinext's lighter client runtime.
 
 Both frameworks ship the same app code and the same RSC client runtime (`react-server-dom-webpack`). The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
@@ -769,11 +806,11 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^7.0.0 || ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 
-This project is experimental and under active development. Issues and PRs are welcome.
+This project is under active development. Issues and PRs are welcome.
 
 ### CI
 

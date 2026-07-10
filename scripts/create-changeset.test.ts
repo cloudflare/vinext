@@ -127,11 +127,23 @@ describe("affectedPackages", () => {
 });
 
 describe("compareVersions", () => {
-  it("orders semver-ish strings", () => {
+  it("orders stable versions", () => {
     expect(compareVersions("0.0.55", "0.0.5")).toBe(1);
     expect(compareVersions("0.0.5", "0.0.55")).toBe(-1);
     expect(compareVersions("1.2.3", "1.2.3")).toBe(0);
     expect(compareVersions("1.0.0", "0.9.9")).toBe(1);
+  });
+
+  it("orders prerelease versions using SemVer precedence", () => {
+    expect(compareVersions("0.3.0-beta.1", "0.3.0-beta.0")).toBe(1);
+    expect(compareVersions("0.3.0-beta.10", "0.3.0-beta.2")).toBe(1);
+    expect(compareVersions("0.3.0-beta.0", "0.3.0-beta.0")).toBe(0);
+    expect(compareVersions("0.3.0", "0.3.0-beta.1")).toBe(1);
+    expect(compareVersions("0.3.0-beta.1", "0.3.0")).toBe(-1);
+    expect(compareVersions("1.0.0-beta", "1.0.0-alpha.1")).toBe(1);
+    expect(compareVersions("1.0.0-alpha.1", "1.0.0-alpha.beta")).toBe(-1);
+    expect(compareVersions("1.0.0-beta-feature.1", "1.0.0-beta-feature.0")).toBe(1);
+    expect(compareVersions("1.0.0+build.2", "1.0.0+build.1")).toBe(0);
   });
 });
 
@@ -140,8 +152,16 @@ describe("decideGeneration (THE CORRECTNESS RULE)", () => {
     expect(decideGeneration("0.1.0", "0.0.55").action).toBe("skip");
   });
 
+  it("skips when a new prerelease version is awaiting publish", () => {
+    expect(decideGeneration("0.3.0-beta.1", "0.3.0-beta.0").action).toBe("skip");
+  });
+
   it("generates when package.json version == tag version (normal accumulation)", () => {
     expect(decideGeneration("0.0.55", "0.0.55").action).toBe("generate");
+  });
+
+  it("generates after the matching prerelease tag is published", () => {
+    expect(decideGeneration("0.3.0-beta.1", "0.3.0-beta.1").action).toBe("generate");
   });
 
   it("generates when there is no tag yet", () => {
@@ -166,6 +186,24 @@ describe("latestTagVersionFromTags (release range source)", () => {
 
   it("picks the highest scoped tag for a package with the `<name>@<version>` scheme", () => {
     expect(latestTagVersionFromTags(tags, "@vinext/cloudflare")).toBe("1.1.0");
+  });
+
+  it("picks the latest prerelease tag using SemVer precedence", () => {
+    expect(
+      latestTagVersionFromTags(
+        ["vinext@0.3.0-beta.2", "vinext@0.3.0-beta.10", "vinext@0.3.0-beta.1"],
+        "vinext",
+      ),
+    ).toBe("0.3.0-beta.10");
+  });
+
+  it("prefers a stable tag over prereleases of the same version", () => {
+    expect(
+      latestTagVersionFromTags(
+        ["vinext@0.3.0-beta.1", "vinext@0.3.0", "vinext@0.3.0-beta.2"],
+        "vinext",
+      ),
+    ).toBe("0.3.0");
   });
 
   it("falls back to the legacy global `v<version>` tag for the root package", () => {

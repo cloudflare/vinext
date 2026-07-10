@@ -15,8 +15,14 @@
 import type { ComponentType, ReactNode } from "react";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { resolvePagesI18nRequest } from "./pages-i18n.js";
-import { createPagesReqRes, getPagesPreviewData } from "./pages-node-compat.js";
+import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
+import { createPagesReqRes } from "./pages-node-compat.js";
+import {
+  appendPagesPreviewClearCookies,
+  getPagesPreviewState,
+  PAGES_PREVIEW_CACHE_CONTROL,
+  type PagesPreviewState,
+} from "./pages-preview.js";
 import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
@@ -54,6 +60,18 @@ import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
+
+function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewState): Response {
+  if (preview.data === false && !preview.shouldClear) return response;
+  const headers = new Headers(response.headers);
+  if (preview.data !== false) headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
+  if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -428,6 +446,9 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
+    const routerAsPath = i18nConfig
+      ? extractLocaleFromUrl(renderAsPath ?? routeUrl, i18nConfig, locale).url
+      : (renderAsPath ?? routeUrl);
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
     });
@@ -446,16 +467,30 @@ export function createPagesPageHandler(
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
         const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
-        const pagesNextData = buildPagesReadinessNextData({
-          pageModule,
-          appComponent: AppComponent as { getInitialProps?: unknown } | null,
-          hasRewrites,
-        });
+        const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+          request.headers.get(PRERENDER_REVALIDATE_HEADER),
+        );
+        const supportsPreview =
+          isStaticPropsRoute || typeof pageModule.getServerSideProps === "function";
+        const preview = supportsPreview
+          ? getPagesPreviewState(request.headers.get("cookie"), {
+              isOnDemandRevalidate,
+            })
+          : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
+        const previewData = preview.data;
+        const pagesNextData = {
+          ...buildPagesReadinessNextData({
+            pageModule,
+            appComponent: AppComponent as { getInitialProps?: unknown } | null,
+            hasRewrites,
+          }),
+          ...(previewData === false ? {} : { isPreview: true as const }),
+        };
         const navigationIsReady =
           typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
                 routePattern,
-                new URL(renderAsPath ?? routeUrl, "http://_").search,
+                new URL(routerAsPath, "http://_").search,
                 pagesNextData,
               )
             : true;
@@ -465,7 +500,7 @@ export function createPagesPageHandler(
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: renderAsPath ?? routeUrl,
+              asPath: routerAsPath,
               navigationIsReady,
               locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -485,7 +520,10 @@ export function createPagesPageHandler(
           }
         }
 
-        applySSRContext({ nextData: pagesNextData });
+        applySSRContext({
+          isPreview: previewData !== false,
+          nextData: pagesNextData,
+        });
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
@@ -558,17 +596,19 @@ export function createPagesPageHandler(
         const parsedRouteUrl = new URL(routeUrl, originalRequestUrl);
         const routePathname = parsedRouteUrl.pathname || "/";
         const pagesResolvedUrl = routePathname + originalRequestUrl.search;
-        const createPageReqRes = () =>
-          createPagesReqRes({
+        const createPageReqRes = () => {
+          const reqRes = createPagesReqRes({
             body: undefined,
             query,
             request,
             url: originalRequestPathAndSearch,
           });
+          if (typeof renderStatusCode === "number") {
+            reqRes.res.statusCode = renderStatusCode;
+          }
+          return reqRes;
+        };
 
-        const isOnDemandRevalidate = isOnDemandRevalidateRequest(
-          request.headers.get(PRERENDER_REVALIDATE_HEADER),
-        );
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
           err: err instanceof Error ? err : undefined,
@@ -605,12 +645,12 @@ export function createPagesPageHandler(
           // external client from forcing synchronous regeneration via an
           // arbitrary header value (cache-stampede/DoS vector).
           isOnDemandRevalidate,
-          previewData: getPagesPreviewData(request, { isOnDemandRevalidate }),
+          previewData,
           pageModule,
           AppComponent,
           params,
           query,
-          asPath: renderAsPath ?? routeUrl,
+          asPath: routerAsPath,
           resolvedUrl: pagesResolvedUrl,
           renderIsrPassToStringAsync,
           route: { isDynamic: route.isDynamic },
@@ -640,22 +680,30 @@ export function createPagesPageHandler(
         if (pageDataResult.kind === "notFound") {
           const notFoundRoute = findNotFoundRoute();
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            return renderPage(request, url, manifest, middlewareHeaders, {
-              statusCode: 404,
-              asPath: renderAsPath ?? routeUrl,
-              renderErrorPageOnMiss: false,
-              __forcedRoute: notFoundRoute,
-            });
+            return finalizePagesPreviewResponse(
+              await renderPage(request, url, manifest, middlewareHeaders, {
+                statusCode: 404,
+                asPath: routerAsPath,
+                renderErrorPageOnMiss: false,
+                __forcedRoute: notFoundRoute,
+              }),
+              preview,
+            );
           }
-          return buildDefaultPagesNotFoundResponse();
+          return finalizePagesPreviewResponse(buildDefaultPagesNotFoundResponse(), preview);
         }
         if (pageDataResult.kind === "response") {
-          return pageDataResult.response;
+          return finalizePagesPreviewResponse(pageDataResult.response, preview);
         }
 
         let pageProps = pageDataResult.pageProps;
         let renderProps = pageDataResult.props;
-        if (routePattern === "/_error" && typeof renderStatusCode === "number") {
+        if (previewData !== false) renderProps = { ...renderProps, __N_PREVIEW: true };
+        if (
+          routePattern === "/_error" &&
+          typeof renderStatusCode === "number" &&
+          renderProps.pageProps !== undefined
+        ) {
           pageProps = { ...pageProps, statusCode: renderStatusCode };
           renderProps = { ...renderProps, pageProps };
         }
@@ -673,7 +721,7 @@ export function createPagesPageHandler(
           setSSRContext({
             pathname: routePattern,
             query,
-            asPath: renderAsPath ?? routeUrl,
+            asPath: routerAsPath,
             navigationIsReady: false,
             locale,
             locales: i18nConfig ? i18nConfig.locales : undefined,
@@ -738,7 +786,10 @@ export function createPagesPageHandler(
               init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
             }
           }
-          return buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
+          return finalizePagesPreviewResponse(
+            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init),
+            preview,
+          );
         }
 
         // Include both the global _app module and the matched page module.
@@ -758,61 +809,69 @@ export function createPagesPageHandler(
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         });
 
-        return await renderPagesPageResponse({
-          assetTags,
-          buildId,
-          clearSsrContext() {
-            if (typeof setSSRContext === "function") setSSRContext(null);
-          },
-          createPageElement(currentProps) {
-            const el = createPageElement(PageComponent, AppComponent, currentProps);
-            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-          },
-          enhancePageElement(renderPageOpts) {
-            const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
-            return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
-          },
-          DocumentComponent,
-          err: err instanceof Error ? err : undefined,
-          flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-          fontLinkHeader,
-          fontPreloads: allFontPreloads,
-          getFontLinks,
-          getFontStyles,
-          getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
-          clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
-            ? vinextConfig.clientTraceMetadata
-            : undefined,
-          documentReqRes,
-          gsspRes,
-          isrCacheKey: pageIsrCacheKey,
-          expireSeconds: vinextConfig.expireTime,
-          isrRevalidateSeconds,
-          isStaticPropsRoute,
-          isrSet,
-          i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
-          isFallback: isFallbackRender,
-          pageProps,
-          props: renderProps,
-          params,
-          query,
-          renderDocumentToString(element) {
-            return renderToStringAsync(element);
-          },
-          renderToReadableStream,
-          resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
-          setDocumentInitialHead:
-            typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
-          routePattern,
-          routeUrl,
-          safeJsonStringify,
-          scriptNonce,
-          statusCode: renderStatusCode,
-          nextData: serializedPagesNextData,
-          userAgent: request.headers.get("user-agent") ?? undefined,
-          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
-          requestCacheControl: request.headers.get("cache-control") ?? undefined,
-        });
+        return finalizePagesPreviewResponse(
+          await renderPagesPageResponse({
+            assetTags,
+            buildId,
+            clearSsrContext() {
+              if (typeof setSSRContext === "function") setSSRContext(null);
+            },
+            createPageElement(currentProps) {
+              const el = createPageElement(PageComponent, AppComponent, currentProps);
+              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+            },
+            enhancePageElement(renderPageOpts) {
+              const el = enhancePageElement(
+                PageComponent,
+                AppComponent,
+                renderProps,
+                renderPageOpts,
+              );
+              return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
+            },
+            DocumentComponent,
+            err: err instanceof Error ? err : undefined,
+            flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
+            fontLinkHeader,
+            fontPreloads: allFontPreloads,
+            getFontLinks,
+            getFontStyles,
+            getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+            clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
+              ? vinextConfig.clientTraceMetadata
+              : undefined,
+            documentReqRes,
+            gsspRes,
+            isrCacheKey: pageIsrCacheKey,
+            expireSeconds: vinextConfig.expireTime,
+            isrRevalidateSeconds,
+            isStaticPropsRoute,
+            isrSet,
+            i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
+            isFallback: isFallbackRender,
+            pageProps,
+            props: renderProps,
+            params,
+            query,
+            renderDocumentToString(element) {
+              return renderToStringAsync(element);
+            },
+            renderToReadableStream,
+            resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+            setDocumentInitialHead:
+              typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
+            routePattern,
+            routeUrl,
+            safeJsonStringify,
+            scriptNonce,
+            statusCode: renderStatusCode,
+            nextData: serializedPagesNextData,
+            userAgent: request.headers.get("user-agent") ?? undefined,
+            ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+            requestCacheControl: request.headers.get("cache-control") ?? undefined,
+          }),
+          preview,
+        );
       } catch (e) {
         console.error("[vinext] SSR error:", e);
         reportRequestError(

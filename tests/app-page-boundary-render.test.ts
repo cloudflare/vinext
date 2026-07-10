@@ -82,6 +82,7 @@ function createCommonOptions() {
     },
     metadataRoutes: [],
     renderToReadableStream: renderElementToStream,
+    request: new Request("https://example.com/posts/missing"),
     requestUrl: "https://example.com/posts/missing",
     resolveChildSegments() {
       return [];
@@ -162,6 +163,28 @@ const notFoundModule = {
   default: NotFoundBoundary,
 } satisfies TestModule;
 
+function RedirectingRootLayout(): React.ReactNode {
+  const error = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/login;307;",
+  });
+  throw error;
+}
+
+const redirectingRootLayoutModule = {
+  default: RedirectingRootLayout,
+} satisfies TestModule;
+
+function NotFoundThrowingRootLayout(): React.ReactNode {
+  // Mimics notFound() re-thrown while the route-miss boundary itself is
+  // rendering — the shape that has no parent boundary to climb to.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const notFoundThrowingRootLayoutModule = {
+  default: NotFoundThrowingRootLayout,
+} satisfies TestModule;
+
 const notFoundModuleWithMetadata = {
   default: NotFoundBoundary,
   metadata: { title: "notfound title" },
@@ -217,6 +240,50 @@ describe("app page boundary render helpers", () => {
     expect(response).toBeNull();
     expect(common.loadSsrHandler).not.toHaveBeenCalled();
     expect(common.clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [redirectingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(307);
+    const location = response?.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(new URL(location!, common.request.url).pathname).toBe("/login");
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates with a status-text response when an http-access signal is thrown while rendering the boundary", async () => {
+    // Scope boundary for the route-miss redirect fix. Redirects thrown during
+    // boundary rendering are fully handled (see the test above), but a
+    // notFound()/forbidden()/unauthorized() re-thrown *inside* the boundary has
+    // no parent boundary to climb to. renderBoundarySpecialErrorResponse omits
+    // renderFallbackPage precisely so it cannot recurse on the same boundary,
+    // so it falls through to a plain status-text response rather than the
+    // boundary UI. Pins that deliberate terminal behavior.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [notFoundThrowingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const body = await response?.text();
+    expect(body).toBe("Not Found");
+    expect(body).not.toContain('data-boundary="not-found"');
   });
 
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {

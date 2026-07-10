@@ -410,24 +410,28 @@ describe("mapStackLine", () => {
     expect(transformRequests).toEqual([]);
   });
 
-  it("reports ignore-list metadata for unmapped Windows dependency frames", async () => {
-    const { server, transformRequests } = createServer(undefined, { root: "C:\\repo\\app" });
-    const line = "    at render (C:\\repo\\app\\node_modules\\react\\index.js:1:2)";
+  // V8 frames carry backslash paths only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")(
+    "reports ignore-list metadata for unmapped Windows dependency frames",
+    async () => {
+      const { server, transformRequests } = createServer(undefined, { root: "C:\\repo\\app" });
+      const line = "    at render (C:\\repo\\app\\node_modules\\react\\index.js:1:2)";
 
-    await expect(
-      mapStackLineWithMetadata(
-        server,
+      await expect(
+        mapStackLineWithMetadata(
+          server,
+          line,
+          undefined,
+          new Map<string, Promise<SourceMapPayload | null>>(),
+        ),
+      ).resolves.toEqual({
         line,
-        undefined,
-        new Map<string, Promise<SourceMapPayload | null>>(),
-      ),
-    ).resolves.toEqual({
-      line,
-      isFrame: true,
-      ignored: true,
-    });
-    expect(transformRequests).toEqual([]);
-  });
+        isFrame: true,
+        ignored: true,
+      });
+      expect(transformRequests).toEqual([]);
+    },
+  );
 
   it("does not ignore-list app frames by default", async () => {
     const { server, transformRequests } = createServer({
@@ -508,15 +512,19 @@ describe("mapStackLine", () => {
     expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
   });
 
-  it("recognizes Windows local filesystem frames under the project root", async () => {
-    const { server, transformRequests } = createServer(null, { root: "C:\\repo\\app" });
-    const line = "    at SiteFooter (C:\\repo\\app\\app\\_components\\site-footer.tsx:9:8)";
+  // V8 frames carry backslash paths only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")(
+    "recognizes Windows local filesystem frames under the project root",
+    async () => {
+      const { server, transformRequests } = createServer(null, { root: "C:\\repo\\app" });
+      const line = "    at SiteFooter (C:\\repo\\app\\app\\_components\\site-footer.tsx:9:8)";
 
-    await expect(
-      mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
-    ).resolves.toBe(line);
-    expect(transformRequests).toEqual(["rsc:C:\\repo\\app\\app\\_components\\site-footer.tsx"]);
-  });
+      await expect(
+        mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+      ).resolves.toBe(line);
+      expect(transformRequests).toEqual(["rsc:C:\\repo\\app\\app\\_components\\site-footer.tsx"]);
+    },
+  );
 
   it("leaves local filesystem frames unchanged when no server source map is available", async () => {
     const { server, transformRequests } = createServer(null);

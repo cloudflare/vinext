@@ -38,6 +38,7 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
+  waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
@@ -612,6 +613,7 @@ export async function handleSsr(
 
         let htmlStream: ReadableStream<Uint8Array>;
         let shellErrorRecovered = false;
+        let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
           const htmlAbortController = new AbortController();
@@ -630,6 +632,8 @@ export async function handleSsr(
 
             if (options?.waitForAllReady === true) {
               await streamingHtmlStream.allReady;
+            } else {
+              shouldDelayInitialHtmlPull = true;
             }
 
             htmlStream = streamingHtmlStream;
@@ -704,6 +708,10 @@ export async function handleSsr(
         // ordering applies to scripts rendered in the initial shell.
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+
+        if (shouldDelayInitialHtmlPull) {
+          await waitAtLeastOneReactRenderTask();
+        }
 
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(

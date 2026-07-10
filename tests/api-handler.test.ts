@@ -197,9 +197,180 @@ describe("handleApiRoute", () => {
     });
   });
 
+  describe("preview mode", () => {
+    it("supports setDraftMode and bypass-only draft requests in dev API routes", async () => {
+      const enableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setDraftMode({ enable: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft"),
+        enableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+      const cookies = enableResponse._headers["set-cookie"];
+      if (!Array.isArray(cookies)) throw new Error("expected draft cookie");
+      expect(cookies).toHaveLength(1);
+
+      const observed: Record<string, unknown> = {};
+      const disableResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.setDraftMode({ enable: false });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/draft", undefined, { cookie: cookies[0].split(";", 1)[0] }),
+        disableResponse,
+        "/api/draft",
+        [route("/api/draft")],
+      );
+
+      expect(observed).toEqual({ preview: true, draftMode: true, previewData: {} });
+      expect(disableResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+      ]);
+    });
+
+    it("sets, reads, and clears preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies.map((value) => value.split(";", 1)[0]).join("; ");
+
+      const observed: Record<string, unknown> = {};
+      const clearResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        clearResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: true,
+        draftMode: true,
+        previewData: { draft: true },
+      });
+      expect(clearResponse._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=.*; HttpOnly; Path=\/docs;/),
+        expect.stringMatching(/^__next_preview_data=; Expires=.*; HttpOnly; Path=\/docs;/),
+      ]);
+    });
+
+    it("rejects and clears tampered preview data in dev API routes", async () => {
+      const setResponse = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(_req: any, res: any) {
+            res.setPreviewData({ draft: true });
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview"),
+        setResponse,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+      const setCookies = setResponse._headers["set-cookie"];
+      if (!Array.isArray(setCookies)) throw new Error("expected preview cookies");
+      const cookie = setCookies
+        .map((value) => value.split(";", 1)[0])
+        .join("; ")
+        .replace(
+          /(__next_preview_data=)([^;])([^;]*)/,
+          (_match, prefix: string, first: string, rest: string) =>
+            `${prefix}${first === "a" ? "b" : "a"}${rest}`,
+        );
+
+      const observed: Record<string, unknown> = {};
+      const response = mockRes();
+      await handleApiRoute(
+        mockServer({
+          default(req: any, res: any) {
+            observed.preview = req.preview;
+            observed.draftMode = req.draftMode;
+            observed.previewData = req.previewData;
+            res.clearPreviewData({ path: "/docs" });
+            res.clearPreviewData();
+            res.end();
+          },
+        }),
+        mockReq("GET", "/api/preview", undefined, { cookie }),
+        response,
+        "/api/preview",
+        [route("/api/preview")],
+      );
+
+      expect(observed).toEqual({
+        preview: undefined,
+        draftMode: undefined,
+        previewData: false,
+      });
+      expect(response._headers["set-cookie"]).toEqual([
+        expect.stringMatching(/^__prerender_bypass=; Expires=/),
+        expect.stringMatching(/^__next_preview_data=; Expires=/),
+      ]);
+    });
+  });
+
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("does not expose process environment variables on the request", async () => {
+      const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+      process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+      let capturedRequest: any;
+      const handler = vi.fn((req: any) => {
+        capturedRequest = req;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/env");
+      const res = mockRes();
+
+      try {
+        await handleApiRoute(server, req, res, "/api/env", [route("/api/env")]);
+
+        expect(capturedRequest).not.toHaveProperty("env");
+        expect(capturedRequest.env).toBeUndefined();
+      } finally {
+        if (previousValue === undefined) {
+          delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+        } else {
+          process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+        }
+      }
+    });
+
     it("parses JSON body with application/json content-type", async () => {
       let capturedBody: unknown;
       const handler = vi.fn((req: any) => {
@@ -699,8 +870,9 @@ describe("handleApiRoute", () => {
 
   describe("res.redirect()", () => {
     it("redirects with default 307 when given only a URL", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect("/dashboard");
+        returnedResponse = res.redirect("/dashboard");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/login");
@@ -710,12 +882,16 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(307);
       expect(res._headers["location"]).toBe("/dashboard");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/dashboard");
       expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with custom status code", async () => {
+      let returnedResponse: unknown;
       const handler = vi.fn((_req: any, res: any) => {
-        res.redirect(301, "/new-location");
+        returnedResponse = res.redirect(301, "/new-location");
       });
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/old");
@@ -725,6 +901,10 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(301);
       expect(res._headers["location"]).toBe("/new-location");
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(Buffer.from(res._body).toString()).toBe("/new-location");
+      expect(res._ended).toBe(true);
+      expect(returnedResponse).toBe(res);
     });
 
     it("redirects with 302 status code", async () => {
@@ -739,6 +919,34 @@ describe("handleApiRoute", () => {
 
       expect(res._statusCode).toBe(302);
       expect(res._headers["location"]).toBe("https://external.com");
+    });
+
+    it.each([
+      [null, undefined],
+      [307, undefined],
+      [true, "/destination"],
+    ])("rejects invalid redirect arguments %#", async (statusOrUrl, url) => {
+      const handler = vi.fn((_req: any, res: any) => {
+        res.redirect(statusOrUrl, url);
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/invalid-redirect");
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/invalid-redirect", [
+        route("/api/invalid-redirect"),
+      ]);
+
+      expect(reportRequestError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(res._statusCode).toBe(500);
+      expect(res._body).toBe("Internal Server Error");
     });
   });
 

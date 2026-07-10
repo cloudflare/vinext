@@ -24,7 +24,6 @@ import {
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   createClientReuseManifest,
@@ -445,14 +444,6 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
   });
 
   it("normalizes the semantic render mode marker", () => {
-    const refresh = normalized(
-      normalizeRscRequest(
-        req("/page.rsc", {
-          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-        }),
-        "",
-      ),
-    );
     const normal = normalized(
       normalizeRscRequest(req("/page.rsc", { [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }), ""),
     );
@@ -466,12 +457,13 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     );
     const html = normalized(
       normalizeRscRequest(
-        req("/page", { [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
+        req("/page", {
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
         "",
       ),
     );
 
-    expect(refresh.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
     expect(prefetchShell.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
@@ -482,14 +474,14 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
       normalizeRscRequest(
         req(`/page?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
           [RSC_HEADER]: "1",
-          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         }),
         "",
       ),
     );
 
     expect(result.isRscRequest).toBe(true);
-    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
   });
 });
 

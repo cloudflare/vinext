@@ -107,6 +107,7 @@ export function generateImageAdaptersModule(images?: VinextImageConfig): string 
     "let __vinextImageOptimizerRegistered = false;",
     "",
     "export function registerConfiguredImageOptimizer(env) {",
+    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     "  if (__vinextImageOptimizerRegistered) return;",
     "  __vinextImageOptimizerRegistered = true;",
     "  try {",

@@ -1157,7 +1157,30 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  return destination.replace(paramRe, (_token, key: string) => params[key]);
+  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
+    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
+
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+
+  if (queryIndex !== -1) {
+    const beforeQuery = beforeHash.slice(0, queryIndex);
+    const query = beforeHash.slice(queryIndex + 1);
+    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
+      query,
+      encodeDestinationQueryParamValue,
+    )}${replaceParams(hash, (value) => value)}`;
+  }
+
+  return replaceParams(destination, (value) => value);
+}
+
+function encodeDestinationQueryParamValue(value: string): string {
+  const params = new URLSearchParams();
+  params.set("", value);
+  return params.toString().slice(1);
 }
 
 /**

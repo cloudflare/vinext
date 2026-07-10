@@ -164,7 +164,7 @@ describe("pages page response", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(response.headers.get("content-type")).toBe("text/html");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("x-test")).toBe("1");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
