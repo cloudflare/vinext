@@ -3,12 +3,20 @@ import type { PluginApi } from "@vitejs/plugin-rsc";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
 const RESOLVED_ID_PROXY_PREFIX = "virtual:vite-rsc/resolved-id/";
+const DEV_CLIENT_REFERENCE_WARMUP_IDS = Object.freeze([
+  "virtual:vite-rsc/remove-duplicate-server-css",
+]);
 
 type RscClientReferenceMeta = PluginApi["manager"]["clientReferenceMetaMap"][string];
 
 type RscPluginWithApi = Plugin & {
   api?: PluginApi;
 };
+
+function getRscApi(plugins: readonly Plugin[]): PluginApi | undefined {
+  return (plugins.find((plugin) => plugin.name === "rsc:minimal") as RscPluginWithApi | undefined)
+    ?.api;
+}
 
 function withResolvedIdProxy(resolvedId: string): string {
   return resolvedId.startsWith("\0")
@@ -46,24 +54,38 @@ function generateDirectClientReferenceLoaders(metas: RscClientReferenceMeta[]): 
   return `export default {\n${entries}\n};\n`;
 }
 
+async function warmupRscDevClientReferences(rscApi: PluginApi | undefined): Promise<void> {
+  const manager = rscApi?.manager;
+  if (!manager || manager.config.command !== "serve") return;
+
+  const rscEnv = manager.server?.environments["rsc"];
+  if (!rscEnv) return;
+
+  for (const source of DEV_CLIENT_REFERENCE_WARMUP_IDS) {
+    const resolved = await rscEnv.pluginContainer.resolveId(source, undefined);
+    await rscEnv.transformRequest(resolved?.id ?? source);
+  }
+}
+
 export function createRscClientReferenceLoadersPlugin(): Plugin {
   let rscApi: PluginApi | undefined;
+  let devClientReferenceWarmup: Promise<void> | null = null;
 
   return {
     name: "vinext:rsc-client-reference-loaders",
     enforce: "post",
     configResolved(config) {
-      rscApi = (
-        config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
-          | RscPluginWithApi
-          | undefined
-      )?.api;
+      rscApi = getRscApi(config.plugins);
     },
-    transform(_code, id) {
+    async transform(_code, id) {
       if (id !== CLIENT_REFERENCES_ID) return null;
 
       const manager = rscApi?.manager;
       if (!manager || manager.isScanBuild) return null;
+      if (!devClientReferenceWarmup) {
+        devClientReferenceWarmup = warmupRscDevClientReferences(rscApi).catch(() => {});
+      }
+      await devClientReferenceWarmup;
 
       // This post-transform runs after @vitejs/plugin-rsc has loaded the
       // client-reference virtual module and populated the manager metadata. The

@@ -125,8 +125,13 @@ import {
 } from "./app-browser-state.js";
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
+  clearVisitedResponseCache,
   createVisitedResponseCacheEntry,
+  deleteVisitedResponseCacheEntry,
+  findVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryCompatibleForNavigation,
   isVisitedResponseCacheEntryFresh,
+  visitedResponseCache,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
 import {
@@ -321,7 +326,6 @@ function isRouterStatePromise(
 }
 
 let latestClientParams: Record<string, string | string[]> = {};
-const visitedResponseCache = new Map<string, VisitedResponseCacheEntry>();
 let clientNavigationCacheGeneration = 0;
 // Sticky bit: stays true once BrowserRoot has committed at least once. Used by
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
@@ -408,10 +412,6 @@ function stageClientParams(params: Record<string, string | string[]>): void {
   // module-level value after their async request boundary.
   latestClientParams = params;
   replaceClientParamsWithoutNotify(params);
-}
-
-function clearVisitedResponseCache(): void {
-  visitedResponseCache.clear();
 }
 
 function clearPrefetchState(): void {
@@ -706,8 +706,11 @@ function readVisitedResponseCacheCandidate(
   navigationKind: NavigationKind,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  const cached = visitedResponseCache.get(cacheKey);
-  if (!cached) {
+  const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext, {
+    mountedSlotsHeader,
+    isEntryCompatible: isVisitedResponseCacheEntryCompatibleForNavigation,
+  });
+  if (!match) {
     return {
       cacheKey,
       entry: null,
@@ -719,15 +722,18 @@ function readVisitedResponseCacheCandidate(
   }
 
   return {
-    cacheKey,
-    entry: cached,
+    cacheKey: match.cacheKey,
+    entry: match.entry,
     facts: {
       candidate: "present",
-      fresh: isVisitedResponseCacheEntryFresh(cached, {
+      fresh: isVisitedResponseCacheEntryFresh(match.entry, {
         navigationKind,
         now: Date.now(),
       }),
-      mountedSlotsMatch: cached.mountedSlotsHeader === mountedSlotsHeader,
+      mountedSlotsMatch: isVisitedResponseCacheEntryCompatibleForNavigation(
+        match.entry,
+        mountedSlotsHeader,
+      ),
       navigationKind,
     },
   };
@@ -757,8 +763,15 @@ function applyVisitedResponseCacheCandidateDecision(
   return null;
 }
 
-function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
-  visitedResponseCache.delete(AppElementsWire.encodeCacheKey(rscUrl, interceptionContext));
+function deleteVisitedResponse(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): void {
+  deleteVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext, {
+    mountedSlotsHeader,
+    isEntryCompatible: isVisitedResponseCacheEntryCompatibleForNavigation,
+  });
 }
 
 function storeVisitedResponseSnapshot(
@@ -1913,7 +1926,7 @@ function bootstrapHydration(
           );
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
-            deleteVisitedResponse(rscUrl, requestInterceptionContext);
+            deleteVisitedResponse(rscUrl, requestInterceptionContext, mountedSlotsHeader);
             continue;
           }
           return;

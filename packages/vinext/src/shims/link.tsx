@@ -468,6 +468,7 @@ function prefetchUrl(
           },
           headersModule,
           { resolveHybridClientRewriteHref, resolveHybridClientRouteOwner },
+          { claimVisitedResponseCacheEntryForPrefetch },
         ] = await Promise.all([
           import("./navigation.js"),
           import("../server/app-elements.js"),
@@ -475,6 +476,7 @@ function prefetchUrl(
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
           import("./internal/hybrid-client-route-owner.js"),
+          import("../server/app-visited-response-cache.js"),
         ]);
         const {
           getPrefetchInterceptionContext,
@@ -668,6 +670,12 @@ function prefetchUrl(
               .then((response) => response.arrayBuffer())
               .catch(() => {});
           }
+          return;
+        }
+        if (
+          autoPrefetch.cacheForNavigation &&
+          claimVisitedResponseCacheEntryForPrefetch(rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
           return;
         }
         prefetched.add(cacheKey);

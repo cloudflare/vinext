@@ -3,8 +3,14 @@ import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
   createVisitedResponseCacheEntry,
+  deleteVisitedResponseCacheEntry,
+  findVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryCompatibleForNavigation,
+  isVisitedResponseCacheEntryCompatibleForPrefetch,
   isVisitedResponseCacheEntryFresh,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
+import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
+import { PREFETCH_CACHE_TTL } from "../packages/vinext/src/shims/navigation.js";
 import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 
@@ -107,6 +113,22 @@ describe("visited response cache freshness", () => {
     expect(entry.elements).toBe(elements);
   });
 
+  it("keeps navigation mounted-slot matching strict for entries carrying decoded elements", () => {
+    const elements = { "page:/dynamic": "cached page" } satisfies AppElements;
+    const entry = createVisitedResponseCacheEntry({
+      elements,
+      now: 1_000_000,
+      mountedSlotsHeader: null,
+      params: {},
+      response: createCachedResponse(),
+    });
+
+    // Entries with decoded elements may satisfy a future full-prefetch claim,
+    // but a soft navigation must still respect its current mounted slot context.
+    expect(isVisitedResponseCacheEntryCompatibleForNavigation(entry, "slot:modal")).toBe(false);
+    expect(isVisitedResponseCacheEntryCompatibleForPrefetch(entry, "slot:modal")).toBe(true);
+  });
+
   it("keeps traversal restores independent from dynamic stale expiry", () => {
     const now = 1_000_000;
     const entry = createVisitedResponseCacheEntry({
@@ -129,6 +151,31 @@ describe("visited response cache freshness", () => {
     ).toBe(false);
   });
 
+  it("uses static prefetch freshness for full-prefetch visited response reuse", () => {
+    // Mirrors Next.js Segment Cache BFCache full-prefetch reuse:
+    // packages/next/src/client/components/segment-cache/cache.ts
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+    });
+
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "prefetch",
+        now: now + PREFETCH_CACHE_TTL,
+      }),
+    ).toBe(true);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "prefetch",
+        now: now + PREFETCH_CACHE_TTL + 1,
+      }),
+    ).toBe(false);
+  });
+
   it("never reuses visited responses for refresh navigations", () => {
     const now = 1_000_000;
     const entry = createVisitedResponseCacheEntry({
@@ -143,5 +190,61 @@ describe("visited response cache freshness", () => {
         now,
       }),
     ).toBe(false);
+  });
+
+  it("finds and deletes normalized _rsc variants", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const storedKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=old", null);
+    cache.set(storedKey, entry);
+
+    expect(findVisitedResponseCacheEntry(cache, "/dynamic?_rsc=new", null)).toEqual({
+      cacheKey: storedKey,
+      entry,
+    });
+
+    expect(deleteVisitedResponseCacheEntry(cache, "/dynamic?_rsc=new", null)).toBe(true);
+    expect(cache.has(storedKey)).toBe(false);
+    expect(findVisitedResponseCacheEntry(cache, "/dynamic?_rsc=new", null)).toBeNull();
+  });
+
+  it("keeps normalized _rsc lookup scoped to compatible mounted-slot variants", () => {
+    const cache = new Map<string, ReturnType<typeof createVisitedResponseCacheEntry>>();
+    const modalEntry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      mountedSlotsHeader: "slot:modal:/",
+      params: {},
+      response: createCachedResponse(),
+    });
+    const drawerEntry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      mountedSlotsHeader: "slot:drawer:/",
+      params: {},
+      response: createCachedResponse(),
+    });
+    const modalKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=modal", null);
+    const drawerKey = AppElementsWire.encodeCacheKey("/dynamic?_rsc=drawer", null);
+    cache.set(modalKey, modalEntry);
+    cache.set(drawerKey, drawerEntry);
+
+    expect(
+      findVisitedResponseCacheEntry(cache, "/dynamic?_rsc=current", null, {
+        mountedSlotsHeader: "slot:drawer:/",
+        isEntryCompatible: isVisitedResponseCacheEntryCompatibleForNavigation,
+      }),
+    ).toEqual({ cacheKey: drawerKey, entry: drawerEntry });
+
+    expect(
+      deleteVisitedResponseCacheEntry(cache, "/dynamic?_rsc=current", null, {
+        mountedSlotsHeader: "slot:sidebar:/",
+        isEntryCompatible: isVisitedResponseCacheEntryCompatibleForNavigation,
+      }),
+    ).toBe(false);
+    expect(cache.has(modalKey)).toBe(true);
+    expect(cache.has(drawerKey)).toBe(true);
   });
 });

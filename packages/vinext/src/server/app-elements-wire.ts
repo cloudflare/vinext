@@ -276,6 +276,10 @@ type AppElementsWireCodec = {
   readonly unmatchedSlotValue: typeof APP_UNMATCHED_SLOT_WIRE_VALUE;
   createMetadataEntries(input: AppElementsWireMetadataInput): AppElementsWireMetadataEntries;
   decode(elements: AppWireElements): AppElements;
+  decodeCacheKey(input: string): {
+    interceptionContext: string | null;
+    rscUrl: string;
+  } | null;
   encodeCacheKey(rscUrl: string, interceptionContext: string | null): string;
   encodeLayoutId(treePath: string): string;
   encodeOutgoingPayload(input: {
@@ -328,6 +332,18 @@ function createAppPayloadSlotId(slotName: string, treePath: string): string {
 
 function createAppPayloadCacheKey(rscUrl: string, interceptionContext: string | null): string {
   return appendInterceptionContext(rscUrl, interceptionContext);
+}
+
+function parseAppPayloadCacheKey(input: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} | null {
+  const parsed = parsePathWithInterception(input);
+  if (parsed === null) return null;
+  return {
+    interceptionContext: parsed.interceptionContext,
+    rscUrl: parsed.path,
+  };
 }
 
 function parsePathWithInterception(input: string): {
@@ -884,6 +900,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   unmatchedSlotValue: APP_UNMATCHED_SLOT_WIRE_VALUE,
   createMetadataEntries: createAppElementsWireMetadataEntries,
   decode: normalizeAppElements,
+  decodeCacheKey: parseAppPayloadCacheKey,
   encodeCacheKey: createAppPayloadCacheKey,
   encodeLayoutId: createAppPayloadLayoutId,
   encodeOutgoingPayload: buildOutgoingAppPayload,
