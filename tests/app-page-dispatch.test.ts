@@ -18,6 +18,7 @@ import {
   resolveAppPageSegmentParams,
 } from "../packages/vinext/src/server/app-page-params.js";
 import { createAppPageTreePath } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { resolveAppPageDynamicParams } from "../packages/vinext/src/server/app-page-request.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -2057,6 +2058,36 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toBe("This page could not be found");
+  });
+
+  it("keeps fallback params when no generated static param tuple matches", async () => {
+    const generateStaticParams = vi.fn(async () => [
+      { locale: "en", slug: "a" },
+      { locale: "fr", slug: "b" },
+    ]);
+    const clearRequestContext = vi.fn();
+
+    const result = await resolveAppPageDynamicParams({
+      clearRequestContext,
+      enforceStaticParamsOnly: false,
+      generateStaticParams: {
+        generateStaticParams,
+        parentParamNames: ["locale"],
+      },
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "b" },
+      routeParamNames: ["locale", "slug"],
+    });
+
+    expect(result).toEqual({
+      fallbackParamNames: ["locale", "slug"],
+      response: null,
+    });
+    expect(clearRequestContext).not.toHaveBeenCalled();
+    expect(generateStaticParams).toHaveBeenCalledTimes(1);
+    expect(generateStaticParams).toHaveBeenCalledWith({
+      params: { locale: "en" },
+    });
   });
 
   it("serves intercepted RSC source-route payloads with middleware response state", async () => {

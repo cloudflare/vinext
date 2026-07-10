@@ -1,7 +1,8 @@
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { isRouteParams, type RouteParams } from "../utils/route-params.js";
 
-export type PrerenderRouteParams = Record<string, string | string[]>;
+export type PrerenderRouteParams = RouteParams;
 
 export type PrerenderRouteParamsPayload = {
   fallbackParamNames?: readonly string[];
@@ -19,18 +20,6 @@ type PrerenderRouteParamsRouteMatch =
       kind: "fallback-shell";
       params: PrerenderRouteParams;
     };
-
-function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
-  if (!isUnknownRecord(value)) return false;
-
-  for (const [, param] of Object.entries(value)) {
-    if (typeof param === "string") continue;
-    if (Array.isArray(param) && param.every((item) => typeof item === "string")) continue;
-    return false;
-  }
-
-  return true;
-}
 
 function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteParamsPayload {
   if (!isUnknownRecord(value)) return false;
@@ -51,7 +40,7 @@ function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteP
   return (
     typeof value.routePattern === "string" &&
     value.routePattern.startsWith("/") &&
-    isPrerenderRouteParams(value.params)
+    isRouteParams(value.params)
   );
 }
 

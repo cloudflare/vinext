@@ -14,7 +14,7 @@ type GenerateStaticParamsModule = {
   generateStaticParams?: GenerateStaticParams | null;
 };
 
-type GenerateStaticParamsSource = {
+export type AppPageGenerateStaticParamsSource = {
   generateStaticParams: GenerateStaticParams;
   paramAliases?: Readonly<Record<string, string>>;
   paramPatternParts?: readonly string[];
@@ -37,11 +37,20 @@ export type ValidateAppPageDynamicParamsOptions = {
   enforceStaticParamsOnly: boolean;
   generateStaticParams?:
     | GenerateStaticParams
-    | GenerateStaticParamsSource
-    | readonly (GenerateStaticParams | GenerateStaticParamsSource | null | undefined)[]
+    | AppPageGenerateStaticParamsSource
+    | readonly (GenerateStaticParams | AppPageGenerateStaticParamsSource | null | undefined)[]
     | null;
   isDynamicRoute: boolean;
   params: AppPageParams;
+};
+
+export type ResolveAppPageDynamicParamsOptions = ValidateAppPageDynamicParamsOptions & {
+  routeParamNames: readonly string[];
+};
+
+export type ResolveAppPageDynamicParamsResult = {
+  fallbackParamNames: readonly string[];
+  response: Response | null;
 };
 
 type ResolveAppPageGenerateStaticParamsSourcesOptions = {
@@ -176,7 +185,7 @@ type ResolveAppPageInterceptResult<TInterceptOpts> = {
   response: Response | null;
 };
 
-function pickRouteParams(
+function pickAppPageRouteParams(
   matchedParams: AppPageParams,
   routeParamNames: readonly string[],
 ): AppPageParams {
@@ -275,8 +284,8 @@ function getParallelParentParamNames(
 
 export function resolveAppPageGenerateStaticParamsSources(
   options: ResolveAppPageGenerateStaticParamsSourcesOptions,
-): GenerateStaticParamsSource[] {
-  const sources: GenerateStaticParamsSource[] = [];
+): AppPageGenerateStaticParamsSource[] {
+  const sources: AppPageGenerateStaticParamsSource[] = [];
 
   options.layouts?.forEach((layout, index) => {
     if (typeof layout?.generateStaticParams !== "function") return;
@@ -349,7 +358,7 @@ export function resolveAppPageGenerateStaticParamsSources(
   return sources;
 }
 
-function areStaticParamsAllowed(
+function areAppPageStaticParamsAllowed(
   params: AppPageParams,
   staticParams: readonly Record<string, unknown>[],
 ): boolean {
@@ -391,9 +400,68 @@ function areStaticParamsAllowed(
   );
 }
 
-function normalizeGenerateStaticParams(
+function isAppPageStaticParamCovered(
+  staticParamSet: Record<string, unknown>,
+  paramName: string,
+  currentValue: string | string[],
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(staticParamSet, paramName)) {
+    return false;
+  }
+
+  const staticValue = staticParamSet[paramName];
+
+  if (Array.isArray(currentValue)) {
+    return (
+      Array.isArray(staticValue) && JSON.stringify(currentValue) === JSON.stringify(staticValue)
+    );
+  }
+
+  if (
+    typeof staticValue === "string" ||
+    typeof staticValue === "number" ||
+    typeof staticValue === "boolean"
+  ) {
+    return String(currentValue) === String(staticValue);
+  }
+
+  return false;
+}
+
+function getAppPageStaticParamSourceParamNames(
+  staticParams: readonly Record<string, unknown>[],
+  routeParamNames: readonly string[],
+): string[] {
+  const sourceParamNames: string[] = [];
+
+  for (const paramName of routeParamNames) {
+    if (
+      staticParams.some((staticParamSet) =>
+        Object.prototype.hasOwnProperty.call(staticParamSet, paramName),
+      )
+    ) {
+      sourceParamNames.push(paramName);
+    }
+  }
+
+  return sourceParamNames;
+}
+
+function isAppPageStaticParamTupleCovered(
+  staticParamSet: Record<string, unknown>,
+  params: AppPageParams,
+  paramNames: readonly string[],
+): boolean {
+  return paramNames.every((paramName) => {
+    const currentValue = params[paramName];
+    if (currentValue === undefined) return false;
+    return isAppPageStaticParamCovered(staticParamSet, paramName, currentValue);
+  });
+}
+
+function normalizeAppPageGenerateStaticParamsSources(
   generateStaticParams: ValidateAppPageDynamicParamsOptions["generateStaticParams"],
-): GenerateStaticParamsSource[] {
+): AppPageGenerateStaticParamsSource[] {
   const sources = Array.isArray(generateStaticParams)
     ? generateStaticParams
     : [generateStaticParams];
@@ -411,6 +479,80 @@ function normalizeGenerateStaticParams(
   });
 }
 
+export async function resolveAppPageDynamicParams(
+  options: ResolveAppPageDynamicParamsOptions,
+): Promise<ResolveAppPageDynamicParamsResult> {
+  if (!options.isDynamicRoute) {
+    return { fallbackParamNames: [], response: null };
+  }
+
+  const generateStaticParamsSources = normalizeAppPageGenerateStaticParamsSources(
+    options.generateStaticParams,
+  );
+  if (generateStaticParamsSources.length === 0) {
+    if (options.enforceStaticParamsOnly) {
+      options.clearRequestContext();
+      return {
+        fallbackParamNames: options.routeParamNames,
+        response: notFoundResponse(),
+      };
+    }
+
+    return { fallbackParamNames: options.routeParamNames, response: null };
+  }
+
+  const staticallyCoveredParamNames = new Set<string>();
+
+  for (const source of generateStaticParamsSources) {
+    const staticParams = await runWithFetchDedupe(() =>
+      source.generateStaticParams({
+        params: pickAppPageRouteParams(options.params, source.parentParamNames),
+      }),
+    );
+
+    if (!Array.isArray(staticParams)) {
+      continue;
+    }
+
+    if (
+      options.enforceStaticParamsOnly &&
+      !areAppPageStaticParamsAllowed(options.params, staticParams)
+    ) {
+      options.clearRequestContext();
+      return {
+        fallbackParamNames: options.routeParamNames.filter(
+          (paramName) => !staticallyCoveredParamNames.has(paramName),
+        ),
+        response: notFoundResponse(),
+      };
+    }
+
+    const sourceParamNames = getAppPageStaticParamSourceParamNames(
+      staticParams,
+      options.routeParamNames,
+    );
+    if (sourceParamNames.length === 0) continue;
+
+    const matchedTuple = staticParams.some((staticParamSet) =>
+      isAppPageStaticParamTupleCovered(staticParamSet, options.params, sourceParamNames),
+    );
+    if (!matchedTuple) continue;
+
+    for (const paramName of sourceParamNames) {
+      if (!staticallyCoveredParamNames.has(paramName)) {
+        staticallyCoveredParamNames.add(paramName);
+      }
+    }
+  }
+
+  return {
+    fallbackParamNames: options.routeParamNames.filter(
+      (paramName) => !staticallyCoveredParamNames.has(paramName),
+    ),
+    response: null,
+  };
+}
+
 export async function validateAppPageDynamicParams(
   options: ValidateAppPageDynamicParamsOptions,
 ): Promise<Response | null> {
@@ -418,26 +560,11 @@ export async function validateAppPageDynamicParams(
     return null;
   }
 
-  const generateStaticParamsSources = normalizeGenerateStaticParams(options.generateStaticParams);
-  if (generateStaticParamsSources.length === 0) {
-    options.clearRequestContext();
-    return notFoundResponse();
-  }
-
-  for (const source of generateStaticParamsSources) {
-    const sourceParams = remapRouteParams(options.params, source);
-    const staticParams = await runWithFetchDedupe(() =>
-      source.generateStaticParams({
-        params: pickRouteParams(sourceParams, source.parentParamNames),
-      }),
-    );
-    if (Array.isArray(staticParams) && !areStaticParamsAllowed(sourceParams, staticParams)) {
-      options.clearRequestContext();
-      return notFoundResponse();
-    }
-  }
-
-  return null;
+  const result = await resolveAppPageDynamicParams({
+    ...options,
+    routeParamNames: Object.keys(options.params),
+  });
+  return result.response;
 }
 
 /**
@@ -467,7 +594,7 @@ export async function resolveAppPageInterceptMatch<TRoute, TPage, TInterceptOpts
   return {
     interceptOpts: options.toInterceptOpts(interceptState.intercept),
     matchedParams: interceptState.intercept.matchedParams,
-    sourceParams: pickRouteParams(
+    sourceParams: pickAppPageRouteParams(
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     ),
@@ -547,7 +674,7 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
         ...sourceMatchedParams,
         ...interceptState.intercept.matchedParams,
       },
-      params: pickRouteParams(
+      params: pickAppPageRouteParams(
         sourceMatchedParams,
         options.getRouteParamNames(interceptState.sourceRoute),
       ),
@@ -597,7 +724,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     const renderSearchParams = options.resolveSearchParams
       ? await options.resolveSearchParams(renderRoute, options.searchParams)
       : options.searchParams;
-    const renderParams = pickRouteParams(
+    const renderParams = pickAppPageRouteParams(
       sourceMatchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
