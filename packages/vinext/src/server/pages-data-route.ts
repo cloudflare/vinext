@@ -59,6 +59,14 @@ export function urlParserCreatesPagesDataPath(pathname: string): boolean {
 }
 
 /**
+ * Keep URL-parser-ignored characters encoded until route matching decodes the
+ * captured parameter. Passing them literally to `new URL()` would remove them.
+ */
+export function encodeUrlParserIgnoredCharacters(pathname: string): string {
+  return pathname.replaceAll("\t", "%09").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
+}
+
+/**
  * Parse `/_next/data/<buildId>/<...page>.json` and return the normalized page
  * pathname. Returns `null` if the pathname does not match the pattern or if
  * the buildId segment does not match the server's buildId.

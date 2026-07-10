@@ -5,6 +5,7 @@ import {
   parseNextDataPathname,
   buildNextDataJsonResponse,
   buildNextDataNotFoundResponse,
+  encodeUrlParserIgnoredCharacters,
   normalizePagesDataRequest,
   normalizeNextDataPagePathname,
   urlParserCreatesPagesDataPath,
@@ -41,6 +42,10 @@ describe("pages-data-route", () => {
       expect(urlParserCreatesPagesDataPath("/_next/data/abc/about.json")).toBe(false);
       expect(urlParserCreatesPagesDataPath("/about")).toBe(false);
     });
+  });
+
+  it("keeps URL-parser-ignored characters encoded for later parameter decoding", () => {
+    expect(encodeUrlParserIgnoredCharacters("/posts/a\tb\nc\rd")).toBe("/posts/a%09b%0Ac%0Dd");
   });
 
   describe("parseNextDataPathname", () => {

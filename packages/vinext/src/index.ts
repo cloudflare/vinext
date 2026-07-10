@@ -86,6 +86,7 @@ import { mergeServerExternalPackages } from "./config/server-external-packages.j
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import {
+  encodeUrlParserIgnoredCharacters,
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
@@ -4762,17 +4763,20 @@ export const loadServerActionClient = ${
                 res.end("Bad Request");
                 return;
               }
+              if (urlParserCreatesPagesDataPath(pathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+
+              // Preserve parser-ignored bytes until route param decoding. The
+              // literal characters would otherwise disappear in new URL().
+              pathname = encodeUrlParserIgnoredCharacters(pathname);
               // Keep url in sync with the normalized pathname so the pipeline
               // receives the decoded path for config rule matching.
               {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = pathname + qs;
-              }
-
-              if (urlParserCreatesPagesDataPath(pathname)) {
-                res.writeHead(404);
-                res.end("This page could not be found");
-                return;
               }
 
               const capturedMiddlewarePath = middlewarePath;

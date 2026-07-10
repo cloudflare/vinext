@@ -2492,7 +2492,7 @@ describe("Pages Router integration", () => {
       const data = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/foo%09.json`);
       expect(data.status).toBe(200);
       await expect(data.json()).resolves.toMatchObject({
-        pageProps: { id: "foo" },
+        pageProps: { id: "foo\t" },
       });
     });
 
@@ -6948,7 +6948,7 @@ describe("Production server middleware (Pages Router)", () => {
       const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/foo%09.json`);
       expect(data.status).toBe(200);
       await expect(data.json()).resolves.toMatchObject({
-        pageProps: { id: "foo" },
+        pageProps: { id: "foo\t" },
       });
     });
 

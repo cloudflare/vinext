@@ -69,4 +69,15 @@ test.describe("middleware.ts on Pages Router Cloudflare Workers (prod build)", (
       expect(await response.text()).not.toContain("Server-Side Rendered on Workers");
     }
   });
+
+  test("preserves encoded URL controls in data route parameters", async ({ page, request }) => {
+    await page.goto(`${BASE}/ssr`);
+    const buildId = await page.evaluate(() => (window as any).__NEXT_DATA__.buildId as string);
+
+    const response = await request.get(`${BASE}/_next/data/${buildId}/posts/foo%09.json`);
+    expect(response.status()).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      pageProps: { id: "foo\t" },
+    });
+  });
 });

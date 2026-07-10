@@ -49,6 +49,7 @@ import {
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
+  encodeUrlParserIgnoredCharacters,
   urlParserCreatesPagesDataPath,
 } from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -1793,6 +1794,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         res.writeHead(404);
         res.end("This page could not be found");
         return;
+      }
+      // Preserve parser-ignored bytes until route param decoding. The literal
+      // characters would otherwise disappear when constructing webRequest.
+      pathname = encodeUrlParserIgnoredCharacters(pathname);
+      {
+        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = pathname + qs;
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
