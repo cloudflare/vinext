@@ -82,4 +82,25 @@ describe("RSC stream hint helpers", () => {
 
     await expect(readStream(stream)).resolves.toBe(':HL["/assets/app.css","style"]');
   });
+
+  it("does not rewrite hint-like text inside a length-prefixed row", async () => {
+    const body =
+      'user text 0:HL["/user.css","stylesheet"]\n' +
+      '2:HL["/also-user-controlled.css","stylesheet"]';
+    const header = `a:T${new TextEncoder().encode(body).byteLength.toString(16)},`;
+    const hint = ':HL["/assets/app.css","stylesheet"]\n';
+    const payload = header + body + hint;
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks([
+        payload.slice(0, 3),
+        payload.slice(3, header.length + 10),
+        payload.slice(header.length + 10, header.length + body.length - 4),
+        payload.slice(header.length + body.length - 4),
+      ]),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      header + body + ':HL["/assets/app.css","style"]\n',
+    );
+  });
 });
