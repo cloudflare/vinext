@@ -446,7 +446,11 @@ function remapStaticParamsToRouteParams(
 function mergeStaticParamResults(
   parentParams: readonly Record<string, unknown>[],
   staticParams: readonly Record<string, unknown>[],
+  preserveParentsOnEmpty: boolean,
 ): Record<string, unknown>[] {
+  if (staticParams.length === 0) {
+    return preserveParentsOnEmpty ? [...parentParams] : [];
+  }
   return parentParams.flatMap((parent) => staticParams.map((params) => ({ ...parent, ...params })));
 }
 
@@ -541,6 +545,7 @@ export async function validateAppPageDynamicParams(
       const combinedStaticParams = mergeStaticParamResults(
         chainedStaticParams ?? [{}],
         remapStaticParamsToRouteParams(staticParams, source),
+        chainedStaticParams !== null,
       );
       if (!areStaticParamsAllowed(options.params, combinedStaticParams, true)) {
         options.clearRequestContext();

@@ -60,6 +60,15 @@ test.describe("parallel routes under a static root param", () => {
     );
   });
 
+  test("preserves primary params for an empty parallel result", async ({ request }) => {
+    expect(
+      (await request.get("/parallel-root-param/en/empty-ownership/stories/main")).status(),
+    ).toBe(200);
+    expect(
+      (await request.get("/parallel-root-param/en/empty-ownership/stories/other")).status(),
+    ).toBe(404);
+  });
+
   test("renders the 404 boundary for an unknown generated child during soft navigation", async ({
     page,
   }) => {
