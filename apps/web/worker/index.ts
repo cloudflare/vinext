@@ -14,6 +14,7 @@ type Env = {
   VINEXT_KV_CACHE: KVNamespace;
   PERFORMANCE_PROFILES: R2Bucket;
   COMPAT_INGEST_SECRET?: string;
+  GITHUB_TOKEN?: string;
 };
 
 type ExecutionContext = {

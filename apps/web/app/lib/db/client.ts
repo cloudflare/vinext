@@ -5,6 +5,7 @@ import * as schema from "./schema";
 type CloudflareEnv = {
   DB: D1Database;
   COMPAT_INGEST_SECRET?: string;
+  GITHUB_TOKEN?: string;
 };
 
 /**
@@ -19,4 +20,8 @@ export function getDb() {
 
 export function getIngestSecret(): string | undefined {
   return (env as CloudflareEnv).COMPAT_INGEST_SECRET;
+}
+
+export function getGitHubToken(): string | undefined {
+  return (env as CloudflareEnv).GITHUB_TOKEN;
 }
