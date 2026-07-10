@@ -54,4 +54,19 @@ test.describe("middleware.ts on Pages Router Cloudflare Workers (prod build)", (
     expect(unhandled.headers()["content-type"]).toBe("text/plain; charset=utf-8");
     expect(await unhandled.text()).toBe("Not Found");
   });
+
+  test("does not reinterpret encoded URL controls as data paths", async ({ page, request }) => {
+    await page.goto(`${BASE}/ssr`);
+    const buildId = await page.evaluate(() => (window as any).__NEXT_DATA__.buildId as string);
+
+    for (const pathname of [
+      `/%09_next/data/${buildId}/ssr.json`,
+      `/_ne%0Axt/data/${buildId}/ssr.json`,
+      `/_next/%0Ddata/${buildId}/ssr.json`,
+    ]) {
+      const response = await request.get(`${BASE}${pathname}`);
+      expect(response.status()).toBe(404);
+      expect(await response.text()).not.toContain("Server-Side Rendered on Workers");
+    }
+  });
 });

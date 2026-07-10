@@ -2468,6 +2468,11 @@ describe("Pages Router integration", () => {
     });
 
     it("does not reinterpret encoded URL controls as data paths in development", async () => {
+      const canonical = await fetch(
+        `${baseUrl}/_next/data/${BUILD_ID}/middleware-protected-data.json`,
+      );
+      expect(canonical.status).toBe(403);
+
       const paths = [
         `/%09_next/data/${BUILD_ID}/middleware-protected-data.json`,
         `/_ne%0Axt/data/${BUILD_ID}/middleware-protected-data.json`,
@@ -2476,6 +2481,7 @@ describe("Pages Router integration", () => {
       for (const pathname of paths) {
         const response = await fetch(`${baseUrl}${pathname}`);
         expect(response.status).toBe(404);
+        expect(await response.text()).not.toContain("only visible after middleware");
       }
     });
 

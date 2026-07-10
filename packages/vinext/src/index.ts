@@ -89,6 +89,7 @@ import {
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
@@ -4766,6 +4767,12 @@ export const loadServerActionClient = ${
               {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = pathname + qs;
+              }
+
+              if (urlParserCreatesPagesDataPath(pathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
               }
 
               const capturedMiddlewarePath = middlewarePath;

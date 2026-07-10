@@ -49,6 +49,7 @@ import {
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
+  urlParserCreatesPagesDataPath,
 } from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
@@ -1550,15 +1551,6 @@ function isPagesServerEntryPageRoute(value: unknown): value is PagesServerEntryP
 
 function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRoute[] | undefined {
   return Array.isArray(value) && value.every(isPagesServerEntryPageRoute) ? value : undefined;
-}
-
-function urlParserCreatesPagesDataPath(pathname: string): boolean {
-  const parsedPathname = pathname.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "");
-  return (
-    pathname !== parsedPathname &&
-    !isNextDataPathname(pathname) &&
-    isNextDataPathname(parsedPathname)
-  );
 }
 
 /**
