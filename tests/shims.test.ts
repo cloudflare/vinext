@@ -7574,19 +7574,30 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/archive/2024-07-10-11", matcher)).toBe(false);
   });
 
-  it("rejects prefix-ambiguous alternatives only under unbounded repetition", async () => {
+  it("rejects prefix-ambiguous alternatives under repetition", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
 
-    for (const matcher of ["/:path((?:a|aa)+)", "/:path((?:aa|a)*)", "/:path((?:[a]|aa){1,})"]) {
+    for (const matcher of [
+      "/:path((?:a|aa)+)",
+      "/:path((?:aa|a)*)",
+      "/:path((?:[a]|aa){1,})",
+      "/:path((?:a|aa){2})",
+      "/:path((?:a|A)+)",
+      "/:path((?:é|É)+)",
+    ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
         error: expect.stringContaining("ambiguous alternatives"),
       });
     }
 
-    expect(compileMiddlewareMatcherPattern("/:path((?:a|aa){2})").regexp).toBeInstanceOf(RegExp);
     expect(compileMiddlewareMatcherPattern("/:path((?:foo|bar)+)").regexp).toBeInstanceOf(RegExp);
+    expect(compileMiddlewareMatcherPattern("/:path((?:ab|ac)+)").regexp).toBeInstanceOf(RegExp);
+    expect(compileMiddlewareMatcherPattern("/:path((?:ab|ac){10})").regexp).toBeInstanceOf(RegExp);
+    // Non-Unicode ECMAScript ignore-case canonicalization deliberately does
+    // not fold a non-ASCII character to ASCII.
+    expect(compileMiddlewareMatcherPattern("/:path((?:k|K)+)").regexp).toBeInstanceOf(RegExp);
   });
 
   // Ported from Next.js path-to-regexp matcher semantics:
@@ -10945,11 +10956,12 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(\\d{2,4})")).toBe(true);
   });
 
-  it("accepts bounded groups containing bounded repetition", async () => {
+  it("accepts only fixed-width nested bounded repetition", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(isSafeRegex("\\d{4}(?:-\\d{2}){2}")).toBe(true);
-    expect(isSafeRegex("(?:a{1,2}){3}")).toBe(true);
-    expect(isSafeRegex("(?:a{1,2}){2,4}")).toBe(true);
+    expect(isSafeRegex("(?:a{2}){3}")).toBe(true);
+    expect(isSafeRegex("(?:a{1,2}){3}")).toBe(false);
+    expect(isSafeRegex("(?:a{1,2}){2,4}")).toBe(false);
   });
 
   it("rejects nested quantifiers: (a+)+", async () => {
@@ -10982,10 +10994,11 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(a+){2,}")).toBe(false);
   });
 
-  it("accepts bounded repetition around an unbounded inner atom", async () => {
+  it("rejects bounded outer repetition around an unbounded inner atom", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+){2}")).toBe(true);
-    expect(isSafeRegex("(a+){2,4}")).toBe(true);
+    expect(isSafeRegex("(a+){2}")).toBe(false);
+    expect(isSafeRegex("(a+){2,4}")).toBe(false);
+    expect(isSafeRegex("(a+){10}")).toBe(false);
   });
 
   it("accepts quantifier on group without inner quantifier", async () => {
@@ -11055,6 +11068,12 @@ describe("safeRegExp", () => {
     // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
     const re = safeRegExp("(a+)+b");
     expect(re).toBeNull();
+  });
+
+  it("uses the final ignore-case semantics for ambiguous alternatives", async () => {
+    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(safeRegExp("(?:a|A)+", "i")).toBeNull();
+    expect(safeRegExp("(?:ab|ac)+", "i")).toBeInstanceOf(RegExp);
   });
 
   it("returns null for invalid regex syntax", async () => {
@@ -11629,6 +11648,12 @@ describe("checkHasConditions", () => {
         query: new URLSearchParams("empty="),
       }),
     ).toBe(false);
+    expect(
+      checkHasConditions([{ type: "query", key: "present", value: "" }], undefined, {
+        ...ctx,
+        query: new URLSearchParams("present=yes&present="),
+      }),
+    ).toBe(true);
   });
 
   // -- host conditions --

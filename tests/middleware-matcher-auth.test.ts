@@ -35,6 +35,7 @@ const PROTECTED_PATHS = [
   "/bar/secret",
   "/report.json",
   "/archive/2024-07-10",
+  "/codes/abac",
 ] as const;
 
 async function assertAuthGuard(baseUrl: string): Promise<void> {
@@ -74,14 +75,14 @@ async function assertAuthGuard(baseUrl: string): Promise<void> {
     cookie: "session=active",
   };
   const conditioned = await fetch(
-    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&blocked=1&blocked=0`,
+    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&present=&blocked=1&blocked=0`,
     { headers: conditionedHeaders },
   );
   expect(conditioned.status, await conditioned.text()).toBe(403);
   expect(conditioned.headers.get("x-auth-guard")).toBe("blocked");
 
   const wrongLastHas = await fetch(
-    `${baseUrl}/conditioned?role=admin&role=guest&present=yes&blocked=1&blocked=0`,
+    `${baseUrl}/conditioned?role=admin&role=guest&present=yes&present=&blocked=1&blocked=0`,
     { headers: conditionedHeaders },
   );
   const wrongLastHasBody = await wrongLastHas.text();
@@ -90,7 +91,7 @@ async function assertAuthGuard(baseUrl: string): Promise<void> {
   expect(wrongLastHasBody).toContain("conditioned page");
 
   const wrongLastMissing = await fetch(
-    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&blocked=0&blocked=1`,
+    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&present=&blocked=0&blocked=1`,
     { headers: conditionedHeaders },
   );
   const wrongLastMissingBody = await wrongLastMissing.text();
@@ -266,7 +267,9 @@ describe("unsafe middleware matcher rejection", () => {
     ["/:path(.*)*/end", /may match an empty value or path delimiter/],
     ["/:path(.*)+/end", /may match an empty value or path delimiter/],
     ["/:path((?:a+)+)", /contains nested repetition/],
-    ["/:path((?:a|aa)+)", /contains ambiguous alternatives under unbounded repetition/],
+    ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
+    ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
+    ["/:path((?:a+){10})", /contains nested repetition/],
     ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
     ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
   ] as const)(

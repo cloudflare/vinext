@@ -21,6 +21,7 @@ import {
 } from "../utils/protocol-headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
+import { analyzeRegexSafety } from "../utils/regex-safety.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -265,129 +266,16 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
 /**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
- * Uses a lightweight heuristic: scans the pattern string for nested quantifiers
- * (a quantifier applied to a group that itself contains a quantifier). This
- * catches the most common pathological patterns like `(a+)+`, `(.*)*`,
- * `([^/]+)+`, `(a|a+)+` without needing a full regex parser.
+ * Uses the same deterministic structural analysis as middleware matcher
+ * validation. Nested bounded repetition is accepted only when its repeated
+ * language has fixed width and unambiguous branches; a fixed outer count can
+ * otherwise still cause polynomially catastrophic backtracking on long near
+ * misses.
  *
  * Returns true if the pattern appears safe, false if it's potentially dangerous.
  */
-export function isSafeRegex(pattern: string): boolean {
-  // Track parenthesis nesting depth and whether we've seen a quantifier
-  // at each depth level.
-  const quantifierAtDepth: boolean[] = [];
-  let depth = 0;
-  let i = 0;
-
-  while (i < pattern.length) {
-    const ch = pattern[i];
-
-    // Skip escaped characters
-    if (ch === "\\") {
-      i += 2;
-      continue;
-    }
-
-    // Skip character classes [...] — quantifiers inside them are literal
-    if (ch === "[") {
-      i++;
-      while (i < pattern.length && pattern[i] !== "]") {
-        if (pattern[i] === "\\") i++; // skip escaped char in class
-        i++;
-      }
-      i++; // skip closing ]
-      continue;
-    }
-
-    if (ch === "(") {
-      depth++;
-      // Initialize: no quantifier seen yet at this new depth
-      if (quantifierAtDepth.length <= depth) {
-        quantifierAtDepth.push(false);
-      } else {
-        quantifierAtDepth[depth] = false;
-      }
-      i++;
-      continue;
-    }
-
-    if (ch === ")") {
-      const hadQuantifier = depth > 0 && quantifierAtDepth[depth];
-      if (depth > 0) depth--;
-
-      // Only unbounded repetition of a group with inner quantifiers is
-      // intrinsically dangerous. A finite group repetition such as
-      // `(?:-\d{2}){2}` has a bounded number of paths and is safe by itself.
-      // Still propagate every group quantifier to the enclosing group so a
-      // later unbounded repetition around it is rejected.
-      const next = pattern[i + 1];
-      let hasGroupQuantifier = next === "+" || next === "*" || next === "?";
-      let hasUnboundedGroupQuantifier = next === "+" || next === "*";
-      if (next === "{") {
-        const braceQuantifier = /^\{\d+(,\d*)?\}/.exec(pattern.slice(i + 1));
-        hasGroupQuantifier = braceQuantifier !== null;
-        hasUnboundedGroupQuantifier = braceQuantifier?.[1]?.endsWith(",") === true;
-      }
-      if (hasGroupQuantifier) {
-        if (hasUnboundedGroupQuantifier && hadQuantifier) {
-          // Nested quantifier detected: quantifier on a group that contains a quantifier
-          return false;
-        }
-        // Mark the enclosing depth as having a quantifier
-        if (depth >= 0 && depth < quantifierAtDepth.length) {
-          quantifierAtDepth[depth] = true;
-        }
-      }
-      i++;
-      continue;
-    }
-
-    // Detect quantifiers: +, *, ?, {n,m}
-    // '?' is a quantifier (optional) unless it follows another quantifier (+, *, ?, })
-    // in which case it's a non-greedy modifier.
-    if (ch === "+" || ch === "*") {
-      if (depth > 0) {
-        quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-
-    if (ch === "?") {
-      // Group prefixes such as (?:...), (?=...), (?!...), and (?<=...) are
-      // syntax markers, not optional quantifiers.
-      if (i > 0 && pattern[i - 1] === "(" && /[:=!<]/.test(pattern[i + 1] ?? "")) {
-        i++;
-        continue;
-      }
-      // '?' after +, *, ?, or } is a non-greedy modifier, not a quantifier
-      const prev = i > 0 ? pattern[i - 1] : "";
-      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
-        if (depth > 0) {
-          quantifierAtDepth[depth] = true;
-        }
-      }
-      i++;
-      continue;
-    }
-
-    if (ch === "{") {
-      // Check if this is a quantifier {n}, {n,}, {n,m}
-      let j = i + 1;
-      while (j < pattern.length && /[\d,]/.test(pattern[j])) j++;
-      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
-        if (depth > 0) {
-          quantifierAtDepth[depth] = true;
-        }
-        i = j + 1;
-        continue;
-      }
-    }
-
-    i++;
-  }
-
-  return true;
+export function isSafeRegex(pattern: string, flags?: string): boolean {
+  return analyzeRegexSafety(pattern, { ignoreCase: flags?.includes("i") }) === null;
 }
 
 /**
@@ -397,11 +285,11 @@ export function isSafeRegex(pattern: string): boolean {
  * Logs a warning when a pattern is rejected so developers can fix their config.
  */
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
-  if (!isSafeRegex(pattern)) {
+  if (!isSafeRegex(pattern, flags)) {
     console.warn(
       `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
-        `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
-        `  Simplify the pattern to avoid nested repetition.`,
+        `  Nested or ambiguous repetition can cause catastrophic backtracking.\n` +
+        `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
     );
     return null;
   }
@@ -676,6 +564,10 @@ function matchSingleCondition(
     case "query": {
       const queryValues = ctx.query.getAll(condition.key);
       if (queryValues.length === 0) return null;
+      // Next.js checks presence against the parsed value before selecting the
+      // last array element for a value regex. A duplicate key is represented
+      // as a truthy array even when its final value is empty.
+      if (!condition.value && queryValues.length > 1) return _emptyParams();
       // Node parses duplicate query keys as an array and Next.js matchHas
       // explicitly tests its final value (`value.slice(-1)[0]`).
       return _matchConditionValue(queryValues[queryValues.length - 1], condition.value);

@@ -1,4 +1,6 @@
+import { performance } from "node:perf_hooks";
 import { matchPattern } from "../../packages/vinext/src/server/middleware-matcher.ts";
+import { analyzeRegexSafety } from "../../packages/vinext/src/utils/regex-safety.ts";
 
 const nearMiss = `/${"a/".repeat(2_000)}not-end`;
 for (const modifier of ["*", "+"]) {
@@ -21,4 +23,23 @@ if (!matchPattern(`/${"a".repeat(3_000)}b`, overlappingRepetition)) {
 const ambiguousAlternative = "/:path((?:a|aa)+)";
 if (!matchPattern(`/${"a".repeat(3_000)}b`, ambiguousAlternative)) {
   throw new Error(`Unsafe matcher did not fail closed: ${ambiguousAlternative}`);
+}
+
+for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
+  if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
+    throw new Error(`Unsafe matcher did not fail closed: ${matcher}`);
+  }
+}
+
+// Keep the analysis itself linear for large, disjoint literal alternations.
+// CJK literals have stable, distinct non-Unicode ignore-case canonical forms.
+const alternatives = Array.from({ length: 2_000 }, (_, index) =>
+  String.fromCharCode(0x4e00 + index),
+).join("|");
+const analysisStart = performance.now();
+const analysisIssue = analyzeRegexSafety(`(?:${alternatives})+`, { ignoreCase: true });
+const analysisDuration = performance.now() - analysisStart;
+if (analysisIssue) throw new Error(`Safe large alternation was rejected: ${analysisIssue}`);
+if (analysisDuration > 1_000) {
+  throw new Error(`Large alternation analysis took ${analysisDuration.toFixed(1)}ms`);
 }

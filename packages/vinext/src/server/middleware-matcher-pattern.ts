@@ -1,5 +1,5 @@
-import { isSafeRegex } from "../config/config-matchers.js";
 import type { HasCondition } from "../config/next-config.js";
+import { analyzeRegexSafety, regexAtomsMayOverlap } from "../utils/regex-safety.js";
 import {
   middlewarePathTokensToRegExp,
   normalizeMiddlewarePathTokens,
@@ -105,193 +105,7 @@ function patternMatches(pattern: string, value: string): boolean {
 }
 
 function atomsOverlap(left: string, right: string): boolean {
-  let leftRegexp: RegExp;
-  let rightRegexp: RegExp;
-  try {
-    leftRegexp = new RegExp(`^(?:${left})$`);
-    rightRegexp = new RegExp(`^(?:${right})$`);
-  } catch {
-    return true;
-  }
-
-  // Middleware paths are URL text. The ASCII URL alphabet is sufficient to
-  // prove overlap for the common literal, dot, shorthand, and class atoms;
-  // include one non-ASCII code point for broad Unicode classes.
-  for (let code = 0x20; code <= 0x7e; code++) {
-    const character = String.fromCharCode(code);
-    if (leftRegexp.test(character) && rightRegexp.test(character)) return true;
-  }
-  return leftRegexp.test("é") && rightRegexp.test("é");
-}
-
-function findGroupEnd(pattern: string, start: number): number | null {
-  let depth = 0;
-  let inClass = false;
-  for (let index = start; index < pattern.length; index++) {
-    const character = pattern[index];
-    if (character === "\\") {
-      index++;
-      continue;
-    }
-    if (character === "[") {
-      inClass = true;
-      continue;
-    }
-    if (character === "]" && inClass) {
-      inClass = false;
-      continue;
-    }
-    if (inClass) continue;
-    if (character === "(") depth++;
-    if (character === ")" && --depth === 0) return index;
-  }
-  return null;
-}
-
-function splitTopLevelAlternatives(pattern: string): string[] {
-  const alternatives: string[] = [];
-  let start = 0;
-  let depth = 0;
-  let inClass = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index];
-    if (character === "\\") {
-      index++;
-      continue;
-    }
-    if (character === "[") {
-      inClass = true;
-      continue;
-    }
-    if (character === "]" && inClass) {
-      inClass = false;
-      continue;
-    }
-    if (inClass) continue;
-    if (character === "(") depth++;
-    else if (character === ")") depth--;
-    else if (character === "|" && depth === 0) {
-      alternatives.push(pattern.slice(start, index));
-      start = index + 1;
-    }
-  }
-  alternatives.push(pattern.slice(start));
-  return alternatives;
-}
-
-function firstConsumingAtoms(branch: string): string[] | null {
-  for (let index = 0; index < branch.length; index++) {
-    const character = branch[index];
-    if (character === "^" || character === "$") continue;
-    if (character === "\\") {
-      return index + 1 < branch.length ? [branch.slice(index, index + 2)] : null;
-    }
-    if (character === "[") {
-      let end = index + 1;
-      if (branch[end] === "^") end++;
-      while (end < branch.length && branch[end] !== "]") {
-        if (branch[end] === "\\") end++;
-        end++;
-      }
-      return end < branch.length ? [branch.slice(index, end + 1)] : null;
-    }
-    if (character === ".") return ["."];
-    if (character === "(") {
-      const end = findGroupEnd(branch, index);
-      if (end === null) return null;
-      const body = branch.slice(index + 1, end);
-      if (/^\?(?:[=!]|<[=!])/.test(body)) {
-        // Lookarounds consume no text, so the following atom owns the prefix.
-        index = end;
-        continue;
-      }
-      const groupBody = body.startsWith("?:") ? body.slice(2) : body;
-      const alternatives = splitTopLevelAlternatives(groupBody);
-      const atoms = alternatives.flatMap((alternative) => firstConsumingAtoms(alternative) ?? []);
-      return atoms.length === alternatives.length ? atoms : null;
-    }
-    if ("*+?{}|)".includes(character)) return null;
-    return [character];
-  }
-  return null;
-}
-
-function alternativesMaySharePrefix(pattern: string): boolean {
-  const alternatives = splitTopLevelAlternatives(pattern);
-  if (alternatives.length > 1) {
-    const firstAtoms = alternatives.map(firstConsumingAtoms);
-    for (let left = 0; left < firstAtoms.length; left++) {
-      for (let right = left + 1; right < firstAtoms.length; right++) {
-        const leftAtoms = firstAtoms[left];
-        const rightAtoms = firstAtoms[right];
-        // Unknown or empty branches cannot be proven prefix-disjoint, so fail
-        // closed when the alternation itself is repeated without a bound.
-        if (!leftAtoms || !rightAtoms) return true;
-        if (leftAtoms.some((a) => rightAtoms.some((b) => atomsOverlap(a, b)))) return true;
-      }
-    }
-  }
-
-  // An alternation nested inside an unbounded repeated group can still make
-  // the repeated language ambiguous even when wrapped in a non-capturing
-  // group or preceded by shared literals. Inspect all child groups as well.
-  for (let index = 0; index < pattern.length; index++) {
-    if (pattern[index] === "\\") {
-      index++;
-      continue;
-    }
-    if (pattern[index] === "[") {
-      while (++index < pattern.length && pattern[index] !== "]") {
-        if (pattern[index] === "\\") index++;
-      }
-      continue;
-    }
-    if (pattern[index] !== "(") continue;
-    const end = findGroupEnd(pattern, index);
-    if (end === null) return true;
-    const body = pattern.slice(index + 1, end);
-    if (!/^\?(?:[=!]|<[=!])/.test(body)) {
-      const groupBody = body.startsWith("?:") ? body.slice(2) : body;
-      if (alternativesMaySharePrefix(groupBody)) return true;
-    }
-    index = end;
-  }
-  return false;
-}
-
-function hasAmbiguousQuantifiedAlternation(pattern: string): boolean {
-  const groupStarts: number[] = [];
-  let inClass = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index];
-    if (character === "\\") {
-      index++;
-      continue;
-    }
-    if (character === "[") {
-      inClass = true;
-      continue;
-    }
-    if (character === "]" && inClass) {
-      inClass = false;
-      continue;
-    }
-    if (inClass) continue;
-    if (character === "(") {
-      groupStarts.push(index);
-      continue;
-    }
-    if (character !== ")") continue;
-    const start = groupStarts.pop();
-    if (start === undefined) return true;
-    const suffix = pattern.slice(index + 1);
-    const unbounded = suffix[0] === "+" || suffix[0] === "*" || /^\{\d+,\}/.test(suffix);
-    if (!unbounded) continue;
-    const body = pattern.slice(start + 1, index);
-    const groupBody = body.startsWith("?:") ? body.slice(2) : body;
-    if (alternativesMaySharePrefix(groupBody)) return true;
-  }
-  return groupStarts.length > 0;
+  return regexAtomsMayOverlap(left, right, true);
 }
 
 function groupCanMatchEmpty(group: string): boolean {
@@ -397,11 +211,12 @@ function hasOverlappingSequentialRepetition(pattern: string): boolean {
 }
 
 function unsafeTokenReason(token: MiddlewarePathKey): string | null {
-  if (!isSafeRegex(token.pattern)) {
-    return `parameter "${token.name}" contains nested repetition`;
-  }
-  if (hasAmbiguousQuantifiedAlternation(token.pattern)) {
-    return `parameter "${token.name}" contains ambiguous alternatives under unbounded repetition`;
+  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true });
+  if (regexSafetyIssue) {
+    if (regexSafetyIssue === "analysis budget exceeded") {
+      return `parameter "${token.name}" exceeds the regex analysis budget`;
+    }
+    return `parameter "${token.name}" contains ${regexSafetyIssue}`;
   }
   if (hasOverlappingSequentialRepetition(token.pattern)) {
     return `parameter "${token.name}" contains overlapping sequential repetition`;
