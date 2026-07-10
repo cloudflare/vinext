@@ -106,7 +106,7 @@ const projectServers = {
     ],
     use: { baseURL: "http://localhost:4177" },
     server: {
-      command: "npx vp build && npx wrangler dev --port 4177",
+      command: "VINEXT_E2E_REVALIDATION_PROXY=1 npx vp build && npx wrangler dev --port 4177",
       cwd: "./examples/pages-router-cloudflare",
       port: 4177,
       reuseExistingServer: !process.env.CI,

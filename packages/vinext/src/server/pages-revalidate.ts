@@ -55,12 +55,14 @@ export async function performOnDemandRevalidate(
     throw new Error(`Cannot revalidate ${urlPath} from an internal revalidation request`);
   }
 
+  const executionContext = getRequestExecutionContext();
+  const dispatchRevalidate = executionContext?.dispatchPagesRevalidate;
   const target = createRevalidateTarget(source, urlPath, trustedOrigin);
 
   const headers: Record<string, string> = {
     [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret(),
   };
-  if (trustedOrigin) {
+  if (trustedOrigin && !dispatchRevalidate) {
     const logicalHostname = normalizeDomainHostname(resolveRequestHost(source, "localhost"));
     if (logicalHostname) headers[VINEXT_REVALIDATE_HOST_HEADER] = logicalHostname;
   }
@@ -68,8 +70,6 @@ export async function performOnDemandRevalidate(
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
 
-  const executionContext = getRequestExecutionContext();
-  const dispatchRevalidate = executionContext?.dispatchPagesRevalidate;
   if (dispatchRevalidate && executionContext.isInternalPagesRevalidation) {
     throw new Error(`Cannot revalidate ${urlPath} from an internal revalidation request`);
   }

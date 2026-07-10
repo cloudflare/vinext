@@ -26,6 +26,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -1314,6 +1315,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const filteredHeaders = executionContext?.isInternalPagesRevalidation
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }

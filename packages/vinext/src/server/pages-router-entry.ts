@@ -37,6 +37,7 @@ import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -137,12 +138,11 @@ async function handleRequest(
 
     // Strip internal headers from inbound requests so callers cannot forge
     // framework state. Request.headers is immutable in Workers.
-    request = cloneRequestWithHeaders(
-      request,
-      ctx.isInternalPagesRevalidation
-        ? new Headers(request.headers)
-        : filterInternalHeaders(request.headers),
-    );
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    request = cloneRequestWithHeaders(request, filteredHeaders);
 
     // Track basePath presence on the original request so matcher gating can
     // distinguish requests inside basePath from requests outside it.

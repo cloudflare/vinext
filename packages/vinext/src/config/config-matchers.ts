@@ -20,6 +20,7 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
@@ -1422,9 +1423,11 @@ export async function proxyExternalRequest(
   headers.delete(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
   // On-demand revalidation is an internal authenticated request. Config and
   // middleware rewrites may legitimately proxy ordinary requests externally,
-  // but the credential and its companion control header must remain local.
+  // but the credential, its companion control header, and the authenticated
+  // Node logical-host side channel must remain local.
   headers.delete(PRERENDER_REVALIDATE_HEADER);
   headers.delete(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER);
+  headers.delete(VINEXT_REVALIDATE_HOST_HEADER);
   // Internal App Router dev middleware context must never leave the dev server.
   headers.delete(VINEXT_MW_CTX_HEADER);
 

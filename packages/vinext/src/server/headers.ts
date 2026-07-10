@@ -15,6 +15,7 @@ import {
   MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ export {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
@@ -66,9 +68,6 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
-
-/** Authenticated logical hostname for a server-pinned Pages revalidation loopback. */
-export const VINEXT_REVALIDATE_HOST_HEADER = "x-vinext-revalidate-host";
 
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";

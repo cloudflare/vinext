@@ -5,6 +5,7 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
 
 function stubFetch() {
   const fetchMock = vi.fn(
@@ -143,6 +144,7 @@ describe("performOnDemandRevalidate", () => {
     expect(request?.url).toBe("http://public-origin.example/fixed-page");
     expect(request?.headers.get(PRERENDER_REVALIDATE_HEADER)).toMatch(/^[a-f0-9]{64}$/);
     expect(request?.headers.get(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER)).toBe("1");
+    expect(request?.headers.get(VINEXT_REVALIDATE_HOST_HEADER)).toBeNull();
   });
 
   it("rejects nested internal revalidation dispatch", async () => {

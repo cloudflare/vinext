@@ -11870,6 +11870,9 @@ describe("proxyExternalRequest", () => {
         "x-middleware-next": "1",
         "x-vinext-prerender-secret": "build-secret-123",
         "x-vinext-prerender-route-params": "%7B%22id%22%3A%22forged%22%7D",
+        "x-vinext-revalidate-host": "example.fr",
+        "x-prerender-revalidate": "revalidation-secret",
+        "x-prerender-revalidate-if-generated": "1",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -11895,6 +11898,9 @@ describe("proxyExternalRequest", () => {
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
       expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedHeaders!.get("x-vinext-prerender-route-params")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-revalidate-host")).toBeNull();
+      expect(capturedHeaders!.get("x-prerender-revalidate")).toBeNull();
+      expect(capturedHeaders!.get("x-prerender-revalidate-if-generated")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");

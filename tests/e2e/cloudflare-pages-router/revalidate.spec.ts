@@ -101,3 +101,46 @@ test("rejects nested Worker revalidation without contaminating concurrent reques
   expect(await selfTarget.json()).toEqual({ nestedRejected: true });
   expect(Date.now() - startedAt).toBeLessThan(2_000);
 });
+
+test("does not expose Worker revalidation internals to userland or external rewrites", async ({
+  request,
+}) => {
+  const sentinel = await request.get(
+    `${BASE}/api/revalidate?path=${encodeURIComponent("/api/revalidation-host-sentinel")}`,
+  );
+  expect(sentinel.status()).toBe(200);
+  expect(await sentinel.json()).toEqual({ revalidated: true });
+
+  const captures: Array<{
+    logicalHost: string | undefined;
+    onlyGenerated: string | undefined;
+    secret: string | undefined;
+  }> = [];
+  const outsideServer = createServer((incoming, response) => {
+    const read = (name: string): string | undefined => {
+      const value = incoming.headers[name];
+      return Array.isArray(value) ? value[0] : value;
+    };
+    captures.push({
+      logicalHost: read("x-vinext-revalidate-host"),
+      onlyGenerated: read("x-prerender-revalidate-if-generated"),
+      secret: read("x-prerender-revalidate"),
+    });
+    response.writeHead(200);
+    response.end("outside");
+  });
+  await new Promise<void>((resolve) => outsideServer.listen(43199, "127.0.0.1", resolve));
+
+  try {
+    const proxy = await request.get(
+      `${BASE}/api/revalidate?path=${encodeURIComponent("/external-revalidate-proxy")}&onlyGenerated=1`,
+    );
+    expect(proxy.status()).toBe(200);
+    expect(await proxy.json()).toEqual({ revalidated: true });
+    expect(captures).toEqual([
+      { logicalHost: undefined, onlyGenerated: undefined, secret: undefined },
+    ]);
+  } finally {
+    await closeServer(outsideServer);
+  }
+});
