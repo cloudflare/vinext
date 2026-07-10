@@ -1614,27 +1614,26 @@ describe("Pages Router integration", () => {
     expect(html).toContain("About");
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching (dev)", async () => {
-    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+  it("does not match a percent-encoded redirect source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toBe("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching (dev)", async () => {
-    // /%61pi/hello decodes to /api/hello → X-Custom-Header: vinext
+  it("does not match a percent-encoded header source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%61pi/hello`);
-    expect(res.headers.get("x-custom-header")).toBe("vinext");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching (dev)", async () => {
-    // /%62efore-rewrite decodes to /before-rewrite → /about
+  it("does not match a percent-encoded rewrite source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%62efore-rewrite`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 
   // --- getStaticPaths ---
@@ -7727,31 +7726,26 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(html).toContain("Hello, vinext!");
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
-  // Config matchers must receive decoded paths so that encoded variants
-  // like /%6Fld-%61bout still match the /old-about redirect rule.
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching (prod)", async () => {
-    // /old-about → /about (permanent redirect). /%6Fld-%61bout decodes to /old-about.
+  it("does not match a percent-encoded redirect source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toContain("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching (prod)", async () => {
-    // /api/(.*) should receive X-Custom-Header: vinext.
-    // /%61pi/hello decodes to /api/hello.
+  it("does not match a percent-encoded header source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%61pi/hello`);
-    expect(res.headers.get("x-custom-header")).toBe("vinext");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching (prod)", async () => {
-    // /before-rewrite → /about (beforeFiles rewrite).
-    // /%62efore-rewrite decodes to /before-rewrite.
+  it("does not match a percent-encoded rewrite source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%62efore-rewrite`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 });
 

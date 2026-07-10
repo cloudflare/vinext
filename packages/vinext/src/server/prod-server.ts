@@ -1443,6 +1443,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const request = nodeToWebRequest(req, rawUrl, prerenderSecret);
       const response = await rscHandler(request);
 
+      // Preserve the canonical build-asset 404 even when the RSC handler also
+      // identifies the request as a public/static-file lookup. Middleware may
+      // still handle or rewrite the request by returning a non-404 response.
+      if (missingBuildAsset && response.status === 404) {
+        cancelResponseBody(response);
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+        return;
+      }
+
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
       if (staticFileSignal) {
         let staticFilePath = "/";
@@ -1477,13 +1487,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           res,
           compress,
         );
-        return;
-      }
-
-      if (missingBuildAsset && response.status === 404) {
-        cancelResponseBody(response);
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
         return;
       }
 

@@ -71,7 +71,7 @@ import {
 import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
-import { stripBasePath } from "./utils/base-path.js";
+import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -4813,27 +4813,33 @@ export const loadServerActionClient = ${
               // strip it (for robustness) but don't reject paths that don't start
               // with basePath — Vite has already done the filtering.
               const bp = nextConfig?.basePath ?? "";
-              if (bp && pathname.startsWith(bp)) {
-                const stripped = pathname.slice(bp.length) || "/";
-                const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                url = stripped + qs;
-                pathname = stripped;
+              const viteBase = server.config.base;
+              const viteBasePath =
+                viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
+              const routingBasePath = bp || viteBasePath;
+              if (routingBasePath) {
+                if (hasBasePath(pathname, routingBasePath)) {
+                  const stripped = stripBasePath(pathname, routingBasePath);
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = stripped + qs;
+                  pathname = stripped;
+                }
                 const middlewarePathname = middlewareUrl.split("?")[0];
-                if (middlewarePathname.startsWith(bp)) {
+                if (hasBasePath(middlewarePathname, routingBasePath)) {
                   const middlewareQs = middlewareUrl.includes("?")
                     ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
                     : "";
-                  middlewareUrl = (middlewarePathname.slice(bp.length) || "/") + middlewareQs;
+                  middlewareUrl = stripBasePath(middlewarePathname, routingBasePath) + middlewareQs;
                 }
                 const routePathname = routeUrl.split("?")[0];
-                if (routePathname.startsWith(bp)) {
+                if (hasBasePath(routePathname, routingBasePath)) {
                   const routeQs = routeUrl.includes("?")
                     ? routeUrl.slice(routeUrl.indexOf("?"))
                     : "";
-                  routeUrl = (routePathname.slice(bp.length) || "/") + routeQs;
+                  routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
                 }
               }
-              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], bp);
+              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
 
               if (nextConfig) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";

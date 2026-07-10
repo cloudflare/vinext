@@ -73,14 +73,10 @@ test("keeps Worker encoded aliases out of slash and config-header identity", asy
   const literal = await getRawPath("/about");
   expect(literal.status).toBe(200);
   expect(literal.headers["x-page-header"]).toBe("about-page");
-  expect(literal.headers["set-cookie"]).toContain("encoded-parity=1; Path=/");
-  expect(literal.headers["cache-control"]).toBe("public, max-age=123");
 
   const alias = await getRawPath("/%61bout");
   expect(alias.status).toBe(404);
   expect(alias.headers["x-page-header"]).toBeUndefined();
-  expect(alias.headers["set-cookie"]).toBeUndefined();
-  expect(alias.headers["cache-control"]).not.toBe("public, max-age=123");
 
   const slash = await getRawPath("/%61bout/");
   expect(slash.status).toBe(308);

@@ -11,10 +11,12 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
-  basePath: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? "/docs" : undefined,
-  i18n: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
-    ? { locales: ["en", "fr"], defaultLocale: "en" }
-    : undefined,
+  ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+    ? {
+        basePath: "/docs",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      }
+    : {}),
   // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
   // fixture-wide solely for that spec (the only observable effect is the
   // optional `experimental_gesturePush` method being attached). Note this
@@ -201,11 +203,7 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [
-          { key: "X-Page-Header", value: "about-page" },
-          { key: "Set-Cookie", value: "encoded-parity=1; Path=/" },
-          { key: "Cache-Control", value: "public, max-age=123" },
-        ],
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

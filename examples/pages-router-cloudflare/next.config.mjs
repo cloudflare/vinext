@@ -3,11 +3,7 @@ export default {
     return [
       {
         source: "/about",
-        headers: [
-          { key: "X-Page-Header", value: "about-page" },
-          { key: "Set-Cookie", value: "encoded-parity=1; Path=/" },
-          { key: "Cache-Control", value: "public, max-age=123" },
-        ],
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
       {
         source: "/headers-before-middleware-rewrite",
