@@ -141,4 +141,41 @@ test.describe("pages-router javascript-urls", () => {
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });
+
+  test("blocks javascript URLs returned by Pages data redirects", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await waitForHydration(page);
+
+    const destination = "javascript:void(window.__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__=true)";
+    const dataResponse = await page.request.get(
+      `${BASE}/nextjs-compat/javascript-urls/data-redirect?next=${encodeURIComponent(destination)}`,
+      { maxRedirects: 0 },
+    );
+
+    expect(dataResponse.status()).toBe(500);
+    expect(dataResponse.headers()["location"]).toBeUndefined();
+    expect(await dataResponse.text()).not.toContain("javascript:");
+    await page.locator("#data-redirect-link").click();
+    await page.waitForTimeout(250);
+    expect(
+      await page.evaluate(() =>
+        Boolean(Reflect.get(window, "__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__")),
+      ),
+    ).toBe(false);
+  });
+
+  test("does not execute javascript URLs returned by middleware redirects", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await waitForHydration(page);
+
+    await page.locator("#middleware-redirect-link").click();
+
+    await page.waitForTimeout(500);
+    expect(new URL(page.url()).origin).toBe(BASE);
+    expect(
+      await page.evaluate(() =>
+        Boolean(Reflect.get(window, "__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__")),
+      ),
+    ).toBe(false);
+  });
 });

@@ -28,6 +28,7 @@ import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { isDangerousScheme } from "vinext/shims/url-safety";
 
 type PagesRedirectResult = {
   destination: string;
@@ -422,6 +423,21 @@ function buildPagesRedirectResponse(
   props: PagesRenderProps = { pageProps: {} },
 ): Response {
   const destination = options.sanitizeDestination(redirect.destination);
+
+  // Next.js currently passes these destinations through to both `Location`
+  // and the client-consumed `__N_REDIRECT` field. Vinext deliberately rejects
+  // executable schemes here: a data navigation would otherwise assign a
+  // request-controlled `javascript:` URL to `window.location.href`.
+  if (isDangerousScheme(destination)) {
+    const headers = new Headers({
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "Content-Type": "text/plain; charset=utf-8",
+    });
+    if (options.deploymentId) {
+      headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
+    }
+    return new Response("Invalid redirect destination", { status: 500, headers });
+  }
 
   if (options.isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all

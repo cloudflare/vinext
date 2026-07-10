@@ -144,4 +144,65 @@ test.describe("pages-router-prod javascript-urls", () => {
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });
+
+  test("blocks javascript URLs returned by Pages data redirects", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await waitForHydration(page);
+
+    const buildId = await page.evaluate(() => window.__NEXT_DATA__.buildId);
+    const destination = "javascript:void(window.__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__=true)";
+    const dataResponse = await page.request.get(
+      `${BASE}/_next/data/${buildId}/nextjs-compat/javascript-urls/data-redirect.json?next=${encodeURIComponent(destination)}`,
+      { maxRedirects: 0 },
+    );
+
+    expect(dataResponse.status()).toBe(500);
+    expect(await dataResponse.text()).not.toContain("javascript:");
+    const htmlResponse = await page.request.get(
+      `${BASE}/nextjs-compat/javascript-urls/data-redirect?next=${encodeURIComponent(destination)}`,
+      { maxRedirects: 0 },
+    );
+    expect(htmlResponse.status()).toBe(500);
+    expect(htmlResponse.headers()["location"]).toBeUndefined();
+    await page.locator("#data-redirect-link").click();
+    await page.waitForTimeout(250);
+    expect(
+      await page.evaluate(() =>
+        Boolean(Reflect.get(window, "__VINEXT_PAGES_DATA_REDIRECT_EXECUTED__")),
+      ),
+    ).toBe(false);
+  });
+
+  test("blocks javascript URLs returned by middleware data redirects", async ({ page }) => {
+    const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
+    beforePageLoad(page);
+    await page.goto(`${BASE}/nextjs-compat/javascript-urls/data-redirect-trigger`);
+    await waitForHydration(page);
+    const initialUrl = page.url();
+
+    await page.locator("#middleware-redirect-link").click();
+
+    await expect
+      .poll(async () => {
+        const logs = await page.evaluate(() => {
+          const value = Reflect.get(window, "__VINEXT_TEST_CONSOLE_ERRORS__");
+          return Array.isArray(value) ? value.map(String) : [];
+        });
+        return logs.some((message) =>
+          message.includes("has blocked a javascript: URL as a security precaution."),
+        );
+      })
+      .toBe(true);
+    expect(
+      getNavigationRequests().filter(
+        (request) => !request.url().includes(new URL(initialUrl).pathname),
+      ),
+    ).toHaveLength(0);
+    expect(new URL(page.url()).origin).toBe(BASE);
+    expect(
+      await page.evaluate(() =>
+        Boolean(Reflect.get(window, "__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__")),
+      ),
+    ).toBe(false);
+  });
 });

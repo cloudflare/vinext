@@ -41,6 +41,18 @@ export function middleware(request: NextRequest) {
     throw new Error("middleware data request failure");
   }
 
+  if (
+    url.pathname === "/nextjs-compat/javascript-urls/middleware-dangerous-redirect" &&
+    request.__isData
+  ) {
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)",
+      },
+    });
+  }
+
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
   // request's query params on the rewrite target so getServerSideProps
   // sees them. Middleware preserves query by mutating `request.nextUrl`

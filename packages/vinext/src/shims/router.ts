@@ -86,7 +86,12 @@ import {
   setPagesRouterPopStateHandler,
   setStampInitialHistoryState,
 } from "./pages-router-runtime.js";
-import { assertSafeNavigationUrl } from "./url-safety.js";
+import {
+  assertSafeNavigationUrl,
+  DANGEROUS_URL_BLOCK_MESSAGE,
+  isDangerousScheme,
+  reportBlockedDangerousNavigation,
+} from "./url-safety.js";
 import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
@@ -1451,6 +1456,10 @@ function cancelPreviousRenderCommit(): void {
 }
 
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
+  if (isDangerousScheme(url)) {
+    reportBlockedDangerousNavigation();
+    throw new HardNavigationScheduledError(DANGEROUS_URL_BLOCK_MESSAGE);
+  }
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
   }

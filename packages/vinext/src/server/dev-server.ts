@@ -72,6 +72,7 @@ import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-mod
 import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
 import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
+import { isDangerousScheme } from "vinext/shims/url-safety";
 import {
   loadUserDocumentInitialProps,
   type RenderPageEnhancers,
@@ -307,6 +308,20 @@ function writeGsspRedirect(
   let dest = redirect.destination;
   if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
     dest = dest.replace(/^[\\/]+/, "/");
+  }
+
+  if (isDangerousScheme(dest)) {
+    const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+    const headers: Record<string, string> = {
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "Content-Type": "text/plain; charset=utf-8",
+    };
+    if (deploymentId) {
+      headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+    }
+    res.writeHead(500, headers);
+    res.end("Invalid redirect destination");
+    return;
   }
 
   if (isDataReq) {

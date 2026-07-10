@@ -1695,6 +1695,30 @@ describe("pages page data", () => {
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
   });
 
+  it("rejects dangerous redirect schemes before emitting a data envelope", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getServerSideProps() {
+            return {
+              redirect: { destination: "javascript:globalThis.compromised=true", permanent: false },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(500);
+    expect(result.response.headers.get("location")).toBeNull();
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+    expect(await result.response.text()).not.toContain("javascript:");
+  });
+
   it("omits x-nextjs-deployment-id on redirect/notFound data responses when deploymentId is not set", async () => {
     const notFoundResult = await resolvePagesPageData(
       createOptions({
