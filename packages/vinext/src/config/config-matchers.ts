@@ -1090,11 +1090,19 @@ export function matchRewrite(
   rewrites: NextRewrite[],
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  paramsPathname: string = pathname,
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
-    const params = matchConfigPattern(pathname, rewrite.source);
-    if (params) {
+    const matchedParams = matchConfigPattern(pathname, rewrite.source);
+    if (matchedParams) {
+      // App request routing matches against a segment-normalized pathname but
+      // Next.js prepareDestination substitutes the encoded source captures.
+      // Prefer those captures when the caller retained the encoded pathname.
+      const params =
+        paramsPathname === pathname
+          ? matchedParams
+          : (matchConfigPattern(paramsPathname, rewrite.source) ?? matchedParams);
       const conditionParams =
         rewrite.has || rewrite.missing
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)

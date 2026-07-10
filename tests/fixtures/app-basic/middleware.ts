@@ -33,6 +33,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  if (pathname === "/%61dmin") {
+    return NextResponse.rewrite(new URL("/admin", request.url));
+  }
+
+  if (pathname.startsWith("/encoded-parity/middleware/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
+    return NextResponse.rewrite(target);
+  }
+
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
@@ -375,6 +385,8 @@ export const config = {
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/admin",
+    "/%61dmin",
+    "/encoded-parity/middleware/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",

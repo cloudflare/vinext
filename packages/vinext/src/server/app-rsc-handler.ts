@@ -388,6 +388,7 @@ async function applyRewrite(
     request: Request;
     requestContext: RequestContext;
     rewrites: NextRewrite[];
+    paramsPathname?: string;
   },
   cleanPathname: string,
 ): Promise<Response | string | null> {
@@ -398,6 +399,7 @@ async function applyRewrite(
     options.rewrites,
     options.requestContext,
     options.basePathState,
+    options.paramsPathname,
   );
   if (!rewritten) return null;
 
@@ -645,8 +647,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
 
     cleanPathname = middlewareResult.cleanPathname;
-    if (cleanPathname !== normalized.cleanPathname) cleanPathnameIsRequestPathname = false;
     didMiddlewareRewrite = middlewareResult.rewritten;
+    // A rewrite destination is authoritative even when normalization makes it
+    // textually equal to the incoming path (for example /%61dmin -> /admin).
+    if (didMiddlewareRewrite || cleanPathname !== normalized.cleanPathname) {
+      cleanPathnameIsRequestPathname = false;
+    }
     didMiddlewareRewritePathname = cleanPathname !== normalized.cleanPathname;
     if (middlewareResult.search !== null) {
       url.search = middlewareResult.search;
@@ -679,6 +685,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           postMiddlewareRequestContext,
           resolvedUrl,
           url,
+        ),
+        paramsPathname: matchPathname(
+          cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         ),
         rewrites: [rewrite],
       },
@@ -716,6 +725,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolvedUrl,
             url,
           ),
+          paramsPathname: matchPathname(
+            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+          ),
           rewrites: [rewrite],
         },
         matchPathname(cleanPathname),
@@ -740,6 +752,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               postMiddlewareRequestContext,
               resolvedUrl,
               url,
+            ),
+            paramsPathname: matchPathname(
+              cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
             ),
             rewrites: [rewrite],
           },
@@ -961,6 +976,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolvedUrl,
             url,
           ),
+          paramsPathname: matchPathname(
+            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+          ),
           rewrites: [rewrite],
         },
         matchPathname(cleanPathname),
@@ -1006,6 +1024,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             postMiddlewareRequestContext,
             resolvedUrl,
             url,
+          ),
+          paramsPathname: matchPathname(
+            cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           ),
           rewrites: [rewrite],
         },

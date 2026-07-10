@@ -105,9 +105,9 @@ test.describe("Middleware Block (OpenNext compat)", () => {
     expect(response.status()).toBe(404);
     expect(await response.text()).not.toContain("Protected admin content");
 
-    const encodedStatic = await getRawPath("/%61dmin");
+    const encodedStatic = await getRawPath("/%61bout");
     expect(encodedStatic.status).toBe(404);
-    expect(encodedStatic.body).not.toContain("Protected admin content");
+    expect(encodedStatic.body).not.toContain("About");
   });
 
   test("server action rerenders preserve encoded request route identity", async ({ page }) => {
@@ -132,6 +132,50 @@ test.describe("Middleware Block (OpenNext compat)", () => {
       expect(await response.text()).not.toContain("Protected admin content");
     });
   }
+});
+
+test.describe("encoded App route parity", () => {
+  test("keeps lazy Route Handler params stable across first and later requests", async ({
+    request,
+  }) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await request.get(`${BASE}/encoded-parity/handler/a%2561/b%2Fc`);
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ path: ["a%61", "b/c"] });
+    }
+
+    const optional = await request.get(`${BASE}/encoded-parity/handler`);
+    expect(await optional.json()).toEqual({ path: null });
+  });
+
+  test("keeps direct, config-rewritten, and middleware-rewritten App Page params canonical", async ({
+    request,
+  }) => {
+    for (const pathname of [
+      "/encoded-parity/page/a%2561/b%2Fc",
+      "/encoded-parity/rewrite/a%2561/b%2Fc",
+      "/encoded-parity/middleware/a%2561/b%2Fc",
+    ]) {
+      const response = await request.get(`${BASE}${pathname}`);
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toContain('["a%2561","b%2Fc"]');
+    }
+  });
+
+  test("dynamicParams=false only accepts the encoded literal static value", async () => {
+    const allowed = await getRawPath("/encoded-parity/static/a%252Fb");
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toContain("a%252Fb");
+
+    const alias = await getRawPath("/encoded-parity/static/a%2Fb");
+    expect(alias.status).toBe(404);
+  });
+
+  test("routes an explicit middleware rewrite whose normalized target is unchanged", async () => {
+    const response = await getRawPath("/%61dmin");
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("Protected admin content");
+  });
 });
 
 test.describe("Middleware execution count", () => {

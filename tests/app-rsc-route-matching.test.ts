@@ -50,10 +50,14 @@ describe("App RSC route matching", () => {
     });
   });
 
-  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour.
+  // Route Handlers expose decoded params, unlike App Pages, whose params use
+  // the canonical encoded representation.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
-  it("decodes matched params via decodeURIComponent (mirrors Next.js)", () => {
-    const matcher = createAppRscRouteMatcher([route("/files/:name", ["files", ":name"])]);
+  it("decodes rewritten Route Handler params via decodeURIComponent", () => {
+    const matcher = createAppRscRouteMatcher([
+      { ...route("/files/:name", ["files", ":name"]), routeHandler: {} },
+    ]);
 
     expect(matcher.matchRoute("/files/a%2Fb")).toMatchObject({
       params: { name: "a/b" },
@@ -76,7 +80,42 @@ describe("App RSC route matching", () => {
       params: { subdomain: "demo" },
     });
     expect(matcher.matchRoute("/files/a%252Fb")).toMatchObject({
-      params: { name: "a%2Fb" },
+      params: { name: "a%252Fb" },
+    });
+  });
+
+  it("classifies lazy Route Handlers consistently before and after their first load", () => {
+    const lazyRoute: TestRoute = {
+      ...route("/api/:path*", ["api", ":path*"]),
+      __loadRouteHandler: async () => ({}),
+      routeHandler: null,
+    };
+    const matcher = createAppRscRouteMatcher([lazyRoute]);
+
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    lazyRoute.routeHandler = {};
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    expect(matcher.matchRequestRoute("/api")).toMatchObject({ params: {} });
+  });
+
+  it("keeps rewritten App Page params canonical while Route Handlers decode once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/page/:path+", ["page", ":path+"]),
+      {
+        ...route("/api/:path+", ["api", ":path+"]),
+        __loadRouteHandler: async () => ({}),
+      },
+    ]);
+
+    expect(matcher.matchRoute("/page/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%2561", "b%2Fc"] },
+    });
+    expect(matcher.matchRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
     });
   });
 
@@ -729,6 +768,7 @@ type TestSiblingIntercept = {
 };
 
 type TestRoute = {
+  __loadRouteHandler?: unknown;
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;

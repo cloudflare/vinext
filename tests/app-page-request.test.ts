@@ -78,6 +78,28 @@ describe("app page request helpers", () => {
     expect(response).toBeNull();
   });
 
+  it("does not treat an encoded delimiter as an alias for a literal static value", async () => {
+    const generateStaticParams = async () => [{ id: "a%2Fb" }];
+
+    const encodedLiteral = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%252Fb" },
+    });
+    expect(encodedLiteral).toBeNull();
+
+    const delimiterAlias = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%2Fb" },
+    });
+    expect(delimiterAlias?.status).toBe(404);
+  });
+
   it("requires every segment generateStaticParams source to allow the params", async () => {
     const clearRequestContext = vi.fn();
     const layoutGenerateStaticParams = async () => [{ category: "docs" }];

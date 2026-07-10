@@ -921,9 +921,9 @@ describe("createAppRscHandler", () => {
       },
       dispatchMatchedPage,
       matchRoute(pathname: string) {
-        return pathname === "/product/sticks & stones"
+        return pathname === "/product/sticks%20%26%20stones"
           ? {
-              params: { id: "sticks & stones" },
+              params: { id: "sticks%20%26%20stones" },
               route: productRoute,
             }
           : null;
@@ -947,8 +947,8 @@ describe("createAppRscHandler", () => {
       expect(response.status).toBe(200);
       expect(dispatchMatchedPage).toHaveBeenCalledWith(
         expect.objectContaining({
-          cleanPathname: "/product/sticks & stones",
-          params: { id: "sticks & stones" },
+          cleanPathname: "/product/sticks%20%26%20stones",
+          params: { id: "sticks%20%26%20stones" },
           staticParamsValidationParams: undefined,
         }),
       );
@@ -1284,6 +1284,37 @@ describe("createAppRscHandler", () => {
     await handler(new Request("https://example.test/docs/source"), null);
 
     expect(pageOptions?.interceptionPathname).toBe("/about/%2561");
+  });
+
+  it("treats an explicit middleware rewrite as authoritative after normalization", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("admin"));
+    const requestRouteMatch = vi.fn(() => null);
+    const rewrittenRoute = createPageRoute({ pattern: "/admin", routeSegments: ["admin"] });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRequestRoute: requestRouteMatch,
+      matchRoute(pathname: string) {
+        return pathname === "/admin" ? { params: {}, route: rewrittenRoute } : null;
+      },
+      middlewareModule: {
+        default: (request: NextRequest) =>
+          new Response(null, {
+            headers: {
+              "x-middleware-rewrite": new URL("/docs/admin", request.url).toString(),
+            },
+          }),
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/%61dmin"), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("admin");
+    expect(requestRouteMatch).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/admin", route: rewrittenRoute }),
+    );
   });
 
   it("evaluates config rewrite conditions against middleware rewrite queries", async () => {

@@ -1,4 +1,4 @@
-import { buildRouteTrie, trieMatch, trieMatchRaw } from "../routing/route-trie.js";
+import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
   matchRoutePattern,
   matchRoutePatternRaw,
@@ -75,6 +75,7 @@ type AppRscSiblingInterceptForMatching = {
 };
 
 type AppRscRouteForMatching = {
+  __loadRouteHandler?: unknown;
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
@@ -153,6 +154,57 @@ function canonicalizeAppPageParams(params: AppRscRouteParams): void {
   }
 }
 
+function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
+  // Generated manifests retain the lazy loader before the first request and
+  // hydrate routeHandler afterwards. Classification must not change when that
+  // module load completes.
+  return route.routeHandler != null || typeof route.__loadRouteHandler === "function";
+}
+
+function normalizeMatchedParamsForRoute(result: {
+  route: AppRscRouteForMatching;
+  params: AppRscRouteParams;
+}): void {
+  if (isAppRouteHandlerRoute(result.route)) {
+    decodeMatchedParams(result.params);
+  } else {
+    canonicalizeAppPageParams(result.params);
+  }
+}
+
+function extractRawParamsForMatchedRoute(
+  patternParts: readonly string[],
+  pathnameParts: readonly string[],
+): AppRscRouteParams {
+  // Route selection uses the normalized pathname so encoded static segments
+  // cannot alias filesystem routes. Param values come from the encoded URL
+  // parts, matching Next.js client/route-params.ts before the route-kind-
+  // specific canonicalize/decode step below.
+  const params = createRouteParams();
+  let pathnameIndex = 0;
+
+  for (const part of patternParts) {
+    if (!part.startsWith(":")) {
+      pathnameIndex += 1;
+      continue;
+    }
+
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const paramName = part.slice(1, isCatchAll ? -1 : undefined);
+    if (isCatchAll) {
+      const remaining = pathnameParts.slice(pathnameIndex);
+      if (remaining.length > 0) params[paramName] = [...remaining];
+      break;
+    }
+
+    const value = pathnameParts[pathnameIndex];
+    if (value !== undefined) params[paramName] = value;
+    pathnameIndex += 1;
+  }
+
+  return params;
+}
+
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
@@ -166,16 +218,17 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
   return {
     matchRoute(url) {
-      return trieMatch(routeTrie, appRscPathnameParts(url, false));
+      const rawParts = appRscPathnameParts(url, true);
+      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
+      if (!result) return null;
+      result.params = extractRawParamsForMatchedRoute(result.route.patternParts, rawParts);
+      normalizeMatchedParamsForRoute(result);
+      return result;
     },
     matchRequestRoute(url) {
       const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, true));
       if (!result) return null;
-      if (result.route.routeHandler) {
-        decodeMatchedParams(result.params);
-      } else {
-        canonicalizeAppPageParams(result.params);
-      }
+      normalizeMatchedParamsForRoute(result);
       return result;
     },
     findIntercept(pathname, sourcePathname = null) {
