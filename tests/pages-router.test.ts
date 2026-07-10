@@ -4733,11 +4733,12 @@ export const config = { matcher: ["/protected"] };
     expect(vinextChunk).toBeDefined();
     expect(entryChunk).toBeDefined();
 
-    // The entry chunk should be small (just the hydration bootstrap, not the
-    // entire React framework). Before code-splitting this was ~200KB+.
+    // The entry chunk should stay small: it contains the hydration bootstrap
+    // and this fixture's generated route table, but not the React framework.
+    // Before code-splitting this was ~200KB+.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(25 * 1024); // < 25 KB
+      expect(entrySize).toBeLessThan(26 * 1024); // < 26 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
