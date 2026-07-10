@@ -11,6 +11,7 @@ import {
   consumeDynamicUsage,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
+  isDraftModeRequest,
   markDynamicUsage,
   setHeadersAccessPhase,
 } from "vinext/shims/headers";
@@ -148,6 +149,7 @@ export async function dispatchAppRouteHandler(
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
+  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
 
   if (hasAppRouteHandlerDefaultExport(handler) && isDevelopment) {
     console.error(
@@ -202,6 +204,7 @@ export async function dispatchAppRouteHandler(
       handlerFn: resolvedHandlerFn,
       isAutoHead,
       isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
+      isDraftMode,
       isProduction,
       method,
       revalidateSeconds,
@@ -281,6 +284,7 @@ export async function dispatchAppRouteHandler(
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
       isAutoHead,
+      isDraftMode,
       isProduction,
       isrDebug: options.isrDebug,
       isrRouteKey: options.isrRouteKey,

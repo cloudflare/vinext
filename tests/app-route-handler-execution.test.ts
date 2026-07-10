@@ -334,6 +334,62 @@ describe("app route handler execution helpers", () => {
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
   });
 
+  it("applies the draft cache policy to responses with immutable headers", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    let wroteCache = false;
+
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags(pathname, extraTags) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/draft-redirect",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: null,
+      getAndClearPendingCookies() {
+        return [];
+      },
+      getCollectedFetchTags() {
+        return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
+      },
+      handler: { dynamic: "auto" },
+      handlerFn() {
+        return Response.redirect("https://example.com/target");
+      },
+      isAutoHead: false,
+      isDraftMode: true,
+      isProduction: true,
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {
+        wroteCache = true;
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      reportRequestError() {},
+      request: new Request("https://example.com/api/draft-redirect"),
+      revalidateSeconds: 60,
+      routePattern: "/api/draft-redirect",
+      setHeadersAccessPhase() {
+        return "render";
+      },
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://example.com/target");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(wroteCache).toBe(false);
+  });
+
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {
     // Regression test for the patched fetch's explicit no-store branch
     // calling markDynamicUsage() (upstream patch-fetch parity, where

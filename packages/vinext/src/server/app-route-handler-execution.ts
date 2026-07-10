@@ -8,6 +8,7 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -72,6 +73,7 @@ type RunAppRouteHandlerOptions = {
   dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  isDraftMode?: boolean;
   trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
@@ -90,6 +92,21 @@ type RunAppRouteHandlerResult = {
   response: Response;
 };
 
+function applyDraftModeCachePolicy(response: Response, isDraftMode: boolean): Response {
+  if (!isDraftMode) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cloudflare-CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 type ExecuteAppRouteHandlerOptions = {
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
   clearRequestContext: () => void;
@@ -100,6 +117,7 @@ type ExecuteAppRouteHandlerOptions = {
   getDraftModeCookieHeader: () => string | null | undefined;
   handler: AppRouteHandlerModule;
   isAutoHead: boolean;
+  isDraftMode?: boolean;
   isProduction: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrRouteKey: (pathname: string) => string;
@@ -115,11 +133,13 @@ type ExecuteAppRouteHandlerOptions = {
 
 function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOptions): void {
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const isDraftMode =
+      options.isDraftMode ??
+      (options.draftModeSecret !== undefined &&
+        isDraftModeRequest(options.request, options.draftModeSecret));
     setHeadersContext(
       createStaticGenerationHeadersContext({
-        draftModeEnabled:
-          options.draftModeSecret !== undefined &&
-          isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeEnabled: isDraftMode,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "route",
@@ -197,6 +217,7 @@ export async function executeAppRouteHandler(
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
+        isDraftMode: options.isDraftMode,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
       })
@@ -219,6 +240,7 @@ export async function executeAppRouteHandler(
         dynamicUsedInHandler,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
+        isDraftMode: options.isDraftMode,
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
@@ -253,13 +275,16 @@ export async function executeAppRouteHandler(
     const draftCookie = options.getDraftModeCookieHeader();
     options.clearRequestContext();
 
-    return applyRouteHandlerMiddlewareContext(
-      finalizeRouteHandlerResponse(response, {
-        pendingCookies,
-        draftCookie,
-        isHead: options.isAutoHead,
-      }),
-      options.middlewareContext,
+    return applyDraftModeCachePolicy(
+      applyRouteHandlerMiddlewareContext(
+        finalizeRouteHandlerResponse(response, {
+          pendingCookies,
+          draftCookie,
+          isHead: options.isAutoHead,
+        }),
+        options.middlewareContext,
+      ),
+      options.isDraftMode === true,
     );
   } catch (error) {
     const pendingCookies = options.getAndClearPendingCookies();

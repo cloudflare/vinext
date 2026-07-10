@@ -48,6 +48,7 @@ const projectServers = {
     testIgnore: [
       appRouterBrowserSpecificTests,
       "**/app-router/nextjs-compat/client-cache.spec.ts",
+      "**/app-router/nextjs-compat/route-handler-draft-cache.spec.ts",
       "**/app-router/nextjs-compat/segment-cache-client-params.spec.ts",
     ],
     use: { baseURL: "http://localhost:4174" },
@@ -55,7 +56,11 @@ const projectServers = {
   },
   "app-router-client-cache": {
     testDir: "./tests/e2e/app-router/nextjs-compat",
-    testMatch: ["client-cache.spec.ts", "segment-cache-client-params.spec.ts"],
+    testMatch: [
+      "client-cache.spec.ts",
+      "route-handler-draft-cache.spec.ts",
+      "segment-cache-client-params.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4191" },
     server: {
       command:
