@@ -736,6 +736,7 @@ export default createAppRscHandler({
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     clientReuseManifest,
+    clientSearchParams,
     cleanPathname,
     displayPathname,
     formState,
@@ -812,6 +813,7 @@ export default createAppRscHandler({
         }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
+      clientSearchParams,
       cleanPathname,
       displayPathname,
       clearRequestContext() {

@@ -1,5 +1,6 @@
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 
 type VinextHydrateRootErrorInfo = {
   componentStack?: string;
@@ -81,5 +82,10 @@ export function prodOnCaughtError(error: unknown, errorInfo: VinextHydrateRootEr
 }
 
 export function prodOnRecoverableError(error: unknown): void {
-  reportGlobalError(error instanceof Error && error.cause !== undefined ? error.cause : error);
+  const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
+  // Static Client Component hooks intentionally leave an incomplete Suspense
+  // boundary for the browser to render. Match Next.js and do not report that
+  // expected bailout as a hydration failure.
+  if (isBailoutToCSRError(cause)) return;
+  reportGlobalError(cause);
 }

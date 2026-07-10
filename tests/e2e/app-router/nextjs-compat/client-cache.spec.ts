@@ -436,3 +436,170 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/2`)).toEqual([]);
   });
 });
+
+test("ISR hydration uses the current visitor's search params", async ({ page, request }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") hydrationErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => hydrationErrors.push(error.message));
+
+  const slug = `hydration-query-${Date.now()}`;
+  const pathname = `/isr-client-search-poison/${slug}`;
+
+  const attackerResponse = await request.get(`${pathname}?q=ATTACKER_PAYLOAD`);
+  expect(attackerResponse.status()).toBe(200);
+  const attackerHtml = await attackerResponse.text();
+  expect(attackerHtml).toContain("loading");
+  expect(attackerHtml).not.toContain("ATTACKER_PAYLOAD");
+
+  await page.waitForTimeout(100);
+
+  const victimResponse = await page.goto(pathname);
+  expect(victimResponse?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("query-echo")).toHaveText("Search query: none");
+
+  const otherVictimResponse = await page.goto(`${pathname}?q=INNOCENT_PAYLOAD`);
+  expect(otherVictimResponse?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("query-echo")).toHaveText("Search query: INNOCENT_PAYLOAD");
+  await expect(page.locator("body")).not.toContainText("ATTACKER_PAYLOAD");
+  expect(hydrationErrors).toEqual([]);
+});
+
+test("force-static hydration reads search params from the current URL", async ({ page }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") hydrationErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => hydrationErrors.push(error.message));
+
+  const pathname = "/isr-client-search-force-static";
+
+  const firstResponse = await page.goto(`${pathname}?q=FIRST_QUERY`);
+  expect(firstResponse?.status()).toBe(200);
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("force-static-query-echo")).toHaveText(
+    "Force-static query: FIRST_QUERY",
+  );
+
+  const secondResponse = await page.goto(`${pathname}?q=SECOND_QUERY`);
+  expect(secondResponse?.status()).toBe(200);
+  expect(secondResponse?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("force-static-query-echo")).toHaveText(
+    "Force-static query: SECOND_QUERY",
+  );
+  await expect(page.locator("body")).not.toContainText("FIRST_QUERY");
+  expect(hydrationErrors).toEqual([]);
+});
+
+// Next.js confirms useSearchParams wrapped in Suspense must retain a static shell:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/missing-suspense-with-csr-bailout/missing-suspense-with-csr-bailout.test.ts
+test("dynamic-error client search params bail out to cached Suspense HTML", async ({ page }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") hydrationErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => hydrationErrors.push(error.message));
+
+  const slug = `dynamic-error-hydration-${Date.now()}`;
+  const pathname = `/isr-client-search-dynamic-error/${slug}`;
+
+  const firstResponse = await page.goto(`${pathname}?q=FIRST_QUERY`);
+  expect(firstResponse?.status()).toBe(200);
+  const firstHtml = await firstResponse?.text();
+  expect(firstHtml).toContain("loading");
+  expect(firstHtml).not.toContain("FIRST_QUERY");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("dynamic-error-query-echo")).toHaveText(
+    "Dynamic-error query: FIRST_QUERY",
+  );
+
+  await page.waitForTimeout(1_100);
+
+  const secondResponse = await page.goto(`${pathname}?q=SECOND_QUERY`);
+  expect(secondResponse?.status()).toBe(200);
+  expect(secondResponse?.headers()["x-vinext-cache"]).toBe("STALE");
+  const secondHtml = await secondResponse?.text();
+  expect(secondHtml).toContain("loading");
+  expect(secondHtml).not.toContain("SECOND_QUERY");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("dynamic-error-query-echo")).toHaveText(
+    "Dynamic-error query: SECOND_QUERY",
+  );
+  await expect(page.locator("body")).not.toContainText("FIRST_QUERY");
+
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(pathname);
+        return response.headers()["x-vinext-cache"];
+      },
+      { timeout: 10_000 },
+    )
+    .toBe("HIT");
+
+  const thirdResponse = await page.goto(`${pathname}?q=THIRD_QUERY`);
+  expect(thirdResponse?.status()).toBe(200);
+  expect(thirdResponse?.headers()["x-vinext-cache"]).toBe("HIT");
+  const thirdHtml = await thirdResponse?.text();
+  expect(thirdHtml).toContain("loading");
+  expect(thirdHtml).not.toContain("THIRD_QUERY");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("dynamic-error-query-echo")).toHaveText(
+    "Dynamic-error query: THIRD_QUERY",
+  );
+  expect(hydrationErrors).toEqual([]);
+});
+
+test("unbounded dynamic-error client search params fail without a cache artifact", async ({
+  request,
+}) => {
+  const slug = `unbounded-dynamic-error-${Date.now()}`;
+  const pathname = `/isr-client-search-dynamic-error-unbounded/${slug}`;
+
+  const first = await request.get(`${pathname}?q=UNBOUNDED_ATTACKER`);
+  expect(first.status()).toBe(500);
+  expect(await first.text()).not.toContain("UNBOUNDED_ATTACKER");
+
+  const second = await request.get(pathname);
+  expect(second.status()).toBe(500);
+  expect(second.headers()["x-vinext-cache"]).not.toBe("HIT");
+});
+
+test("rewrite destination query is hidden from SSR client hooks", async ({ page }) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") hydrationErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => hydrationErrors.push(error.message));
+
+  const response = await page.goto("/nextjs-compat/rewrite-query-visible?shown=yes");
+  expect(response?.status()).toBe(200);
+  const html = await response?.text();
+  expect(html).toContain("server:shown=<!-- -->yes<!-- -->&amp;hidden=<!-- -->secret");
+  expect(html).toContain("client:<!-- -->shown=yes");
+  expect(html).not.toContain("client:<!-- -->shown=yes&amp;hidden=secret");
+
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("rewrite-page-query")).toHaveText("server:shown=yes&hidden=secret");
+  await expect(page.getByTestId("rewrite-client-query")).toHaveText("client:shown=yes");
+  expect(hydrationErrors).toEqual([]);
+});
+
+test("server-inserted callback query access fails without cache publication", async ({
+  request,
+}) => {
+  const slug = `inserted-dynamic-error-${Date.now()}`;
+  const pathname = `/isr-client-search-inserted-error/${slug}`;
+
+  const first = await request.get(`${pathname}?q=INSERTED_ATTACKER`);
+  expect(first.status()).toBe(500);
+  expect(await first.text()).not.toContain("INSERTED_ATTACKER");
+
+  const second = await request.get(pathname);
+  expect(second.status()).toBe(500);
+  expect(second.headers()["x-vinext-cache"]).not.toBe("HIT");
+});

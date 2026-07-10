@@ -133,6 +133,72 @@ describe("App Router production responses with a CDN-managed cache", () => {
     expect(first.headers.get("cache-control")).toMatch(/no-store/);
   });
 
+  it("edge-caches the Suspense bailout for ISR client search params", async () => {
+    const edge = createWorkersLikeEdge(handler);
+    const pathname = `/query-isr/query-${Date.now()}`;
+
+    const attacker = await edge.fetch(
+      new Request(`https://example.com${pathname}?q=EDGE_ATTACKER_PAYLOAD`),
+    );
+    const attackerHtml = await attacker.text();
+    expect(attackerHtml).toContain('id="query-loading"');
+    expect(attackerHtml).not.toContain("EDGE_ATTACKER_PAYLOAD");
+    expect(attacker.headers.get("cdn-cache-control")).toMatch(/public, max-age=60/);
+
+    const victim = await edge.fetch(new Request(`https://example.com${pathname}`));
+    const victimHtml = await victim.text();
+    expect(victimHtml).toBe(attackerHtml);
+    expect(victimHtml).not.toContain("EDGE_ATTACKER_PAYLOAD");
+    expect(edge.originRequests).toBe(1);
+  });
+
+  it("rejects query access while serializing server-inserted HTML", async () => {
+    const edge = createWorkersLikeEdge(handler);
+    const pathname = `/query-inserted-error/query-${Date.now()}`;
+
+    await expect(
+      edge.fetch(new Request(`https://example.com${pathname}?q=INSERTED_EDGE_ATTACKER`)),
+    ).rejects.toThrow("Bail out to client-side rendering: useSearchParams()");
+    await expect(edge.fetch(new Request(`https://example.com${pathname}`))).rejects.toThrow(
+      "Bail out to client-side rendering: useSearchParams()",
+    );
+    expect(edge.originRequests).toBe(2);
+  });
+
+  it("rejects unbounded dynamic-error client search params", async () => {
+    const edge = createWorkersLikeEdge(handler);
+    const pathname = `/query-dynamic-error-unbounded/query-${Date.now()}`;
+
+    const first = await edge.fetch(
+      new Request(`https://example.com${pathname}?q=EDGE_ATTACKER_PAYLOAD`),
+    );
+    expect(first.status).toBe(500);
+    expect(first.headers.get("cdn-cache-control")).toBeNull();
+    expect(first.headers.get("cache-control")).toMatch(/no-store/);
+
+    const second = await edge.fetch(new Request(`https://example.com${pathname}`));
+    expect(second.status).toBe(500);
+    expect(second.headers.get("cdn-cache-control")).toBeNull();
+    expect(edge.originRequests).toBe(2);
+  });
+
+  it("edge-caches dynamic-error client search params as a Suspense bailout", async () => {
+    const edge = createWorkersLikeEdge(handler);
+    const pathname = `/query-dynamic-error/query-${Date.now()}`;
+
+    const first = await edge.fetch(
+      new Request(`https://example.com${pathname}?q=EDGE_ATTACKER_PAYLOAD`),
+    );
+    const firstHtml = await first.text();
+    expect(firstHtml).toContain("query fallback");
+    expect(firstHtml).not.toContain("EDGE_ATTACKER_PAYLOAD");
+    expect(first.headers.get("cdn-cache-control")).toMatch(/public, max-age=60/);
+
+    const second = await edge.fetch(new Request(`https://example.com${pathname}`));
+    expect(await second.text()).toBe(firstHtml);
+    expect(edge.originRequests).toBe(1);
+  });
+
   it("still lets the edge cache a deferred response that remains static", async () => {
     const edge = createWorkersLikeEdge(handler);
 

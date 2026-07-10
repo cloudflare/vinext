@@ -1611,6 +1611,103 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html2).not.toContain('"filter">alpha<');
   });
 
+  // Next.js treats useSearchParams() during static generation as a dynamic/CSR
+  // boundary rather than caching request-specific HTML.
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("caches client useSearchParams behind its ISR Suspense boundary", async () => {
+    const slug = `query-poison-${Date.now()}`;
+    const pathname = `/isr-client-search-poison/${slug}`;
+
+    const attackerRes = await fetch(`${baseUrl}${pathname}?q=ATTACKER_PAYLOAD`);
+    expect(attackerRes.status).toBe(200);
+    const attackerHtml = await attackerRes.text();
+    expect(attackerHtml).toContain("loading");
+    expect(attackerHtml).not.toContain("ATTACKER_PAYLOAD");
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const victimRes = await fetch(`${baseUrl}${pathname}`);
+    const victimHtml = await victimRes.text();
+    expect(victimRes.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(victimHtml).not.toContain("ATTACKER_PAYLOAD");
+    expect(victimHtml).toContain("loading");
+
+    const otherVictimRes = await fetch(`${baseUrl}${pathname}?q=INNOCENT_PAYLOAD`);
+    const otherVictimHtml = await otherVictimRes.text();
+    expect(otherVictimRes.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(otherVictimHtml).not.toContain("ATTACKER_PAYLOAD");
+    expect(otherVictimHtml).toContain("loading");
+    expect(otherVictimHtml).not.toContain("INNOCENT_PAYLOAD");
+  });
+
+  it("keeps force-static client search params out of reusable ISR HTML", async () => {
+    const pathname = "/isr-client-search-force-static";
+    const firstRes = await fetch(`${baseUrl}${pathname}?q=FIRST_QUERY`);
+    expect(firstRes.status).toBe(200);
+    const firstHtml = await firstRes.text();
+    expect(firstHtml).toContain("Force-static query: <!-- -->none");
+    expect(firstHtml).not.toContain("FIRST_QUERY");
+
+    const secondRes = await fetch(`${baseUrl}${pathname}?q=SECOND_QUERY`);
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await secondRes.text();
+    expect(secondHtml).toContain("Force-static query: <!-- -->none");
+    expect(secondHtml).not.toContain("FIRST_QUERY");
+    expect(secondHtml).not.toContain("SECOND_QUERY");
+  });
+
+  it("bails client useSearchParams to Suspense under dynamic = 'error'", async () => {
+    const slug = `dynamic-error-query-${Date.now()}`;
+    const firstRes = await fetch(
+      `${baseUrl}/isr-client-search-dynamic-error/${slug}?q=REQUEST_SPECIFIC`,
+    );
+    expect(firstRes.status).toBe(200);
+    const firstHtml = await firstRes.text();
+    expect(firstHtml).toContain("loading");
+    expect(firstHtml).not.toContain("REQUEST_SPECIFIC");
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const secondRes = await fetch(`${baseUrl}/isr-client-search-dynamic-error/${slug}`);
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await secondRes.text();
+    expect(secondHtml).toContain("loading");
+    expect(secondHtml).not.toContain("REQUEST_SPECIFIC");
+  });
+
+  it("rejects search params read while serializing server-inserted HTML", async () => {
+    const slug = `inserted-query-${Date.now()}`;
+    const pathname = `/isr-client-search-inserted-error/${slug}`;
+
+    const attackerRes = await fetch(`${baseUrl}${pathname}?q=INSERTED_ATTACKER`);
+    expect(attackerRes.status).toBe(500);
+    expect(await attackerRes.text()).not.toContain("INSERTED_ATTACKER");
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const victimRes = await fetch(`${baseUrl}${pathname}`);
+    expect(victimRes.status).toBe(500);
+    expect(victimRes.headers.get("x-vinext-cache")).not.toBe("HIT");
+    const victimHtml = await victimRes.text();
+    expect(victimHtml).not.toContain("INSERTED_ATTACKER");
+  });
+
+  it("rejects unbounded dynamic-error client search params without caching", async () => {
+    const slug = `unbounded-query-${Date.now()}`;
+    const pathname = `/isr-client-search-dynamic-error-unbounded/${slug}`;
+
+    const attackerRes = await fetch(`${baseUrl}${pathname}?q=UNBOUNDED_ATTACKER`);
+    expect(attackerRes.status).toBe(500);
+    expect(await attackerRes.text()).not.toContain("UNBOUNDED_ATTACKER");
+
+    const victimRes = await fetch(`${baseUrl}${pathname}`);
+    expect(victimRes.status).toBe(500);
+    expect(victimRes.headers.get("x-vinext-cache")).not.toBe("HIT");
+  });
+
   // Route handler ISR caching tests
   // These tests are ORDER-DEPENDENT: they share a single production server and
   // /api/static-data cache state persists across tests. HIT depends on MISS

@@ -775,7 +775,7 @@ export async function renderAppPageLifecycle(
     options.isPrerender !== true &&
     cdnCacheAdapter.pageCacheMode === "edge";
   const shouldCompleteDynamicUsageBeforeResponse =
-    usesResponseEdgeCache &&
+    (usesResponseEdgeCache || options.isDynamicError) &&
     options.isProgressiveActionRender !== true &&
     (revalidateSeconds === null || revalidateSeconds > 0) &&
     !options.isDraftMode &&
@@ -1110,7 +1110,11 @@ export async function renderAppPageLifecycle(
   });
 
   let dynamicUsageCheckComplete = false;
-  if (shouldCompleteDynamicUsageBeforeResponse && !dynamicUsedDuringRender) {
+  if (
+    shouldCompleteDynamicUsageBeforeResponse &&
+    !dynamicUsageCheckComplete &&
+    !dynamicUsedDuringRender
+  ) {
     // A CDN must decide from the response headers whether to cache the body,
     // unlike the origin cache which can wait for the stream to drain before
     // committing it. Inspect CDN-managed candidates within strict time/size
@@ -1120,7 +1124,9 @@ export async function renderAppPageLifecycle(
     const verification = await verifyCdnCacheCandidateStream(safeHtmlStream);
     safeHtmlStream = verification.stream;
     if (verification.complete) {
-      dynamicUsedDuringRender = dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
+      const searchParamsAccessed = await (htmlRender.searchParamsAccessed ?? false);
+      dynamicUsedDuringRender =
+        searchParamsAccessed || dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
       dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
       dynamicUsageCheckComplete = true;
     }
@@ -1194,6 +1200,7 @@ export async function renderAppPageLifecycle(
         return dynamicUsedBeforeContextCleanup;
       },
       capturedRscDataPromise: capturedRscDataRef.value,
+      searchParamsAccessedPromise: htmlRender.searchParamsAccessed,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
       dynamicUsageCheckComplete,

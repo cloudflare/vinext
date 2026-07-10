@@ -90,14 +90,12 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     expect(html).toContain('<span id="client-page-search-string">q=hello&amp;page=2</span>');
   });
 
-  it("navigation runtime searchParams matches query string", async () => {
+  it("navigation runtime omits request searchParams from the reusable bootstrap", async () => {
     const res = await fetch(`${_baseUrl}${ROUTE}?q=test`);
     const html = await res.text();
 
     const { nav } = extractRscBootstrap(html);
-    const sp = new URLSearchParams(nav.searchParams);
-
-    expect(sp.get("q")).toBe("test");
+    expect(nav.searchParams).toEqual([]);
   });
 
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts

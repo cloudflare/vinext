@@ -37,6 +37,7 @@ type BuildAppPageCacheRenderObservation = (input: {
 type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
+  searchParamsAccessedPromise?: Promise<boolean>;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   dynamicUsageCheckComplete?: boolean;
@@ -169,8 +170,10 @@ export function finalizeAppPageHtmlCacheResponse(
   const cachePromise = (async () => {
     try {
       const cachedHtml = await readStreamAsText(streamForCache);
+      const searchParamsAccessed = await (options.searchParamsAccessedPromise ?? false);
 
       if (
+        searchParamsAccessed ||
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
         options.consumeDynamicUsage()
       ) {

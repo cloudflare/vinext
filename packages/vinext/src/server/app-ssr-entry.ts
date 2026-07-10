@@ -10,6 +10,7 @@ import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
+import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import {
   ServerInsertedHTMLContext,
   clearServerInsertedHTML,
@@ -237,7 +238,8 @@ function renderInsertedHtml(insertedElements: readonly unknown[]): string {
       insertedHTML += renderToStaticMarkup(
         createReactElement(Fragment, null, element as ReactNode),
       );
-    } catch {
+    } catch (error) {
+      if (isBailoutToCSRError(error)) throw error;
       // Ignore individual callback failures so the rest of the page can render.
     }
   }
@@ -315,7 +317,11 @@ function buildHeadInjectionHtml(
 ): string {
   const navPayload = {
     pathname: navContext.pathname,
-    searchParams: [...navContext.searchParams.entries()],
+    // Search params belong to the browser URL, not a pathname-keyed HTML
+    // artifact that may be reused by another request. The browser entry
+    // exposes them from window.location after the neutral snapshot hydrates.
+    searchParams: [] as [string, string][],
+    searchParamsAccessMode: navContext.searchParamsAccessMode,
   };
   const rscMetadataScript = createInlineScriptTag(
     createNavigationRuntimeRscMetadataScript(
@@ -393,7 +399,35 @@ export async function handleSsr(
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
-    const ssrNavigationContext = requireNavigationContext(navContext);
+    const incomingNavigationContext = requireNavigationContext(navContext);
+    let didAccessSearchParams = false;
+    let resolveSearchParamsAccessed!: (accessed: boolean) => void;
+    const searchParamsAccessed = new Promise<boolean>((resolve) => {
+      resolveSearchParamsAccessed = resolve;
+    });
+    let didResolveSearchParamsAccessed = false;
+    const resolveSearchParamsAccess = (): void => {
+      if (didResolveSearchParamsAccessed) return;
+      didResolveSearchParamsAccessed = true;
+      resolveSearchParamsAccessed(didAccessSearchParams);
+    };
+    const ssrNavigationContext: NavigationContext = {
+      ...incomingNavigationContext,
+      searchParams:
+        incomingNavigationContext.searchParamsAccessMode === "force-static"
+          ? incomingNavigationContext.searchParams
+          : (incomingNavigationContext.clientSearchParams ??
+            incomingNavigationContext.searchParams),
+      onSearchParamsAccess() {
+        if (incomingNavigationContext.searchParamsAccessMode === "force-static") return;
+        // Next.js bails client useSearchParams() to the nearest Suspense
+        // boundary during static generation. Vinext can render it during SSR,
+        // so keep the response private instead. Resolve this observation only
+        // when the stream flushes: useServerInsertedHTML callbacks are rendered
+        // by the stream transform after the main Fizz tree reaches allReady.
+        didAccessSearchParams = true;
+      },
+    };
 
     await clientReferencePreloader.preload();
 
@@ -402,6 +436,7 @@ export async function handleSsr(
     clearServerInsertedHTML();
 
     const cleanup = (): void => {
+      resolveSearchParamsAccess();
       setNavigationContext(null);
       clearServerInsertedHTML();
     };
@@ -678,7 +713,19 @@ export async function handleSsr(
         };
         let didInjectHeadHTML = false;
         const getInsertedHTML = (): string => {
-          const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
+          const previousSearchParamsAccessMode = ssrNavigationContext.searchParamsAccessMode;
+          ssrNavigationContext.searchParamsAccessMode = "bailout";
+          let insertedHTML: string;
+          try {
+            // Next.js executes these callbacks outside the component request
+            // scope. Client navigation hooks are therefore invalid here in
+            // both development and production, even on an otherwise dynamic
+            // route. Use the same bailout sentinel as static SSR so the late
+            // stream failure cannot be mistaken for cacheable output.
+            insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
+          } finally {
+            ssrNavigationContext.searchParamsAccessMode = previousSearchParamsAccessMode;
+          }
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
             options?.initialDevServerError,
@@ -740,6 +787,7 @@ export async function handleSsr(
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
+          searchParamsAccessed,
           shellErrorRecovered,
           linkHeader: reactLinkHeader,
         };

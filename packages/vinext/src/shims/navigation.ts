@@ -54,6 +54,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { BailoutToCSRError } from "./navigation-errors.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
@@ -1336,7 +1337,14 @@ let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
  * be visible until the next commit.
  */
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
-  if (getNavigationContext()) return getServerSearchParamsSnapshot();
+  const context = getNavigationContext();
+  if (
+    context &&
+    context.searchParamsAccessMode !== "bailout" &&
+    context.searchParamsAccessMode !== "force-static"
+  ) {
+    return getServerSearchParamsSnapshot();
+  }
 
   const pagesCtx = _getPagesNavigationContext();
   if (pagesCtx) {
@@ -1649,6 +1657,20 @@ export function usePathname(): string | null {
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
+    const navigationContext = getNavigationContext();
+    if (navigationContext?.searchParamsAccessMode === "bailout") {
+      // Next.js turns Client Component useSearchParams() into a CSR bailout
+      // during static generation. A surrounding Suspense boundary can then be
+      // cached safely and the browser reads the current URL during hydration.
+      // Ported from Next.js: packages/next/src/server/app-render/dynamic-rendering.ts
+      throw new BailoutToCSRError("useSearchParams()");
+    }
+    // Client Components execute this branch during SSR. App Router search
+    // params are request-specific, so observing them must invalidate a shared
+    // ISR render just like reading the page-level searchParams prop does.
+    // Keep the Pages Router compatibility path unchanged: it has its own cache
+    // semantics and does not install an App navigation context.
+    navigationContext?.onSearchParamsAccess?.();
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.
     return getServerSearchParamsSnapshot();

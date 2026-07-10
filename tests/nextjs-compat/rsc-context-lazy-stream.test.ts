@@ -272,9 +272,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
 
     const { nav } = extractRscBootstrap(html);
 
-    // searchParams is serialised as [...urlSearchParams.entries()] — an array of
-    // [key, value] pairs — to preserve duplicate keys (e.g. ?tag=a&tag=b).
-    // With no query string it should be an empty array.
+    // Search params are restored from window.location during hydration so a
+    // pathname-keyed HTML artifact never carries another request's query.
     expect(nav.searchParams).toEqual([]);
   });
 
@@ -289,32 +288,17 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
   });
 
   // ── 4. searchParams are correct (with query string) ───────────────────────
-  //
-  // This is the critical hydration parity test. Without __VINEXT_RSC_NAV__:
-  //   - SSR renders: <span id="nav-search-q">hello</span>
-  //   - getServerSnapshot returns: new URLSearchParams() → ""
-  //   → React sees "hello" ≠ "" → hydration mismatch error #418
-  //
-  // With __VINEXT_RSC_NAV__:
-  //   - SSR renders: <span id="nav-search-q">hello</span>
-  //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
-  //   - getServerSnapshot returns: "hello"
-  //   → React sees "hello" = "hello" → no mismatch
 
-  it("navigation runtime searchParams carries query params from request URL", async () => {
+  it("navigation runtime keeps query params out of the reusable bootstrap", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
     const html = await res.text();
 
     const { nav } = extractRscBootstrap(html);
 
-    // Serialised as array of [key, value] pairs to preserve duplicates.
-    expect(nav.searchParams).toEqual([
-      ["q", "hello"],
-      ["page", "3"],
-    ]);
+    expect(nav.searchParams).toEqual([]);
   });
 
-  it("navigation runtime searchParams agrees with SSR-rendered useSearchParams() output", async () => {
+  it("SSR useSearchParams output stays request-specific while the bootstrap is neutral", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
     const html = await res.text();
 
@@ -322,13 +306,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     expect(html).toContain('<span id="nav-search-q">hello</span>');
     expect(html).toContain('<span id="nav-search-page">3</span>');
 
-    // Embedded payload must match
     const { nav } = extractRscBootstrap(html);
-
-    // new URLSearchParams(nav.searchParams) reconstructs the same params
-    const sp = new URLSearchParams(nav.searchParams);
-    expect(sp.get("q")).toBe("hello");
-    expect(sp.get("page")).toBe("3");
+    expect(nav.searchParams).toEqual([]);
   });
 
   it("SSR-rendered useSearchParams() reflects query params (confirms parity source)", async () => {
@@ -338,8 +317,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     // The SSR path: RSC environment sets navigation context from request URL,
     // passes it to SSR environment via handleSsr(rscStream, navContext, ...).
     // The SSR environment's useSearchParams() reads navContext.searchParams.
-    // The __VINEXT_RSC_NAV__ payload comes from the same navContext.
-    // Both should reflect the request query string.
+    // The hydration bootstrap deliberately omits the query and the browser
+    // restores it from window.location instead.
     expect(html).toContain('<span id="nav-search-q">hello</span>');
     expect(html).toContain('<span id="nav-search-page">3</span>');
     expect(html).toContain(`<span id="nav-pathname">${NAV_ROUTE}</span>`);
@@ -347,7 +326,7 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
 
   // ── 5. Special characters in searchParams are safely serialised ───────────
 
-  it("navigation runtime searchParams handles special characters without XSS", async () => {
+  it("navigation runtime omits special-character searchParams from inline scripts", async () => {
     // Ensure the JSON serialisation (safeJsonStringify) encodes characters
     // that could break out of a <script> tag if embedded raw.
     // The server uses safeJsonStringify which encodes < > & / to unicode escapes.
@@ -361,10 +340,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     // </script> injection.
     expect(html).not.toContain(`"q":"${specialQ}"`);
 
-    // But when we parse the embedded JSON, the value round-trips correctly.
     const { nav } = extractRscBootstrap(html);
-    const sp = new URLSearchParams(nav.searchParams);
-    expect(sp.get("q")).toBe(specialQ);
+    expect(nav.searchParams).toEqual([]);
   });
 
   // ── 6. __VINEXT_RSC_PARAMS__ for dynamic segment routes ──────────────────

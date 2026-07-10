@@ -248,6 +248,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
+  clientSearchParams?: URLSearchParams;
   cleanPathname: string;
   displayPathname?: string;
   clearRequestContext: () => void;
@@ -354,11 +355,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
   scriptNonce?: string;
   searchParams: URLSearchParams;
-  setNavigationContext: (context: {
-    params: AppPageParams;
-    pathname: string;
-    searchParams: URLSearchParams;
-  }) => void;
+  setNavigationContext: (context: NavigationContext) => void;
   renderMode?: AppRscRenderMode;
 };
 
@@ -523,6 +520,7 @@ async function runAppPageRevalidationContext<
       pathname: options.displayPathname ?? options.cleanPathname,
       searchParams: new URLSearchParams(),
       params: options.params,
+      searchParamsAccessMode: options.dynamicConfig === "force-static" ? "force-static" : "bailout",
     });
     return await runWithFetchDedupe(renderFn);
   });
@@ -578,6 +576,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  const shouldBailoutClientSearchParams =
+    options.isProduction &&
+    (isDynamicError ||
+      (!isForceDynamic &&
+        !isDraftMode &&
+        options.isProgressiveActionRender !== true &&
+        !options.scriptNonce &&
+        (isPrerender || (currentRevalidateSeconds !== null && currentRevalidateSeconds > 0))));
   const requestHeadersContext = getHeadersContext();
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
@@ -988,7 +994,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options.setNavigationContext({
     pathname: options.displayPathname ?? options.cleanPathname,
     searchParams: pageSearchParams,
+    clientSearchParams: options.clientSearchParams,
     params: navigationParams,
+    searchParamsAccessMode: isForceStatic
+      ? "force-static"
+      : shouldBailoutClientSearchParams
+        ? "bailout"
+        : "dynamic",
   });
 
   const layoutClassifications = getEffectiveLayoutClassifications(

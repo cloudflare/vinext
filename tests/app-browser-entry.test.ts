@@ -7,6 +7,7 @@ import {
   prodOnCaughtError,
   prodOnRecoverableError,
 } from "../packages/vinext/src/server/app-browser-error.js";
+import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   clearAppNavigationFailureTarget,
   handleAppNavigationFailure,
@@ -8036,6 +8037,14 @@ describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
       const err = new Error("recoverable", { cause });
       prodOnRecoverableError(err);
       expect(reportErrorSpy).toHaveBeenCalledWith(cause);
+    });
+  });
+
+  it("does not report an expected static-generation CSR bailout", () => {
+    withFakeReportError((reportErrorSpy) => {
+      const cause = new BailoutToCSRError("useSearchParams()");
+      prodOnRecoverableError(new Error("recoverable", { cause }));
+      expect(reportErrorSpy).not.toHaveBeenCalled();
     });
   });
 });

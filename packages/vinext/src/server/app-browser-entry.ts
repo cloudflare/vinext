@@ -58,6 +58,7 @@ import {
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntimeNavigate,
+  type NavigationRuntimeSnapshot,
   type NavigationRuntimeVisibleCommitMode,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
@@ -1218,12 +1219,31 @@ function restoreHydrationNavigationContext(
   pathname: string,
   searchParams: SearchParamInput,
   params: Record<string, string | string[]>,
+  searchParamsAccessMode?: NavigationRuntimeSnapshot["searchParamsAccessMode"],
 ): void {
   setNavigationContext({
     pathname,
     searchParams: new URLSearchParams(searchParams),
     params,
+    searchParamsAccessMode,
   });
+}
+
+function applyHydrationNavigationSnapshot(
+  nav: NavigationRuntimeSnapshot,
+  params: Record<string, string | string[]>,
+): void {
+  const shouldDeferLiveSearchParams =
+    nav.searchParamsAccessMode === "bailout" || nav.searchParamsAccessMode === "force-static";
+  // Static HTML hydrates against the same neutral search params the server
+  // rendered. Once hydration commits, the browser URL becomes authoritative
+  // and updates useSearchParams() without a server/client mismatch.
+  restoreHydrationNavigationContext(
+    nav.pathname,
+    shouldDeferLiveSearchParams ? nav.searchParams : window.location.search,
+    params,
+    nav.searchParamsAccessMode,
+  );
 }
 
 function restorePopstateScrollPosition(
@@ -1356,11 +1376,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
       applyClientParams(vinext.__VINEXT_RSC_PARAMS__);
     }
     if (vinext.__VINEXT_RSC_NAV__) {
-      restoreHydrationNavigationContext(
-        vinext.__VINEXT_RSC_NAV__.pathname,
-        vinext.__VINEXT_RSC_NAV__.searchParams,
-        params,
-      );
+      applyHydrationNavigationSnapshot(vinext.__VINEXT_RSC_NAV__, params);
     }
 
     return createProgressiveRscStream();
@@ -1421,7 +1437,7 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
     applyClientParams(rsc.params);
   }
   if (rsc.nav) {
-    restoreHydrationNavigationContext(rsc.nav.pathname, rsc.nav.searchParams, params);
+    applyHydrationNavigationSnapshot(rsc.nav, params);
   }
 }
 

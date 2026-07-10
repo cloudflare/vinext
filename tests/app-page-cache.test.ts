@@ -1102,6 +1102,48 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it("waits for SSR search params observation before writing the HTML cache", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn();
+    let resolveSearchParamsAccessed!: (accessed: boolean) => void;
+    const searchParamsAccessedPromise = new Promise<boolean>((resolve) => {
+      resolveSearchParamsAccessed = resolve;
+    });
+
+    const response = finalizeAppPageHtmlCacheResponse(new Response("<h1>query-specific</h1>"), {
+      capturedRscDataPromise: null,
+      cleanPathname: "/search-params-observation",
+      consumeDynamicUsage() {
+        return false;
+      },
+      getPageTags() {
+        return ["/search-params-observation"];
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      revalidateSeconds: 60,
+      searchParamsAccessedPromise,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    await expect(response.text()).resolves.toBe("<h1>query-specific</h1>");
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await Promise.resolve();
+    expect(isrSet).not.toHaveBeenCalled();
+
+    resolveSearchParamsAccessed(true);
+    await pendingCacheWrites[0];
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it("skips HTML and RSC cache writes when dynamic usage was captured before context cleanup", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const debugCalls: Array<[string, string]> = [];

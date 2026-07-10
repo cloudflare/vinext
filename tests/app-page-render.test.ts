@@ -873,6 +873,36 @@ describe("app page render lifecycle", () => {
     }
   });
 
+  it("keeps CDN-managed HTML private when SSR reports useSearchParams access", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        revalidateSeconds: 30,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return {
+              htmlStream: createStream(["<html>query-specific</html>"]),
+              metadataReady: Promise.resolve(),
+              capturedRscData: null,
+              searchParamsAccessed: Promise.resolve(true),
+            };
+          },
+        }),
+      });
+
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>query-specific</html>");
+      expect(common.isrSet).not.toHaveBeenCalled();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
     const common = createCommonOptions();
     const releaseRsc = createDeferred();

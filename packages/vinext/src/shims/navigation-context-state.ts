@@ -1,4 +1,5 @@
 import * as React from "react";
+import { isBailoutToCSRError } from "./navigation-errors.js";
 
 const LAYOUT_SEGMENT_CONTEXT_KEY = Symbol.for("vinext.layoutSegmentContext");
 const SERVER_INSERTED_HTML_CONTEXT_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
@@ -18,7 +19,16 @@ export type SegmentMap = Readonly<Record<string, string[]>> & {
 export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
+  /** Browser-visible query before middleware and config rewrites. */
+  clientSearchParams?: URLSearchParams;
   params: Record<string, string | string[]>;
+  searchParamsAccessMode?: "dynamic" | "bailout" | "force-static";
+  /**
+   * SSR runs in a separate Vite environment. Its request-local callback records
+   * Client Component useSearchParams() access and reports the result back to
+   * the RSC-owned cache lifecycle after the HTML stream is consumed.
+   */
+  onSearchParamsAccess?: () => void;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {
@@ -193,7 +203,8 @@ function renderInsertedHTMLCallbacks(clear: boolean): unknown[] {
     try {
       const result = callback();
       if (result != null) results.push(result);
-    } catch {
+    } catch (error) {
+      if (isBailoutToCSRError(error)) throw error;
       // One style registry must not suppress output from the others.
     }
   }

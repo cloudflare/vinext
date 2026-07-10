@@ -150,6 +150,24 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("keeps late dynamic-error HTML observations private", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: true,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("resolves HTML response policy precedence", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({

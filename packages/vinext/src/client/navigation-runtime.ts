@@ -5,6 +5,7 @@ import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state
 export type NavigationRuntimeSnapshot = {
   pathname: string;
   searchParams: [string, string][];
+  searchParamsAccessMode?: "dynamic" | "bailout" | "force-static";
 };
 
 export type NavigationRuntimeRscChunk = string | [3, string];
@@ -131,6 +132,7 @@ function isNavigationRuntimeSnapshot(value: unknown): value is NavigationRuntime
   if (!isUnknownRecord(value)) return false;
   const pathname = Reflect.get(value, "pathname");
   const searchParams = Reflect.get(value, "searchParams");
+  const searchParamsAccessMode = Reflect.get(value, "searchParamsAccessMode");
   return (
     typeof pathname === "string" &&
     Array.isArray(searchParams) &&
@@ -140,7 +142,11 @@ function isNavigationRuntimeSnapshot(value: unknown): value is NavigationRuntime
         entry.length === 2 &&
         typeof entry[0] === "string" &&
         typeof entry[1] === "string",
-    )
+    ) &&
+    (searchParamsAccessMode === undefined ||
+      searchParamsAccessMode === "dynamic" ||
+      searchParamsAccessMode === "bailout" ||
+      searchParamsAccessMode === "force-static")
   );
 }
 

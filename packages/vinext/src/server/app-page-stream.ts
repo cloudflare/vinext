@@ -27,6 +27,7 @@ export type AppSsrRenderResult = {
   htmlStream: ReadableStream<Uint8Array>;
   metadataReady: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
+  searchParamsAccessed?: Promise<boolean>;
   shellErrorRecovered?: boolean;
   /**
    * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
@@ -56,6 +57,7 @@ function normalizeAppSsrRenderResult(
     htmlStream: raw,
     metadataReady: resolvedMetadataReady,
     capturedRscData: fallbackCapturedRscData,
+    searchParamsAccessed: Promise.resolve(false),
     shellErrorRecovered: false,
   };
 }
@@ -206,6 +208,7 @@ type AppPageHtmlStreamRecoveryResult = {
   response: Response | null;
   metadataReady: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
+  searchParamsAccessed: Promise<boolean>;
   shellErrorRecovered: boolean;
   /** React-emitted preload `Link` header (already capped). */
   linkHeader?: string;
@@ -310,14 +313,21 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
 ): Promise<AppPageHtmlStreamRecoveryResult> {
   try {
     const rawResult = await options.renderHtmlStream();
-    const { htmlStream, metadataReady, capturedRscData, linkHeader, shellErrorRecovered } =
-      normalizeAppSsrRenderResult(rawResult);
+    const {
+      htmlStream,
+      metadataReady,
+      capturedRscData,
+      searchParamsAccessed,
+      linkHeader,
+      shellErrorRecovered,
+    } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     return {
       htmlStream,
       response: null,
       metadataReady,
       capturedRscData,
+      searchParamsAccessed: searchParamsAccessed ?? Promise.resolve(false),
       shellErrorRecovered: shellErrorRecovered === true,
       linkHeader,
     };
@@ -329,6 +339,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
         response: await options.renderSpecialErrorResponse(specialError),
         metadataReady: resolvedMetadataReady,
         capturedRscData: null,
+        searchParamsAccessed: Promise.resolve(false),
         shellErrorRecovered: false,
       };
     }
@@ -340,6 +351,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
         response: boundaryResponse,
         metadataReady: resolvedMetadataReady,
         capturedRscData: null,
+        searchParamsAccessed: Promise.resolve(false),
         shellErrorRecovered: false,
       };
     }

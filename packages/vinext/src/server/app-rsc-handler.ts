@@ -153,6 +153,7 @@ function applyMiddlewareContextToResponse(
 
 type DispatchMatchedPageOptions<TRoute> = {
   clientReuseManifest: ClientReuseManifestParseResult;
+  clientSearchParams: URLSearchParams;
   cleanPathname: string;
   displayPathname: string;
   formState: ReactFormState | null;
@@ -271,6 +272,7 @@ type RenderPagesFallbackOptions = {
 };
 
 type NavigationContextValue = {
+  clientSearchParams?: URLSearchParams;
   params: AppPageParams;
   pathname: string;
   searchParams: URLSearchParams;
@@ -608,6 +610,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // has/missing matching. This mirrors Next.js' navigation middleware fixture.
   const normalizedUserlandRequest = requestWithoutRscSuffix(request);
   const userlandRequest = requestWithoutRscCacheBustingSearchParam(normalizedUserlandRequest);
+  const visibleSearchParams = new URL(userlandRequest.url).searchParams;
   const middlewareContext: AppRscMiddlewareContext = {
     headers: null,
     requestHeaders: null,
@@ -797,6 +800,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: getResolvedSearchParams(),
+    clientSearchParams: visibleSearchParams,
     params: {},
   });
 
@@ -1110,6 +1114,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: resolvedSearchParams,
+    clientSearchParams: visibleSearchParams,
     params: renderParams,
   });
   const rootParams = pickRootParams(renderParams, route.rootParamNames);
@@ -1150,6 +1155,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const pageResponse = await options.dispatchMatchedPage({
     clientReuseManifest,
+    clientSearchParams: visibleSearchParams,
     cleanPathname,
     displayPathname: canonicalPathname,
     formState,

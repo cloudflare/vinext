@@ -1456,9 +1456,7 @@ describe("app page dispatch", () => {
     });
 
     try {
-      const response = await dispatchAppPage(options);
-
-      await expect(response.text()).rejects.toThrow('Page with `dynamic = "error"`');
+      await expect(dispatchAppPage(options)).rejects.toThrow('Page with `dynamic = "error"`');
       expect(receivedQueries).toEqual([]);
     } finally {
       setHeadersContext(null);

@@ -221,6 +221,13 @@ export function resolveAppPageHtmlResponsePolicy(
     };
   }
 
+  if (options.dynamicUsedDuringRender && options.isDynamicError) {
+    return {
+      cacheControl: NO_STORE_CACHE_CONTROL,
+      shouldWriteToCache: false,
+    };
+  }
+
   if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,

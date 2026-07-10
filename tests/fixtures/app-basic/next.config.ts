@@ -122,6 +122,12 @@ const nextConfig: NextConfig = {
           source: "/rewrite-search-param/:term",
           destination: "/search?q=from-rewrite",
         },
+        // Ported from Next.js rewrite/searchParams behavior: Page props receive
+        // the resolved destination query while client hooks see the visible URL.
+        {
+          source: "/nextjs-compat/rewrite-query-visible",
+          destination: "/nextjs-compat/rewrite-query-destination?hidden=secret",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts
