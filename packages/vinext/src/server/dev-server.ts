@@ -787,7 +787,7 @@ export function createSSRHandler(
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
     const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq
+    let requestAsPath = isDataReq
       ? gsspResolvedUrl
       : i18nConfig
         ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
@@ -799,7 +799,7 @@ export function createSSRHandler(
     const userFacingParams: Record<string, string | string[]> | null = route.isDynamic
       ? params
       : null;
-    const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
@@ -839,6 +839,15 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        if (
+          typeof pageModule.getStaticProps === "function" &&
+          typeof pageModule.getServerSideProps !== "function"
+        ) {
+          // Match Next.js's Pages handler: getStaticProps renders receive only
+          // route params and a resolved asPath without request search state.
+          query = mergeRouteParamsIntoQuery({}, params);
+          requestAsPath = localeStrippedUrl.split("?")[0];
+        }
         const supportsPreview =
           typeof pageModule.getStaticProps === "function" ||
           typeof pageModule.getServerSideProps === "function";

@@ -1,0 +1,114 @@
+import fs from "node:fs/promises";
+import type http from "node:http";
+import path from "node:path";
+import { build } from "vite-plus";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
+import { createIsolatedFixture } from "./helpers.js";
+
+const FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures/pages-isr-query-context");
+
+async function buildPagesFixture(root: string, outDir: string): Promise<void> {
+  await build({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [vinext({ disableAppRouter: true })],
+    build: {
+      outDir: path.join(outDir, "server"),
+      ssr: "virtual:vinext-server-entry",
+      rolldownOptions: { output: { entryFileNames: "entry.js" } },
+    },
+  });
+  await build({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [vinext({ disableAppRouter: true })],
+    build: {
+      outDir: path.join(outDir, "client"),
+      manifest: true,
+      ssrManifest: true,
+      rolldownOptions: { input: "virtual:vinext-client-entry" },
+    },
+  });
+}
+
+async function fetchCacheHit(url: string): Promise<{ response: Response; html: string }> {
+  const deadline = Date.now() + 5_000;
+  do {
+    const response = await fetch(url);
+    const html = await response.text();
+    if (response.headers.get("x-vinext-cache") === "HIT") return { response, html };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for an ISR cache hit from ${url}`);
+}
+
+describe("Pages ISR request query context in production", () => {
+  let root: string;
+  let server: http.Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    root = await createIsolatedFixture(FIXTURE_DIR, "vinext-pages-isr-query-");
+    const outDir = path.join(root, "dist");
+    await buildPagesFixture(root, outDir);
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const started = await startProdServer({ host: "127.0.0.1", port: 0, outDir });
+    server = started.server;
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Production server did not bind");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  }, 60_000);
+
+  afterAll(async () => {
+    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  // Next.js passes params only to Pages getStaticProps renders:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  it("does not render or cache request query state on a cold ISR miss", async () => {
+    const token = "COLD_QUERY_CONTEXT_TOKEN";
+    const attacker = await fetch(`${baseUrl}/cold?utm=${token}`);
+    const attackerHtml = await attacker.text();
+    expect(attacker.status).toBe(200);
+    expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(attackerHtml).not.toContain(token);
+    expect(attackerHtml).toContain('<p id="query">{}</p>');
+    expect(attackerHtml).toContain('<p id="as-path">/cold</p>');
+
+    const victim = await fetch(`${baseUrl}/cold`);
+    const victimHtml = await victim.text();
+    expect(victim.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(victimHtml).not.toContain(token);
+  });
+
+  it("does not apply the triggering request query during stale regeneration", async () => {
+    const seed = await fetch(`${baseUrl}/stale`);
+    expect(seed.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(await seed.text()).toContain('<p id="query">{}</p>');
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const token = "STALE_QUERY_CONTEXT_TOKEN";
+    const trigger = await fetch(`${baseUrl}/stale?utm=${token}`);
+    expect(trigger.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(await trigger.text()).not.toContain(token);
+
+    const { response: victim, html: victimHtml } = await fetchCacheHit(`${baseUrl}/stale`);
+    expect(victim.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(victimHtml).not.toContain(token);
+    expect(victimHtml).toContain('<p id="as-path">/stale</p>');
+  });
+
+  it("retains dynamic route params while excluding request query state", async () => {
+    const token = "DYNAMIC_QUERY_CONTEXT_TOKEN";
+    const response = await fetch(`${baseUrl}/dynamic/known?utm=${token}`);
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).not.toContain(token);
+    expect(html).toContain('<p id="query">{&quot;slug&quot;:&quot;known&quot;}</p>');
+    expect(html).toContain('<p id="as-path">/dynamic/known</p>');
+  });
+});
