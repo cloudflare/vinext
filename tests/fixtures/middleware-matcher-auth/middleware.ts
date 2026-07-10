@@ -15,5 +15,6 @@ export const config = {
     "/docs/:lang(en|fr)*",
     "/manual/:lang(en|fr)+",
     "/(foo.*|bar)/:path*",
+    "/report{.:ext}",
   ],
 };

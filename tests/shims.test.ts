@@ -7495,6 +7495,10 @@ describe("middleware matcher patterns", () => {
       "/docs/:lang(en|fr)*",
       "/cdn/:path*(api|static)",
       "/foo-:path*",
+      "/foo{/:id}?",
+      "/files/:name{.:ext}?",
+      "/foo{-:bar}+",
+      "/x/:id(a+(?:b)a+)",
     ];
 
     for (const pattern of patterns) {
@@ -7826,14 +7830,14 @@ describe("middleware matcher patterns", () => {
     ).toBe(false);
   });
 
-  it("matchesMiddleware: rejects a single object matcher config", async () => {
+  it("matchesMiddleware: fails closed for a single object matcher config", async () => {
     const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     const matcher: any = {
       source: "/dashboard",
       has: [{ type: "header", key: "x-user-tier", value: "pro" }],
     };
 
-    expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(true);
     expect(
       matchesMiddleware(
         "/dashboard",
@@ -7842,15 +7846,15 @@ describe("middleware matcher patterns", () => {
           headers: { "x-user-tier": "pro" },
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("matchesMiddleware: rejects object matchers with unsupported fields", async () => {
+  it("matchesMiddleware: fails closed for object matchers with unsupported fields", async () => {
     const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     const matcher: any = [{ source: "/does-not-match", regexp: "^/dashboard(?:/.*)?$" }];
 
-    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(false);
-    expect(matchesMiddleware("/about", matcher)).toBe(false);
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
   });
 
   it("matchesMiddleware: matches default-locale and locale-prefixed paths unless locale is false", async () => {
@@ -10950,6 +10954,7 @@ describe("isSafeRegex", () => {
     // (ab)+ is fine — no inner quantifier
     expect(isSafeRegex("(ab)+")).toBe(true);
     expect(isSafeRegex("(foo|bar)*")).toBe(true);
+    expect(isSafeRegex("(?:(?!\\.)[^/])+?")).toBe(true);
   });
 
   it("treats escaped characters as safe", async () => {

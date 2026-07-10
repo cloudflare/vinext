@@ -68,7 +68,11 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
+import {
+  extractMiddlewareMatcherConfig,
+  extractMiddlewareMatcherConfigValue,
+  hasExportedName,
+} from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
@@ -2036,7 +2040,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
         if (middlewarePath) {
-          const staticMatcher = extractMiddlewareMatcherConfig(middlewarePath);
+          const staticMatcher = extractMiddlewareMatcherConfigValue(middlewarePath);
           if (staticMatcher !== undefined) {
             validateMiddlewareMatcherPatterns(staticMatcher);
           }

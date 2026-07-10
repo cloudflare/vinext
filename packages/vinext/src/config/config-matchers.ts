@@ -346,6 +346,12 @@ export function isSafeRegex(pattern: string): boolean {
     }
 
     if (ch === "?") {
+      // Group prefixes such as (?:...), (?=...), (?!...), and (?<=...) are
+      // syntax markers, not optional quantifiers.
+      if (i > 0 && pattern[i - 1] === "(" && /[:=!<]/.test(pattern[i + 1] ?? "")) {
+        i++;
+        continue;
+      }
       // '?' after +, *, ?, or } is a non-greedy modifier, not a quantifier
       const prev = i > 0 ? pattern[i - 1] : "";
       if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {

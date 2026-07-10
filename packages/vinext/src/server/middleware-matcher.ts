@@ -3,16 +3,13 @@ import {
   requestContextFromRequest,
   type RequestContext,
 } from "../config/config-matchers.js";
-import type { HasCondition, NextI18nConfig } from "../config/next-config.js";
+import type { NextI18nConfig } from "../config/next-config.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
-import { compileMiddlewareMatcherPattern } from "./middleware-matcher-pattern.js";
-
-type MiddlewareMatcherObject = {
-  source: string;
-  locale?: false;
-  has?: HasCondition[];
-  missing?: HasCondition[];
-};
+import {
+  compileMiddlewareMatcherPattern,
+  isValidMiddlewareMatcherObjectConfig,
+  type MiddlewareMatcherObject,
+} from "./middleware-matcher-pattern.js";
 
 export type MatcherConfig = string | Array<string | MiddlewareMatcherObject>;
 
@@ -42,7 +39,7 @@ export function matchesMiddleware(
     return matchMatcherPattern(pathname, matcher, i18nConfig);
   }
   if (!Array.isArray(matcher)) {
-    return false;
+    return true;
   }
 
   const requestContext = request
@@ -57,40 +54,21 @@ export function matchesMiddleware(
       continue;
     }
 
-    if (isValidMiddlewareMatcherObject(m)) {
-      if (!matchObjectMatcher(pathname, m, i18nConfig)) {
-        continue;
-      }
-
-      if (!checkHasConditions(m.has, m.missing, requestContext)) {
-        continue;
-      }
-
+    if (!isValidMiddlewareMatcherObjectConfig(m)) {
       return true;
     }
+    if (!matchObjectMatcher(pathname, m, i18nConfig)) {
+      continue;
+    }
+
+    if (!checkHasConditions(m.has, m.missing, requestContext)) {
+      continue;
+    }
+
+    return true;
   }
 
   return false;
-}
-
-function isValidMiddlewareMatcherObject(value: unknown): value is MiddlewareMatcherObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-
-  if (!("source" in value) || typeof value.source !== "string") return false;
-
-  for (const key of Object.keys(value)) {
-    if (key !== "source" && key !== "locale" && key !== "has" && key !== "missing") {
-      return false;
-    }
-  }
-
-  if ("locale" in value && value.locale !== undefined && value.locale !== false) return false;
-  if ("has" in value && value.has !== undefined && !Array.isArray(value.has)) return false;
-  if ("missing" in value && value.missing !== undefined && !Array.isArray(value.missing)) {
-    return false;
-  }
-
-  return true;
 }
 
 function matchMatcherPattern(

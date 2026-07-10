@@ -33,6 +33,7 @@ const PROTECTED_PATHS = [
   "/manual/en",
   "/manual/en/fr",
   "/bar/secret",
+  "/report.json",
 ] as const;
 
 async function assertAuthGuard(baseUrl: string): Promise<void> {
@@ -235,6 +236,8 @@ describe("unsafe middleware matcher rejection", () => {
     ["/:path(.*)*/end", /may match an empty value or path delimiter/],
     ["/:path(.*)+/end", /may match an empty value or path delimiter/],
     ["/:path((?:a+)+)", /contains nested repetition/],
+    ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
+    ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
   ] as const)(
     "rejects unsafe matcher %s during the build config phase",
     async (matcher, reason) => {
@@ -286,5 +289,41 @@ describe("unsafe middleware matcher rejection", () => {
       stderr: expect.stringContaining("Middleware will run for all paths"),
       stdout: "",
     });
+  });
+});
+
+describe("invalid middleware matcher object auth guards", () => {
+  it("rejects an object matcher with an unsupported field before production build", async () => {
+    const root = await createIsolatedFixture(
+      FIXTURE_DIR,
+      "vinext-middleware-matcher-invalid-object-",
+      (source) => path.basename(source) !== "wrangler.jsonc",
+    );
+    try {
+      await fs.writeFile(
+        path.join(root, "middleware.ts"),
+        `export function middleware() {
+  return new Response("blocked by middleware", {
+    status: 403,
+    headers: { "x-auth-guard": "blocked" },
+  })
+}
+export const config = {
+  matcher: [{ source: "/admin/:path*", typo: true }],
+}
+`,
+      );
+
+      await expect(
+        createBuilder({
+          root,
+          configFile: false,
+          plugins: [vinext({ appDir: root })],
+          logLevel: "silent",
+        }),
+      ).rejects.toThrow(/matcher object contains unsupported field "typo"/);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

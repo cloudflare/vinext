@@ -8,3 +8,10 @@ for (const modifier of ["*", "+"]) {
     throw new Error(`Unsafe matcher did not fail closed: ${matcher}`);
   }
 }
+
+// Sequential repetitions that can consume the same text can also produce
+// catastrophic backtracking without a quantifier directly wrapping a group.
+const overlappingRepetition = "/:path(a+.*a+)";
+if (!matchPattern(`/${"a".repeat(3_000)}b`, overlappingRepetition)) {
+  throw new Error(`Unsafe matcher did not fail closed: ${overlappingRepetition}`);
+}
