@@ -204,12 +204,13 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
   searchParams: URLSearchParams;
 };
 
-type HandleProgressiveActionRequestOptions = {
+type HandleProgressiveActionRequestOptions<TRoute> = {
   actionId: string | null;
   cleanPathname: string;
   contentType: string;
   middlewareContext: AppRscMiddlewareContext;
   request: Request;
+  routeMatch: AppRscRouteMatch<TRoute> | null;
 };
 
 /**
@@ -237,7 +238,7 @@ type ProgressiveActionFormStateResult =
       kind: "form-state";
     } & ProgressiveActionSideEffects);
 
-type HandleServerActionRequestOptions = {
+type HandleServerActionRequestOptions<TRoute> = {
   actionId: string | null;
   cleanPathname: string;
   contentType: string;
@@ -246,6 +247,8 @@ type HandleServerActionRequestOptions = {
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   request: Request;
+  routeMatch: AppRscRouteMatch<TRoute> | null;
+  routePathname: string;
   searchParams: URLSearchParams;
 };
 
@@ -308,7 +311,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    */
   registerCacheAdapters: (env?: Record<string, unknown>) => void;
   handleProgressiveActionRequest?: (
-    options: HandleProgressiveActionRequestOptions,
+    options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
   createPprFallbackShells?: (
@@ -316,7 +319,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     params: AppPageParams,
   ) => AppPagePprFallbackCacheShell[];
   handleServerActionRequest?: (
-    options: HandleServerActionRequestOptions,
+    options: HandleServerActionRequestOptions<TRoute>,
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
@@ -857,6 +860,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         contentType,
         middlewareContext,
         request,
+        routeMatch: preActionMatch,
       });
     } else if (preActionMatch?.route.__loadPage && !preActionMatch.route.__loadRouteHandler) {
       return createMissingServerActionResponse(options, null);
@@ -899,6 +903,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           middlewareContext,
           mountedSlotsHeader,
           request,
+          routeMatch: preActionMatch,
+          routePathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
           searchParams: getResolvedSearchParams(),
         })
       : null;

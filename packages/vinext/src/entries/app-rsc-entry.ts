@@ -999,6 +999,7 @@ export default createAppRscHandler({
     contentType,
     middlewareContext,
     request,
+    routeMatch,
   }) {
     const {
       handleProgressiveServerActionRequest: __handleProgressiveServerActionRequest,
@@ -1019,11 +1020,10 @@ export default createAppRscHandler({
       contentType,
       actionId,
     );
-    const __progressiveActionMatch = __isProgressiveAction ? matchRoute(cleanPathname) : null;
     const __hasPageRoute = Boolean(
-      __progressiveActionMatch &&
-        __progressiveActionMatch.route.__loadPage &&
-        !__progressiveActionMatch.route.__loadRouteHandler,
+      __isProgressiveAction &&
+        routeMatch?.route.__loadPage &&
+        !routeMatch.route.__loadRouteHandler,
     );
     return __handleProgressiveServerActionRequest({
       actionId,
@@ -1056,6 +1056,8 @@ export default createAppRscHandler({
     middlewareContext,
     mountedSlotsHeader,
     request,
+    routeMatch,
+    routePathname,
     searchParams,
   }) {
     const {
@@ -1063,7 +1065,7 @@ export default createAppRscHandler({
       readActionBodyWithLimit: __readBodyWithLimit,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
-    const __actionMatch = matchRoute(cleanPathname);
+    const __actionMatch = routeMatch;
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
@@ -1103,6 +1105,8 @@ export default createAppRscHandler({
         __clearRequestContext();
       },
       contentType,
+      currentRouteMatch: __actionMatch,
+      currentRoutePathname: routePathname,
       createNotFoundElement(actionRouteId) {
         return {
           ...__AppElementsWire.createMetadataEntries({

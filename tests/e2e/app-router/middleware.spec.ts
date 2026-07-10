@@ -110,6 +110,21 @@ test.describe("Middleware Block (OpenNext compat)", () => {
     expect(encodedStatic.body).not.toContain("Protected admin content");
   });
 
+  test("server action rerenders preserve encoded request route identity", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/action-revalidate`);
+    await expect(page.locator("#revalidate")).toBeVisible();
+    await page.evaluate(() => history.pushState(null, "", "/%2561dmin"));
+
+    const actionResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST",
+    );
+    await page.locator("#revalidate").click();
+    const actionResponse = await actionResponsePromise;
+
+    expect(new URL(actionResponse.url()).pathname).toBe("/%2561dmin");
+    expect(await actionResponse.text()).not.toContain("Protected admin content");
+  });
+
   for (const pathname of ["/foo/..%252fadmin", "/api/health/..%252fadmin"]) {
     test(`keeps encoded delimiters non-structural for ${pathname}`, async ({ request }) => {
       const response = await request.get(pathname);

@@ -243,6 +243,10 @@ export type HandleServerActionRscRequestOptions<
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
+  /** Route selected at the request boundary before action execution. */
+  currentRouteMatch: AppServerActionMatch<TRoute> | null;
+  /** Request-aware pathname identity used for current-route interception lookup. */
+  currentRoutePathname: string;
   createNotFoundElement: (routeId: string) => TElement;
   createPayloadRouteId: (pathname: string, interceptionContext: string | null) => string;
   createRscOnErrorHandler: (
@@ -1281,7 +1285,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      const currentMatch = options.matchRoute(options.cleanPathname);
+      const currentMatch = options.currentRouteMatch;
       // Hydrate the current route before resolving its runtime below.
       if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
@@ -1417,14 +1421,14 @@ export async function handleServerActionRscRequest<
 
     if (!actionThrew) rootParamsUsage.transitionToRender();
 
-    const match = options.matchRoute(options.cleanPathname);
+    const match = options.currentRouteMatch;
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
       const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
-        cleanPathname: options.cleanPathname,
+        cleanPathname: options.currentRoutePathname,
         currentParams: actionParams,
         currentRoute: actionRoute,
         findIntercept: options.findIntercept,
