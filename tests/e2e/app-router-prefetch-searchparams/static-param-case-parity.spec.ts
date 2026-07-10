@@ -28,6 +28,19 @@ test.describe("generated App param case parity in production", () => {
     ).toBe(404);
   });
 
+  test("chains generators within one parallel branch", async ({ request }) => {
+    expect(
+      (await request.get("/parallel-root-param/en/sequential-ownership/stories/b")).status(),
+    ).toBe(200);
+    for (const slug of ["a", "main", "other"]) {
+      expect(
+        (
+          await request.get(`/parallel-root-param/en/sequential-ownership/stories/${slug}`)
+        ).status(),
+      ).toBe(404);
+    }
+  });
+
   test("exact-matches scalar and catch-all generated params", async ({ request }) => {
     for (const pathname of [
       "/nextjs-compat/static-param-case-parity/scalar/AbC",

@@ -21,6 +21,7 @@ type GenerateStaticParamsSource = {
    */
   chained?: true;
   generateStaticParams: GenerateStaticParams;
+  independentChain?: number;
   paramAliases?: Readonly<Record<string, string>>;
   paramPatternParts?: readonly string[];
   routePatternParts?: readonly string[];
@@ -327,7 +328,7 @@ export function resolveAppPageGenerateStaticParamsSources(
     const name = getAppPageSegmentParamName(segment);
     return name ? [name] : [];
   });
-  for (const parallelBranch of options.parallelBranches ?? []) {
+  for (const [independentChain, parallelBranch] of (options.parallelBranches ?? []).entries()) {
     if (!parallelBranch) continue;
     const slotParamNames = parallelBranch.paramNames ?? routeParamNames;
     const paramAliases = Object.fromEntries(
@@ -345,6 +346,7 @@ export function resolveAppPageGenerateStaticParamsSources(
       if (typeof module?.generateStaticParams !== "function") return;
       sources.push({
         generateStaticParams: module.generateStaticParams,
+        independentChain,
         ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
         ...(parallelBranch.patternParts ? { paramPatternParts: parallelBranch.patternParts } : {}),
         ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
@@ -443,15 +445,57 @@ function remapStaticParamsToRouteParams(
   );
 }
 
-function mergeStaticParamResults(
-  parentParams: readonly Record<string, unknown>[],
-  staticParams: readonly Record<string, unknown>[],
-  preserveParentsOnEmpty: boolean,
-): Record<string, unknown>[] {
-  if (staticParams.length === 0) {
-    return preserveParentsOnEmpty ? [...parentParams] : [];
+async function generateIndependentStaticParams(
+  sources: readonly GenerateStaticParamsSource[],
+  primaryParams: readonly Record<string, unknown>[] | null,
+  requestParams: AppPageParams,
+): Promise<{ staticParams: Record<string, unknown>[]; validated: boolean }> {
+  let rows = (primaryParams ?? []).map((params) => ({ params, branchParams: {} }));
+  let hasParentParams = rows.length > 0;
+  let validated = false;
+
+  for (const source of sources) {
+    const parents = hasParentParams ? rows : [{ params: {}, branchParams: {} }];
+    const nextRows: typeof rows = [];
+
+    for (const parent of parents) {
+      const sourceParams = remapRouteParams(
+        { ...requestParams, ...parent.params } as AppPageParams,
+        source,
+      );
+      const branchParams = remapRouteParams(parent.branchParams as AppPageParams, source);
+      const result = await runWithFetchDedupe(() =>
+        source.generateStaticParams({
+          params: {
+            ...pickRouteParams(sourceParams, source.parentParamNames),
+            ...branchParams,
+          },
+        }),
+      );
+      if (!Array.isArray(result)) {
+        if (hasParentParams) nextRows.push(parent);
+        continue;
+      }
+
+      validated = true;
+      const routeResults = remapStaticParamsToRouteParams(result, source);
+      if (routeResults.length === 0) {
+        if (hasParentParams) nextRows.push(parent);
+        continue;
+      }
+      for (const routeResult of routeResults) {
+        nextRows.push({
+          params: { ...parent.params, ...routeResult },
+          branchParams: { ...parent.branchParams, ...routeResult },
+        });
+      }
+    }
+
+    rows = nextRows;
+    hasParentParams = rows.length > 0;
   }
-  return parentParams.flatMap((parent) => staticParams.map((params) => ({ ...parent, ...params })));
+
+  return { staticParams: rows.map((row) => row.params), validated };
 }
 
 async function generateChainedStaticParams(
@@ -531,23 +575,23 @@ export async function validateAppPageDynamicParams(
     chainedStaticParams = await generateChainedStaticParams(chainedSources);
   }
 
+  const independentChains = new Map<unknown, GenerateStaticParamsSource[]>();
+  for (const source of generateStaticParamsSources.filter((source) => !source.chained)) {
+    const chain = independentChains.get(source.independentChain ?? source) ?? [];
+    chain.push(source);
+    independentChains.set(source.independentChain ?? source, chain);
+  }
+
   let validatedIndependentResults = false;
-  for (const source of generateStaticParamsSources) {
-    if (source.chained) continue;
-    const sourceParams = remapRouteParams(options.params, source);
-    const staticParams = await runWithFetchDedupe(() =>
-      source.generateStaticParams({
-        params: pickRouteParams(sourceParams, source.parentParamNames),
-      }),
+  for (const sources of independentChains.values()) {
+    const result = await generateIndependentStaticParams(
+      sources,
+      chainedStaticParams,
+      options.params,
     );
-    if (Array.isArray(staticParams)) {
+    if (result.validated) {
       validatedIndependentResults = true;
-      const combinedStaticParams = mergeStaticParamResults(
-        chainedStaticParams ?? [{}],
-        remapStaticParamsToRouteParams(staticParams, source),
-        chainedStaticParams !== null,
-      );
-      if (!areStaticParamsAllowed(options.params, combinedStaticParams, true)) {
+      if (!areStaticParamsAllowed(options.params, result.staticParams, true)) {
         options.clearRequestContext();
         return notFoundResponse();
       }

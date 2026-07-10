@@ -332,6 +332,44 @@ describe("app page request helpers", () => {
     await expect(validate("other")).resolves.toMatchObject({ status: 404 });
   });
 
+  it("chains multiple generators within one parallel branch", async () => {
+    const firstGenerateStaticParams = vi.fn(() => [{ slug: "a" }]);
+    const secondGenerateStaticParams = vi.fn(() => [{ slug: "b" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: firstGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          page: { generateStaticParams: secondGenerateStaticParams },
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "sequential-ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("b")).resolves.toBeNull();
+    await expect(validate("a")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("main")).resolves.toMatchObject({ status: 404 });
+    expect(firstGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(secondGenerateStaticParams).toHaveBeenCalledWith({
+      params: { locale: "en", slug: "a" },
+    });
+  });
+
   it("enforces generateStaticParams from a parallel page", async () => {
     const response = await validateAppPageDynamicParams({
       clearRequestContext() {},

@@ -69,6 +69,19 @@ test.describe("parallel routes under a static root param", () => {
     ).toBe(404);
   });
 
+  test("chains generators within one parallel branch", async ({ request }) => {
+    expect(
+      (await request.get("/parallel-root-param/en/sequential-ownership/stories/b")).status(),
+    ).toBe(200);
+    for (const slug of ["a", "main", "other"]) {
+      expect(
+        (
+          await request.get(`/parallel-root-param/en/sequential-ownership/stories/${slug}`)
+        ).status(),
+      ).toBe(404);
+    }
+  });
+
   test("renders the 404 boundary for an unknown generated child during soft navigation", async ({
     page,
   }) => {
