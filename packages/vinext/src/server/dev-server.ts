@@ -6,7 +6,7 @@ import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { NEXTJS_CACHE_HEADER, NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import {
   decideIsr,
   buildMissIsrCacheControl,
@@ -22,6 +22,7 @@ import {
   setRevalidateDuration,
   getRevalidateDuration,
   PRERENDER_REVALIDATE_HEADER,
+  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
@@ -1253,6 +1254,18 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
+          if (
+            isOnDemandRevalidate &&
+            req.headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] !== undefined &&
+            !cached
+          ) {
+            // Match Next.js's Pages handler: onlyGenerated is a successful
+            // no-op when a blocking fallback path has never entered the ISR
+            // cache. Do not call getStaticProps or create the missing entry.
+            res.writeHead(404, { [NEXTJS_CACHE_HEADER]: "REVALIDATED" });
+            res.end("This page could not be found");
+            return;
+          }
           const previewData = requestPreviewData;
           staticPropsPreviewData = previewData;
           const previewContext =

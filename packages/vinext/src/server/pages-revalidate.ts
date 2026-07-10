@@ -23,6 +23,7 @@ import {
   getRevalidateSecret,
 } from "./isr-cache.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 
 const MAX_REVALIDATE_REDIRECTS = 10;
 
@@ -57,7 +58,13 @@ export async function performOnDemandRevalidate(
     headers[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER] = "1";
   }
 
-  const res = await fetchRevalidateTarget(target, headers);
+  const executionContext = getRequestExecutionContext();
+  const dispatchRevalidate = executionContext?.dispatchPagesRevalidate;
+  if (dispatchRevalidate && executionContext.isInternalPagesRevalidation) {
+    throw new Error(`Cannot revalidate ${urlPath} from an internal revalidation request`);
+  }
+
+  const res = await fetchRevalidateTarget(target, headers, dispatchRevalidate);
 
   // Success detection mirrors Next.js's api-resolver: a successful revalidate
   // can return a non-200 status (e.g. `notFound: true` yields 404). Accept when
@@ -80,6 +87,7 @@ export async function performOnDemandRevalidate(
 async function fetchRevalidateTarget(
   initialTarget: URL,
   headers: Record<string, string>,
+  dispatchRevalidate?: (request: Request) => Promise<Response>,
 ): Promise<Response> {
   const origin = initialTarget.origin;
   let target = initialTarget;
@@ -88,7 +96,12 @@ async function fetchRevalidateTarget(
   // redirects manually so the revalidate secret is never forwarded off-origin.
   for (let redirects = 0; ; redirects++) {
     const request = new Request(target, { method: "HEAD", headers, redirect: "manual" });
-    const res = await fetch(request);
+    // Worker runtimes dispatch this request back through vinext's in-process
+    // request pipeline. A global same-origin fetch can bypass the Worker and
+    // reach the zone origin unless global_fetch_strictly_public is enabled,
+    // which would expose the baked revalidation credential. Node keeps the
+    // upstream-compatible HTTP loopback when no dispatcher is installed.
+    const res = dispatchRevalidate ? await dispatchRevalidate(request) : await fetch(request);
     if (!isRedirectStatus(res.status)) {
       return res;
     }

@@ -4,6 +4,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function stubFetch() {
   const fetchMock = vi.fn(
@@ -112,6 +113,54 @@ describe("performOnDemandRevalidate", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(firstFetchHeaders(fetchMock)[PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER]).toBe("1");
+  });
+
+  it("uses the Worker in-process dispatcher instead of global fetch", async () => {
+    const fetchMock = stubFetch();
+    const dispatchPagesRevalidate = vi.fn(
+      async (_request: Request) =>
+        new Response(null, {
+          status: 200,
+          headers: { "x-nextjs-cache": "REVALIDATED" },
+        }),
+    );
+
+    await runWithExecutionContext(
+      {
+        waitUntil() {},
+        dispatchPagesRevalidate,
+      },
+      () =>
+        performOnDemandRevalidate(new Headers({ host: "public-origin.example" }), "/fixed-page", {
+          unstable_onlyGenerated: true,
+        }),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dispatchPagesRevalidate).toHaveBeenCalledOnce();
+    const request = dispatchPagesRevalidate.mock.calls[0]?.[0];
+    expect(request).toBeInstanceOf(Request);
+    expect(request?.url).toBe("http://public-origin.example/fixed-page");
+    expect(request?.headers.get(PRERENDER_REVALIDATE_HEADER)).toMatch(/^[a-f0-9]{64}$/);
+    expect(request?.headers.get(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER)).toBe("1");
+  });
+
+  it("rejects nested internal revalidation dispatch", async () => {
+    const dispatchPagesRevalidate = vi.fn(
+      async (_request: Request) => new Response(null, { status: 200 }),
+    );
+
+    await expect(
+      runWithExecutionContext(
+        {
+          waitUntil() {},
+          dispatchPagesRevalidate,
+          isInternalPagesRevalidation: true,
+        },
+        () => performOnDemandRevalidate(new Headers({ host: "app.local" }), "/fixed-page"),
+      ),
+    ).rejects.toThrow("from an internal revalidation request");
+    expect(dispatchPagesRevalidate).not.toHaveBeenCalled();
   });
 
   it("follows same-origin redirects without dropping revalidation headers", async () => {

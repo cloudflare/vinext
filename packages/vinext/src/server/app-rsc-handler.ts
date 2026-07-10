@@ -1295,6 +1295,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       return pagesDataNormalization.notFoundResponse;
     }
     const isPagesDataRequest = pagesDataNormalization?.isDataReq === true;
+    const executionContext = isExecutionContextLike(ctx)
+      ? ctx
+      : (getRequestExecutionContext() ?? null);
     // Read the trusted prerender route params before filtering strips the
     // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
     // validated value below so the second read in handleAppRscRequest still sees
@@ -1308,7 +1311,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       process.env.VINEXT_PRERENDER === "1" &&
       rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null &&
       rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
-    const filteredHeaders = filterInternalHeaders(rawRequest.headers);
+    const filteredHeaders = executionContext?.isInternalPagesRevalidation
+      ? new Headers(rawRequest.headers)
+      : filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }
@@ -1332,9 +1337,6 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
       : null;
 
-    const executionContext = isExecutionContextLike(ctx)
-      ? ctx
-      : (getRequestExecutionContext() ?? null);
     const headersContext = headersContextFromRequest(request, {
       draftModeSecret: options.draftModeSecret,
     });
