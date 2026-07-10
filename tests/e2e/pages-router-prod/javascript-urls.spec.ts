@@ -169,32 +169,32 @@ test.describe("pages-router-prod javascript-urls", () => {
   test("blocks javascript URLs returned by middleware data redirects", async ({ page }) => {
     const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
     beforePageLoad(page);
-    await page.goto(`${BASE}/about`);
+    const destination =
+      "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)";
+    const observedDataRedirects: string[] = [];
+    page.on("response", (response) => {
+      const redirect = response.headers()["x-nextjs-redirect"];
+      if (redirect) observedDataRedirects.push(redirect);
+    });
+    await page.goto(`${BASE}/ssr?dangerous-middleware-redirect=1`);
     await waitForHydration(page);
     const initialUrl = page.url();
 
     await page.evaluate(() => {
-      const router = window.next?.router;
+      const router = window.next?.router as
+        | { replace(url: string, as?: string): Promise<boolean> }
+        | undefined;
       if (!router) throw new Error("window.next.router is not installed");
-      void router.push("/about?dangerous-middleware-redirect=1");
+      // A distinct href forces route work while the masked URL remains fixed.
+      // Middleware probes the masked URL, including the dangerous redirect flag.
+      void router.replace(
+        "/ssr?dangerous-middleware-redirect=1&route-probe=1",
+        "/ssr?dangerous-middleware-redirect=1",
+      );
     });
 
-    await expect
-      .poll(async () => {
-        const logs = await page.evaluate(() => {
-          const value = Reflect.get(window, "__VINEXT_TEST_CONSOLE_ERRORS__");
-          return Array.isArray(value) ? value.map(String) : [];
-        });
-        return logs.some((message) =>
-          message.includes("has blocked a javascript: URL as a security precaution."),
-        );
-      })
-      .toBe(true);
-    expect(
-      getNavigationRequests().filter(
-        (request) => !request.url().includes(new URL(initialUrl).pathname),
-      ),
-    ).toHaveLength(0);
+    await expect.poll(() => observedDataRedirects.includes(destination)).toBe(true);
+    await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
     expect(new URL(page.url()).origin).toBe(BASE);
     expect(
       await page.evaluate(() =>

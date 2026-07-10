@@ -42,7 +42,7 @@ export function middleware(request: NextRequest) {
   }
 
   if (
-    url.pathname === "/about" &&
+    url.pathname === "/ssr" &&
     url.searchParams.has("dangerous-middleware-redirect") &&
     request.__isData
   ) {

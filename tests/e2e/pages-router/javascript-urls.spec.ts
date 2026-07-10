@@ -157,17 +157,39 @@ test.describe("pages-router javascript-urls", () => {
     expect(await dataResponse.text()).not.toContain("javascript:");
   });
 
-  test("does not execute javascript URLs returned by middleware redirects", async ({ page }) => {
-    await page.goto(`${BASE}/about`);
+  test("blocks javascript URLs returned by middleware data redirects", async ({ page }) => {
+    const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
+    beforePageLoad(page);
+    const destination =
+      "javascript:void(window.__VINEXT_PAGES_MIDDLEWARE_REDIRECT_EXECUTED__=true)";
+    const observedDataRedirects: string[] = [];
+    page.on("response", (response) => {
+      const redirect = response.headers()["x-nextjs-redirect"];
+      if (redirect) observedDataRedirects.push(redirect);
+    });
+    await page.goto(`${BASE}/ssr?dangerous-middleware-redirect=1`);
     await waitForHydration(page);
+    const initialUrl = page.url();
 
     await page.evaluate(() => {
-      const router = window.next?.router;
+      if (!window.__NEXT_DATA__) throw new Error("window.__NEXT_DATA__ is not installed");
+      // Dev omits buildId from __NEXT_DATA__; use the fixture's generateBuildId
+      // so the router takes the real /_next/data path.
+      Reflect.set(window.__NEXT_DATA__, "buildId", "test-build-id");
+      const router = window.next?.router as
+        | { replace(url: string, as?: string): Promise<boolean> }
+        | undefined;
       if (!router) throw new Error("window.next.router is not installed");
-      void router.push("/about?dangerous-middleware-redirect=1");
+      // A distinct href forces route work while the masked URL remains fixed.
+      // Middleware probes the masked URL, including the dangerous redirect flag.
+      void router.replace(
+        "/ssr?dangerous-middleware-redirect=1&route-probe=1",
+        "/ssr?dangerous-middleware-redirect=1",
+      );
     });
 
-    await page.waitForTimeout(500);
+    await expect.poll(() => observedDataRedirects.includes(destination)).toBe(true);
+    await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
     expect(new URL(page.url()).origin).toBe(BASE);
     expect(
       await page.evaluate(() =>
