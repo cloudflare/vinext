@@ -133,7 +133,7 @@ type PagesGsspContextResponse = {
 };
 
 type PagesRenderProps = Record<string, unknown> & {
-  pageProps: unknown;
+  pageProps?: unknown;
 };
 
 export type PagesPageModule = {
@@ -589,8 +589,13 @@ async function loadPagesAppInitialRenderProps(
   }
 
   if (initialProps) {
-    renderProps = normalizePagesRenderProps(initialProps);
-    pageProps = isUnknownRecord(renderProps.pageProps) ? renderProps.pageProps : {};
+    // `_app.getInitialProps` owns the complete render-props envelope. Next.js
+    // preserves that object even when a custom App omits `pageProps`; wrapping
+    // it would change the props passed to the App and mask its intentional
+    // missing-pageProps behavior.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+    renderProps = initialProps;
+    pageProps = isUnknownRecord(initialProps.pageProps) ? initialProps.pageProps : {};
   }
 
   return { kind: "props", pageProps, renderProps };

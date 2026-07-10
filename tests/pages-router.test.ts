@@ -2477,17 +2477,19 @@ describe("Pages Router integration", () => {
       expect(await res.json()).toEqual({});
     });
 
-    it("returns JSON 404 when getStaticPaths fallback:false rejects the path", async () => {
+    it("returns canonical notFound JSON when getStaticPaths fallback:false rejects the path", async () => {
       // /blog/[slug] has `fallback: false` and only allows the slugs listed
-      // in getStaticPaths. An unlisted slug must produce a JSON 404 for
-      // data requests (not the HTML 404 page) so the client router can
-      // hard-navigate instead of failing to parse HTML as JSON.
+      // in getStaticPaths. Next.js itself renders its HTML error response for
+      // this specific miss, but vinext intentionally keeps its existing JSON
+      // response and uses Next's canonical notFound data representation so the
+      // client router recognizes the SSG miss.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
       const res = await fetch(
         `${baseUrl}/_next/data/${BUILD_ID}/blog/this-slug-does-not-exist.json`,
       );
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
-      expect(await res.json()).toEqual({});
+      expect(await res.json()).toEqual({ notFound: true });
     });
 
     it("returns JSON 404 for a stale buildId (dev)", async () => {
