@@ -7614,7 +7614,9 @@ describe("middleware matcher patterns", () => {
       "/space-or-word/:value((?:\\s|[a-z])+)",
       "/digit-or-not/:value((?:\\d|\\D)+)",
       "/two-repeats/:value((?:a+)(?:a+))",
+      "/wrapped-two-repeats/:value((?:a+(?:))(?:a+(?:)))",
       "/disjoint-repeats/:value((?:a+)(?:b+)(?:a+))",
+      "/wrapped-disjoint-repeats/:value((?:a+(?:))(?:b+(?:))(?:a+(?:)))",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -7644,6 +7646,16 @@ describe("middleware matcher patterns", () => {
       expect(
         compileMiddlewareMatcherPattern(adjacentRepetitions),
         `${count} repeats`,
+      ).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("overlapping sequential repetition"),
+      });
+    }
+    for (const count of [3, 6, 7, 8]) {
+      const wrappedRepetitions = `/:path(${"(?:a+(?:))".repeat(count)})`;
+      expect(
+        compileMiddlewareMatcherPattern(wrappedRepetitions),
+        `${count} wrapped repeats`,
       ).toMatchObject({
         kind: "unsafe",
         error: expect.stringContaining("overlapping sequential repetition"),

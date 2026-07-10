@@ -33,6 +33,7 @@ for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
 
 for (const matcher of [
   ...[6, 7, 8, 9, 10].map((count) => `/:path(${"(?:a+)".repeat(count)})`),
+  ...[6, 7, 8].map((count) => `/:path(${"(?:a+(?:))".repeat(count)})`),
   `/:path(${"(?:a|aa)".repeat(26)})`,
 ]) {
   if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
@@ -42,7 +43,13 @@ for (const matcher of [
 
 // A single overlapping boundary is kept for common two-repeat matchers, and
 // non-overlapping repetitions do not compound the partition search.
-for (const pattern of ["(?:a+)(?:a+)", "(?:a+)(?:b+)(?:a+)", "[^/]+.*"]) {
+for (const pattern of [
+  "(?:a+)(?:a+)",
+  "(?:a+(?:))(?:a+(?:))",
+  "(?:a+)(?:b+)(?:a+)",
+  "(?:a+(?:))(?:b+(?:))(?:a+(?:))",
+  "[^/]+.*",
+]) {
   const issue = analyzeRegexSafety(pattern, { ignoreCase: true });
   if (issue) throw new Error(`Safe sequence was rejected: ${pattern} (${issue})`);
 }

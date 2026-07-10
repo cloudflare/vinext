@@ -177,7 +177,12 @@ class RegexParser {
     while (this.index < this.pattern.length) {
       const character = this.pattern[this.index];
       if (character === "|" || character === ")") break;
-      children.push(this.parseTerm());
+      const term = this.parseTerm();
+      // Parentheses around a sequence do not change which terms can consume
+      // adjacent input. Flatten those transparent wrappers so empty groups
+      // cannot hide overlapping repetitions from sequence analysis.
+      if (term.kind === "sequence") children.push(...term.children);
+      else children.push(term);
     }
     return children.length === 1 ? children[0] : this.node({ kind: "sequence", children });
   }
