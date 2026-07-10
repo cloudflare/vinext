@@ -214,7 +214,7 @@ describe("app route handler execution helpers", () => {
         return ["tag:demo"];
       },
       getDraftModeCookieHeader() {
-        return "draft=1; Path=/";
+        return null;
       },
       handler: { dynamic: "auto" },
       handlerFn() {
@@ -261,7 +261,7 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-middleware")).toBe("present");
-    expect(response.headers.getSetCookie?.()).toEqual(["session=1; Path=/", "draft=1; Path=/"]);
+    expect(response.headers.getSetCookie?.()).toEqual(["session=1; Path=/"]);
     await expect(response.text()).resolves.toBe("ok");
     expect(isrSetCalls).toEqual([
       {

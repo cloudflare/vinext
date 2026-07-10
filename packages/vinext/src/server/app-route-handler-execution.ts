@@ -273,6 +273,10 @@ export async function executeAppRouteHandler(
 
     const pendingCookies = options.getAndClearPendingCookies();
     const draftCookie = options.getDraftModeCookieHeader();
+    // A route may enable or disable draft mode after dispatch captured the
+    // request's initial state. Any emitted draft cookie means this response
+    // crossed that boundary and must remain private too.
+    const shouldApplyDraftPolicy = options.isDraftMode === true || draftCookie != null;
     options.clearRequestContext();
 
     return applyDraftModeCachePolicy(
@@ -284,11 +288,12 @@ export async function executeAppRouteHandler(
         }),
         options.middlewareContext,
       ),
-      options.isDraftMode === true,
+      shouldApplyDraftPolicy,
     );
   } catch (error) {
     const pendingCookies = options.getAndClearPendingCookies();
     const draftCookie = options.getDraftModeCookieHeader();
+    const shouldApplyDraftPolicy = options.isDraftMode === true || draftCookie != null;
     const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url, {
       isAction: isPossibleAppRouteActionRequest(options.request),
     });
@@ -311,7 +316,7 @@ export async function executeAppRouteHandler(
             ),
             options.middlewareContext,
           ),
-          options.isDraftMode === true,
+          shouldApplyDraftPolicy,
         );
       }
 
@@ -320,7 +325,7 @@ export async function executeAppRouteHandler(
           new Response(null, { status: specialError.statusCode }),
           options.middlewareContext,
         ),
-        options.isDraftMode === true,
+        shouldApplyDraftPolicy,
       );
     }
 
@@ -344,7 +349,7 @@ export async function executeAppRouteHandler(
         new Response(null, { status: 500 }),
         options.middlewareContext,
       ),
-      options.isDraftMode === true,
+      shouldApplyDraftPolicy,
     );
   } finally {
     options.setHeadersAccessPhase(previousHeadersPhase);

@@ -24,6 +24,10 @@ async function waitForServer(): Promise<void> {
 async function setDraftMode(request: APIRequestContext, enabled: boolean): Promise<void> {
   const response = await request.get(`${BASE_URL}/api/draft-${enabled ? "enable" : "disable"}`);
   expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toContain("no-store");
+  expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect(response.headers()["cache-tag"]).toBeUndefined();
 }
 
 async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {

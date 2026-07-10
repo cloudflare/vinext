@@ -13,6 +13,10 @@ async function setDraftMode(request: APIRequestContext, enabled: boolean): Promi
     `${BASE}/nextjs-compat/api/draft-${enabled ? "enable" : "disable"}`,
   );
   expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toContain("no-store");
+  expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect(response.headers()["cache-tag"]).toBeUndefined();
 }
 
 async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
