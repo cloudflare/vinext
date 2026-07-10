@@ -25,13 +25,15 @@ export type Route = {
 const RESERVED_PAGE_NAMES = new Set(["_app", "_document", "_error"]);
 
 // Route cache — invalidated when pages directory changes
-const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
+const routeCache = new Map<string, Promise<Route[]>>();
+const routeCacheGeneration = new Map<string, number>();
 
 /**
  * Invalidate cached routes for a given pages directory.
  * Called by the file watcher when pages are added/removed.
  */
 export function invalidateRouteCache(pagesDir: string): void {
+  routeCacheGeneration.set(pagesDir, (routeCacheGeneration.get(pagesDir) ?? 0) + 1);
   for (const key of routeCache.keys()) {
     if (key.startsWith(`pages:${pagesDir}:`) || key.startsWith(`api:${pagesDir}:`)) {
       routeCache.delete(key);
@@ -58,14 +60,7 @@ export async function pagesRouter(
 ): Promise<Route[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `pages:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
-  const cached = routeCache.get(cacheKey);
-  if (cached) return cached.promise;
-
-  const promise = scanPageRoutes(pagesDir, matcher);
-  routeCache.set(cacheKey, { routes: [], promise });
-  const routes = await promise;
-  routeCache.set(cacheKey, { routes, promise });
-  return routes;
+  return getCachedRoutes(cacheKey, pagesDir, () => scanPageRoutes(pagesDir, matcher));
 }
 
 async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
@@ -206,14 +201,35 @@ export async function apiRouter(
 ): Promise<Route[]> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `api:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
-  const cached = routeCache.get(cacheKey);
-  if (cached) return cached.promise;
+  return getCachedRoutes(cacheKey, pagesDir, () => scanApiRoutes(pagesDir, matcher));
+}
 
-  const promise = scanApiRoutes(pagesDir, matcher);
-  routeCache.set(cacheKey, { routes: [], promise });
-  const routes = await promise;
-  routeCache.set(cacheKey, { routes, promise });
-  return routes;
+async function getCachedRoutes(
+  cacheKey: string,
+  pagesDir: string,
+  scan: () => Promise<Route[]>,
+): Promise<Route[]> {
+  const cached = routeCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = (async () => {
+    while (true) {
+      const scanGeneration = routeCacheGeneration.get(pagesDir) ?? 0;
+      const routes = await scan();
+      // A watcher may invalidate while the async filesystem scan is still in
+      // flight. Every caller shares this guarded promise, so retry instead of
+      // returning or resurrecting an obsolete result for concurrent callers.
+      if (scanGeneration === (routeCacheGeneration.get(pagesDir) ?? 0)) return routes;
+    }
+  })();
+  routeCache.set(cacheKey, promise);
+
+  try {
+    return await promise;
+  } catch (error) {
+    if (routeCache.get(cacheKey) === promise) routeCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
