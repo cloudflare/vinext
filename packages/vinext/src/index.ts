@@ -187,6 +187,12 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import {
+  createPreviewBuildCredentials,
+  getPreviewBuildCredentials,
+  type PreviewBuildCredentials,
+} from "./build/preview-credentials.js";
+import { createModuleDependencyCache } from "./build/module-dependency-cache.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
@@ -233,11 +239,11 @@ import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
-import { escapeRegExp } from "./utils/regex.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -278,11 +284,6 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-function getCacheDirPrefix(cacheDir: string): string {
-  const normalizedCacheDir = toSlash(cacheDir);
-  return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
-}
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
@@ -533,19 +534,44 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 }
 
 async function collectDevPagesAppStylesheetAssets(
-  root: string,
   appFilePath: string,
-  resolve: ResolveFromImporter,
+  getModuleDependencies: (modulePath: string) => Promise<DevPagesModuleDependency[]>,
 ): Promise<string[]> {
   const stylesheetAssets: string[] = [];
   const seenAssets = new Set<string>();
   const seenModules = new Set<string>();
 
   async function visitModule(modulePath: string): Promise<void> {
+    if (seenModules.has(modulePath)) return;
+    seenModules.add(modulePath);
+
+    for (const dependency of await getModuleDependencies(modulePath)) {
+      if (dependency.type === "stylesheet") {
+        if (seenAssets.has(dependency.asset)) continue;
+        seenAssets.add(dependency.asset);
+        stylesheetAssets.push(dependency.asset);
+      } else {
+        await visitModule(dependency.id);
+      }
+    }
+  }
+
+  await visitModule(appFilePath);
+  return stylesheetAssets;
+}
+
+type DevPagesModuleDependency =
+  | { type: "stylesheet"; asset: string }
+  | { type: "script"; id: string };
+
+function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFromImporter) {
+  return createModuleDependencyCache(collectModuleDependencies);
+
+  async function collectModuleDependencies(
+    modulePath: string,
+  ): Promise<DevPagesModuleDependency[]> {
     const cleanModulePath = stripViteModuleQuery(modulePath);
-    if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return;
-    if (seenModules.has(cleanModulePath)) return;
-    seenModules.add(cleanModulePath);
+    if (!path.isAbsolute(cleanModulePath) || !fs.existsSync(cleanModulePath)) return [];
 
     let ast: ReturnType<typeof parseAst>;
     try {
@@ -553,9 +579,10 @@ async function collectDevPagesAppStylesheetAssets(
         lang: parserLanguageForScript(cleanModulePath),
       });
     } catch {
-      return;
+      return [];
     }
 
+    const dependencies: DevPagesModuleDependency[] = [];
     for (const statement of ast.body as AstStaticDependencyDeclaration[]) {
       if (
         statement.type !== "ImportDeclaration" &&
@@ -577,21 +604,17 @@ async function collectDevPagesAppStylesheetAssets(
 
       if (isStylesheetSpecifier(specifier)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
-        if (!asset || seenAssets.has(asset)) continue;
-        seenAssets.add(asset);
-        stylesheetAssets.push(asset);
-        continue;
-      }
-
-      if (specifier.includes("?") || specifier.includes("#")) continue;
-      if (isScriptModuleId(resolved.id)) {
-        await visitModule(resolved.id);
+        if (asset) dependencies.push({ type: "stylesheet", asset });
+      } else if (
+        !specifier.includes("?") &&
+        !specifier.includes("#") &&
+        isScriptModuleId(resolved.id)
+      ) {
+        dependencies.push({ type: "script", id: resolved.id });
       }
     }
+    return dependencies;
   }
-
-  await visitModule(appFilePath);
-  return stylesheetAssets;
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
@@ -1280,7 +1303,8 @@ type NitroSetupContext = {
 };
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
-  assertSupportedViteVersion();
+  const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
+    assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   let root: string;
   let pagesDir: string;
@@ -1310,16 +1334,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   let rscCompatibilityId: string | undefined;
-  const draftModeSecret = randomUUID();
+  let draftModeSecret = getPagesPreviewModeId();
+  let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
   // `configResolved` binds the resolved config, so multiple vinext builds in
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
-
-  // Populated from the resolved Vite config before transform filters are
-  // compiled, while keeping the filter object referenced by the plugin stable.
-  const typeofWindowIdFilter = { exclude: /(?!)/ };
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
@@ -1872,6 +1893,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
           process.env.NODE_ENV = resolvedNodeEnv;
         }
+        if (env?.command === "build") {
+          previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
+        }
+        draftModeSecret = previewBuildCredentials?.id ?? getPagesPreviewModeId();
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -3258,8 +3283,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
-        const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
-        typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
@@ -3540,11 +3563,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(appFilePath ? [appFilePath] : []),
               ...pagesRoutes.map((route) => route.filePath),
             ];
+            const getModuleDependencies = createDevPagesModuleDependencyReader(
+              root,
+              this.resolve.bind(this),
+            );
             for (const moduleFilePath of moduleFilePaths) {
               const stylesheetAssets = await collectDevPagesAppStylesheetAssets(
-                root,
                 moduleFilePath,
-                this.resolve.bind(this),
+                getModuleDependencies,
               );
               if (stylesheetAssets.length > 0) {
                 ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
@@ -5456,22 +5482,36 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Fold `typeof window` like Next.js before Rolldown resolves imports. This
-    // removes browser-only dynamic imports from server bundles before package
-    // conditional exports are evaluated.
     {
       name: "vinext:typeof-window",
+      configEnvironment(_name, environment) {
+        if (!useNativeTypeofWindowFolding) return null;
+        return {
+          define: {
+            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          },
+        };
+      },
+    },
+    // Toolchains before Vite 8.1.4 / Rolldown 1.1.4 can run native define
+    // folding too late to prune dead imports, so retain the custom fold for
+    // every build. Newer toolchains only need it for plugin-RSC's write-less
+    // analysis builds, which replace modules with lexer-discovered imports
+    // before native folding runs.
+    {
+      name: "vinext:typeof-window-scan",
+      apply(_config, environment) {
+        return !useNativeTypeofWindowFolding || environment.command === "build";
+      },
       enforce: "post",
       transform: {
-        filter: {
-          id: typeofWindowIdFilter,
-          code: /typeof\s+window/,
-        },
+        filter: { code: /\btypeof\s+window\b/ },
         handler(code, id) {
-          const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
-          if (toSlash(id).startsWith(cacheDirPrefix)) {
+          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
             return null;
           }
+          const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
+          if (toSlash(id).startsWith(cacheDir)) return null;
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment), id);
         },
       },
@@ -5527,6 +5567,17 @@ export const loadServerActionClient = ${
         if (sharedRevalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(sharedRevalidateSecret);
+        }
+        if (previewBuildCredentials) {
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(
+            previewBuildCredentials.id,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_SIGNING_KEY"] = JSON.stringify(
+            previewBuildCredentials.signingKey,
+          );
+          serverDefines["process.env.__VINEXT_PREVIEW_MODE_ENCRYPTION_KEY"] = JSON.stringify(
+            previewBuildCredentials.encryptionKey,
+          );
         }
 
         return { define: serverDefines };

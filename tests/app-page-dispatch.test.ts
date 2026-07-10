@@ -293,6 +293,7 @@ type CreateDispatchOptionsOverrides = {
   mountedSlotsHeader?: string | null;
   params?: Record<string, string | string[]>;
   pprFallbackCacheShells?: DispatchOptions["pprFallbackCacheShells"];
+  pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
   probePage?: DispatchOptions["probePage"];
@@ -386,6 +387,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     pprFallbackCacheShells: overrides.pprFallbackCacheShells,
+    pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage: overrides.probePage ?? (() => null),
@@ -569,6 +571,42 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it("disables streaming metadata while producing prerendered HTML", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({ buildPageElement });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: false,
+    });
+  });
+
+  it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      serveStreamingMetadata: true,
+    });
+  });
+
   it("does not run a speculative connection() page probe for HTML renders", async () => {
     const probePage = vi.fn(async () => {
       await connection();
@@ -2407,7 +2445,11 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("popular");
     expect(buildOptions).toEqual([
-      { observeMetadataSearchParamsAccess: true, observePageSearchParamsAccess: true },
+      {
+        observeMetadataSearchParamsAccess: true,
+        observePageSearchParamsAccess: true,
+        serveStreamingMetadata: true,
+      },
     ]);
   });
 
@@ -2474,9 +2516,13 @@ describe("app page dispatch", () => {
     };
     let capturedWaitForAllReady: boolean | undefined;
     let capturedFallbackToErrorDocument: boolean | undefined;
+    let capturedServeStreamingMetadata: boolean | undefined;
     const isrSet = vi.fn(async () => {});
     const { options } = createDispatchOptions({
-      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      buildPageElement: async (_route, _params, _opts, _searchParams, _layout, buildOptions) => {
+        capturedServeStreamingMetadata = buildOptions?.serveStreamingMetadata;
+        return React.createElement("main", null, "fresh");
+      },
       cleanPathname: "/posts/hello",
       isProduction: true,
       isrGet: vi.fn(async () =>
@@ -2517,6 +2563,7 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
+    expect(capturedServeStreamingMetadata).toBe(false);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
   });

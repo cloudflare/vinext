@@ -4,6 +4,7 @@ import MagicString from "magic-string";
 import { parseAst, type Plugin } from "vite";
 import {
   collectBindingNames,
+  DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   hasRange,
   isAstRecord,
@@ -23,6 +24,12 @@ import {
 } from "./ast-scope.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
+const REQUIRE_PRESCAN =
+  /(?:\brequire\b|(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\}))(?:q|\\u(?:0071|\{0*71\}))(?:u|\\u(?:0075|\{0*75\}))(?:i|\\u(?:0069|\{0*69\}))(?:r|\\u(?:0072|\{0*72\}))(?:e|\\u(?:0065|\{0*65\})))/i;
+const DYNAMIC_REQUEST_PRESCAN = new RegExp(
+  String.raw`(?:${REQUIRE_PRESCAN.source}|${DYNAMIC_IMPORT_PRESCAN.source})`,
+  "i",
+);
 const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
@@ -726,7 +733,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
   // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
   // bare `import` (static ESM) otherwise matched ~every module, so this plugin
   // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
-  if (!code.includes("require") && !mayContainDynamicImport(code)) return null;
+  if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
 
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =
@@ -885,6 +892,7 @@ export function createIgnoreDynamicRequestsPlugin(
         id: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
         },
+        code: DYNAMIC_REQUEST_PRESCAN,
       },
       handler(code, id) {
         const cleanId = id.split("?", 1)[0];

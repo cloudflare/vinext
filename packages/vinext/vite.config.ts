@@ -1,5 +1,10 @@
 import { defineConfig } from "vite-plus";
 
+const typescriptPackageUrl = import.meta.resolve("typescript/package.json");
+const { default: getTscPath } = await import(
+  new URL("lib/getExePath.js", typescriptPackageUrl).href
+);
+
 /**
  * Keep third-party bare specifiers external — even when imported dynamically.
  *
@@ -83,7 +88,9 @@ export default defineConfig({
       entryFileNames: renameBundledDepsOutput,
       chunkFileNames: renameBundledDepsOutput,
     },
-    dts: true,
+    dts: {
+      tsgo: { path: getTscPath() },
+    },
     fixedExtension: false,
     format: "esm",
     unbundle: true,

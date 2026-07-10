@@ -97,6 +97,155 @@ describe("Vite tsconfig paths support", () => {
     expect(resolvedConfig?.resolve?.tsconfigPaths).toBe(true);
   });
 
+  it("uses custom typeof window folding before Vite 8.1.4", async () => {
+    const root = setupProject({ name: "vite", version: "8.1.3" });
+    process.chdir(root);
+
+    const plugins = vinext({ appDir: root });
+    const definePlugin = await findNamedPlugin(plugins, "vinext:typeof-window");
+    const scanPlugin = await findNamedPlugin(plugins, "vinext:typeof-window-scan");
+    if (typeof definePlugin?.configEnvironment !== "function") {
+      throw new Error("vinext:typeof-window configEnvironment hook not found");
+    }
+    if (!scanPlugin?.transform || typeof scanPlugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
+    }
+
+    expect(typeof scanPlugin.apply).toBe("function");
+    expect((scanPlugin.apply as Function)({}, { command: "serve" })).toBe(true);
+    expect(
+      definePlugin.configEnvironment.call(
+        {} as never,
+        "server",
+        { consumer: "server" },
+        {} as never,
+      ),
+    ).toBeNull();
+    expect(
+      await scanPlugin.transform.handler.call(
+        {
+          environment: {
+            config: {
+              build: { write: true },
+              cacheDir: path.join(root, ".vite"),
+              consumer: "server",
+            },
+          },
+        } as never,
+        `export const browser = typeof window !== "undefined"`,
+        path.join(root, "app.js"),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("uses native typeof window folding from Vite 8.1.4", async () => {
+    const root = setupProject({ name: "vite", version: "8.1.4" });
+    process.chdir(root);
+
+    const plugins = vinext({ appDir: root });
+    const definePlugin = await findNamedPlugin(plugins, "vinext:typeof-window");
+    const scanPlugin = await findNamedPlugin(plugins, "vinext:typeof-window-scan");
+    if (typeof definePlugin?.configEnvironment !== "function") {
+      throw new Error("vinext:typeof-window configEnvironment hook not found");
+    }
+    if (!scanPlugin?.transform || typeof scanPlugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
+    }
+
+    expect(typeof scanPlugin.apply).toBe("function");
+    expect((scanPlugin.apply as Function)({}, { command: "serve" })).toBe(false);
+    expect(
+      definePlugin.configEnvironment.call(
+        {} as never,
+        "server",
+        { consumer: "server" },
+        {} as never,
+      ),
+    ).toEqual({ define: { "typeof window": '"undefined"' } });
+    expect(
+      await scanPlugin.transform.handler.call(
+        {
+          environment: {
+            config: {
+              build: { write: true },
+              cacheDir: path.join(root, ".vite"),
+              consumer: "server",
+            },
+          },
+        } as never,
+        `export const browser = typeof window !== "undefined"`,
+        path.join(root, "app.js"),
+      ),
+    ).toBeNull();
+  });
+
+  it("uses bundled Rolldown capability from npm alias packages", async () => {
+    const root = setupProject({
+      name: "@voidzero-dev/vite-plus-core",
+      version: "0.2.2",
+      bundledVersions: { vite: "8.1.2", rolldown: "1.1.4" },
+    });
+    process.chdir(root);
+
+    const plugins = vinext({ appDir: root });
+    const definePlugin = await findNamedPlugin(plugins, "vinext:typeof-window");
+    const scanPlugin = await findNamedPlugin(plugins, "vinext:typeof-window-scan");
+    if (typeof definePlugin?.configEnvironment !== "function") {
+      throw new Error("vinext:typeof-window configEnvironment hook not found");
+    }
+    if (!scanPlugin?.transform || typeof scanPlugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
+    }
+
+    expect(
+      definePlugin.configEnvironment.call(
+        {} as never,
+        "server",
+        { consumer: "server" },
+        {} as never,
+      ),
+    ).toEqual({ define: { "typeof window": '"undefined"' } });
+    expect(
+      await scanPlugin.transform.handler.call(
+        {
+          environment: {
+            config: {
+              build: { write: true },
+              cacheDir: path.join(root, ".vite"),
+              consumer: "server",
+            },
+          },
+        } as never,
+        `export const browser = typeof window !== "undefined"`,
+        path.join(root, "app.js"),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps custom folding for npm alias packages with older bundled Rolldown", async () => {
+    const root = setupProject({
+      name: "@voidzero-dev/vite-plus-core",
+      version: "0.2.1",
+      bundledVersions: { vite: "8.1.2", rolldown: "1.1.3" },
+    });
+    process.chdir(root);
+
+    const plugins = vinext({ appDir: root });
+    const definePlugin = await findNamedPlugin(plugins, "vinext:typeof-window");
+    if (typeof definePlugin?.configEnvironment !== "function") {
+      throw new Error("vinext:typeof-window configEnvironment hook not found");
+    }
+
+    expect(
+      definePlugin.configEnvironment.call(
+        {} as never,
+        "server",
+        { consumer: "server" },
+        {} as never,
+      ),
+    ).toBeNull();
+  });
+
   it("materializes simple tsconfig path aliases into resolve.alias on Vite 8", async () => {
     const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);

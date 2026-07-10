@@ -6,35 +6,14 @@ import {
   createRscRedirectLocation,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
-import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
+import { VINEXT_RSC_REDIRECT_HEADER, VINEXT_RSC_REDIRECT_TYPE_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
-import { addBasePathToPathname } from "../utils/base-path.js";
 import { isPromiseLike } from "../utils/promise.js";
+import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
-
-/**
- * Builds the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest that
- * Next.js encodes on `redirect()` / `permanentRedirect()` throws. Used when
- * we synthesize a flight payload for an RSC navigation: the digest must
- * round-trip through the client's `RedirectErrorBoundary` so the same
- * `getURLFromRedirectError` / `getRedirectTypeFromError` helpers decode it.
- *
- * The URL is included verbatim, not encoded — Next.js's `getRedirectError`
- * sets `digest = ${CODE};${type};${url};${status};` with the raw URL, and the
- * client decodes via `error.digest.split(';').slice(2, -2).join(';')`. We
- * default `type=replace` because `redirect()` is replace-style outside of
- * server actions, matching Next.js's `getRedirectError` default.
- *
- * Reference:
- *   `.nextjs-ref/packages/next/src/client/components/redirect.ts:20-23`
- *   `.nextjs-ref/packages/next/src/client/components/redirect-error.ts`
- */
-function formatNextRedirectDigest(options: { url: string; statusCode: number }): string {
-  return `NEXT_REDIRECT;replace;${options.url};${options.statusCode};`;
-}
 
 export type { LayoutFlags };
 
@@ -77,7 +56,13 @@ export function tagAppPageMetadataError<T>(error: T): T {
 }
 
 export type AppPageSpecialError =
-  | { kind: "redirect"; location: string; statusCode: number; fromMetadata?: boolean }
+  | {
+      kind: "redirect";
+      location: string;
+      statusCode: number;
+      type?: "push" | "replace";
+      fromMetadata?: boolean;
+    }
   | { kind: "http-access-fallback"; statusCode: number; fromMetadata?: boolean };
 
 export type AppPageFontPreload = {
@@ -227,7 +212,7 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
   }
 
   const digest = String(error.digest);
-  const fromMetadata = (error as Record<symbol, unknown>)[APP_PAGE_METADATA_ERROR_MARKER] === true;
+  const fromMetadata = Reflect.get(error, APP_PAGE_METADATA_ERROR_MARKER) === true;
 
   const redirect = parseNextRedirectDigest(digest);
   if (redirect) {
@@ -235,6 +220,7 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
       kind: "redirect",
       location: redirect.url,
       statusCode: redirect.status,
+      type: redirect.type === "push" ? "push" : "replace",
       ...(fromMetadata ? { fromMetadata: true } : {}),
     };
   }
@@ -259,23 +245,19 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * in `app-render.tsx`: a `redirect("/about")` call from a page mounted at
  * `/blog` (basePath) produces `Location: /blog/about`.
  *
- * Skips prefixing when:
- *  - basePath is unset / empty
- *  - the target is a full URL pointing at a different origin (external redirect)
- *  - the target already starts with the basePath (caller did the work themselves)
+ * Skips prefixing only when basePath is unset or the raw target does not start
+ * with `/`, matching Next.js's literal `addPathPrefix()` contract.
  */
-function applyAppPageRedirectBasePath(
-  location: string,
-  requestUrl: string,
-  basePath: string | undefined,
-): string {
-  const resolved = new URL(location, requestUrl);
-  const requestOrigin = new URL(requestUrl).origin;
-  if (!basePath || resolved.origin !== requestOrigin) {
-    return resolved.toString();
-  }
-  resolved.pathname = addBasePathToPathname(resolved.pathname, basePath);
-  return resolved.toString();
+function applyAppPageRedirectBasePath(location: string, basePath: string | undefined): string {
+  if (!basePath || !location.startsWith("/")) return location;
+
+  const queryIndex = location.indexOf("?");
+  const hashIndex = location.indexOf("#");
+  const suffixIndex =
+    queryIndex === -1 ? hashIndex : hashIndex === -1 ? queryIndex : Math.min(queryIndex, hashIndex);
+  const pathname = suffixIndex === -1 ? location : location.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? "" : location.slice(suffixIndex);
+  return `${basePath}${pathname}${suffix}`;
 }
 
 /**
@@ -336,11 +318,11 @@ export async function buildAppPageSpecialErrorResponse(
     // /<basePath>/<target> before the RSC cache-busting transform sees them.
     const prefixedLocation = applyAppPageRedirectBasePath(
       options.specialError.location,
-      options.request.url,
       options.basePath,
     );
     const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
     const digest = formatNextRedirectDigest({
+      type: options.specialError.type ?? "replace",
       url: digestUrl,
       statusCode: options.specialError.statusCode,
     });
@@ -381,10 +363,6 @@ export async function buildAppPageSpecialErrorResponse(
 
       const headers = new Headers({
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
-        // Side-channel signal so vinext's client loop can detect the redirect
-        // without having to decode the flight body first. See
-        // `VINEXT_RSC_REDIRECT_HEADER` in server/headers.ts for the rationale.
-        [VINEXT_RSC_REDIRECT_HEADER]: digestUrl,
       });
       applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
       // Mirror the regular RSC response by stamping the build-time compatibility
@@ -395,6 +373,11 @@ export async function buildAppPageSpecialErrorResponse(
       // Preserve middleware response headers (Set-Cookie, custom headers, etc.)
       // exactly like the 307 path does — the client will still see them.
       mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+      // Framework-owned redirect semantics must win over middleware headers.
+      // The Flight digest remains authoritative; these headers are only the
+      // early client side-channel for following it without decoding first.
+      headers.set(VINEXT_RSC_REDIRECT_HEADER, digestUrl);
+      headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, options.specialError.type ?? "replace");
       const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
       for (const cookie of pendingCookies) {
         headers.append("Set-Cookie", cookie);
@@ -660,6 +643,26 @@ export async function readAppPageBinaryStream(
   }
 
   return buffer.buffer;
+}
+
+export async function bufferAppPageBinaryStream(
+  stream: ReadableStream<Uint8Array>,
+): Promise<ReadableStream<Uint8Array>> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
 }
 
 export function teeAppPageRscStreamForCapture(

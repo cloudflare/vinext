@@ -227,6 +227,44 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("renders unlisted fallback false paths in preview mode without caching them", async () => {
+    const isrSet = vi.fn(async () => {});
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrSet,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: "known" } }],
+            };
+          },
+          async getStaticProps(context) {
+            return {
+              props: {
+                preview: context.preview,
+                previewData: context.previewData,
+                slug: context.params?.slug,
+              },
+            };
+          },
+        },
+        params: { slug: "missing" },
+        previewData: {},
+        query: { slug: "missing" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/missing",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isFallback: false,
+      pageProps: { preview: true, previewData: {}, slug: "missing" },
+    });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["null", null],
     ["undefined", undefined],

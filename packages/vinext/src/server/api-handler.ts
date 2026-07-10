@@ -29,7 +29,12 @@ import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 import { hasBasePath } from "../utils/base-path.js";
-import { attachPagesRequestCookies } from "./pages-node-compat.js";
+import {
+  attachPagesPreviewApi,
+  attachPagesRequestCookies,
+  type PagesReqResRequest,
+  type PagesReqResResponse,
+} from "./pages-node-compat.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -38,6 +43,9 @@ type NextApiRequest = {
   query: Record<string, string | string[]>;
   body: unknown;
   cookies: Record<string, string>;
+  preview?: true;
+  draftMode?: true;
+  previewData: object | string | false;
 } & IncomingMessage;
 
 /**
@@ -47,8 +55,14 @@ type NextApiResponse = {
   status(code: number): NextApiResponse;
   json(data: unknown): void;
   send(data: unknown): void;
-  redirect(statusOrUrl: number | string, url?: string): void;
+  redirect(statusOrUrl: number | string, url?: string): NextApiResponse;
   revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void>;
+  setPreviewData(
+    data: object | string,
+    options?: { maxAge?: number; path?: string },
+  ): NextApiResponse;
+  clearPreviewData(options?: { path?: string }): NextApiResponse;
+  setDraftMode(options?: { enable?: boolean }): NextApiResponse;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {
@@ -286,7 +300,7 @@ function enhanceApiObjects(
   }) as NextApiRequest;
   attachPagesRequestCookies(apiReq);
 
-  const apiRes: NextApiResponse = Object.assign(res, {
+  const apiRes = Object.assign(res, {
     status(this: NextApiResponse, code: number) {
       this.statusCode = code;
       return this;
@@ -320,11 +334,18 @@ function enhanceApiObjects(
 
     redirect(this: NextApiResponse, statusOrUrl: number | string, url?: string) {
       if (typeof statusOrUrl === "string") {
-        this.writeHead(307, { Location: statusOrUrl });
-      } else {
-        this.writeHead(statusOrUrl, { Location: url ?? "" });
+        url = statusOrUrl;
+        statusOrUrl = 307;
       }
+      if (typeof statusOrUrl !== "number" || typeof url !== "string") {
+        throw new Error(
+          "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+        );
+      }
+      this.writeHead(statusOrUrl, { Location: url });
+      this.write(url);
       this.end();
+      return this;
     },
 
     // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
@@ -334,7 +355,11 @@ function enhanceApiObjects(
     async revalidate(this: NextApiResponse, urlPath: string, opts?: RevalidateOptions) {
       await performOnDemandRevalidate(req, urlPath, opts);
     },
-  });
+  }) as NextApiResponse;
+  attachPagesPreviewApi(
+    apiReq as unknown as PagesReqResRequest,
+    apiRes as unknown as PagesReqResResponse,
+  );
 
   return { apiReq, apiRes };
 }

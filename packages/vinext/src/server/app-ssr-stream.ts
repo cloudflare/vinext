@@ -30,6 +30,13 @@ type InlineCssRewriteResult = {
   consumedPrependCss: boolean;
 };
 
+// React's edge renderer schedules render continuations on timer tasks. Dynamic
+// SSR must let one such task run before the first stream pull, or fast Suspense
+// boundaries can flush fallback HTML that would otherwise resolve in place.
+export function waitAtLeastOneReactRenderTask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 const NAVIGATION_RUNTIME_REFERENCE = `self[Symbol.for(${safeJsonStringify(
   NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION,
 )})]`;

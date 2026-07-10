@@ -9,7 +9,12 @@ import {
   getPagesClientAssets,
   setPagesClientAssets,
 } from "../packages/vinext/src/server/pages-client-assets.js";
-import { APP_FIXTURE_DIR } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+
+const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/root-layout-not-found-redirect",
+);
 
 function getStylesheetHrefs(html: string): string[] {
   const hrefs: string[] = [];
@@ -1048,6 +1053,139 @@ describe("App Router Production server (startProdServer)", () => {
   it("returns 404 for nonexistent routes", async () => {
     const res = await fetch(`${baseUrl}/no-such-page`);
     expect(res.status).toBe(404);
+  });
+
+  // Faithfully combines two Next.js contracts:
+  // - route misses render the root not-found page inside the root layout:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts
+  // - redirect() thrown during an RSC document request becomes a 307 response:
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  it("handles route-miss root layout redirects in production", async () => {
+    const fixtureRoot = await createIsolatedFixture(
+      ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR,
+      "vinext-root-layout-not-found-redirect-",
+    );
+    const redirectOutDir = path.join(fixtureRoot, "dist");
+    let redirectServer: http.Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
+    const prodGlobalKeys = [
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const started = await startProdServer({
+        port: 0,
+        outDir: redirectOutDir,
+        noCompression: true,
+      });
+      redirectServer = started.server;
+
+      const address = redirectServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Production redirect fixture did not bind to a TCP port");
+      }
+      const redirectBaseUrl = `http://127.0.0.1:${address.port}`;
+
+      const notFoundRes = await fetch(`${redirectBaseUrl}/random-content`);
+      expect(notFoundRes.status).toBe(404);
+      const html = await notFoundRes.text();
+      expect(html).toContain("Root Not Found");
+      expect(html).toContain('id="layout-nav"');
+
+      const redirectRes = await fetch(`${redirectBaseUrl}/random-content`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-root-layout-redirect": "1",
+        },
+      });
+      expect(redirectRes.status).toBe(307);
+      const location = redirectRes.headers.get("location");
+      expect(location).toBeTruthy();
+      expect(new URL(location!, redirectBaseUrl).pathname).toBe("/result");
+
+      // RSC navigations encode the redirect in the flight body (200), not a
+      // 307 status line — mirrors the dev-server RSC test and pins the built
+      // production path through the same boundary redirect-flight builder.
+      // vinext routes RSC by the `.rsc` suffix (app-rsc-request-normalization).
+      const rscRedirectRes = await fetch(`${redirectBaseUrl}/random-content.rsc`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-root-layout-redirect": "1",
+          Accept: "text/x-component",
+        },
+      });
+      expect(rscRedirectRes.status).toBe(200);
+      expect(rscRedirectRes.headers.get("content-type")).toContain("text/x-component");
+      expect(rscRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+      const rscBody = await rscRedirectRes.text();
+      expect(rscBody).toContain("NEXT_REDIRECT");
+      expect(rscBody).toContain("/result");
+
+      // The RSC drain applies to matched-route HTTP-access fallbacks too, not
+      // only route misses. `/gated` is a matched route that calls notFound();
+      // its route-level not-found boundary (app/gated/not-found.tsx) redirects
+      // on its own header, so it renders during the fallback (not the layout
+      // probe) and its async redirect is caught by the boundary drain. With the
+      // trigger → 200 flight redirect; without it → a normal 404 flight
+      // (proving the buffering does not drop or corrupt the matched-route
+      // payload).
+      const matchedRedirectRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
+        redirect: "manual",
+        headers: {
+          "x-vinext-gated-notfound-redirect": "1",
+          Accept: "text/x-component",
+        },
+      });
+      expect(matchedRedirectRes.status).toBe(200);
+      expect(matchedRedirectRes.headers.get("x-vinext-rsc-redirect")).toBe("/result");
+      expect(await matchedRedirectRes.text()).toContain("NEXT_REDIRECT");
+
+      const matchedNotFoundRes = await fetch(`${redirectBaseUrl}/gated.rsc`, {
+        redirect: "manual",
+        headers: { Accept: "text/x-component" },
+      });
+      expect(matchedNotFoundRes.status).toBe(404);
+      expect(matchedNotFoundRes.headers.get("x-vinext-rsc-redirect")).toBeNull();
+      expect(await matchedNotFoundRes.text()).toContain("Gated Not Found");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        if (!redirectServer) {
+          resolve();
+          return;
+        }
+        redirectServer.close((error) => (error ? reject(error) : resolve()));
+      });
+      setPagesClientAssets(previousPagesClientAssets);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts

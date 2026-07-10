@@ -5,7 +5,13 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
-import { getRevalidateSecret, isRevalidateSecret } from "./isr-cache.js";
+import {
+  clearPagesPreviewData,
+  getPagesPreviewState,
+  setPagesDraftMode,
+  setPagesPreviewData,
+  type PagesPreviewData,
+} from "./pages-preview.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -24,6 +30,9 @@ export type PagesReqResRequest = Readable & {
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
+  preview?: true;
+  draftMode?: true;
+  previewData: PagesPreviewData | false;
 };
 
 type PagesReqResHeaders = {
@@ -39,13 +48,15 @@ export type PagesReqResResponse = Writable & {
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
-  redirect: (statusOrUrl: number | string, url?: string) => void;
+  redirect: (statusOrUrl: number | string, url?: string) => PagesReqResResponse;
   getHeaders: () => PagesReqResHeaders;
   revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
   setPreviewData: (
     data: object | string,
     options?: { maxAge?: number; path?: string },
   ) => PagesReqResResponse;
+  clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
+  setDraftMode: (options?: { enable?: boolean }) => PagesReqResResponse;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -67,8 +78,6 @@ type CreatePagesReqResResult = {
   res: PagesReqResResponse;
   responsePromise: Promise<Response>;
 };
-
-export type PagesPreviewData = object | string;
 
 async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) {
@@ -172,54 +181,11 @@ function parsePagesRequestCookies(cookieHeader: string | string[] | null | undef
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
 }
 
-function serializePreviewCookie(
-  name: "__prerender_bypass" | "__next_preview_data",
-  value: string,
-  options: { maxAge?: number; path?: string } = {},
-): string {
-  const parts = [
-    `${name}=${encodeURIComponent(value)}`,
-    "HttpOnly",
-    `Path=${options.path ?? "/"}`,
-    process.env.NODE_ENV !== "development" ? "SameSite=None" : "SameSite=Lax",
-  ];
-  if (process.env.NODE_ENV !== "development") {
-    parts.push("Secure");
-  }
-  if (options.maxAge !== undefined) {
-    parts.push(`Max-Age=${Math.trunc(options.maxAge)}`);
-  }
-  return parts.join("; ");
-}
-
-function decodePagesPreviewPayload(payload: string): PagesPreviewData | false {
-  try {
-    const decoded = Buffer.from(payload, "base64url").toString("utf8");
-    const value = JSON.parse(decoded);
-    return typeof value === "object" && value !== null ? value : String(value);
-  } catch {
-    return false;
-  }
-}
-
-export function getPagesPreviewDataFromCookieHeader(
+function getPagesPreviewDataFromCookieHeader(
   cookieHeader: string | string[] | null | undefined,
   options: { isOnDemandRevalidate?: boolean } = {},
 ): PagesPreviewData | false {
-  // Next.js disables preview mode during on-demand revalidation so preview
-  // cookies cannot poison the regenerated ISR entry.
-  if (options.isOnDemandRevalidate) return false;
-
-  const cookies = parsePagesRequestCookies(cookieHeader);
-  const bypass = cookies.__prerender_bypass;
-  const payload = cookies.__next_preview_data;
-  if (!bypass && !payload) return false;
-  if (!isRevalidateSecret(bypass)) return false;
-  if (!payload) return {};
-
-  // vinext writes preview data as base64url(JSON) instead of Next.js's signed
-  // encrypted JWT. The writer and reader are intentionally paired internally.
-  return decodePagesPreviewPayload(payload);
+  return getPagesPreviewState(cookieHeader, options).data;
 }
 
 export function getPagesPreviewData(
@@ -227,14 +193,6 @@ export function getPagesPreviewData(
   options: { isOnDemandRevalidate?: boolean } = {},
 ): PagesPreviewData | false {
   return getPagesPreviewDataFromCookieHeader(request.headers.get("cookie"), options);
-}
-
-function normalizeSetCookieHeader(
-  value: string | number | boolean | string[] | undefined,
-): string[] {
-  if (value === undefined) return [];
-  if (Array.isArray(value)) return value.map(String);
-  return [String(value)];
 }
 
 export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
@@ -262,6 +220,28 @@ export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void
       });
     },
   });
+}
+
+export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResResponse): void {
+  const preview = getPagesPreviewState(req.headers.cookie);
+  req.previewData = preview.data;
+  if (preview.data !== false) {
+    req.preview = true;
+    req.draftMode = true;
+  }
+  res.setPreviewData = (data, options = {}) => {
+    setPagesPreviewData(res, data, options);
+    return res;
+  };
+  res.clearPreviewData = (options = {}) => {
+    clearPagesPreviewData(res, options);
+    return res;
+  };
+  res.setDraftMode = (options = { enable: true }) => {
+    setPagesDraftMode(res, options.enable !== false);
+    return res;
+  };
+  if (preview.shouldClear) clearPagesPreviewData(res);
 }
 
 class PagesResponseStream extends Writable {
@@ -353,13 +333,20 @@ class PagesResponseStream extends Writable {
     this.end(String(data));
   }
 
-  redirect(statusOrUrl: number | string, url?: string): void {
+  redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
     if (typeof statusOrUrl === "string") {
-      this.writeHead(307, { Location: statusOrUrl });
-    } else {
-      this.writeHead(statusOrUrl, { Location: url ?? "" });
+      url = statusOrUrl;
+      statusOrUrl = 307;
     }
+    if (typeof statusOrUrl !== "number" || typeof url !== "string") {
+      throw new Error(
+        "Invalid redirect arguments. Please use a single argument URL, e.g. res.redirect('/destination') or use a status code and URL, e.g. res.redirect(307, '/destination').",
+      );
+    }
+    this.writeHead(statusOrUrl, { Location: url });
+    this.write(url);
     this.end();
+    return this as PagesReqResResponse;
   }
 
   getHeaders(): PagesReqResHeaders {
@@ -378,18 +365,17 @@ class PagesResponseStream extends Writable {
     data: object | string,
     options: { maxAge?: number; path?: string } = {},
   ): PagesReqResResponse {
-    const payload = Buffer.from(JSON.stringify(data)).toString("base64url");
-    if (payload.length > 2048) {
-      throw new Error(
-        "Preview data is limited to 2KB currently, reduce how much data you are storing as preview data to continue",
-      );
-    }
+    setPagesPreviewData(this, data, options);
+    return this as PagesReqResResponse;
+  }
 
-    this.setHeader("Set-Cookie", [
-      ...normalizeSetCookieHeader(this.getHeader("Set-Cookie")),
-      serializePreviewCookie("__prerender_bypass", getRevalidateSecret(), options),
-      serializePreviewCookie("__next_preview_data", payload, options),
-    ]);
+  clearPreviewData(options: { path?: string } = {}): PagesReqResResponse {
+    clearPagesPreviewData(this, options);
+    return this as PagesReqResResponse;
+  }
+
+  setDraftMode(options: { enable?: boolean } = { enable: true }): PagesReqResResponse {
+    setPagesDraftMode(this, options.enable !== false);
     return this as PagesReqResResponse;
   }
 
@@ -542,6 +528,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     rejectResponse,
     options.request.headers,
   ) as PagesReqResResponse;
+  attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };
 }
