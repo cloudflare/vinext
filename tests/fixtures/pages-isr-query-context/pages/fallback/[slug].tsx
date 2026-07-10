@@ -21,7 +21,15 @@ export default function FallbackPage() {
     window.__INITIAL_FALLBACK_READY__ = router.isReady;
   }
 
-  if (router.isFallback) return <p id="fallback">Loading...</p>;
+  if (router.isFallback) {
+    return (
+      <main>
+        <p id="fallback">Loading...</p>
+        <p id="fallback-query">{JSON.stringify(router.query)}</p>
+        <p id="fallback-as-path">{router.asPath}</p>
+      </main>
+    );
+  }
 
   return (
     <main>

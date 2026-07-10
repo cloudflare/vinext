@@ -296,8 +296,8 @@ test("hydrates a localized dynamic GSP with locale-free navigation state", async
   expect(consoleErrors).toEqual([]);
 });
 
-// Ported from Next.js: test/integration/fallback-route-params/test/index.test.ts
-// https://github.com/vercel/next.js/blob/canary/test/integration/fallback-route-params/test/index.test.ts
+// Ported from Next.js: test/e2e/fallback-route-params/fallback-route-params.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/fallback-route-params/fallback-route-params.test.ts
 test("keeps fallback:true params out of the shell until hydration", async ({
   page,
   productionApp,
@@ -317,10 +317,12 @@ test("keeps fallback:true params out of the shell until hydration", async ({
     query: {},
   });
   expect(shellHtml).toContain('<p id="fallback">Loading...</p>');
+  expect(shellHtml).toContain('<p id="fallback-query">{}</p>');
+  expect(shellHtml).toContain('<p id="fallback-as-path">/fallback/[slug]</p>');
 
   const browserSlug = "hydrated-fallback-shell";
   const response = await page.goto(
-    `${productionApp.baseUrl}${BASE_PATH}/fallback/${browserSlug}?from=browser`,
+    `${productionApp.baseUrl}${BASE_PATH}/nl/fallback/${browserSlug}?from=browser`,
     { waitUntil: "load" },
   );
   expect(response?.status()).toBe(200);
@@ -345,7 +347,7 @@ test("keeps fallback:true params out of the shell until hydration", async ({
         (window as typeof window & { __INITIAL_FALLBACK_AS_PATH__?: string })
           .__INITIAL_FALLBACK_AS_PATH__,
     ),
-  ).toBe(`/fallback/${browserSlug}?from=browser`);
+  ).toBe("/fallback/[slug]");
   expect(
     await page.evaluate(
       () =>
@@ -357,6 +359,7 @@ test("keeps fallback:true params out of the shell until hydration", async ({
   await expect(page.locator("#query")).toHaveText(
     JSON.stringify({ from: "browser", slug: browserSlug }),
   );
+  await expect(page.locator("#as-path")).toHaveText(`/fallback/${browserSlug}?from=browser`);
   await expect(page.locator("#ready")).toHaveText("true");
   expect(consoleErrors).toEqual([]);
 });

@@ -732,16 +732,14 @@ export function createPagesPageHandler(
 
         // Republish SSR context with isFallback flipped on so `useRouter().isFallback`
         // returns true during render, matching Next.js render.tsx fallback shell.
-        if (isFallbackRender && typeof setSSRContext === "function") {
-          setSSRContext({
-            pathname: routePattern,
-            query,
-            asPath: routerAsPath,
+        if (isFallbackRender) {
+          // Next.js clears the concrete params/search state and uses the route
+          // pattern as ServerRouter.asPath for a fallback shell. The browser
+          // publishes the concrete URL after the fallback data request lands.
+          applySSRContext({
+            query: {},
+            asPath: routePattern,
             navigationIsReady: false,
-            locale,
-            locales: i18nConfig ? i18nConfig.locales : undefined,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
             isFallback: true,
           });
         }

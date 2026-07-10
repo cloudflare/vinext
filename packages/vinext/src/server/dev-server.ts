@@ -1031,8 +1031,8 @@ export function createSSRHandler(
             if (isFallbackRender && typeof routerShim.setSSRContext === "function") {
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
-                query,
-                asPath: requestAsPath,
+                query: {},
+                asPath: patternToNextFormat(route.pattern),
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
                 locales: i18nConfig?.locales,
