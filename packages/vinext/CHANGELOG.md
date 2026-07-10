@@ -1,5 +1,43 @@
 # vinext
 
+## 1.0.0-beta.1
+
+### Bug Fixes
+
+#### App Router
+
+- preserve streamed metadata placement parity (#2572)
+- delay dynamic SSR stream pulls (#2575)
+- handle redirects in route-miss fallbacks (#2553)
+- preserve semicolons in redirect digests (#2487)
+
+#### Pages
+
+- preserve missing page props on errors (#2568)
+- align preview mode behavior (#2561)
+- mark auto exports in next data (#2569)
+- normalize i18n router URLs (#2565)
+- preserve fast refresh state (#2544)
+
+#### Misc
+
+- **Build:** gate native typeof window folding (#2574)
+- pass server externals to Nitro traceDeps (#2521)
+- **Build:** honor inline next config for static export (#2543)
+- **Routing:** discover dot-directory routes (#2531)
+
+### Performance
+
+- **Build:** use native typeof window folding (#2564)
+- **Pages:** reuse dev stylesheet dependency analysis (#2550)
+
+### Contributors
+
+- @james-elicx
+- @LubomirGeorgiev
+- @NathanDrake2406
+- @WilliamK112
+
 ## 1.0.0-beta.0
 
 ### Features

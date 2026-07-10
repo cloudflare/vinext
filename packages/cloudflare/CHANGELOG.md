@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.1
+
+### Bug Fixes
+
+- **Build:** honor inline next config for static export (#2543)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.0
 
 ### Features
