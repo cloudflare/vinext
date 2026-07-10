@@ -97,6 +97,13 @@ const nextConfig: NextConfig = {
           source: "/repeat-rewrite/:slug",
           destination: "/docs/:slug/:slug",
         },
+        // Ported from Next.js external rewrite coverage:
+        // test/e2e/custom-routes/custom-routes.test.ts
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+        {
+          source: "/external-prefix/:path*",
+          destination: `${process.env.TEST_EXTERNAL_REWRITE_ORIGIN ?? "http://127.0.0.1:4228"}/v1/:path*`,
+        },
         // Used by Vitest: app-router.test.ts (external proxy credential stripping)
         // Only active when TEST_EXTERNAL_PROXY_TARGET env var is set.
         ...(process.env.TEST_EXTERNAL_PROXY_TARGET

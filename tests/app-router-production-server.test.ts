@@ -114,6 +114,35 @@ type StartedTextSequenceTarget = {
   url: string;
 };
 
+async function startPathEchoTarget(): Promise<StartedTextSequenceTarget> {
+  const upstream = http.createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ pathname: new URL(req.url ?? "/", "http://localhost").pathname }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", () => {
+      upstream.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = upstream.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Path echo target did not bind to a TCP port");
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close() {
+      return new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
+
 async function startTextSequenceTarget(options?: {
   prefix?: string;
   recordRequest?: (req: http.IncomingMessage) => void;
@@ -217,6 +246,7 @@ describe("App Router Production server (startProdServer)", () => {
   let appStaticDynamicTarget: StartedTextSequenceTarget | undefined;
   let appStaticRevalidateTarget: StartedTextSequenceTarget | undefined;
   let revalidatePathFetchTarget: StartedTextSequenceTarget | undefined;
+  let externalRewriteTarget: StartedTextSequenceTarget | undefined;
 
   function extractRequestId(html: string): string | undefined {
     return (
@@ -262,6 +292,7 @@ describe("App Router Production server (startProdServer)", () => {
   }
 
   beforeAll(async () => {
+    externalRewriteTarget = await startPathEchoTarget();
     appStaticDelayTarget = await startDelayedJsonSequenceTarget(750);
     appStaticDynamicTarget = await startTextSequenceTarget({ prefix: "dynamic" });
     appStaticRevalidateTarget = await startTextSequenceTarget({ prefix: "revalidate" });
@@ -270,6 +301,7 @@ describe("App Router Production server (startProdServer)", () => {
     process.env.TEST_APP_STATIC_DYNAMIC_TARGET = appStaticDynamicTarget.url;
     process.env.TEST_APP_STATIC_REVALIDATE_TARGET = appStaticRevalidateTarget.url;
     process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET = revalidatePathFetchTarget.url;
+    process.env.TEST_EXTERNAL_REWRITE_ORIGIN = externalRewriteTarget.url;
 
     try {
       // Build the app-basic fixture to the default dist/ directory
@@ -294,15 +326,18 @@ describe("App Router Production server (startProdServer)", () => {
         await appStaticDynamicTarget?.close();
         await appStaticRevalidateTarget?.close();
         await revalidatePathFetchTarget?.close();
+        await externalRewriteTarget?.close();
       } finally {
         appStaticDelayTarget = undefined;
         appStaticDynamicTarget = undefined;
         appStaticRevalidateTarget = undefined;
         revalidatePathFetchTarget = undefined;
+        externalRewriteTarget = undefined;
         delete process.env.TEST_APP_STATIC_DELAY_TARGET;
         delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
         delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
         delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+        delete process.env.TEST_EXTERNAL_REWRITE_ORIGIN;
       }
       throw error;
     }
@@ -314,10 +349,12 @@ describe("App Router Production server (startProdServer)", () => {
     await appStaticDynamicTarget?.close();
     await appStaticRevalidateTarget?.close();
     await revalidatePathFetchTarget?.close();
+    await externalRewriteTarget?.close();
     delete process.env.TEST_APP_STATIC_DELAY_TARGET;
     delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
     delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
     delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+    delete process.env.TEST_EXTERNAL_REWRITE_ORIGIN;
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
@@ -328,6 +365,16 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  it("preserves external rewrite path prefixes", async () => {
+    for (const pathname of ["%252e%252e", ".%252e", "%252e."]) {
+      const response = await fetch(`${baseUrl}/external-prefix/${pathname}/outside`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        pathname: expect.stringMatching(/^\/v1(?:\/|$)/),
+      });
+    }
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts

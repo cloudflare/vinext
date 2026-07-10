@@ -12036,6 +12036,110 @@ describe("matchRewrite with external URLs", () => {
     expect(isExternalUrl(result!)).toBe(true);
   });
 
+  it("preserves an external destination prefix when a catch-all contains encoded traversal", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/proxy/:path*",
+        destination: "https://api.example.com/v1/:path*",
+      },
+    ];
+
+    // Request normalization decodes the E2E input `%252e%252e` once before matching.
+    expect(matchRewrite("/proxy/%2e%2e/outside", rewrites, emptyCtx)).toBe(
+      "https://api.example.com/v1/%252e%252e/outside",
+    );
+    expect(matchRewrite("/proxy../outside", rewrites, emptyCtx)).toBeNull();
+    expect(matchRewrite("/proxy/a%2Fb", rewrites, emptyCtx)).toBe(
+      "https://api.example.com/v1/a%2Fb",
+    );
+    expect(matchRewrite("/proxy/a%23b", rewrites, emptyCtx)).toBe(
+      "https://api.example.com/v1/a%23b",
+    );
+    expect(matchRewrite("/proxy/a%3Fb", rewrites, emptyCtx)).toBe(
+      "https://api.example.com/v1/a%3Fb",
+    );
+    expect(matchRewrite("/proxy/hello world/café", rewrites, emptyCtx)).toBe(
+      "https://api.example.com/v1/hello world/café",
+    );
+
+    expect(
+      matchRewrite(
+        "/proxy/%2e",
+        [{ source: "/proxy/:sub", destination: "https://:sub.example.com/v1" }],
+        emptyCtx,
+      ),
+    ).toBe("https://%2e.example.com/v1");
+    expect(
+      matchRewrite(
+        "/proxy/%2e%2e",
+        [{ source: "/proxy/:id", destination: "https://api.example.com/v1/prefix-:id" }],
+        emptyCtx,
+      ),
+    ).toBe("https://api.example.com/v1/prefix-%252e%252e");
+    expect(
+      matchRewrite(
+        "/proxy/%2e",
+        [{ source: "/proxy/:id", destination: "https://api.example.com/v1/.:id/outside" }],
+        emptyCtx,
+      ),
+    ).toBe("https://api.example.com/v1/.%252e/outside");
+    expect(
+      matchRewrite(
+        "/proxy/%2e%2e",
+        [{ source: "/proxy/:id", destination: "https://api.example.com/v1#section-:id" }],
+        emptyCtx,
+      ),
+    ).toBe("https://api.example.com/v1#section-%2e%2e");
+    expect(
+      matchRewrite(
+        "/proxy/value",
+        [{ source: "/proxy/:id", destination: "https://api.example.com/v1/../api/:id" }],
+        emptyCtx,
+      ),
+    ).toBe("https://api.example.com/v1/../api/value");
+
+    expect(
+      matchRewrite(
+        "/proxy/value",
+        [
+          {
+            source: "/proxy/:id",
+            destination: "https://api.example.com/v1/:captured/outside",
+            has: [
+              {
+                type: "query",
+                key: "value",
+                value: "(?<captured>.*)",
+              },
+            ],
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ value: ".." }) },
+      ),
+    ).toBe("https://api.example.com/v1/../outside");
+
+    expect(
+      matchRewrite(
+        "/proxy/%2e",
+        [
+          {
+            source: "/proxy/:pathValue",
+            destination: "https://api.example.com/v1/:pathValue-:captured/outside",
+            has: [
+              {
+                type: "query",
+                key: "value",
+                value: "(?<captured>.*)",
+              },
+            ],
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ value: "." }) },
+      ),
+    ).toBe("https://api.example.com/v1/%252e-./outside");
+  });
+
   it("returns internal path for non-external rewrites", async () => {
     const { matchRewrite, isExternalUrl } =
       await import("../packages/vinext/src/config/config-matchers.js");
@@ -18315,6 +18419,64 @@ describe("Pages Router _next/data client navigation", () => {
 
       await Router.prefetch("/ssr");
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  it("warms a middleware rewrite destination loader during prefetch", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
+
+    const sourceLoader = vi.fn(async () => makePageModule("source"));
+    const destinationLoader = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/rewrite-me-to-about": sourceLoader,
+        "/about": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      createElement: () => ({ rel: "", as: "", href: "" }),
+      head: { appendChild: vi.fn() },
+    };
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("{}", {
+          headers: {
+            "Content-Type": "application/json",
+            "x-nextjs-rewrite": "/about?override=internal",
+          },
+        }),
+    ) as any;
+
+    try {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await Router.prefetch("/rewrite-me-to-about?override=internal");
+      await vi.waitFor(() => expect(destinationLoader).toHaveBeenCalledOnce());
+
+      expect(sourceLoader).toHaveBeenCalledOnce();
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `/_next/data/${buildId}/rewrite-me-to-about.json?override=internal`,
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-middleware-prefetch": "1" }),
+        }),
+      );
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;

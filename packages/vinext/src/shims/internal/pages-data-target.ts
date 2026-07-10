@@ -15,6 +15,8 @@ import { fetchStaticPagesData, fetchUncachedPagesData } from "./pages-data-fetch
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 import { isUnknownRecord } from "../../utils/record.js";
 
+const routerBasePath = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
 export type PagesDataTarget = {
   /** Final fetch URL for the data endpoint, including basePath and search. */
   dataHref: string;
@@ -281,12 +283,25 @@ export function prefetchPagesData(target: PagesDataTarget): void {
         ? target.middlewareDataHref
         : (target.prefetchDataHref ?? target.middlewareDataHref ?? target.dataHref);
     void fetchStaticPagesData(dataHref, { headers })
-      .then((response) => response.arrayBuffer())
+      .then(async (response) => {
+        prefetchMiddlewareRewriteLoader(response);
+        await response.arrayBuffer();
+      })
       .catch(() => {});
     return;
   }
 
   if (target.middlewareDataHref) {
-    void fetchUncachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
+    void fetchUncachedPagesData(target.middlewareDataHref, { headers })
+      .then(prefetchMiddlewareRewriteLoader)
+      .catch(() => {});
   }
+}
+
+function prefetchMiddlewareRewriteLoader(response: Response): void {
+  const rewriteTarget = response.headers.get("x-nextjs-rewrite");
+  if (!rewriteTarget) return;
+
+  const target = resolvePagesDataNavigationTarget(rewriteTarget, routerBasePath);
+  if (target) void target.loader().catch(() => {});
 }

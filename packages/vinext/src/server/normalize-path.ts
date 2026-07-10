@@ -106,3 +106,14 @@ export function normalizePath(pathname: string): string {
 
   return "/" + resolved.join("/");
 }
+
+export function encodeUrlDotSegment(value: string): string {
+  if (/^(?:\.|%2e){1,2}$/i.test(value)) {
+    return value.replace(/\.|%2e/gi, (dot) => (dot === "." ? "%252e" : dot.replaceAll("%", "%25")));
+  }
+  return value;
+}
+
+export function escapeUrlDotSegments(pathname: string): string {
+  return pathname.split("/").map(encodeUrlDotSegment).join("/");
+}

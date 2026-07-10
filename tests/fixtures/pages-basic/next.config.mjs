@@ -40,6 +40,13 @@ const nextConfig = {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
         },
+        // Ported from Next.js external rewrite coverage:
+        // test/e2e/custom-routes/custom-routes.test.ts
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+        {
+          source: "/external-prefix/:path*",
+          destination: `${process.env.TEST_EXTERNAL_REWRITE_ORIGIN ?? "http://127.0.0.1:4229"}/v1/:path*`,
+        },
         {
           source: "/rewrite-navigation/:id",
           destination: "/rewrite-navigation/:id/destination",

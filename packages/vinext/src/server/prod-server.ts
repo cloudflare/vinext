@@ -34,7 +34,7 @@ import {
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
 } from "./image-optimization.js";
-import { normalizePath } from "./normalize-path.js";
+import { escapeUrlDotSegments, normalizePath } from "./normalize-path.js";
 import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
@@ -1439,7 +1439,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // RSC handler receives an already-canonical path and doesn't need to
       // re-normalize. This deduplicates the normalizePath work done above.
       const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
-      const normalizedUrl = pathname + qs;
+      const normalizedUrl = escapeUrlDotSegments(pathname) + qs;
 
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
@@ -1660,7 +1660,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       res.end("Bad Request");
       return;
     }
-    let url = pathname + rawQs;
+    let url = escapeUrlDotSegments(pathname) + rawQs;
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
@@ -1782,7 +1782,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          url = stripped + qs;
+          url = escapeUrlDotSegments(stripped) + qs;
           pathname = stripped;
         }
       }

@@ -25,7 +25,12 @@ export default {
 
   async rewrites() {
     return {
-      beforeFiles: [],
+      beforeFiles: [
+        {
+          source: "/external-prefix/:path*",
+          destination: "http://127.0.0.1:4231/v1/:path*",
+        },
+      ],
       afterFiles: [{ source: "/nav-test", destination: "/about" }],
       fallback: [],
     };

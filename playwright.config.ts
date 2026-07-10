@@ -4,6 +4,7 @@ const appRouterBrowserSpecificTests = "**/app-router/**/*.browser.spec.ts";
 const appRouterServer = {
   command: "npx vp dev --port 4174",
   cwd: "./tests/fixtures/app-basic",
+  env: { ...process.env, TEST_EXTERNAL_REWRITE_ORIGIN: "http://127.0.0.1:4228" },
   port: 4174,
   reuseExistingServer: !process.env.CI,
   timeout: 30_000,
@@ -37,6 +38,7 @@ const projectServers = {
     server: {
       command: "npx vp run vinext#build && npx vp dev --port 4173",
       cwd: "./tests/fixtures/pages-basic",
+      env: { ...process.env, TEST_EXTERNAL_REWRITE_ORIGIN: "http://127.0.0.1:4229" },
       port: 4173,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
@@ -121,6 +123,7 @@ const projectServers = {
       command:
         "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4175",
       cwd: "./tests/fixtures/pages-basic",
+      env: { ...process.env, TEST_EXTERNAL_REWRITE_ORIGIN: "http://127.0.0.1:4230" },
       port: 4175,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,

@@ -21,6 +21,7 @@ import {
 } from "../utils/protocol-headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
+import { encodeUrlDotSegment } from "../server/normalize-path.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -1104,8 +1105,15 @@ export function matchRewrite(
         ...params,
         ...conditionParams,
       };
+      const pathParamKeys = new Set(
+        Object.keys(params).filter((key) => !Object.hasOwn(conditionParams, key)),
+      );
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      return substituteAndSanitizeRewriteDestination(
+        rewrite.destination,
+        rewriteParams,
+        pathParamKeys,
+      );
     }
   }
   return null;
@@ -1137,7 +1145,11 @@ export function matchesRewriteSource(
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
  * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
  */
-function substituteDestinationParams(destination: string, params: Record<string, string>): string {
+function substituteDestinationParams(
+  destination: string,
+  params: Record<string, string>,
+  encodedPathParamKeys?: ReadonlySet<string>,
+): string {
   const keys = Object.keys(params);
   if (keys.length === 0) return destination;
 
@@ -1157,8 +1169,37 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
-    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
+  const replaceParams = (
+    value: string,
+    encodeParam: (value: string, key: string, modifier: string | undefined) => string,
+  ): string =>
+    value.replace(paramRe, (_token, key: string, modifier: string | undefined) =>
+      encodeParam(params[key], key, modifier),
+    );
+
+  const replacePathParams = (value: string): string => {
+    if (!encodedPathParamKeys) return replaceParams(value, (param) => param);
+
+    const replaceAndEncodePathname = (pathname: string): string =>
+      replaceParams(pathname, (param, key) => {
+        if (!encodedPathParamKeys.has(key)) return param;
+        return param.split("/").map(encodeUrlDotSegment).join("/");
+      });
+
+    const authorityStart = value.match(/^[A-Za-z][A-Za-z\d+.-]*:\/\//)?.[0].length;
+    if (authorityStart === undefined) {
+      return replaceAndEncodePathname(value);
+    }
+
+    const pathnameStart = value.indexOf("/", authorityStart);
+    if (pathnameStart === -1) return replaceParams(value, (param) => param);
+
+    const authority = value.slice(0, pathnameStart);
+    return (
+      replaceParams(authority, (param) => param) +
+      replaceAndEncodePathname(value.slice(pathnameStart))
+    );
+  };
 
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
@@ -1168,13 +1209,12 @@ function substituteDestinationParams(destination: string, params: Record<string,
   if (queryIndex !== -1) {
     const beforeQuery = beforeHash.slice(0, queryIndex);
     const query = beforeHash.slice(queryIndex + 1);
-    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
-      query,
-      encodeDestinationQueryParamValue,
+    return `${replacePathParams(beforeQuery)}?${replaceParams(query, (value) =>
+      encodeDestinationQueryParamValue(value),
     )}${replaceParams(hash, (value) => value)}`;
   }
 
-  return replaceParams(destination, (value) => value);
+  return `${replacePathParams(beforeHash)}${replaceParams(hash, (value) => value)}`;
 }
 
 function encodeDestinationQueryParamValue(value: string): string {
@@ -1206,8 +1246,15 @@ function substituteAndSanitizeDestination(
 function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
+  pathParamKeys: ReadonlySet<string>,
 ): string {
-  const rewritten = substituteAndSanitizeDestination(destination, params);
+  const rewritten = sanitizeDestination(
+    substituteDestinationParams(
+      destination,
+      params,
+      isExternalUrl(destination) ? pathParamKeys : undefined,
+    ),
+  );
   if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);
