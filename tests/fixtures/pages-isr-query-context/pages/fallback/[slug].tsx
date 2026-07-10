@@ -26,7 +26,12 @@ export default function FallbackPage() {
       <main>
         <p id="fallback">Loading...</p>
         <p id="fallback-query">{JSON.stringify(router.query)}</p>
-        <p id="fallback-as-path">{router.asPath}</p>
+        {/* Next.js publishes the live browser asPath before isReady. This direct
+            server/client probe intentionally observes both values. */}
+        <p id="fallback-as-path" suppressHydrationWarning>
+          {router.asPath}
+        </p>
+        <p id="fallback-ready">{String(router.isReady)}</p>
       </main>
     );
   }

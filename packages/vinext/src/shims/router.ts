@@ -1311,14 +1311,9 @@ function getPathnameAndQuery(): {
     return {
       pathname,
       query: getSerializedRouteQuery(nextData),
-      // A fallback:true shell is rendered with the route pattern as asPath.
-      // Keep the first client snapshot identical so hydration cannot mismatch;
-      // the queued fallback Router.replace publishes the live browser URL.
       asPath:
-        nextData.isFallback === true
-          ? pathname
-          : (getCurrentHistoryAsPath() ??
-            canonicalResolvedPath + window.location.search + window.location.hash),
+        getCurrentHistoryAsPath() ??
+        canonicalResolvedPath + window.location.search + window.location.hash,
     };
   }
   const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);

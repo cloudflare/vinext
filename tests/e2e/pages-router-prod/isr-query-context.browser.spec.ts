@@ -319,10 +319,11 @@ test("keeps fallback:true params out of the shell until hydration", async ({
   expect(shellHtml).toContain('<p id="fallback">Loading...</p>');
   expect(shellHtml).toContain('<p id="fallback-query">{}</p>');
   expect(shellHtml).toContain('<p id="fallback-as-path">/fallback/[slug]</p>');
+  expect(shellHtml).toContain('<p id="fallback-ready">false</p>');
 
   const browserSlug = "hydrated-fallback-shell";
   const response = await page.goto(
-    `${productionApp.baseUrl}${BASE_PATH}/nl/fallback/${browserSlug}?from=browser`,
+    `${productionApp.baseUrl}${BASE_PATH}/nl/fallback/${browserSlug}?from=browser#client-fragment`,
     { waitUntil: "load" },
   );
   expect(response?.status()).toBe(200);
@@ -347,7 +348,7 @@ test("keeps fallback:true params out of the shell until hydration", async ({
         (window as typeof window & { __INITIAL_FALLBACK_AS_PATH__?: string })
           .__INITIAL_FALLBACK_AS_PATH__,
     ),
-  ).toBe("/fallback/[slug]");
+  ).toBe(`/fallback/${browserSlug}?from=browser#client-fragment`);
   expect(
     await page.evaluate(
       () =>
@@ -359,7 +360,9 @@ test("keeps fallback:true params out of the shell until hydration", async ({
   await expect(page.locator("#query")).toHaveText(
     JSON.stringify({ from: "browser", slug: browserSlug }),
   );
-  await expect(page.locator("#as-path")).toHaveText(`/fallback/${browserSlug}?from=browser`);
+  await expect(page.locator("#as-path")).toHaveText(
+    `/fallback/${browserSlug}?from=browser#client-fragment`,
+  );
   await expect(page.locator("#ready")).toHaveText("true");
   expect(consoleErrors).toEqual([]);
 });
