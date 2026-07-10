@@ -15,3 +15,10 @@ const overlappingRepetition = "/:path(a+.*a+)";
 if (!matchPattern(`/${"a".repeat(3_000)}b`, overlappingRepetition)) {
   throw new Error(`Unsafe matcher did not fail closed: ${overlappingRepetition}`);
 }
+
+// Alternations where one branch prefixes another have exponentially many
+// partitions under an unbounded group repetition.
+const ambiguousAlternative = "/:path((?:a|aa)+)";
+if (!matchPattern(`/${"a".repeat(3_000)}b`, ambiguousAlternative)) {
+  throw new Error(`Unsafe matcher did not fail closed: ${ambiguousAlternative}`);
+}

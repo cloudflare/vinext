@@ -315,13 +315,21 @@ export function isSafeRegex(pattern: string): boolean {
       const hadQuantifier = depth > 0 && quantifierAtDepth[depth];
       if (depth > 0) depth--;
 
-      // Look ahead for a quantifier on this group: +, *, {n,m}
-      // Note: '?' after ')' means "zero or one" which does NOT cause catastrophic
-      // backtracking — it only allows 2 paths (match/skip), not exponential.
-      // Only unbounded repetition (+, *, {n,}) on a group with inner quantifiers is dangerous.
+      // Only unbounded repetition of a group with inner quantifiers is
+      // intrinsically dangerous. A finite group repetition such as
+      // `(?:-\d{2}){2}` has a bounded number of paths and is safe by itself.
+      // Still propagate every group quantifier to the enclosing group so a
+      // later unbounded repetition around it is rejected.
       const next = pattern[i + 1];
-      if (next === "+" || next === "*" || next === "{") {
-        if (hadQuantifier) {
+      let hasGroupQuantifier = next === "+" || next === "*" || next === "?";
+      let hasUnboundedGroupQuantifier = next === "+" || next === "*";
+      if (next === "{") {
+        const braceQuantifier = /^\{\d+(,\d*)?\}/.exec(pattern.slice(i + 1));
+        hasGroupQuantifier = braceQuantifier !== null;
+        hasUnboundedGroupQuantifier = braceQuantifier?.[1]?.endsWith(",") === true;
+      }
+      if (hasGroupQuantifier) {
+        if (hasUnboundedGroupQuantifier && hadQuantifier) {
           // Nested quantifier detected: quantifier on a group that contains a quantifier
           return false;
         }
@@ -625,7 +633,9 @@ function _matchConditionValue(
   actualValue: string,
   expectedValue: string | undefined,
 ): Record<string, string> | null {
-  if (expectedValue === undefined) return _emptyParams();
+  // Next.js treats an omitted or empty condition value as a presence check.
+  // Its matchHas helper also requires the actual value to be non-empty.
+  if (!expectedValue) return actualValue ? _emptyParams() : null;
 
   const re = _cachedConditionRegex(expectedValue);
   if (re) {
@@ -664,9 +674,11 @@ function matchSingleCondition(
       return _matchConditionValue(cookieValue, condition.value);
     }
     case "query": {
-      const queryValue = ctx.query.get(condition.key);
-      if (queryValue === null) return null;
-      return _matchConditionValue(queryValue, condition.value);
+      const queryValues = ctx.query.getAll(condition.key);
+      if (queryValues.length === 0) return null;
+      // Node parses duplicate query keys as an array and Next.js matchHas
+      // explicitly tests its final value (`value.slice(-1)[0]`).
+      return _matchConditionValue(queryValues[queryValues.length - 1], condition.value);
     }
     case "host": {
       if (condition.value !== undefined) return _matchConditionValue(ctx.host, condition.value);

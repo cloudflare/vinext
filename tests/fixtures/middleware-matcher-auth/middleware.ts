@@ -16,5 +16,17 @@ export const config = {
     "/manual/:lang(en|fr)+",
     "/(foo.*|bar)/:path*",
     "/report{.:ext}",
+    "/archive/:date(\\d{4}(?:-\\d{2}){2})",
+    {
+      source: "/conditioned",
+      has: [
+        { type: "query", key: "role", value: "admin" },
+        { type: "query", key: "present", value: "" },
+        { type: "header", key: "x-present", value: "" },
+        { type: "cookie", key: "session", value: "" },
+        { type: "host", value: "" },
+      ],
+      missing: [{ type: "query", key: "blocked", value: "1" }],
+    },
   ],
 };

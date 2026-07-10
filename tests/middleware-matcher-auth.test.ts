@@ -34,6 +34,7 @@ const PROTECTED_PATHS = [
   "/manual/en/fr",
   "/bar/secret",
   "/report.json",
+  "/archive/2024-07-10",
 ] as const;
 
 async function assertAuthGuard(baseUrl: string): Promise<void> {
@@ -67,6 +68,35 @@ async function assertAuthGuard(baseUrl: string): Promise<void> {
   expect(constrainedMiss.status, constrainedMissBody).toBe(200);
   expect(constrainedMiss.headers.get("x-auth-guard")).toBeNull();
   expect(constrainedMissBody).toContain("manual secret");
+
+  const conditionedHeaders = {
+    "x-present": "yes",
+    cookie: "session=active",
+  };
+  const conditioned = await fetch(
+    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&blocked=1&blocked=0`,
+    { headers: conditionedHeaders },
+  );
+  expect(conditioned.status, await conditioned.text()).toBe(403);
+  expect(conditioned.headers.get("x-auth-guard")).toBe("blocked");
+
+  const wrongLastHas = await fetch(
+    `${baseUrl}/conditioned?role=admin&role=guest&present=yes&blocked=1&blocked=0`,
+    { headers: conditionedHeaders },
+  );
+  const wrongLastHasBody = await wrongLastHas.text();
+  expect(wrongLastHas.status, wrongLastHasBody).toBe(200);
+  expect(wrongLastHas.headers.get("x-auth-guard")).toBeNull();
+  expect(wrongLastHasBody).toContain("conditioned page");
+
+  const wrongLastMissing = await fetch(
+    `${baseUrl}/conditioned?role=guest&role=admin&present=yes&blocked=0&blocked=1`,
+    { headers: conditionedHeaders },
+  );
+  const wrongLastMissingBody = await wrongLastMissing.text();
+  expect(wrongLastMissing.status, wrongLastMissingBody).toBe(200);
+  expect(wrongLastMissing.headers.get("x-auth-guard")).toBeNull();
+  expect(wrongLastMissingBody).toContain("conditioned page");
 }
 
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
@@ -236,6 +266,7 @@ describe("unsafe middleware matcher rejection", () => {
     ["/:path(.*)*/end", /may match an empty value or path delimiter/],
     ["/:path(.*)+/end", /may match an empty value or path delimiter/],
     ["/:path((?:a+)+)", /contains nested repetition/],
+    ["/:path((?:a|aa)+)", /contains ambiguous alternatives under unbounded repetition/],
     ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
     ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
   ] as const)(
