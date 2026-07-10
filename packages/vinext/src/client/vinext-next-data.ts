@@ -47,8 +47,6 @@ export type VinextNextData = {
     hasRewrites?: boolean;
     /** Server-resolved Pages route URL used to hydrate fallback shells behind rewrites. */
     routeUrl?: string;
-    /** Server router readiness snapshot used only for the initial hydration render. */
-    navigationIsReady?: boolean;
   };
 } & NEXT_DATA;
 

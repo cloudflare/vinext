@@ -285,7 +285,10 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: options.params,
+    // Next.js fallback:true shells intentionally omit the matched route
+    // params. The live slug is published by the hydration query update after
+    // the fallback data request resolves.
+    query: options.isFallback === true ? {} : options.params,
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };

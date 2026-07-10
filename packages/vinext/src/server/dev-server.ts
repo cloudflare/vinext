@@ -1498,7 +1498,6 @@ export function createSSRHandler(
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
                           routeUrl: requestAsPath,
-                          navigationIsReady,
                         },
                       };
 
@@ -1871,7 +1870,6 @@ export function createSSRHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl: requestAsPath,
-            navigationIsReady,
           },
         };
 
@@ -1887,7 +1885,7 @@ export function createSSRHandler(
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: isFallbackRender ? {} : params,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,

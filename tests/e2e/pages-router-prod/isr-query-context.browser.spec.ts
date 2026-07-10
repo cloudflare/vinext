@@ -108,7 +108,7 @@ test("hydrates an ISR page from shared query state before publishing the browser
         (window as typeof window & { __INITIAL_ROUTER_AS_PATH__?: string })
           .__INITIAL_ROUTER_AS_PATH__,
     ),
-  ).toBe("/hydrate");
+  ).toBe(`/hydrate?utm=${victimToken}`);
   expect(
     await page.evaluate(
       () =>
@@ -123,6 +123,8 @@ test("hydrates an ISR page from shared query state before publishing the browser
   expect(consoleErrors).toEqual([]);
 });
 
+// Ported from Next.js: test/integration/router-is-ready/test/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/integration/router-is-ready/test/index.test.ts
 test("publishes a queryless browser URL over query-seeded shared ISR HTML", async ({
   page,
   productionApp,
@@ -157,7 +159,7 @@ test("publishes a queryless browser URL over query-seeded shared ISR HTML", asyn
       () =>
         (window as typeof window & { __INITIAL_ROUTER_READY__?: boolean }).__INITIAL_ROUTER_READY__,
     ),
-  ).toBe(false);
+  ).toBe(true);
   await expect(page.locator("#ready")).toHaveText("true");
   await expect(page.locator("#query")).toHaveText("{}");
   await expect(page.locator("#as-path")).toHaveText("/hydrate");
@@ -186,11 +188,33 @@ test("publishes dynamic params after hydrating query-seeded shared ISR HTML", as
   expect(response?.status()).toBe(200);
   expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
   await waitForHydration(page);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_QUERY__?: string }).__INITIAL_ROUTER_QUERY__,
+    ),
+  ).toBe(JSON.stringify({ slug: "known" }));
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_AS_PATH__?: string })
+          .__INITIAL_ROUTER_AS_PATH__,
+    ),
+  ).toBe("/dynamic/known");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_READY__?: boolean }).__INITIAL_ROUTER_READY__,
+    ),
+  ).toBe(true);
   await expect(page.locator("#ready")).toHaveText("true");
   await expect(page.locator("#query")).toHaveText(JSON.stringify({ slug: "known" }));
   await expect(page.locator("#as-path")).toHaveText("/dynamic/known");
   await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/known");
   await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "known" }));
+  // Next.js also constructs its client router as ready immediately for a
+  // queryless GSP page even though ServerRouter.isReady is false. Components
+  // should avoid using isReady to conditionally render server markup.
   expect(consoleErrors).toEqual([]);
 });
 
@@ -246,7 +270,7 @@ test("hydrates a localized dynamic GSP with locale-free navigation state", async
         (window as typeof window & { __INITIAL_ROUTER_AS_PATH__?: string })
           .__INITIAL_ROUTER_AS_PATH__,
     ),
-  ).toBe("/dynamic/known");
+  ).toBe(`/dynamic/known?utm=${victimToken}`);
   expect(
     await page.evaluate(
       () =>
@@ -269,5 +293,70 @@ test("hydrates a localized dynamic GSP with locale-free navigation state", async
   await expect(page.locator("#as-path")).toHaveText("/dynamic/clean?via=client");
   await expect(page.locator("#navigation-pathname")).toHaveText("/dynamic/clean");
   await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "clean" }));
+  expect(consoleErrors).toEqual([]);
+});
+
+// Ported from Next.js: test/integration/fallback-route-params/test/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/integration/fallback-route-params/test/index.test.ts
+test("keeps fallback:true params out of the shell until hydration", async ({
+  page,
+  productionApp,
+  consoleErrors,
+}) => {
+  const shellSlug = "raw-fallback-shell";
+  const shellResponse = await fetch(
+    `${productionApp.baseUrl}${BASE_PATH}/fallback/${shellSlug}?from=shell`,
+  );
+  const shellHtml = await shellResponse.text();
+  const nextDataJson = shellHtml.match(
+    /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/,
+  )?.[1];
+  expect(nextDataJson).toBeTruthy();
+  expect(JSON.parse(nextDataJson ?? "{}")).toMatchObject({
+    isFallback: true,
+    query: {},
+  });
+  expect(shellHtml).toContain('<p id="fallback">Loading...</p>');
+
+  const browserSlug = "hydrated-fallback-shell";
+  const response = await page.goto(
+    `${productionApp.baseUrl}${BASE_PATH}/fallback/${browserSlug}?from=browser`,
+    { waitUntil: "load" },
+  );
+  expect(response?.status()).toBe(200);
+  await waitForHydration(page);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_FALLBACK_QUERY__?: string })
+          .__INITIAL_FALLBACK_QUERY__,
+    ),
+  ).toBe("{}");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_FALLBACK_SLUG__?: string })
+          .__INITIAL_FALLBACK_SLUG__,
+    ),
+  ).toBeUndefined();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_FALLBACK_AS_PATH__?: string })
+          .__INITIAL_FALLBACK_AS_PATH__,
+    ),
+  ).toBe(`/fallback/${browserSlug}?from=browser`);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_FALLBACK_READY__?: boolean })
+          .__INITIAL_FALLBACK_READY__,
+    ),
+  ).toBe(false);
+
+  await expect(page.locator("#query")).toHaveText(
+    JSON.stringify({ from: "browser", slug: browserSlug }),
+  );
+  await expect(page.locator("#ready")).toHaveText("true");
   expect(consoleErrors).toEqual([]);
 });

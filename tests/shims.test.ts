@@ -14232,7 +14232,6 @@ describe("next/compat/router shim", () => {
         gsp: true,
         isFallback: false,
         __vinext: {
-          navigationIsReady: false,
           routeUrl: "/dynamic/known",
         },
       },
@@ -14972,7 +14971,7 @@ describe("Pages Router concurrent navigation", () => {
     return { win, pushState, replaceState, render };
   }
 
-  it("uses serialized GSP query state until Pages Router readiness", async () => {
+  it("uses serialized GSP query with the live asPath until Pages Router readiness", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();
     Object.assign(win.location, {
@@ -14998,7 +14997,7 @@ describe("Pages Router concurrent navigation", () => {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       expect(routerModule.default.isReady).toBe(false);
       expect(routerModule.default.query).toEqual({});
-      expect(routerModule.default.asPath).toBe("/isr-query-hydration");
+      expect(routerModule.default.asPath).toBe("/isr-query-hydration?utm=token");
 
       expect(routerModule._markPagesRouterReady()).toBe(true);
       (win as any).__NEXT_HYDRATED = true;
