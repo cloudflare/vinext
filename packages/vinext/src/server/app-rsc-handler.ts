@@ -569,7 +569,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const trailingSlashRedirect = normalizeTrailingSlash(
-    pathname,
+    requestCleanPathname,
     hadBasePath ? options.basePath : "",
     options.trailingSlash,
     url.search,
@@ -648,7 +648,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
-        pathname: matchPathname(cleanPathname),
+        pathname: matchPathname(requestCleanPathname),
         requestContext: preMiddlewareRequestContext,
       });
     }
@@ -805,7 +805,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePathState,
         configHeaders: options.configHeaders,
         overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
-        pathname: matchPathname(cleanPathname),
+        pathname: matchPathname(
+          cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+        ),
         requestContext: preMiddlewareRequestContext,
       });
       return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);

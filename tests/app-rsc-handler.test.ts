@@ -1154,6 +1154,15 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe("/outside/");
   });
 
+  it("preserves raw encoded spelling when normalizing trailing slashes", async () => {
+    const handler = createHandler({ configHeaders: [], trailingSlash: true });
+
+    const response = await handler(new Request("https://example.test/docs/%61bout"), null);
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/%61bout/");
+  });
+
   it("keeps the real status for config redirects on Pages data requests", async () => {
     // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts

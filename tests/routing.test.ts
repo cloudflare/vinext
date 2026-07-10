@@ -186,6 +186,15 @@ describe("matchRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/posts/:id");
     expect(result!.params).toEqual({ id: "42" });
+
+    expect(matchRoute("/posts/a%2561", routes)?.params).toEqual({ id: "a%61" });
+    expect(matchRoute("/posts/b%2Fc", routes)?.params).toEqual({ id: "b/c" });
+  });
+
+  it("does not decode static filesystem route identity", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    expect(matchRoute("/%61bout", routes)).toBeNull();
   });
 
   it("preserves encoded slashes within a single static segment", () => {
@@ -206,9 +215,7 @@ describe("matchRoute - URL matching", () => {
 
     expect(matchRoute("/a%2Fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
     expect(matchRoute("/a/b", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a/b");
-    // Lowercase %2f should also match: normalizePathnameForRouteMatch decodes
-    // then re-encodes via encodeURIComponent, which always produces uppercase.
-    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])?.route.pattern).toBe("/a%2Fb");
+    expect(matchRoute("/a%2fb", [encodedRoute, nestedRoute])).toBeNull();
   });
 
   it("returns null for unmatched routes", async () => {

@@ -1639,12 +1639,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    // Rebuild `url` from the decoded pathname + original query string so all
-    // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
-    // always work with the decoded, canonical path.
+    // Normalize backslashes (browsers treat /\ as //), then validate and
+    // normalize the decoded path for adapter-owned asset/internal checks.
+    // Request routing keeps a separate raw encoded pathname: static filesystem
+    // identity is compared before decoding, while dynamic captures decode once.
     const rawPagesPathname = rawPagesPathnameBeforeNormalize.replaceAll("\\", "/");
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
+    let requestPathname = normalizePath(rawPagesPathname);
     let pathname: string;
     try {
       pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
@@ -1654,7 +1655,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       res.end("Bad Request");
       return;
     }
-    let url = pathname + rawQs;
+    let url = requestPathname + rawQs;
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
@@ -1771,14 +1772,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // the basePath gating of rewrites/redirects/headers below — Next.js
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
-      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
-      let configMatchPathname = stripBasePath(rawPagesPathname, basePath);
+      const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
+      let configMatchPathname = stripBasePath(requestPathname, basePath);
       {
-        const stripped = stripBasePath(pathname, basePath);
-        if (stripped !== pathname) {
-          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          url = stripped + qs;
-          pathname = stripped;
+        const strippedPathname = stripBasePath(pathname, basePath);
+        const strippedRequestPathname = stripBasePath(requestPathname, basePath);
+        pathname = strippedPathname;
+        if (strippedRequestPathname !== requestPathname) {
+          requestPathname = strippedRequestPathname;
+          url = requestPathname + rawQs;
         }
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
@@ -1791,8 +1793,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // accidentally triggering middleware/SSR on a bogus path.
       let isDataReq = false;
       const originalRenderUrl = url;
-      if (isNextDataPathname(pathname)) {
-        const dataMatch = pagesBuildId ? parseNextDataPathname(pathname, pagesBuildId) : null;
+      if (isNextDataPathname(requestPathname)) {
+        const dataMatch = pagesBuildId
+          ? parseNextDataPathname(requestPathname, pagesBuildId)
+          : null;
         if (!dataMatch) {
           // Wrong buildId (or malformed) — surface a JSON 404 so the client
           // hard-navigates instead of silently rendering an empty page.
@@ -1807,6 +1811,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           hasMiddleware && trailingSlash,
         );
         url = pagePathname + qs;
+        requestPathname = pagePathname;
         pathname = pagePathname;
         configMatchPathname = pagePathname;
       }

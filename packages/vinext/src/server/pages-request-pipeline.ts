@@ -280,9 +280,6 @@ export async function runPagesRequest(
   // Step 3: Build pre-middleware request context
   const reqCtx: RequestContext = requestContextFromRequest(request);
   const requestHostname = i18nConfig ? url.hostname : "";
-  const matchPathname = i18nConfig
-    ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: requestHostname })
-    : pathname;
   const requestConfigMatchPathname = i18nConfig
     ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
         hostname: requestHostname,
@@ -484,7 +481,7 @@ export async function runPagesRequest(
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
-      pathname: matchPathname,
+      pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
     });

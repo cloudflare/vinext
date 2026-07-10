@@ -201,7 +201,11 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "Set-Cookie", value: "encoded-parity=1; Path=/" },
+          { key: "Cache-Control", value: "public, max-age=123" },
+        ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

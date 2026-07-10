@@ -6,7 +6,7 @@ import {
   type ValidFileMatcher,
 } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
+import { createRouteTrieCache, matchRouteWithTrieRawPathname } from "./route-matching.js";
 
 export type Route = {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -188,7 +188,7 @@ export function matchRoute(
   url: string,
   routes: Route[],
 ): { route: Route; params: Record<string, string | string[]> } | null {
-  return matchRouteWithTrie(url, routes, trieCache);
+  return matchRouteWithTrieRawPathname(url, routes, trieCache);
 }
 
 /**

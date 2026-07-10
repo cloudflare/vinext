@@ -110,7 +110,7 @@ export function normalizeRscRequest(
   // /__vinext/ prefix bypasses the check for internal prerender endpoints
   // that must be reachable regardless of basePath configuration.
   if (basePath) {
-    hadBasePath = hasBasePath(pathname, basePath);
+    hadBasePath = hasBasePath(requestPathname, basePath);
     if (!hadBasePath && !pathname.startsWith("/__vinext/") && !allowOutsideBasePath) {
       return notFoundResponse();
     }

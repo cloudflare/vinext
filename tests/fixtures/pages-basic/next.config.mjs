@@ -119,6 +119,14 @@ const nextConfig = {
         missing: [{ type: "cookie", key: "logged-in" }],
         headers: [{ key: "X-Guest-Only-Header", value: "1" }],
       },
+      {
+        source: "/about",
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "Set-Cookie", value: "encoded-parity=1; Path=/" },
+          { key: "Cache-Control", value: "public, max-age=123" },
+        ],
+      },
       // Test that Vary headers from config are additive (append, not replace)
       {
         source: "/ssr",

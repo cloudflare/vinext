@@ -56,3 +56,22 @@ export function matchRouteWithTrie<R extends { patternParts: string[] }>(
   const trie = getOrBuildTrie(cache, routes);
   return trieMatch(trie, urlParts);
 }
+
+/**
+ * Match a filesystem route against the request's raw encoded pathname.
+ *
+ * Next.js compares static route identity before decoding, so `/%61bout` does
+ * not select the filesystem route `/about`. Dynamic captures are still decoded
+ * exactly once by `trieMatch`, matching `getRouteMatcher` upstream.
+ */
+export function matchRouteWithTrieRawPathname<R extends { patternParts: string[] }>(
+  url: string,
+  routes: R[],
+  cache: RouteTrieCache<R>,
+): { route: R; params: Record<string, string | string[]> } | null {
+  const pathname = url.split("?")[0];
+  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  const urlParts = normalizedUrl.split("/").filter(Boolean);
+  const trie = getOrBuildTrie(cache, routes);
+  return trieMatch(trie, urlParts);
+}

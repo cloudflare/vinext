@@ -62,6 +62,18 @@ describe("trailing slash normalization", () => {
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
   });
+
+  it("preserves raw encoded spelling in trailing-slash redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/%61bout"),
+      baseDeps({ trailingSlash: true }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/%61bout/");
+  });
 });
 
 // 2. Config redirect: permanent redirect → status 308 with Location
@@ -683,6 +695,20 @@ describe("config headers", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.headers.get("X-Custom")).toBe("test");
+  });
+
+  it("does not match percent-encoded static aliases", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/%61bout"),
+      baseDeps({
+        configHeaders: [{ source: "/about", headers: [{ key: "X-Custom", value: "test" }] }],
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("X-Custom")).toBeNull();
   });
 });
 

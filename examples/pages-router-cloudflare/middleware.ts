@@ -27,12 +27,14 @@ export function middleware(request: NextRequest) {
 
   const response = NextResponse.next();
   response.headers.set("x-mw-ran", "true");
+  response.headers.set("x-mw-pathname", request.nextUrl.pathname);
   return response;
 }
 
 export const config = {
   matcher: [
     "/api/:path*",
+    "/about",
     "/ssr",
     "/headers-before-middleware-rewrite",
     "/redirect-before-middleware-rewrite",

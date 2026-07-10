@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 
-function getRawPath(path: string): Promise<{ body: string; location?: string; status: number }> {
+function getRawPath(
+  path: string,
+): Promise<{ body: string; headers: IncomingHttpHeaders; location?: string; status: number }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "localhost", path, port: 4196 }, (res) => {
       let body = "";
@@ -10,6 +12,7 @@ function getRawPath(path: string): Promise<{ body: string; location?: string; st
       res.on("end", () =>
         resolve({
           body,
+          headers: res.headers,
           location: Array.isArray(res.headers.location)
             ? res.headers.location[0]
             : res.headers.location,
@@ -51,6 +54,24 @@ test("keeps encoded static values distinct behind basePath and i18n", async () =
 
   const alias = await getRawPath("/docs/encoded-parity/static/a%2Fb");
   expect(alias.status).toBe(404);
+});
+
+test("keeps encoded aliases out of slash and config-header identity behind basePath", async () => {
+  const literal = await getRawPath("/docs/about");
+  expect(literal.status).toBe(200);
+  expect(literal.headers["x-page-header"]).toBe("about-page");
+  expect(literal.headers["set-cookie"]).toContain("encoded-parity=1; Path=/");
+  expect(literal.headers["cache-control"]).toBe("public, max-age=123");
+
+  const alias = await getRawPath("/docs/%61bout");
+  expect(alias.status).toBe(404);
+  expect(alias.headers["x-page-header"]).toBeUndefined();
+  expect(alias.headers["set-cookie"]).toBeUndefined();
+  expect(alias.headers["cache-control"]).not.toBe("public, max-age=123");
+
+  const slash = await getRawPath("/docs/%61bout/");
+  expect(slash.status).toBe(308);
+  expect(slash.location).toBe("/docs/%61bout");
 });
 
 test("honors encoded middleware rewrites behind basePath and i18n", async () => {

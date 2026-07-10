@@ -4720,6 +4720,15 @@ export const loadServerActionClient = ${
               // rewrite extensionless paths to `.html`, while an actual
               // `.html` request must remain distinguishable to middleware.
               let middlewareUrl = req.__vinextOriginalEncodedUrl ?? url;
+              let routeUrl = middlewareUrl;
+              {
+                const routePathname = routeUrl.split("?")[0];
+                if (routePathname.endsWith("/index.html")) {
+                  routeUrl = routeUrl.replace("/index.html", "/");
+                } else if (routePathname.endsWith(".html")) {
+                  routeUrl = routeUrl.replace(/\.html(?=\?|$)/, "");
+                }
+              }
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -4776,13 +4785,20 @@ export const loadServerActionClient = ${
                     : "";
                   middlewareUrl = (middlewarePathname.slice(bp.length) || "/") + middlewareQs;
                 }
+                const routePathname = routeUrl.split("?")[0];
+                if (routePathname.startsWith(bp)) {
+                  const routeQs = routeUrl.includes("?")
+                    ? routeUrl.slice(routeUrl.indexOf("?"))
+                    : "";
+                  routeUrl = (routePathname.slice(bp.length) || "/") + routeQs;
+                }
               }
               let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], bp);
 
               if (nextConfig) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 const trailingSlashRedirect = normalizeTrailingSlash(
-                  pathname,
+                  routeUrl.split("?")[0],
                   bp,
                   nextConfig.trailingSlash,
                   qs,
@@ -4832,6 +4848,7 @@ export const loadServerActionClient = ${
                   );
                   url = pagePathname + qs;
                   middlewareUrl = url;
+                  routeUrl = url;
                   pathname = pagePathname;
                   configMatchPathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
@@ -4934,7 +4951,7 @@ export const loadServerActionClient = ${
               // proxying external rewrites; that case is handled via
               // proxyNodeReqExternal in pipelineDeps below.
               const method = req.method ?? "GET";
-              const webRequest = new Request(new URL(url, requestOrigin), {
+              const webRequest = new Request(new URL(routeUrl, requestOrigin), {
                 method,
                 headers: nodeRequestHeaders,
               });
