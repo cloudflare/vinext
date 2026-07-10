@@ -45,6 +45,11 @@ async function fetchCacheHit(url: string): Promise<{ response: Response; html: s
   throw new Error(`Timed out waiting for an ISR cache hit from ${url}`);
 }
 
+function expectStableStaticRouterState(html: string): void {
+  expect(html).toContain('<p id="ready">false</p>');
+  expect(html).toContain('<p id="navigation-params">null</p>');
+}
+
 describe("Pages ISR request query context in production", () => {
   let root: string;
   let server: http.Server;
@@ -78,28 +83,51 @@ describe("Pages ISR request query context in production", () => {
     expect(attackerHtml).not.toContain(token);
     expect(attackerHtml).toContain('<p id="query">{}</p>');
     expect(attackerHtml).toContain('<p id="as-path">/cold</p>');
+    expectStableStaticRouterState(attackerHtml);
 
     const victim = await fetch(`${baseUrl}/cold`);
     const victimHtml = await victim.text();
     expect(victim.headers.get("x-vinext-cache")).toBe("HIT");
     expect(victimHtml).not.toContain(token);
+    expectStableStaticRouterState(victimHtml);
+
+    const clean = await fetch(`${baseUrl}/cold-clean`);
+    const cleanHtml = await clean.text();
+    expect(clean.headers.get("x-vinext-cache")).toBe("MISS");
+    expectStableStaticRouterState(cleanHtml);
   });
 
   it("does not apply the triggering request query during stale regeneration", async () => {
     const seed = await fetch(`${baseUrl}/stale`);
     expect(seed.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(await seed.text()).toContain('<p id="query">{}</p>');
+    const seedHtml = await seed.text();
+    expect(seedHtml).toContain('<p id="query">{}</p>');
+    expectStableStaticRouterState(seedHtml);
+
+    const cleanSeed = await fetch(`${baseUrl}/stale-clean`);
+    expect(cleanSeed.headers.get("x-vinext-cache")).toBe("MISS");
+    expectStableStaticRouterState(await cleanSeed.text());
 
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     const token = "STALE_QUERY_CONTEXT_TOKEN";
-    const trigger = await fetch(`${baseUrl}/stale?utm=${token}`);
+    const [trigger, cleanTrigger] = await Promise.all([
+      fetch(`${baseUrl}/stale?utm=${token}`),
+      fetch(`${baseUrl}/stale-clean`),
+    ]);
     expect(trigger.headers.get("x-vinext-cache")).toBe("STALE");
     expect(await trigger.text()).not.toContain(token);
+    expect(cleanTrigger.headers.get("x-vinext-cache")).toBe("STALE");
+    await cleanTrigger.text();
 
-    const { response: victim, html: victimHtml } = await fetchCacheHit(`${baseUrl}/stale`);
+    const [{ response: victim, html: victimHtml }, { html: cleanHtml }] = await Promise.all([
+      fetchCacheHit(`${baseUrl}/stale`),
+      fetchCacheHit(`${baseUrl}/stale-clean`),
+    ]);
     expect(victim.headers.get("x-vinext-cache")).toBe("HIT");
     expect(victimHtml).not.toContain(token);
     expect(victimHtml).toContain('<p id="as-path">/stale</p>');
+    expectStableStaticRouterState(victimHtml);
+    expectStableStaticRouterState(cleanHtml);
   });
 
   it("retains dynamic route params while excluding request query state", async () => {
@@ -110,5 +138,17 @@ describe("Pages ISR request query context in production", () => {
     expect(html).not.toContain(token);
     expect(html).toContain('<p id="query">{&quot;slug&quot;:&quot;known&quot;}</p>');
     expect(html).toContain('<p id="as-path">/dynamic/known</p>');
+    expectStableStaticRouterState(html);
+
+    const victim = await fetch(`${baseUrl}/dynamic/known`);
+    const victimHtml = await victim.text();
+    expect(victim.headers.get("x-vinext-cache")).toBe("HIT");
+    expectStableStaticRouterState(victimHtml);
+
+    const clean = await fetch(`${baseUrl}/dynamic/clean`);
+    const cleanHtml = await clean.text();
+    expect(cleanHtml).toContain('<p id="query">{&quot;slug&quot;:&quot;clean&quot;}</p>');
+    expect(cleanHtml).toContain('<p id="as-path">/dynamic/clean</p>');
+    expectStableStaticRouterState(cleanHtml);
   });
 });

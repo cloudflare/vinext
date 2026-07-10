@@ -70,6 +70,7 @@ const test = base.extend<{ productionApp: ProductionApp }>({
 });
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
 
 test("hydrates an ISR page from shared query state before publishing the browser query", async ({
@@ -91,6 +92,7 @@ test("hydrates an ISR page from shared query state before publishing the browser
   });
 
   expect(response?.status()).toBe(200);
+  expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
   await waitForHydration(page);
   expect(
     await page.evaluate(
@@ -105,9 +107,82 @@ test("hydrates an ISR page from shared query state before publishing the browser
           .__INITIAL_ROUTER_AS_PATH__,
     ),
   ).toBe("/hydrate");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_READY__?: boolean }).__INITIAL_ROUTER_READY__,
+    ),
+  ).toBe(false);
   await expect(page.locator("#ready")).toHaveText("true");
   await expect(page.locator("#query")).toHaveText(JSON.stringify({ utm: victimToken }));
   await expect(page.locator("#query")).not.toContainText(attackerToken);
   await expect(page.locator("#as-path")).toHaveText(`/hydrate?utm=${victimToken}`);
+  await expect(page.locator("#navigation-params")).toHaveText("{}");
+  expect(consoleErrors).toEqual([]);
+});
+
+test("publishes a queryless browser URL over query-seeded shared ISR HTML", async ({
+  page,
+  productionApp,
+  consoleErrors,
+}) => {
+  const attacker = await fetch(`${productionApp.baseUrl}/hydrate?utm=attacker`);
+  expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
+  await attacker.text();
+
+  const response = await page.goto(`${productionApp.baseUrl}/hydrate`, { waitUntil: "load" });
+
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForHydration(page);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_QUERY__?: string }).__INITIAL_ROUTER_QUERY__,
+    ),
+  ).toBe("{}");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_AS_PATH__?: string })
+          .__INITIAL_ROUTER_AS_PATH__,
+    ),
+  ).toBe("/hydrate");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __INITIAL_ROUTER_READY__?: boolean }).__INITIAL_ROUTER_READY__,
+    ),
+  ).toBe(false);
+  await expect(page.locator("#ready")).toHaveText("true");
+  await expect(page.locator("#query")).toHaveText("{}");
+  await expect(page.locator("#as-path")).toHaveText("/hydrate");
+  await expect(page.locator("#navigation-params")).toHaveText("{}");
+  expect(consoleErrors).toEqual([]);
+});
+
+test("publishes dynamic params after hydrating query-seeded shared ISR HTML", async ({
+  page,
+  productionApp,
+  consoleErrors,
+}) => {
+  const attackerToken = "ATTACKER_DYNAMIC_QUERY_CONTEXT_TOKEN";
+  const attacker = await fetch(`${productionApp.baseUrl}/dynamic/known?utm=${attackerToken}`);
+  const attackerHtml = await attacker.text();
+  expect(attacker.headers.get("x-vinext-cache")).toBe("MISS");
+  expect(attackerHtml).not.toContain(attackerToken);
+  expect(attackerHtml).toContain('<p id="ready">false</p>');
+  expect(attackerHtml).toContain('<p id="navigation-params">null</p>');
+
+  const response = await page.goto(`${productionApp.baseUrl}/dynamic/known`, {
+    waitUntil: "load",
+  });
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
+  await waitForHydration(page);
+  await expect(page.locator("#ready")).toHaveText("true");
+  await expect(page.locator("#query")).toHaveText(JSON.stringify({ slug: "known" }));
+  await expect(page.locator("#as-path")).toHaveText("/dynamic/known");
+  await expect(page.locator("#navigation-params")).toHaveText(JSON.stringify({ slug: "known" }));
   expect(consoleErrors).toEqual([]);
 });

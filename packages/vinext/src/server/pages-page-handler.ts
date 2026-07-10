@@ -495,8 +495,14 @@ export function createPagesPageHandler(
           }),
           ...(previewData === false ? {} : { isPreview: true as const }),
         };
-        const navigationIsReady =
-          typeof getPagesNavigationIsReadyFromSerializedState === "function"
+        // Match Next.js's ServerRouter: SSG renders are not ready on the
+        // server, regardless of the triggering request URL. ISR HTML is shared
+        // by pathname, so deriving this bit from request search state would
+        // persist request-specific router and next/navigation output.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+        const navigationIsReady = isStaticPropsRender
+          ? false
+          : typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
                 routePattern,
                 originalRequestUrl.search,
@@ -578,6 +584,7 @@ export function createPagesPageHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl: renderRouteUrl,
+            navigationIsReady,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);

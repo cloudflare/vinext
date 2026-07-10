@@ -839,10 +839,10 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
-        if (
+        const isStaticPropsRender =
           typeof pageModule.getStaticProps === "function" &&
-          typeof pageModule.getServerSideProps !== "function"
-        ) {
+          typeof pageModule.getServerSideProps !== "function";
+        if (isStaticPropsRender) {
           // Match Next.js's Pages handler: getStaticProps renders receive only
           // route params and a resolved asPath without request search state.
           query = mergeRouteParamsIntoQuery({}, params);
@@ -881,8 +881,13 @@ export function createSSRHandler(
           }),
           ...(requestPreviewData === false ? {} : { isPreview: true as const }),
         };
-        const navigationIsReady =
-          typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
+        // Next.js's ServerRouter is never ready during an SSG render. Keep
+        // this independent of the triggering request query because ISR output
+        // is shared by pathname; the client still publishes its live URL state
+        // after hydration. See packages/next/src/server/render.tsx.
+        const navigationIsReady = isStaticPropsRender
+          ? false
+          : typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
                 patternToNextFormat(route.pattern),
                 new URL(url, "http://_").search,
@@ -1493,6 +1498,7 @@ export function createSSRHandler(
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
                           routeUrl: requestAsPath,
+                          navigationIsReady,
                         },
                       };
 
@@ -1865,6 +1871,7 @@ export function createSSRHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl: requestAsPath,
+            navigationIsReady,
           },
         };
 

@@ -6,10 +6,10 @@ import type { PagesPageModule } from "./pages-page-data.js";
  *
  * The initial `router.isReady` value for the `next/navigation` compat hooks is
  * derived from the page/_app data-fetching exports plus the configured-rewrites
- * flag, serialized into `__NEXT_DATA__`. The dev SSR handler and the production
- * Pages page handler must compute this identically so server HTML and client
- * hydration agree — see `getPagesNavigationIsReadyFromSerializedState` in
- * `shims/router.ts`.
+ * flag. The server's concrete readiness snapshot is serialized into
+ * `__NEXT_DATA__` so shared SSG HTML and the initial client hydration render
+ * agree; the client then publishes its live URL state. See
+ * `getPagesNavigationIsReadyFromSerializedState` in `shims/router.ts`.
  */
 
 /**

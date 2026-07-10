@@ -1271,10 +1271,10 @@ function getPathnameAndQuery(): {
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? canonicalResolvedPath;
   const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
-  // Query-bearing GSP documents hydrate from the params-only state serialized
-  // into the shared HTML while isReady is false. The provider publishes the
-  // live browser query/asPath when readiness flips; an explicit navigation
-  // wins immediately even if it occurs before that timer.
+  // GSP documents hydrate from the params-only readiness state serialized into
+  // their shared HTML. The provider publishes the live browser query/asPath
+  // when readiness flips; an explicit navigation wins immediately even if it
+  // occurs before that timer.
   if (!isPagesRouterReady() && !routerRuntimeState.routerDidNavigate && nextData) {
     const serializedUrl = new URL(
       nextData.__vinext?.routeUrl ?? canonicalResolvedPath,
@@ -1362,6 +1362,10 @@ function shouldDeferInitialPagesRouterReady(): boolean {
   const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
   if (!nextData) return false;
 
+  if (typeof nextData.__vinext?.navigationIsReady === "boolean") {
+    return !nextData.__vinext.navigationIsReady;
+  }
+
   return !getPagesNavigationIsReadyFromSerializedState(
     nextData.page,
     window.location.search,
@@ -1398,7 +1402,13 @@ function initializePagesRouterReadyFromNextData(
   if (typeof window === "undefined") return;
   routerRuntimeState.pagesRouterReady =
     forceReady ||
-    getPagesNavigationIsReadyFromSerializedState(nextData.page, window.location.search, nextData);
+    nextData.__vinext?.navigationIsReady === true ||
+    (nextData.__vinext?.navigationIsReady === undefined &&
+      getPagesNavigationIsReadyFromSerializedState(
+        nextData.page,
+        window.location.search,
+        nextData,
+      ));
 }
 
 function markPagesRouterHydrated(): void {
