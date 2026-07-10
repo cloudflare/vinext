@@ -793,6 +793,36 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(paths!.size).toBe(1);
   });
 
+  it("does not seed route-handler artifacts as App page cache entries", async () => {
+    const buildId = "route-handler-artifact-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/api/static-hello",
+            status: "rendered",
+            router: "app",
+            appRouteKind: "route-handler",
+            revalidate: false,
+          },
+        ],
+      },
+      {
+        "api/static-hello": '{"ok":true}',
+      },
+    );
+
+    const count = await seedMemoryCacheFromPrerender(serverDir);
+
+    expect(count).toBe(0);
+    expect(getRenderedConcreteUrlPathsForRoute("/api/static-hello")).toBeUndefined();
+    expect(
+      await getCacheHandler().get(isrCacheKey("app", "/api/static-hello", buildId) + ":html"),
+    ).toBeNull();
+  });
+
   it("clears pregenerated concrete paths when manifest is absent from a subsequent build", async () => {
     setupPrerenderFixture(
       serverDir,

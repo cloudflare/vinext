@@ -67,6 +67,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/** Prerender-only JSON side channel carrying query-invariance proof metadata. */
+export const VINEXT_PRERENDER_QUERY_INVARIANT_HEADER = "x-vinext-prerender-query-invariant";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 
@@ -219,4 +222,5 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_QUERY_INVARIANT_HEADER,
 ];

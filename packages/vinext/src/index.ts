@@ -1300,6 +1300,103 @@ type NitroSetupContext = {
   };
 };
 
+function isCloudflareVitePlugin(plugin: unknown): boolean {
+  return (
+    plugin !== null &&
+    typeof plugin === "object" &&
+    "name" in plugin &&
+    typeof plugin.name === "string" &&
+    (plugin.name === "vite-plugin-cloudflare" || plugin.name.startsWith("vite-plugin-cloudflare:"))
+  );
+}
+
+function flattenPluginCandidates(plugins: unknown): unknown[] {
+  if (!Array.isArray(plugins)) return [];
+  return plugins.flatMap((plugin) =>
+    Array.isArray(plugin) ? flattenPluginCandidates(plugin) : [plugin],
+  );
+}
+
+function hasCloudflareVitePlugin(plugins: unknown): boolean {
+  return flattenPluginCandidates(plugins).some(isCloudflareVitePlugin);
+}
+
+function stripJsonComments(source: string): string {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (inString) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      output += char;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      while (index < source.length && source[index] !== "\n") index++;
+      output += "\n";
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      index += 2;
+      while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+        output += source[index] === "\n" ? "\n" : " ";
+        index++;
+      }
+      index++;
+      continue;
+    }
+
+    output += char;
+  }
+  return output;
+}
+
+function parseJsonOrJsonc(source: string): unknown {
+  try {
+    return JSON.parse(source);
+  } catch {
+    return JSON.parse(stripJsonComments(source).replace(/,\s*([}\]])/g, "$1"));
+  }
+}
+
+function shouldEnableCloudflareRscTransport(root: string, plugins: unknown): boolean {
+  if (!hasCloudflareVitePlugin(plugins)) return false;
+
+  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
+    .map((filename) => path.join(root, filename))
+    .find((candidate) => fs.existsSync(candidate));
+  if (!wranglerPath) return true;
+
+  let parsed: unknown;
+  try {
+    parsed = parseJsonOrJsonc(fs.readFileSync(wranglerPath, "utf-8"));
+  } catch {
+    return false;
+  }
+
+  if (!isRecord(parsed) || parsed.assets === undefined) return true;
+  if (!isRecord(parsed.assets)) return false;
+  const notFoundHandling = parsed.assets.not_found_handling;
+  return notFoundHandling === undefined || notFoundHandling === "none";
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
@@ -2056,6 +2153,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_PREFETCH_INLINING"] = JSON.stringify(
           nextConfig.prefetchInlining ? "true" : "false",
         );
+        defines["process.env.__VINEXT_CLOUDFLARE_RSC_TRANSPORT"] = JSON.stringify(
+          shouldEnableCloudflareRscTransport(root, config.plugins) ? "true" : "false",
+        );
         // Emit a raw boolean (not the "true"/"false" string form used by the
         // sibling defines above): the consumer guards with
         // `if (process.env.__NEXT_GESTURE_TRANSITION)`, so the literal `false`
@@ -2347,22 +2447,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
-        const pluginsFlat: unknown[] = [];
-        function flattenPlugins(arr: unknown[]) {
-          for (const p of arr) {
-            if (Array.isArray(p)) flattenPlugins(p);
-            else if (p) pluginsFlat.push(p);
-          }
-        }
-        flattenPlugins((config.plugins as unknown[]) ?? []);
-        hasCloudflarePlugin = pluginsFlat.some(
-          (p: unknown) =>
-            p &&
-            typeof p === "object" &&
-            "name" in p &&
-            typeof p.name === "string" &&
-            (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
-        );
+        const pluginsFlat = flattenPluginCandidates(config.plugins);
+        hasCloudflarePlugin = pluginsFlat.some(isCloudflareVitePlugin);
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&

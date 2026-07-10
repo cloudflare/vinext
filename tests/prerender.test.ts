@@ -1634,15 +1634,22 @@ describe("assertNoFatalPrerenderRoutes (#1982)", () => {
 
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
   let outDir: string;
+  let clientDir: string;
+  let serverDir: string;
   let allResults: PrerenderRouteResult[];
 
   beforeAll(async () => {
     const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
-    outDir = path.join(root, "dist", "server", "prerendered-routes");
+    serverDir = path.join(root, "dist", "server");
+    outDir = path.join(serverDir, "prerendered-routes");
+    clientDir = path.join(root, "dist", "client");
 
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
 
-    const result = await runPrerender({ root, rscBundlePath });
+    const result = await runPrerender({
+      root,
+      rscBundlePath,
+    });
     allResults = result?.routes ?? [];
   }, 180_000);
 
@@ -1687,6 +1694,93 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
         (r) => r.status === "skipped" && "reason" in r && r.reason === "api",
       );
       expect(apiSkipped.length).toBeGreaterThan(0);
+      expect(findRoute(allResults, "/api/hello")).toMatchObject({
+        route: "/api/hello",
+        status: "skipped",
+        reason: "api",
+      });
+      expect(findRoute(allResults, "/api/static-items/:id")).toMatchObject({
+        route: "/api/static-items/:id",
+        status: "skipped",
+        reason: "api",
+      });
+    });
+
+    it("renders explicit static GET route handlers as route-handler artifacts", () => {
+      const r = findRoute(allResults, "/api/static-hello");
+      expect(r).toMatchObject({
+        route: "/api/static-hello",
+        status: "rendered",
+        revalidate: false,
+        router: "app",
+        appRouteKind: "route-handler",
+        headers: { "content-type": expect.stringContaining("application/json") },
+      });
+      if (r?.status === "rendered") {
+        expect(r.outputFiles).toEqual(["api/static-hello"]);
+      }
+
+      const body = fs.readFileSync(path.join(outDir, "api/static-hello"), "utf-8");
+      expect(JSON.parse(body)).toEqual({ ok: true, source: "static route handler" });
+    });
+
+    it("renders revalidate=false route handlers as permanent static artifacts", () => {
+      const r = findRoute(allResults, "/api/static-revalidate-false");
+      expect(r).toMatchObject({
+        route: "/api/static-revalidate-false",
+        status: "rendered",
+        revalidate: false,
+        router: "app",
+        appRouteKind: "route-handler",
+      });
+      expect(fs.existsSync(path.join(outDir, "api/static-revalidate-false"))).toBe(true);
+    });
+
+    it("does not publish route handlers that set cookies", () => {
+      expect(findRoute(allResults, "/api/static-cookie")).toMatchObject({
+        route: "/api/static-cookie",
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(outDir, "api/static-cookie"))).toBe(false);
+      expect(fs.existsSync(path.join(clientDir, "api/static-cookie"))).toBe(false);
+    });
+
+    it("does not publish route handlers whose status cannot be represented by assets", () => {
+      expect(findRoute(allResults, "/api/static-no-content")).toMatchObject({
+        route: "/api/static-no-content",
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(outDir, "api/static-no-content"))).toBe(false);
+      expect(fs.existsSync(path.join(clientDir, "api/static-no-content"))).toBe(false);
+    });
+
+    it("does not publish route-handler assets when middleware must observe requests", () => {
+      expect(fs.existsSync(path.join(outDir, "api/static-hello"))).toBe(true);
+      expect(fs.existsSync(path.join(clientDir, "api/static-hello"))).toBe(false);
+
+      const headers = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
+      expect(headers).not.toContain("/api/static-hello\n");
+      expect(headers).not.toContain("/api/hello\n");
+    });
+
+    it("preserves the route-handler marker in the prerender manifest", () => {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(serverDir, "vinext-prerender.json"), "utf-8"),
+      );
+      const route = manifest.routes.find(
+        (entry: { route?: string }) => entry.route === "/api/static-hello",
+      );
+      expect(route).toMatchObject({
+        route: "/api/static-hello",
+        status: "rendered",
+        appRouteKind: "route-handler",
+      });
+      expect(manifest.pregeneratedConcretePaths).not.toContainEqual([
+        "/api/static-hello",
+        ["/api/static-hello"],
+      ]);
     });
 
     it("writes HTML and RSC files to outDir", () => {

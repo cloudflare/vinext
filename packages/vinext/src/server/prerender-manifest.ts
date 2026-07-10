@@ -7,8 +7,13 @@ export type PrerenderManifestRoute = {
   expire?: number;
   path?: string;
   router?: string;
+  appRouteKind?: "page" | "route-handler";
   fallback?: boolean;
   headers?: Record<string, string>;
+  queryInvariant?: {
+    html?: boolean;
+    rsc?: boolean;
+  };
 };
 
 export type PrerenderManifest = {
@@ -34,7 +39,13 @@ export function readPrerenderManifest(manifestPath: string): PrerenderManifest |
 }
 
 export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): PrerenderManifestRoute[] {
-  return routes.filter((r) => r.status === "rendered" && r.router === "app");
+  return routes.filter(
+    (r) =>
+      r.status === "rendered" &&
+      r.router === "app" &&
+      // Older manifests did not write appRouteKind; treat missing as App page.
+      r.appRouteKind !== "route-handler",
+  );
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

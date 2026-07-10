@@ -40,6 +40,7 @@ import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/rou
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_QUERY_INVARIANT_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -56,6 +57,11 @@ import {
   startPrerenderServerPool,
   type PrerenderServerPool,
 } from "./prerender-server-pool.js";
+import {
+  getRouteHandlerAssetOutputPath,
+  getStaticRouteHandlerResponseHeaders,
+  isExplicitStaticGetRouteHandler,
+} from "./static-route-handler-assets.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
@@ -135,6 +141,11 @@ export type PrerenderResult = {
   outputFiles?: string[];
 };
 
+type PrerenderQueryInvariant = {
+  html: boolean;
+  rsc: boolean;
+};
+
 export type PrerenderRouteResult =
   | {
       /** The route's file-system pattern, e.g. `/blog/:slug`. */
@@ -151,8 +162,12 @@ export type PrerenderRouteResult =
       path?: string;
       /** Which router produced this route. Used by cache seeding. */
       router: "app" | "pages";
+      /** App Router artifact kind. Omitted by older manifests and Pages Router entries. */
+      appRouteKind?: "page" | "route-handler";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string>;
+      /** Query-invariance proof for publishing prerendered artifacts as static assets. */
+      queryInvariant?: PrerenderQueryInvariant;
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -1181,6 +1196,7 @@ export async function prerenderApp({
       urlPath: string;
       /** The file-system route pattern this URL was expanded from (e.g. `/blog/:slug`). */
       routePattern: string;
+      appRouteKind: "page" | "route-handler";
       prerenderRouteParams: PrerenderRouteParamsPayload | null;
       revalidate: number | false;
       isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
@@ -1192,6 +1208,17 @@ export async function prerenderApp({
       const renderEntryPath = getAppRouteRenderEntryPath(route);
 
       if (!renderEntryPath && route.routePath) {
+        if (isExplicitStaticGetRouteHandler(route)) {
+          urlsToRender.push({
+            urlPath: route.pattern,
+            routePattern: route.pattern,
+            appRouteKind: "route-handler",
+            prerenderRouteParams: null,
+            revalidate: false,
+            isSpeculative: false,
+          });
+          continue;
+        }
         results.push({ route: route.pattern, status: "skipped", reason: "api" });
         continue;
       }
@@ -1335,6 +1362,7 @@ export async function prerenderApp({
             urlsToRender.push({
               urlPath,
               routePattern: route.pattern,
+              appRouteKind: "page",
               prerenderRouteParams: encodePrerenderRouteParams(route.pattern, params),
               revalidate,
               isSpeculative: false,
@@ -1354,6 +1382,7 @@ export async function prerenderApp({
                 urlsToRender.push({
                   urlPath: fallbackShell.pathname,
                   routePattern: route.pattern,
+                  appRouteKind: "page",
                   prerenderRouteParams: encodePrerenderRouteParams(
                     route.pattern,
                     fallbackShell.params,
@@ -1385,6 +1414,7 @@ export async function prerenderApp({
         urlsToRender.push({
           urlPath: route.pattern,
           routePattern: route.pattern,
+          appRouteKind: "page",
           prerenderRouteParams: null,
           revalidate: false,
           isSpeculative: true,
@@ -1394,6 +1424,7 @@ export async function prerenderApp({
         urlsToRender.push({
           urlPath: route.pattern,
           routePattern: route.pattern,
+          appRouteKind: "page",
           prerenderRouteParams: null,
           revalidate,
           isSpeculative: false,
@@ -1412,11 +1443,16 @@ export async function prerenderApp({
     async function renderUrl({
       urlPath,
       routePattern,
+      appRouteKind,
       prerenderRouteParams,
       revalidate,
       isSpeculative,
       isFallback,
     }: UrlToRender): Promise<PrerenderRouteResult> {
+      if (appRouteKind === "route-handler") {
+        return renderRouteHandlerUrl({ urlPath, routePattern });
+      }
+
       try {
         // Invoke RSC handler directly with a synthetic Request.
         // Each request is wrapped in its own ALS context via runWithHeadersContext
@@ -1444,6 +1480,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            const queryInvariant = readPrerenderQueryInvariantHeader(response.headers);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1451,6 +1488,7 @@ export async function prerenderApp({
                 linkHeader,
                 html: null,
                 ok: response.ok,
+                queryInvariant,
                 requestCacheLife: null,
                 status: response.status,
               };
@@ -1466,6 +1504,7 @@ export async function prerenderApp({
               linkHeader,
               html,
               ok: true,
+              queryInvariant,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
             };
@@ -1575,7 +1614,9 @@ export async function prerenderApp({
             ? { expire: renderedCacheControl.expire }
             : {}),
           router: "app",
+          appRouteKind: "page",
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
+          ...(htmlRender.queryInvariant ? { queryInvariant: htmlRender.queryInvariant } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
@@ -1584,6 +1625,54 @@ export async function prerenderApp({
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
+        const err = e as Error & { digest?: string };
+        const base = config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message;
+        const msg = err.digest ? `${base} (digest: ${err.digest})` : base;
+        return { route: routePattern, status: "error", error: msg };
+      }
+    }
+
+    async function renderRouteHandlerUrl(options: {
+      urlPath: string;
+      routePattern: string;
+    }): Promise<PrerenderRouteResult> {
+      const { urlPath, routePattern } = options;
+      try {
+        const outputPath = getRouteHandlerAssetOutputPath(urlPath);
+        if (outputPath === null) {
+          return { route: routePattern, status: "skipped", reason: "api" };
+        }
+
+        const request = new Request(`http://localhost${urlPath}`, { method: "GET" });
+        const response = await runWithHeadersContext(headersContextFromRequest(request), () =>
+          rscHandler(request),
+        );
+        const cacheControl = response.headers.get("cache-control") ?? "";
+        if (
+          response.status !== 200 ||
+          cacheControl.toLowerCase().includes("no-store") ||
+          response.headers.has("set-cookie")
+        ) {
+          await response.body?.cancel();
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
+        }
+
+        const body = new Uint8Array(await response.arrayBuffer());
+        const fullPath = path.join(outDir, outputPath);
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, body);
+
+        return {
+          route: routePattern,
+          status: "rendered",
+          outputFiles: [outputPath],
+          revalidate: false,
+          router: "app",
+          appRouteKind: "route-handler",
+          headers: getStaticRouteHandlerResponseHeaders(response.headers),
+        };
+      } catch (e) {
+        renderPool?.recordRenderError(e);
         const err = e as Error & { digest?: string };
         const base = config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message;
         const msg = err.digest ? `${base} (digest: ${err.digest})` : base;
@@ -1722,6 +1811,21 @@ function readPrerenderCacheLifeHeader(
   }
 }
 
+function readPrerenderQueryInvariantHeader(headers: Headers): PrerenderQueryInvariant | null {
+  const value = headers.get(VINEXT_PRERENDER_QUERY_INVARIANT_HEADER);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as { html?: unknown; rsc?: unknown };
+    return {
+      html: parsed.html === true,
+      rsc: parsed.rsc === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function resolveRenderedExpireSeconds(options: {
   fallbackExpireSeconds: number;
   sMaxage?: number;
@@ -1774,7 +1878,9 @@ export function writePrerenderIndex(
         revalidate: r.revalidate,
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
+        ...(r.appRouteKind ? { appRouteKind: r.appRouteKind } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
+        ...(r.queryInvariant ? { queryInvariant: r.queryInvariant } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };

@@ -5,6 +5,10 @@ import {
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
+  createRscTransportRequestPathname,
+  isCloudflareRscTransportEnabled,
+} from "./app-rsc-transport.js";
+import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
@@ -324,6 +328,9 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  if (isCloudflareRscTransportEnabled()) {
+    url.pathname = createRscTransportRequestPathname(url.pathname, headers);
+  }
   return `${url.pathname}${url.search}`;
 }
 
