@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  rewriteBuiltWorkerUrlBase,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
@@ -80,6 +81,27 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result?.code).toContain(`new URL("./font.ttf", import.meta?.url)`);
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
+  });
+
+  it("uses the browser location for emitted worker URL bases", () => {
+    const result = rewriteBuiltWorkerUrlBase(
+      'new Worker(new URL("/docs/_next/static/workers/worker.js?dpl=deploy", "file:///ROOT/app/page.tsx"))',
+    );
+
+    expect(result?.code).toContain(
+      'new URL("/docs/_next/static/workers/worker.js?dpl=deploy", globalThis.location.href)',
+    );
+  });
+
+  it("preserves Vite development worker URL base expressions", () => {
+    const result = rewriteImportMetaUrl(
+      'new Worker(new URL("/docs/app/worker.ts?worker_file&type=module", "" + import.meta.url));',
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result).toBeNull();
   });
 
   it("rewrites optional chained import.meta.url reads", () => {
