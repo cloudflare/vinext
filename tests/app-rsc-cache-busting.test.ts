@@ -17,6 +17,10 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_STATIC_RSC_TRANSPORT_PREFIX,
+  VINEXT_WORKER_RSC_TRANSPORT_PREFIX,
+} from "../packages/vinext/src/server/app-rsc-transport.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -50,6 +54,53 @@ describe("App Router RSC cache-busting", () => {
 
     await expect(createRscRequestUrl("/dashboard?tab=activity", headers)).resolves.toBe(
       "/dashboard?tab=activity&_rsc",
+    );
+  });
+
+  it("uses the static RSC transport path for plain Cloudflare RSC navigations", async () => {
+    const headers = createRscRequestHeaders();
+
+    await withEnvVar("__VINEXT_CLOUDFLARE_RSC_TRANSPORT", "true", async () => {
+      await expect(createRscRequestUrl("/dashboard?tab=activity", headers)).resolves.toBe(
+        `${VINEXT_STATIC_RSC_TRANSPORT_PREFIX}/dashboard.rsc?tab=activity&_rsc`,
+      );
+      await expect(createRscRequestUrl("/", headers)).resolves.toBe(
+        `${VINEXT_STATIC_RSC_TRANSPORT_PREFIX}/__root.rsc?_rsc`,
+      );
+    });
+  });
+
+  it("uses the Worker RSC transport path for Cloudflare variant RSC requests", async () => {
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    const hash = await computeRscCacheBustingSearchParam(headers);
+
+    await withEnvVar("__VINEXT_CLOUDFLARE_RSC_TRANSPORT", "true", async () => {
+      await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
+        `${VINEXT_WORKER_RSC_TRANSPORT_PREFIX}/photos/42.rsc?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
+      );
+    });
+  });
+
+  it("keeps stale Cloudflare transport RSC redirects on the transport path", async () => {
+    const headers = createRscRequestHeaders({
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    const hash = await computeRscCacheBustingSearchParam(headers);
+    const request = new Request(
+      `https://example.com${VINEXT_WORKER_RSC_TRANSPORT_PREFIX}/photos/42.rsc?_rsc=stale`,
+      { headers },
+    );
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.headers.get("Location")).toBe(
+      `${VINEXT_WORKER_RSC_TRANSPORT_PREFIX}/photos/42.rsc?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
   });
 

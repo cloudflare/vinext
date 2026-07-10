@@ -1078,6 +1078,25 @@ export function matchRedirect(
 }
 
 /**
+ * Check whether a redirect source can match a pathname without evaluating its
+ * request-dependent `has` / `missing` conditions.
+ *
+ * Build-time asset publication uses this as a conservative guard: if the
+ * source can match, the route must stay Worker-owned because request state may
+ * decide whether the redirect applies.
+ */
+export function matchesRedirectSource(
+  pathname: string,
+  redirect: NextRedirect,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return (
+    shouldEvaluateRule(redirect.basePath, basePathState) &&
+    matchConfigPattern(pathname, redirect.source) !== null
+  );
+}
+
+/**
  * Apply rewrite rules from next.config.js.
  * Returns the rewritten URL or null if no rewrite matched.
  *
@@ -1515,6 +1534,31 @@ export function matchHeaders(
     }
   }
   return result;
+}
+
+/**
+ * Check whether a custom-header source can match a pathname without evaluating
+ * request-dependent `has` / `missing` conditions.
+ *
+ * Uses the same header-source compiler as matchHeaders so publication
+ * eligibility follows runtime header matching semantics.
+ */
+export function matchesHeaderSource(
+  pathname: string,
+  header: NextHeader,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  if (!shouldEvaluateRule(header.basePath, basePathState)) return false;
+
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+  const source = pathnameHadTrailingSlash
+    ? stripTrailingSlashForConfigMatch(header.source)
+    : header.source;
+  const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
+    safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
+  );
+  return sourceRegex !== null && sourceRegex.test(pathname);
 }
 
 /**

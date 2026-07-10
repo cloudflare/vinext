@@ -7,9 +7,10 @@
  *
  * Output files (HTML/RSC payloads) are written to
  * `dist/server/prerendered-routes/` for non-export builds, co-located with
- * server artifacts and away from the static assets directory. On Cloudflare
- * Workers, `not_found_handling: "none"` means every request hits the worker
- * first, so files in `dist/client/` are never auto-served for page requests.
+ * server artifacts. After the prerender manifest is written, a conservative
+ * Cloudflare publisher may copy fully static App Router HTML into visible
+ * assets and RSC payloads into a reserved transport namespace so browser RSC
+ * requests cannot be shadowed by document assets.
  * For `output: 'export'` builds the caller controls `outDir` via
  * `static-export.ts`, which passes `dist/client/` directly.
  *
@@ -35,6 +36,7 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { publishCloudflarePrerenderedAppAssets } from "./cloudflare-prerender-assets.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -206,13 +208,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let completedUrls = 0;
   const progress = new PrerenderProgress();
 
-  // Non-export builds write to dist/server/prerendered-routes/ so they are
-  // co-located with server artifacts. On Cloudflare Workers the assets binding
-  // uses not_found_handling: "none", so every request hits the worker first;
-  // files in dist/client/ are never auto-served for page requests and would be
-  // inert. Keeping prerendered output out of dist/client/ also prevents ISR
-  // routes from being served as stale static files forever (bypassing
-  // revalidation) when KV pre-population is added in the future.
+  // Non-export builds write to dist/server/prerendered-routes/ so ISR and
+  // dynamic artifacts stay server-owned by default. Fully static App Router
+  // artifacts are copied into Cloudflare's asset directory later only when
+  // ASSETS-first document serving and the split RSC transport are semantically safe.
   //
   // output: 'export' builds use dist/client/ (handled by static-export.ts which
   // passes its own outDir — this path is only reached for non-export builds).
@@ -347,6 +346,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     writePrerenderIndex(allRoutes, manifestDir, {
       buildId: config.buildId,
       trailingSlash: config.trailingSlash,
+    });
+    publishCloudflarePrerenderedAppAssets({
+      config,
+      prerenderDir: outDir,
+      root,
+      routes: allRoutes,
+      rscCompatibilityId: process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID || config.deploymentId,
+      serverDir,
     });
   } finally {
     progress.finish(rendered, skipped, errors);

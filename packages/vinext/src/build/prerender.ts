@@ -40,6 +40,7 @@ import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/rou
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_QUERY_INVARIANT_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -135,6 +136,11 @@ export type PrerenderResult = {
   outputFiles?: string[];
 };
 
+type PrerenderQueryInvariant = {
+  html: boolean;
+  rsc: boolean;
+};
+
 export type PrerenderRouteResult =
   | {
       /** The route's file-system pattern, e.g. `/blog/:slug`. */
@@ -153,6 +159,8 @@ export type PrerenderRouteResult =
       router: "app" | "pages";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string>;
+      /** Query-invariance proof for publishing prerendered artifacts as static assets. */
+      queryInvariant?: PrerenderQueryInvariant;
       /** Set to true when this is a PPR fallback shell. */
       fallback?: boolean;
     }
@@ -1444,6 +1452,7 @@ export async function prerenderApp({
             const cacheControl = response.headers.get("cache-control") ?? "";
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
+            const queryInvariant = readPrerenderQueryInvariantHeader(response.headers);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1451,6 +1460,7 @@ export async function prerenderApp({
                 linkHeader,
                 html: null,
                 ok: response.ok,
+                queryInvariant,
                 requestCacheLife: null,
                 status: response.status,
               };
@@ -1466,6 +1476,7 @@ export async function prerenderApp({
               linkHeader,
               html,
               ok: true,
+              queryInvariant,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
             };
@@ -1576,6 +1587,7 @@ export async function prerenderApp({
             : {}),
           router: "app",
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
+          ...(htmlRender.queryInvariant ? { queryInvariant: htmlRender.queryInvariant } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
@@ -1722,6 +1734,21 @@ function readPrerenderCacheLifeHeader(
   }
 }
 
+function readPrerenderQueryInvariantHeader(headers: Headers): PrerenderQueryInvariant | null {
+  const value = headers.get(VINEXT_PRERENDER_QUERY_INVARIANT_HEADER);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as { html?: unknown; rsc?: unknown };
+    return {
+      html: parsed.html === true,
+      rsc: parsed.rsc === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function resolveRenderedExpireSeconds(options: {
   fallbackExpireSeconds: number;
   sMaxage?: number;
@@ -1775,6 +1802,7 @@ export function writePrerenderIndex(
         ...(typeof r.revalidate === "number" ? { expire: r.expire } : {}),
         router: r.router,
         ...(r.headers ? { headers: r.headers } : {}),
+        ...(r.queryInvariant ? { queryInvariant: r.queryInvariant } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),
       };

@@ -39,6 +39,11 @@ import {
   handleConfiguredImageOptimization,
   isImageOptimizationPath,
 } from "./image-optimization.js";
+import {
+  resolveRscTransportRequest,
+  resolveRscTransportRoutePathname,
+} from "./app-rsc-transport.js";
+import { resolveInvalidRscCacheBustingRequest } from "./app-rsc-cache-busting.js";
 import { finalizeMissingStaticAssetResponse, resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -90,7 +95,16 @@ async function handleRequest(
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
-  const url = new URL(request.url);
+  let url = new URL(request.url);
+  if (resolveRscTransportRoutePathname(url.pathname) !== null) {
+    const redirect = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+    if (redirect) return redirect;
+  }
+  request = resolveRscTransportRequest(request, url);
+  url = new URL(request.url);
 
   if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
     const assetFetcher = env.ASSETS;
