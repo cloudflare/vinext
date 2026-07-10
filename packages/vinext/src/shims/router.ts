@@ -1270,7 +1270,25 @@ function getPathnameAndQuery(): {
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? canonicalResolvedPath;
-  const nextData = window.__NEXT_DATA__;
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  // Query-bearing GSP documents hydrate from the params-only state serialized
+  // into the shared HTML while isReady is false. The provider publishes the
+  // live browser query/asPath when readiness flips; an explicit navigation
+  // wins immediately even if it occurs before that timer.
+  if (!isPagesRouterReady() && !routerRuntimeState.routerDidNavigate && nextData) {
+    const serializedUrl = new URL(
+      nextData.__vinext?.routeUrl ?? canonicalResolvedPath,
+      window.location.href,
+    );
+    const serializedResolvedPath = removeNavigationLocalePrefix(
+      stripBasePath(serializedUrl.pathname, __basePath),
+    );
+    return {
+      pathname,
+      query: getRouteQueryFromNextData(nextData, serializedResolvedPath),
+      asPath: serializedResolvedPath + serializedUrl.search + serializedUrl.hash,
+    };
+  }
   const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
   // URL search params always reflect the current URL
   const searchQuery: Record<string, string | string[]> = {};

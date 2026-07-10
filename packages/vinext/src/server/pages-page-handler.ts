@@ -499,7 +499,7 @@ export function createPagesPageHandler(
           typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
                 routePattern,
-                new URL(routerAsPath, "http://_").search,
+                originalRequestUrl.search,
                 pagesNextData,
               )
             : true;

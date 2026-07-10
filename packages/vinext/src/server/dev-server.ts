@@ -1492,6 +1492,7 @@ export function createSSRHandler(
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
+                          routeUrl: requestAsPath,
                         },
                       };
 
@@ -1863,6 +1864,7 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            routeUrl: requestAsPath,
           },
         };
 
