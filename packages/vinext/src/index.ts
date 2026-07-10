@@ -86,6 +86,7 @@ import {
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
 import {
   encodeUrlParserIgnoredCharacters,
   isNextDataPathname,
@@ -2034,6 +2035,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? path.join(root, "src")
             : root;
         middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
+        if (middlewarePath) {
+          const staticMatcher = extractMiddlewareMatcherConfig(middlewarePath);
+          if (staticMatcher !== undefined) {
+            validateMiddlewareMatcherPatterns(staticMatcher);
+          }
+        }
         const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
           spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
         );

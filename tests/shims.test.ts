@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7474,6 +7475,54 @@ describe("middleware/proxy export validation", () => {
 // matchPattern / matchesMiddleware unit tests
 
 describe("middleware matcher patterns", () => {
+  it("matches Next.js 16.2.7 path-to-regexp tokens and compiled regexes", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { parseMiddlewarePath } =
+      await import("../packages/vinext/src/server/middleware-path-to-regexp.js");
+    type Token = ReturnType<typeof parseMiddlewarePath>[number];
+    const nextPathToRegexp = createRequire(import.meta.url)(
+      "next/dist/compiled/path-to-regexp",
+    ) as {
+      parse(source: string): Token[];
+      tokensToRegexp(tokens: Token[]): RegExp;
+    };
+    const patterns = [
+      "/foo\\:bar",
+      "/(foo.*|bar)/:path*",
+      "/foo/:id(a\\)b)?",
+      "/:id((?:foo|bar)-\\d+)?",
+      "/docs/:lang(en|fr)*",
+      "/cdn/:path*(api|static)",
+      "/foo-:path*",
+    ];
+
+    for (const pattern of patterns) {
+      const nextTokens = nextPathToRegexp.parse(pattern);
+      expect(parseMiddlewarePath(pattern), pattern).toEqual(nextTokens);
+
+      let nextRegexp: RegExp;
+      try {
+        nextRegexp = nextPathToRegexp.tokensToRegexp(nextTokens);
+      } catch {
+        nextRegexp = nextPathToRegexp.tokensToRegexp(
+          nextTokens.map((token) =>
+            typeof token === "object" &&
+            (token.modifier === "*" || token.modifier === "+") &&
+            token.prefix === "" &&
+            token.suffix === ""
+              ? { ...token, prefix: "/" }
+              : token,
+          ),
+        );
+      }
+
+      const compiled = compileMiddlewareMatcherPattern(pattern);
+      expect(compiled.regexp?.source, pattern).toBe(nextRegexp.source);
+      expect(compiled.regexp?.flags, pattern).toBe(nextRegexp.flags);
+    }
+  });
+
   it("matchPattern: exact path match", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchPattern("/about", "/about")).toBe(true);
@@ -7510,6 +7559,38 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/de/about", "/:locale(en|es|fr)?/about")).toBe(false);
   });
 
+  // Ported from Next.js path-to-regexp matcher semantics:
+  // packages/next/src/lib/try-to-parse-path.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/try-to-parse-path.ts
+  it("matchPattern: unnamed regex groups compose with named params", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+    const pattern = "/(admin|dashboard)/:path*";
+
+    expect(matchPattern("/admin", pattern)).toBe(true);
+    expect(matchPattern("/admin/secrets", pattern)).toBe(true);
+    expect(matchPattern("/dashboard/users/active", pattern)).toBe(true);
+    expect(matchPattern("/public", pattern)).toBe(false);
+  });
+
+  // path-to-regexp applies a modifier after a constraint to the entire
+  // slash-prefixed param and permits repeated constraint-matching segments.
+  it("matchPattern: constrained params repeat across path segments", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+
+    const zeroOrMore = "/docs/:lang(en|fr)*";
+    expect(matchPattern("/docs", zeroOrMore)).toBe(true);
+    expect(matchPattern("/docs/en", zeroOrMore)).toBe(true);
+    expect(matchPattern("/docs/en/fr", zeroOrMore)).toBe(true);
+    expect(matchPattern("/docs/de", zeroOrMore)).toBe(false);
+    expect(matchPattern("/docs/en/de", zeroOrMore)).toBe(false);
+
+    const oneOrMore = "/docs/:lang(en|fr)+";
+    expect(matchPattern("/docs", oneOrMore)).toBe(false);
+    expect(matchPattern("/docs/en", oneOrMore)).toBe(true);
+    expect(matchPattern("/docs/en/fr", oneOrMore)).toBe(true);
+    expect(matchPattern("/docs/de", oneOrMore)).toBe(false);
+  });
+
   it("matchPattern: wildcard (:path*) matches zero or more segments", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchPattern("/dashboard", "/dashboard/:path*")).toBe(true);
@@ -7518,19 +7599,46 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/other", "/dashboard/:path*")).toBe(false);
   });
 
-  it("matchPattern: :param*(constraint) and :param+(constraint)", async () => {
+  it("matchPattern: a group after :param* is a separate suffix token", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
-    // /:path*(api|static) — optional segment constrained to api or static
-    expect(matchPattern("/cdn", "/cdn/:path*(api|static)")).toBe(true);
-    expect(matchPattern("/cdn/api", "/cdn/:path*(api|static)")).toBe(true);
-    expect(matchPattern("/cdn/static", "/cdn/:path*(api|static)")).toBe(true);
+    // path-to-regexp parses this as a repeated `path` param followed by an
+    // unnamed `(api|static)` suffix. A constrained repeat is written with the
+    // modifier after the group: `:path(api|static)*`.
+    expect(matchPattern("/cdn", "/cdn/:path*(api|static)")).toBe(false);
+    expect(matchPattern("/cdnapi", "/cdn/:path*(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/fooapi", "/cdn/:path*(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/api", "/cdn/:path*(api|static)")).toBe(false);
     expect(matchPattern("/cdn/other", "/cdn/:path*(api|static)")).toBe(false);
 
-    // /:path+(api|static) — required segment constrained
+    // `+` requires the path token, so the adjacent zero-segment form differs.
     expect(matchPattern("/cdn", "/cdn/:path+(api|static)")).toBe(false);
-    expect(matchPattern("/cdn/api", "/cdn/:path+(api|static)")).toBe(true);
-    expect(matchPattern("/cdn/static", "/cdn/:path+(api|static)")).toBe(true);
+    expect(matchPattern("/cdnapi", "/cdn/:path+(api|static)")).toBe(false);
+    expect(matchPattern("/cdn/fooapi", "/cdn/:path+(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/api", "/cdn/:path+(api|static)")).toBe(false);
     expect(matchPattern("/cdn/other", "/cdn/:path+(api|static)")).toBe(false);
+  });
+
+  it("matchPattern: preserves escaped and nested path-to-regexp syntax", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+
+    expect(matchPattern("/foo:bar", "/foo\\:bar")).toBe(true);
+    expect(matchPattern("/foo/bar", "/foo\\:bar")).toBe(false);
+
+    const mixed = "/(foo.*|bar)/:path*";
+    expect(matchPattern("/foo-value/child", mixed)).toBe(true);
+    expect(matchPattern("/bar", mixed)).toBe(true);
+    expect(matchPattern("/baz/child", mixed)).toBe(false);
+
+    const escapedClose = "/foo/:id(a\\)b)?";
+    expect(matchPattern("/foo", escapedClose)).toBe(true);
+    expect(matchPattern("/foo/a)b", escapedClose)).toBe(true);
+    expect(matchPattern("/foo/ab", escapedClose)).toBe(false);
+
+    const nested = "/:id((?:foo|bar)-\\d+)?";
+    expect(matchPattern("/", nested)).toBe(true);
+    expect(matchPattern("/foo-123", nested)).toBe(true);
+    expect(matchPattern("/bar-9", nested)).toBe(true);
+    expect(matchPattern("/baz-9", nested)).toBe(false);
   });
 
   it("matchPattern: one-or-more (:path+) requires at least one segment", async () => {
@@ -7781,17 +7889,17 @@ describe("middleware matcher patterns", () => {
 
   it("matchPattern: fails closed for pathological ReDoS patterns", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
-    // Pathological pattern: (a+)+ causes catastrophic backtracking
+    // Pathological constraint: (?:a+)+ causes catastrophic backtracking.
     // matchPattern must avoid evaluating it and run middleware instead of
     // silently bypassing a potentially security-sensitive request guard.
     // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(true);
+    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "/:path((?:a+)+)")).toBe(true);
   });
 
-  it("matchPattern: does not run globally for malformed regex syntax", async () => {
+  it("matchPattern: fails closed for malformed matcher syntax", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
 
-    expect(matchPattern("/public", "/admin(")).toBe(false);
+    expect(matchPattern("/public", "/admin(")).toBe(true);
     expect(matchPattern("/admin(", "/admin(")).toBe(true);
   });
 });
