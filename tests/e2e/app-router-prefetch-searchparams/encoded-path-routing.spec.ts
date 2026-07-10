@@ -22,6 +22,10 @@ test("double-encoded static paths are not decoded twice", async ({ request }) =>
   expect(response.status()).toBe(404);
   expect(await response.text()).not.toContain("Protected admin content");
 
+  const repeatedlyEncoded = await getRawPath("/%252561dmin");
+  expect(repeatedlyEncoded.status).toBe(404);
+  expect(repeatedlyEncoded.body).not.toContain("Protected admin content");
+
   const encodedStatic = await getRawPath("/%61dmin");
   expect(encodedStatic.status).toBe(404);
   expect(encodedStatic.body).not.toContain("Protected admin content");
