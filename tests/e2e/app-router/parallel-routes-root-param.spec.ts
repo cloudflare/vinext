@@ -48,8 +48,11 @@ test.describe("parallel routes under a static root param", () => {
     );
   });
 
-  test("keeps primary-owned params when a parallel generator omits them", async ({ request }) => {
+  test("preserves each mixed parallel generator result", async ({ request }) => {
     expect((await request.get("/parallel-root-param/en/ownership/stories/main")).status()).toBe(
+      200,
+    );
+    expect((await request.get("/parallel-root-param/en/ownership/stories/parallel")).status()).toBe(
       200,
     );
     expect((await request.get("/parallel-root-param/en/ownership/stories/other")).status()).toBe(
