@@ -237,6 +237,40 @@ describe("app page request helpers", () => {
     await expect(validate("en", "dynamic-123")).resolves.toMatchObject({ status: 404 });
   });
 
+  it("keeps primary params when a parallel generator omits that key", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: "main" }]);
+    const parallelGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: parallelGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+    expect(parallelGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+  });
+
   it("enforces generateStaticParams from a parallel page", async () => {
     const response = await validateAppPageDynamicParams({
       clearRequestContext() {},

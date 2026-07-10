@@ -48,6 +48,15 @@ test.describe("parallel routes under a static root param", () => {
     );
   });
 
+  test("keeps primary-owned params when a parallel generator omits them", async ({ request }) => {
+    expect((await request.get("/parallel-root-param/en/ownership/stories/main")).status()).toBe(
+      200,
+    );
+    expect((await request.get("/parallel-root-param/en/ownership/stories/other")).status()).toBe(
+      404,
+    );
+  });
+
   test("renders the 404 boundary for an unknown generated child during soft navigation", async ({
     page,
   }) => {
