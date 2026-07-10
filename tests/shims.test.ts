@@ -5947,6 +5947,37 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
+  it("registerCachedFunction preserves cacheLife stale metadata on data-cache hits", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _consumeRequestScopedCacheLife, cacheLife, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    _consumeRequestScopedCacheLife();
+
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      cacheLife({ stale: 120, revalidate: 3600, expire: 7200 });
+      callCount++;
+      return { value: "cached" };
+    }, "test:cachelife-stale-hit");
+
+    await cached();
+    expect(_consumeRequestScopedCacheLife()).toEqual({
+      stale: 120,
+      revalidate: 3600,
+      expire: 7200,
+    });
+
+    await cached();
+    expect(callCount).toBe(1);
+    expect(_consumeRequestScopedCacheLife()).toEqual({
+      stale: 120,
+      revalidate: 3600,
+      expire: 7200,
+    });
+  });
+
   it("registerCachedFunction collects cacheTag", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
