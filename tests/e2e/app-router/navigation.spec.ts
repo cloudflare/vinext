@@ -29,6 +29,31 @@ test.describe("App Router Client-side Navigation", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/fallback-prefetch/fallback-prefetch.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/fallback-prefetch/fallback-prefetch.test.ts
+  test("prefetches an ungenerated force-static dynamic route without errors", async ({ page }) => {
+    const failedResponses: Array<{ status: number; url: string }> = [];
+    page.on("response", (response) => {
+      if (!response.ok() && response.status() !== 304) {
+        failedResponses.push({ status: response.status(), url: response.url() });
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click('[data-testid="fallback-prefetch-link"]');
+    await expect(page.locator('[data-testid="fallback-prefetch-page"]')).toHaveText(
+      "Fallback page: random-id",
+    );
+
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+    expect(failedResponses).toEqual([]);
+  });
+
   test("Link navigates back from about to home", async ({ page }) => {
     await page.goto(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");

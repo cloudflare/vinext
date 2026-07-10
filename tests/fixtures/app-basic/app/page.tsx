@@ -40,6 +40,9 @@ export default function HomePage() {
         <Link href="/delayed-protected-loading" data-testid="delayed-protected-loading-link">
           Delayed Protected Loading
         </Link>
+        <Link href="/fallback-prefetch/random-id" data-testid="fallback-prefetch-link">
+          Fallback Prefetch
+        </Link>
       </nav>
     </main>
   );
