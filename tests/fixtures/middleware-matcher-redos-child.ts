@@ -34,6 +34,10 @@ for (const matcher of ["/:path((?:a+){10})", "/:path((?:a|A)+)"]) {
 for (const matcher of [
   ...[6, 7, 8, 9, 10].map((count) => `/:path(${"(?:a+)".repeat(count)})`),
   ...[6, 7, 8].map((count) => `/:path(${"(?:a+(?:))".repeat(count)})`),
+  ...[6, 8].map((count) => `/:path(${"(?:a+){1}".repeat(count)})`),
+  ...[6, 8].map((count) => `/:path(${"(?:a+){1,1}".repeat(count)})`),
+  `/:path(${"(?:a+){1}?".repeat(6)})`,
+  ...[6, 8].map((count) => `/:path(${"(?:(?:a+){1}){1,1}".repeat(count)})`),
   `/:path(${"(?:a|aa)".repeat(26)})`,
 ]) {
   if (!matchPattern(`/${"a".repeat(3_000)}b`, matcher)) {
@@ -46,8 +50,11 @@ for (const matcher of [
 for (const pattern of [
   "(?:a+)(?:a+)",
   "(?:a+(?:))(?:a+(?:))",
+  "(?:a+){1}(?:a+){1,1}",
+  "(?:a+){1}?(?:a+){1}",
   "(?:a+)(?:b+)(?:a+)",
   "(?:a+(?:))(?:b+(?:))(?:a+(?:))",
+  "(?:(?:a+){1}){1,1}(?:b+){1}(?:(?:a+){1,1}){1}",
   "[^/]+.*",
 ]) {
   const issue = analyzeRegexSafety(pattern, { ignoreCase: true });

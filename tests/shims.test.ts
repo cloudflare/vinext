@@ -7615,8 +7615,10 @@ describe("middleware matcher patterns", () => {
       "/digit-or-not/:value((?:\\d|\\D)+)",
       "/two-repeats/:value((?:a+)(?:a+))",
       "/wrapped-two-repeats/:value((?:a+(?:))(?:a+(?:)))",
+      "/exact-one-two-repeats/:value((?:a+){1}(?:a+){1,1})",
       "/disjoint-repeats/:value((?:a+)(?:b+)(?:a+))",
       "/wrapped-disjoint-repeats/:value((?:a+(?:))(?:b+(?:))(?:a+(?:)))",
+      "/exact-one-disjoint-repeats/:value((?:(?:a+){1}){1,1}(?:b+){1}(?:(?:a+){1,1}){1})",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
@@ -7657,6 +7659,13 @@ describe("middleware matcher patterns", () => {
         compileMiddlewareMatcherPattern(wrappedRepetitions),
         `${count} wrapped repeats`,
       ).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("overlapping sequential repetition"),
+      });
+    }
+    for (const wrapper of ["(?:a+){1}", "(?:a+){1,1}", "(?:a+){1}?", "(?:(?:a+){1}){1,1}"]) {
+      const exactOneRepetitions = `/:path(${wrapper.repeat(6)})`;
+      expect(compileMiddlewareMatcherPattern(exactOneRepetitions), wrapper).toMatchObject({
         kind: "unsafe",
         error: expect.stringContaining("overlapping sequential repetition"),
       });

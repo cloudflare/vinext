@@ -192,6 +192,10 @@ class RegexParser {
     const quantifier = this.parseQuantifier();
     if (!quantifier) return atom;
     if (this.pattern[this.index] === "?") this.index++;
+    // An exact-one quantifier does not change the language or consumption of
+    // its child. Remove it so it cannot hide a variable repetition from the
+    // surrounding sequence analysis.
+    if (quantifier.min === 1 && quantifier.max === 1) return atom;
     return this.node({ kind: "repeat", child: atom, ...quantifier });
   }
 
