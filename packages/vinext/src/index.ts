@@ -3273,7 +3273,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // `.cjs`/`.cts` if they need extensionless imports of CJS config files.
         const extensions =
           configuredExtensions === null
-            ? buildViteResolveExtensions(nextConfig.pageExtensions, config.resolve?.extensions)
+            ? buildViteResolveExtensions(config.resolve?.extensions)
             : normalizeViteResolveExtensions(configuredExtensions);
         config.resolve ??= {};
         config.resolve.extensions = extensions;
