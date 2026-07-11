@@ -1073,7 +1073,7 @@ export function checkConventions(root: string): CheckItem[] {
 
   // Scan all source files once for per-file checks:
   //   - ViewTransition import from react
-  //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
+  //   - free uses of __dirname / __filename (server-only compatibility globals)
   //
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
@@ -1140,9 +1140,8 @@ export function checkConventions(root: string): CheckItem[] {
   if (cjsGlobalFiles.length > 0) {
     items.push({
       name: "__dirname / __filename (CommonJS globals)",
-      status: "unsupported",
-      detail:
-        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+      status: "partial",
+      detail: "provided automatically in eligible server modules; unavailable in client modules",
       files: cjsGlobalFiles,
     });
   }

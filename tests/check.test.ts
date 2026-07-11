@@ -1213,17 +1213,19 @@ describe("checkConventions", () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
-  it("detects __dirname usage in server files", () => {
+  it("reports __dirname usage as partially supported across server and client modules", () => {
     writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
+    writeFile("app/client.tsx", `"use client";\nconst file = __filename;`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
     const cjs = items.find((i) => i.name.includes("__dirname"));
     expect(cjs).toBeDefined();
-    expect(cjs?.status).toBe("unsupported");
-    expect(cjs?.detail).toContain("fileURLToPath");
-    expect(cjs?.detail).toContain("import.meta.dirname");
+    expect(cjs?.status).toBe("partial");
+    expect(cjs?.detail).toContain("eligible server modules");
+    expect(cjs?.detail).toContain("client modules");
     expect(cjs?.files).toContain("lib/db.ts");
+    expect(cjs?.files).toContain("app/client.tsx");
   });
 
   it("detects __filename usage", () => {
@@ -1576,7 +1578,7 @@ describe("formatReport", () => {
     expect(report).toContain("next/amp");
   });
 
-  it("lists affected files under unsupported items in issues section", () => {
+  it("reports CJS globals as partial support rather than issues to address", () => {
     writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
@@ -1584,9 +1586,23 @@ describe("formatReport", () => {
     const result = runCheck(tmpDir);
     const report = formatReport(result);
 
-    expect(report).toContain("Issues to address");
+    expect(report).not.toContain("Issues to address");
+    expect(report).toContain("Partial support (may need attention)");
     expect(report).toContain("__dirname");
-    expect(report).toContain("lib/db.ts");
+  });
+
+  it("does not count CJS path globals as a migration issue alongside missing type:module", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(result.summary.unsupported).toBe(1);
+    expect(result.summary.partial).toBe(1);
+    expect(report).toMatch(/Issues to address:[\s\S]*Missing "type": "module"/);
+    expect(report).toMatch(/Partial support[\s\S]*__dirname \/ __filename/);
   });
 
   it("shows partial support section when there are partial items", () => {
