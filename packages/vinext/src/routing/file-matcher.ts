@@ -4,6 +4,15 @@ import path, { toSlash } from "pathslash";
 import { escapeRegExp } from "../utils/regex.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
+const DEFAULT_VINEXT_RESOLVE_EXTENSIONS = [
+  ".tsx",
+  ".ts",
+  ".jsx",
+  ".js",
+  ".mjs",
+  ".mts",
+  ".json",
+] as const;
 
 export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
@@ -110,18 +119,22 @@ export function findFileWithExts(
 }
 
 /**
- * Add the config extensions produced by `vinext init` to Vite's resolver.
+ * Add the config extensions produced by `vinext init` to vinext's resolver.
  *
  * `pageExtensions` is intentionally not part of module resolution. Next.js
  * uses it to discover route files; custom module extensions are configured
  * separately through `turbopack.resolveExtensions` or webpack
  * `resolve.extensions`.
  *
+ * The default order preserves vinext's existing module-resolution behavior
+ * and matches Next.js Turbopack for overlapping JavaScript and TypeScript
+ * extensions.
+ *
  * `.cjs`/`.cts` go last because `vinext init` renames CJS config files when it
  * adds `"type": "module"`, and app code may import those files extensionlessly.
  */
 export function buildViteResolveExtensions(
-  viteExtensions: readonly string[] = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"],
+  viteExtensions: readonly string[] = DEFAULT_VINEXT_RESOLVE_EXTENSIONS,
 ): string[] {
   const seen = new Set<string>();
   const result: string[] = [];

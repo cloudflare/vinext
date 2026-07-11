@@ -61,4 +61,20 @@ describe("App Router route and project file collisions", () => {
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(body).toContain("Custom MDX route response");
   });
+
+  it("preserves the default extensionless module resolution priority", async () => {
+    // Next.js Turbopack prefers .tsx over .js by default.
+    // https://github.com/vercel/next.js/blob/canary/turbopack/crates/turbopack-resolve/src/resolve.rs
+    const headers = createRscRequestHeaders();
+    const requestUrl = await createRscRequestUrl("/default-priority", headers);
+    const response = await fetch(`${baseUrl}${requestUrl}`, {
+      headers,
+    });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/x-component");
+    expect(body).toContain("TypeScript module response");
+    expect(body).not.toContain("JavaScript module response");
+  });
 });

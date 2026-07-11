@@ -19,15 +19,15 @@ import {
 //
 // Regression test for cloudflare/vinext#1502.
 describe("buildViteResolveExtensions", () => {
-  it("appends CJS config extensions to Vite defaults", () => {
+  it("appends CJS config extensions to vinext defaults", () => {
     const extensions = buildViteResolveExtensions();
     expect(extensions).toEqual([
-      ".mjs",
-      ".js",
-      ".mts",
+      ".tsx",
       ".ts",
       ".jsx",
-      ".tsx",
+      ".js",
+      ".mjs",
+      ".mts",
       ".json",
       ".cjs",
       ".cts",
