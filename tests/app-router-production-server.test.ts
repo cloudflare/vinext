@@ -496,6 +496,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(offsetCss).toContain("scroll-padding-top:20px");
   });
 
+  it("keeps production route-level global CSS isolated for non-intercepting parallel slot pages", async () => {
+    // Same isolation pressure as the sibling hash-route test above, but for a
+    // non-intercepting @slot/page.tsx. This mirrors Next.js' route-tree model
+    // for parallel routes: the slot page's CSS belongs to the active route
+    // tree, not to every route that shares the generated RSC manifest entry.
+    // Next.js parallel-route CSS navigation coverage:
+    // test/e2e/app-dir/css-client-side-nav-parallel-routes/css-client-side-nav-parallel-routes.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/css-client-side-nav-parallel-routes/css-client-side-nav-parallel-routes.test.ts
+    const unrelatedRes = await fetch(`${baseUrl}/nextjs-compat/hash-scroll-css-isolation`);
+    expect(unrelatedRes.status).toBe(200);
+    const unrelatedHtml = await unrelatedRes.text();
+    const unrelatedCss = await getLinkedStylesheetText(baseUrl, unrelatedHtml);
+    expect(unrelatedCss).not.toContain("parallel-slot-css-isolation-slot");
+
+    const slotRes = await fetch(`${baseUrl}/parallel-slot-css-isolation`);
+    expect(slotRes.status).toBe(200);
+    const slotHtml = await slotRes.text();
+    expect(slotHtml).toContain("parallel-slot-css-isolation-slot");
+    const slotCss = await getLinkedStylesheetText(baseUrl, slotHtml);
+    expect(slotCss).toContain("parallel-slot-css-isolation-slot");
+  });
+
   it("keeps production route-level global CSS isolated for intercepted modal pages", async () => {
     // Direct feed visit: the modal page module is lazy, so its CSS must
     // not be emitted when the intercept is not active.

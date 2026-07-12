@@ -87,8 +87,9 @@ type ImportAllocator = {
   /**
    * Emit a `const load_N = () => import(path)` lazy loader thunk for a module
    * that should be code-split out of the RSC entry's top-level evaluation
-   * (page modules of static routes, and all route-handler modules). Returns the
-   * loader variable name. Deduplicated independently of eager imports.
+   * (route page modules, parallel-slot page modules, intercepting page modules,
+   * and route-handler modules). Returns the loader variable name. Deduplicated
+   * independently of eager imports.
    */
   getLazyLoaderVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;

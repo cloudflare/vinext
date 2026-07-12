@@ -57,6 +57,76 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.routeHandler).toBe(handlerModule);
   });
 
+  it("hydrates lazy parallel slot page modules onto slot.page", async () => {
+    const pageModule = { default: () => null };
+    const slotPageModule = { default: () => null, unstable_dynamicStaleTime: 30 };
+    const __loadPage = vi.fn(async () => slotPageModule);
+    const route: LazyLoadableRoute = {
+      page: pageModule,
+      slots: {
+        "modal:/dashboard/@modal": {
+          page: null,
+          __loadPage,
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.page).toBe(pageModule);
+    expect(route.slots?.["modal:/dashboard/@modal"]?.page).toBe(slotPageModule);
+    expect(__loadPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("can hydrate route entry modules without evaluating parallel slot pages", async () => {
+    const handlerModule = { GET: () => new Response("ok") };
+    const slotPageModule = { default: () => null };
+    const __loadRouteHandler = vi.fn(async () => handlerModule);
+    const __loadSlotPage = vi.fn(async () => slotPageModule);
+    const route: LazyLoadableRoute = {
+      routeHandler: null,
+      slots: {
+        "panel:/dashboard/@panel": {
+          page: null,
+          __loadPage: __loadSlotPage,
+        },
+      },
+      __loadRouteHandler,
+    };
+
+    await ensureAppRouteModulesLoaded(route, { includeParallelSlotPages: false });
+
+    expect(route.routeHandler).toBe(handlerModule);
+    expect(route.slots?.["panel:/dashboard/@panel"]?.page).toBeNull();
+    expect(__loadRouteHandler).toHaveBeenCalledTimes(1);
+    expect(__loadSlotPage).not.toHaveBeenCalled();
+  });
+
+  it("hydrates skipped slot pages when a later full page-route load requests them", async () => {
+    const pageModule = { default: () => null };
+    const slotPageModule = { default: () => null };
+    const __loadPage = vi.fn(async () => pageModule);
+    const __loadSlotPage = vi.fn(async () => slotPageModule);
+    const route: LazyLoadableRoute = {
+      page: null,
+      slots: {
+        "panel:/dashboard/@panel": {
+          page: null,
+          __loadPage: __loadSlotPage,
+        },
+      },
+      __loadPage,
+    };
+
+    await ensureAppRouteModulesLoaded(route, { includeParallelSlotPages: false });
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.page).toBe(pageModule);
+    expect(route.slots?.["panel:/dashboard/@panel"]?.page).toBe(slotPageModule);
+    expect(__loadPage).toHaveBeenCalledTimes(1);
+    expect(__loadSlotPage).toHaveBeenCalledTimes(1);
+  });
+
   it("is idempotent: a second call does not re-import", async () => {
     const pageModule = { default: () => null };
     const __loadPage = vi.fn(async () => pageModule);

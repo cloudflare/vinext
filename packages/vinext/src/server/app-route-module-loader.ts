@@ -1,18 +1,19 @@
 /**
  * Lazy route-module hydration for the App Router RSC entry.
  *
- * The generated route table (see `entries/app-rsc-manifest.ts`) emits page and
- * route-handler modules as lazy `() => import()` thunks instead of eager
- * `import * as mod_N` namespaces. This keeps those modules out of the RSC
- * entry's top-level evaluation, so an app with many routes — or routes with
- * expensive module-level initialization — does not pay to evaluate every route
- * module at Worker startup. Only the module(s) for the matched route are
- * evaluated, on demand.
+ * The generated route table (see `entries/app-rsc-manifest.ts`) emits page,
+ * route-handler, layouts, templates, boundaries, and parallel-slot modules as
+ * lazy `() => import()` thunks instead of eager `import * as mod_N` namespaces.
+ * This keeps those modules out of the RSC entry's top-level evaluation, so an
+ * app with many routes - or routes with expensive module-level initialization -
+ * does not pay to evaluate every route module at Worker startup. Only the
+ * module(s) for the matched route are evaluated, on demand.
  *
  * `ensureAppRouteModulesLoaded` resolves a route's lazy thunks and populates
  * the synchronous module fields that the rest of the request pipeline reads
- * directly (`page`, `routeHandler`, layouts, templates, boundaries, and
- * parallel-slot modules). It is:
+ * directly. It can load only route-entry modules (page + route handler) for
+ * pre-dispatch branching, or the full page render tree when parallel slot
+ * pages are needed. It is:
  *
  *  - idempotent: once a route is loaded it returns immediately;
  *  - dedup'd: concurrent calls for the same route share one in-flight promise,
@@ -84,10 +85,23 @@ export type LazyLoadableRoute = {
   __loadNotFound?: LazyModuleThunk | null;
   __loadForbidden?: LazyModuleThunk | null;
   __loadUnauthorized?: LazyModuleThunk | null;
+  /** Set once the lazy page/route-handler fields have been resolved. */
+  __entryLoaded?: boolean;
+  /** In-flight entry-module hydration promise, used to dedup concurrent loads. */
+  __entryLoading?: Promise<unknown> | null;
   /** Set once the route's lazy module fields have been resolved. */
   __loaded?: boolean;
-  /** In-flight hydration promise, used to dedup concurrent loads. */
+  /** In-flight full route hydration promise, used to dedup concurrent loads. */
   __loading?: Promise<unknown> | null;
+};
+
+export type EnsureAppRouteModulesLoadedOptions = {
+  /**
+   * Include parallel-slot page modules. Disable this for the pre-dispatch
+   * route-handler branch check, where route handlers need `route.routeHandler`
+   * loaded but must not evaluate unrelated UI slot pages.
+   */
+  includeParallelSlotPages?: boolean;
 };
 
 function pushFieldLoad(
@@ -98,7 +112,7 @@ function pushFieldLoad(
 ): void {
   if (!loader || target[field] != null) return;
   loads.push(
-    loader().then((module) => {
+    Promise.resolve(loader()).then((module) => {
       target[field] = module;
     }),
   );
@@ -114,7 +128,7 @@ function pushArrayLoads(
   // The manifest emits these arrays as fresh mutable literals (e.g. `[null,
   // null]`) sized to match `loaders`; the loader is their sole writer, filling
   // each slot once on first resolve. The public field types stay `readonly`
-  // because callers must not mutate route metadata — so the in-place write is a
+  // because callers must not mutate route metadata, so the in-place write is a
   // boundary-local cast here rather than a widening of the shared contract.
   const slots = target as unknown[];
   for (const [index, loader] of loaders.entries()) {
@@ -158,16 +172,15 @@ export function loadAppInterceptLayouts(
  */
 export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   route: TRoute | null | undefined,
+  options?: EnsureAppRouteModulesLoadedOptions,
 ): TRoute | Promise<TRoute> {
   if (!route || route.__loaded) return route as TRoute;
+  if (options?.includeParallelSlotPages === false) return ensureRouteEntryModulesLoaded(route);
   if (route.__loading) return route.__loading as Promise<TRoute>;
 
-  const loadPage = route.__loadPage;
-  const loadRouteHandler = route.__loadRouteHandler;
   const loads: Promise<unknown>[] = [];
+  const entryResult = ensureRouteEntryModulesLoaded(route);
 
-  pushFieldLoad(loads, route as Record<string, unknown>, "page", loadPage);
-  pushFieldLoad(loads, route as Record<string, unknown>, "routeHandler", loadRouteHandler);
   pushFieldLoad(loads, route as Record<string, unknown>, "loading", route.__loadLoading);
   pushFieldLoad(loads, route as Record<string, unknown>, "error", route.__loadError);
   pushFieldLoad(loads, route as Record<string, unknown>, "notFound", route.__loadNotFound);
@@ -191,11 +204,26 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   }
 
   if (loads.length === 0) {
+    if (entryResult instanceof Promise) {
+      route.__loading = entryResult
+        .then((loadedRoute) => {
+          loadedRoute.__loaded = true;
+          loadedRoute.__loading = null;
+          return loadedRoute;
+        })
+        .catch((error: unknown) => {
+          route.__loading = null;
+          throw error;
+        });
+      return route.__loading as Promise<TRoute>;
+    }
     route.__loaded = true;
+    route.__loading = null;
     return route;
   }
 
-  const loading = Promise.all(loads)
+  const loading = Promise.resolve(entryResult)
+    .then(() => Promise.all(loads))
     .then(() => {
       route.__loaded = true;
       route.__loading = null;
@@ -213,5 +241,35 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     });
 
   route.__loading = loading;
+  return loading;
+}
+
+function ensureRouteEntryModulesLoaded<TRoute extends LazyLoadableRoute>(
+  route: TRoute,
+): TRoute | Promise<TRoute> {
+  if (route.__entryLoaded) return route;
+  if (route.__entryLoading) return route.__entryLoading as Promise<TRoute>;
+
+  const loads: Promise<unknown>[] = [];
+  pushFieldLoad(loads, route as Record<string, unknown>, "page", route.__loadPage);
+  pushFieldLoad(loads, route as Record<string, unknown>, "routeHandler", route.__loadRouteHandler);
+
+  if (loads.length === 0) {
+    route.__entryLoaded = true;
+    return route;
+  }
+
+  const loading = Promise.all(loads)
+    .then(() => {
+      route.__entryLoaded = true;
+      route.__entryLoading = null;
+      return route;
+    })
+    .catch((error: unknown) => {
+      route.__entryLoading = null;
+      throw error;
+    });
+
+  route.__entryLoading = loading;
   return loading;
 }

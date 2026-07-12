@@ -1057,13 +1057,27 @@ export default createAppRscHandler({
     request,
     searchParams,
   }) {
+    // Non-action requests (e.g. a plain GET to a route handler) have no action
+    // id. The generated wrapper must not hydrate the matched route for those,
+    // otherwise parallel slot page modules would be evaluated before the
+    // route-handler dispatch branch runs. Progressive form actions are handled
+    // by handleProgressiveActionRequest.
+    if (!actionId) return null;
+
     const {
       handleServerActionRscRequest: __handleServerActionRscRequest,
       readActionBodyWithLimit: __readBodyWithLimit,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
     const __actionMatch = matchRoute(cleanPathname);
-    if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
+    if (__actionMatch) {
+      // Server actions run against a page module; parallel slot pages are only
+      // needed for the subsequent render, which calls buildPageElements and
+      // performs full route hydration there.
+      await __ensureRouteLoaded(__actionMatch.route, {
+        includeParallelSlotPages: false,
+      });
+    }
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
       : false;

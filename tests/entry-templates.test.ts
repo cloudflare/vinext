@@ -441,6 +441,7 @@ describe("App Router generated manifest construction", () => {
     expect(dynamicRouteEntry).toContain("layouts: [null, null]");
     expect(dynamicRouteEntry).toContain("__loadLayouts: [load_1, load_7]");
     expect(dynamicRouteEntry).toContain('"modal:/tmp/test/app/dashboard/@modal": {');
+    expect(dynamicRouteEntry).toContain("__loadPage: load_12");
     expect(dynamicRouteEntry).toContain("interceptLayouts: [null]");
     expect(dynamicRouteEntry).toContain("__loadInterceptLayouts: [load_18]");
     expect(dynamicRouteEntry).toContain("page: null");

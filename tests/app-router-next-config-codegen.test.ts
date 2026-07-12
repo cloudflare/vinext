@@ -363,6 +363,20 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).not.toContain("function __validateCsrfOrigin");
   });
 
+  it("generated server-action preflight skips hydration for non-action requests", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    const actionStart = code.indexOf("handleServerActionRequest({");
+    const actionEnd = code.indexOf("i18nConfig: __i18nConfig", actionStart);
+    const actionOptions = code.slice(actionStart, actionEnd);
+
+    // The wrapper is invoked on every App Router request, so it must bail out
+    // early when there is no action id. Otherwise a plain GET to a route
+    // handler would fully hydrate the matched route (including parallel slot
+    // pages) before the handler dispatch branch runs.
+    expect(actionOptions).toContain("if (!actionId) return null;");
+    expect(actionOptions).toContain("includeParallelSlotPages: false");
+  });
+
   // ── Dev origin check code generation ────────────────────────────────
   it("generates dev origin validation code in RSC entry", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);

@@ -9,6 +9,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import {
+  ensureAppRouteModulesLoaded,
+  type LazyLoadableRoute,
+} from "../packages/vinext/src/server/app-route-module-loader.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
@@ -30,9 +34,7 @@ import {
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
-type TestRoute = {
-  __loadPage?: unknown;
-  __loadRouteHandler?: unknown;
+type TestRoute = LazyLoadableRoute & {
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -41,7 +43,12 @@ type TestRoute = {
   rootParamNames?: readonly string[];
   routeHandler?: { GET?: () => Response; runtime?: string } | null;
   routeSegments: readonly string[];
-  slots?: AppRouteTreePrefetchRoute["slots"];
+  slots?: Record<
+    string,
+    NonNullable<AppRouteTreePrefetchRoute["slots"]>[string] & {
+      __loadPage?: (() => Promise<unknown>) | null;
+    }
+  >;
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
@@ -55,7 +62,6 @@ type DispatchMatchedRouteHandler = HandlerOptions["dispatchMatchedRouteHandler"]
 
 function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
   return {
-    __loadPage() {},
     isDynamic: false,
     page: { default() {} },
     pattern: "/about",
@@ -89,6 +95,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       (async () => new Response("page", { status: 200, headers: { "x-from-dispatch": "page" } })),
     dispatchMatchedRouteHandler:
       overrides.dispatchMatchedRouteHandler ?? (async () => new Response("route", { status: 200 })),
+    ensureRouteLoaded: overrides.ensureRouteLoaded,
     ensureInstrumentation: overrides.ensureInstrumentation,
     handleProgressiveActionRequest:
       "handleProgressiveActionRequest" in overrides
@@ -221,7 +228,7 @@ describe("createAppRscHandler", () => {
     async (phase) => {
       const route = createPageRoute({
         __loadPage: undefined,
-        __loadRouteHandler() {},
+        __loadRouteHandler: async () => ({}),
         page: null,
         pattern: "/api",
         routeHandler: { GET: () => new Response("route") },
@@ -1742,6 +1749,108 @@ describe("createAppRscHandler", () => {
     expect(dispatchedUrl.pathname).toBe("/docs/api/inspect");
     expect(dispatchedUrl.search).toBe("?tab=latest");
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
+  });
+
+  it("does not hydrate parallel slot pages before route handler dispatch", async () => {
+    const routeHandlerModule = { GET: () => new Response("route") };
+    const slotPageModule = { default: () => null };
+    const loadRouteHandler = vi.fn(async () => routeHandlerModule);
+    const loadSlotPage = vi.fn(async () => slotPageModule);
+    const route = createPageRoute({
+      page: null,
+      pattern: "/dashboard",
+      routeHandler: null,
+      routeSegments: ["dashboard"],
+      __loadRouteHandler: loadRouteHandler,
+      slots: {
+        "panel:/dashboard/@panel": {
+          name: "panel",
+          page: null,
+          routeSegments: null,
+          __loadPage: loadSlotPage,
+        },
+      },
+    });
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      ensureRouteLoaded: ensureAppRouteModulesLoaded,
+      matchRoute: (pathname: string) => (pathname === "/dashboard" ? { params: {}, route } : null),
+    });
+
+    const response = await handler(new Request("https://example.test/docs/dashboard"), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedRouteHandler).toHaveBeenCalledTimes(1);
+    expect(route.routeHandler).toBe(routeHandlerModule);
+    expect(route.slots?.["panel:/dashboard/@panel"]?.page).toBeNull();
+    expect(loadRouteHandler).toHaveBeenCalledTimes(1);
+    expect(loadSlotPage).not.toHaveBeenCalled();
+  });
+
+  // Regression for the server-action preflight path in the generated RSC entry.
+  // handleServerActionRequest is invoked for every App Router request, not only
+  // real server actions. The generated wrapper must skip hydration when there is
+  // no action id and must entry-load the matched route (page + route handler,
+  // but not parallel slot pages) when there is one. Without this guard a plain
+  // GET to a route handler with inherited parallel slots would evaluate the slot
+  // page modules before the handler dispatch branch runs.
+  it("does not let the server-action preflight load parallel slot pages for route handlers", async () => {
+    const routeHandlerModule = { GET: () => new Response("route") };
+    const slotPageModule = { default: () => null };
+    const loadRouteHandler = vi.fn(async () => routeHandlerModule);
+    const loadSlotPage = vi.fn(async () => slotPageModule);
+    const route = createPageRoute({
+      page: null,
+      pattern: "/dashboard",
+      routeHandler: null,
+      routeSegments: ["dashboard"],
+      __loadRouteHandler: loadRouteHandler,
+      slots: {
+        "panel:/dashboard/@panel": {
+          name: "panel",
+          page: null,
+          routeSegments: null,
+          __loadPage: loadSlotPage,
+        },
+      },
+    });
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const matchRoute = (pathname: string) =>
+      pathname === "/dashboard" ? { params: {}, route } : null;
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      ensureRouteLoaded: ensureAppRouteModulesLoaded,
+      handleServerActionRequest: async ({ actionId, cleanPathname }) => {
+        // Models the generated RSC entry wrapper: non-action requests bail out,
+        // and action requests only load the route entry (page/route handler),
+        // leaving parallel slot page hydration for the page render path.
+        if (!actionId) return null;
+        const match = matchRoute(cleanPathname);
+        if (match) {
+          await ensureAppRouteModulesLoaded(match.route, {
+            includeParallelSlotPages: false,
+          });
+        }
+        return null;
+      },
+      matchRoute,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/dashboard"), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedRouteHandler).toHaveBeenCalledTimes(1);
+    expect(route.routeHandler).toBe(routeHandlerModule);
+    expect(route.slots?.["panel:/dashboard/@panel"]?.page).toBeNull();
+    expect(loadRouteHandler).toHaveBeenCalledTimes(1);
+    expect(loadSlotPage).not.toHaveBeenCalled();
   });
 
   it("preserves non-RSC route handler request URLs while hiding internal parsed params", async () => {
