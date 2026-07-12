@@ -3,8 +3,7 @@
  *
  * This file exercises the instrumentation.ts support for Pages Router apps.
  * The key regression it covers: calling server.ssrLoadModule() during
- * configureServer() (at startup, before the server is listening) crashes in
- * Vite 7 with:
+ * configureServer() (at startup, before the server is listening) can crash with:
  *
  *   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
  *

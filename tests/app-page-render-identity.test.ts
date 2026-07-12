@@ -16,6 +16,19 @@ describe("createAppPageRenderIdentity", () => {
     });
   });
 
+  it("keeps rewritten route identity separate from the browser-visible pathname", () => {
+    const identity = createAppPageRenderIdentity({
+      displayPathname: "/products/a",
+      matchedRoutePathname: "/products/b",
+    });
+
+    expect(identity.displayPathname).toBe("/products/a");
+    expect(identity.matchedRoutePathname).toBe("/products/b");
+    expect(identity.targetMatchedPathname).toBe("/products/a");
+    expect(identity.routeId).toBe("route:/products/b");
+    expect(identity.pageId).toBe("page:/products/b");
+  });
+
   it("uses the source route as the route identity for intercepted source renders", () => {
     const identity = createAppPageRenderIdentity({
       displayPathname: "/photos/42",
@@ -35,6 +48,20 @@ describe("createAppPageRenderIdentity", () => {
       targetMatchedUrl: "/photos/42",
       targetRouteId: "route:/photos/42",
     });
+  });
+
+  it("uses the middleware-matched target for interception proof without changing display pathname", () => {
+    const identity = createAppPageRenderIdentity({
+      displayPathname: "/interception-mw/foo/p/1",
+      targetMatchedPathname: "/interception-mw/en/foo/p/1",
+      interceptionContext: "/interception-mw/en",
+      interceptSourceMatchedUrl: "/interception-mw/en",
+      interceptSlotId: "slot:modal:/interception-mw/[locale]",
+    });
+
+    expect(identity.displayPathname).toBe("/interception-mw/foo/p/1");
+    expect(identity.interception?.targetMatchedUrl).toBe("/interception-mw/en/foo/p/1");
+    expect(identity.interception?.targetRouteId).toBe("route:/interception-mw/en/foo/p/1");
   });
 
   it("normalizes encoded source and target pathnames before encoding route IDs", () => {

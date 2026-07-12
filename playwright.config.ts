@@ -45,9 +45,26 @@ const projectServers = {
   "app-router": {
     testDir: "./tests/e2e",
     testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
-    testIgnore: appRouterBrowserSpecificTests,
+    testIgnore: [
+      appRouterBrowserSpecificTests,
+      "**/app-router/nextjs-compat/client-cache.spec.ts",
+      "**/app-router/nextjs-compat/segment-cache-client-params.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
+  },
+  "app-router-client-cache": {
+    testDir: "./tests/e2e/app-router/nextjs-compat",
+    testMatch: ["client-cache.spec.ts", "segment-cache-client-params.spec.ts"],
+    use: { baseURL: "http://localhost:4191" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4191",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4191,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
   },
   "app-router-chrome-browser-specific": {
     testDir: "./tests/e2e",
@@ -138,6 +155,32 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-sentry-app": {
+    testDir: "./tests/e2e",
+    testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],
+    use: { baseURL: "http://localhost:4193" },
+    server: {
+      command:
+        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4193/1 npx vp build && npx wrangler dev --port 4193",
+      cwd: "./tests/fixtures/cf-sentry-app",
+      port: 4193,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
+  "cloudflare-sentry-pages": {
+    testDir: "./tests/e2e",
+    testMatch: ["**/cloudflare-sentry-pages/**/*.spec.ts"],
+    use: { baseURL: "http://localhost:4194" },
+    server: {
+      command:
+        "NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4194/1 npx vp build && npx wrangler dev --port 4194",
+      cwd: "./tests/fixtures/cf-sentry-pages",
+      port: 4194,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-dev": {
     testDir: "./tests/e2e",
     testMatch: [
@@ -202,9 +245,11 @@ const projectServers = {
     use: { baseURL: "http://localhost:4182" },
     server: {
       // Build vinext CLI, then build the fixture, then start the standalone
-      // server. The standalone server.js reads PORT from the environment.
+      // server from an isolated temp directory. Moving it outside the repo
+      // prevents Node from resolving missing externals from workspace
+      // node_modules and verifies the standalone package is self-contained.
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
+        'npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && standalone_dir="$(mktemp -d)" && cp -R dist/standalone/. "$standalone_dir" && PORT=4182 node "$standalone_dir/server.js"',
       cwd: "./tests/fixtures/standalone-output",
       port: 4182,
       reuseExistingServer: !process.env.CI,
@@ -244,7 +289,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4187" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build --prerender-all && node ../../../packages/vinext/dist/cli.js start --port 4187",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4187",
       cwd: "./tests/fixtures/ppr-impact-demo",
       port: 4187,
       reuseExistingServer: !process.env.CI,
@@ -289,6 +334,18 @@ const projectServers = {
         "(test -e node_modules || test -L node_modules || ln -s ../pages-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4190",
       cwd: "./tests/fixtures/pages-basepath-trailing-slash",
       port: 4190,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "app-router-prefetch-searchparams": {
+    testDir: "./tests/e2e/app-router-prefetch-searchparams",
+    use: { baseURL: "http://localhost:4191" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4191",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4191,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },

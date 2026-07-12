@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 
 /** Resolve empty-module next to this file (.js in dist, .ts in source). */
 function resolveInstrumentationClientEmptyModule(dir: string): string {

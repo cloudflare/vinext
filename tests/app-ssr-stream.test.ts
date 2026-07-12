@@ -1,10 +1,24 @@
 import { describe, it, expect } from "vite-plus/test";
+import { createElement, Suspense, use } from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
 import {
+  createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
   fixFlightHints,
   fixPreloadAs,
+  waitAtLeastOneReactRenderTask,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
+
+it("serializes dynamic stale time into the hydration bootstrap", () => {
+  expect(
+    createNavigationRuntimeRscMetadataScript(
+      { id: "1" },
+      { pathname: "/posts/1", searchParams: [] },
+      30,
+    ),
+  ).toContain("dynamicStaleTimeSeconds:30");
+});
 
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
@@ -120,6 +134,34 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain(".done=true");
     expect(finalScripts).toContain('.rsc.push("chunk1")');
     expect(finalScripts).toContain('.rsc.push("chunk2")');
+  });
+
+  it("finalizes initial cache metadata after the RSC stream settles", async () => {
+    let initialCacheKind: "dynamic" | "static" = "static";
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
+      kind: initialCacheKind,
+      ...(initialCacheKind === "dynamic" ? { dynamicStaleTimeSeconds: 30 } : {}),
+    }));
+
+    initialCacheKind = "dynamic";
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain('"initialCacheKind":"dynamic"');
+    expect(finalScripts).toContain('"dynamicStaleTimeSeconds":30');
+    expect(finalScripts.indexOf("initialCacheKind")).toBeLessThan(
+      finalScripts.indexOf(".done=true"),
+    );
+  });
+
+  it("omits dynamic stale time from finalized static payload metadata", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
+      kind: "static",
+    }));
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain('"initialCacheKind":"static"');
+    expect(finalScripts).not.toContain("dynamicStaleTimeSeconds");
   });
 
   it("rejects getRawBuffer when the stream errors (#1002)", async () => {
@@ -266,6 +308,52 @@ async function readSingleTransformChunk(
 
   return new TextDecoder().decode(result.value);
 }
+
+function createFastSuspenseDocument() {
+  const ready = new Promise<void>((resolve) => queueMicrotask(resolve));
+
+  function FastContent() {
+    use(ready);
+    return createElement("p", { id: "resolved-fast" }, "resolved-fast");
+  }
+
+  return createElement(
+    "html",
+    null,
+    createElement("head"),
+    createElement(
+      "body",
+      null,
+      createElement(
+        Suspense,
+        { fallback: createElement("p", { id: "fallback-fast" }, "fallback-fast") },
+        createElement(FastContent),
+      ),
+    ),
+  );
+}
+
+async function renderFastSuspenseDocument(waitBeforePipe: boolean): Promise<string> {
+  const stream = await renderToReadableStream(createFastSuspenseDocument());
+  if (waitBeforePipe) {
+    await waitAtLeastOneReactRenderTask();
+  }
+  return new Response(
+    stream.pipeThrough(createTickBufferedTransform(createNoopRscEmbedTransform())),
+  ).text();
+}
+
+describe("dynamic App SSR stream pull scheduling", () => {
+  it("waits one React render task before pulling dynamic HTML streams", async () => {
+    const immediateHtml = await renderFastSuspenseDocument(false);
+    expect(immediateHtml).toContain("fallback-fast");
+    expect(immediateHtml).toContain("resolved-fast");
+
+    const delayedHtml = await renderFastSuspenseDocument(true);
+    expect(delayedHtml).not.toContain("fallback-fast");
+    expect(delayedHtml).toContain("resolved-fast");
+  });
+});
 
 describe("createTickBufferedTransform pre-head splice", () => {
   it("emits injectAfterHeadOpenHTML immediately after <head> opens", async () => {

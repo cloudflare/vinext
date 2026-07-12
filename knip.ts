@@ -38,12 +38,17 @@ export default {
         // Build-time entries referenced by path constant (Vite reads them
         // from disk via `fs`), so knip wouldn't otherwise trace them.
         "src/server/app-browser-entry.ts",
+        "src/server/app-browser-server-action-client.ts",
         "src/server/app-ssr-entry.ts",
+        // Forked as a child process by prerender-server-pool.ts via a path
+        // constant (child_process.fork), so knip can't trace it as imported.
+        "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
+        "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
@@ -89,11 +94,21 @@ export default {
       entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "packages/create-vinext-app": {
+      entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
+      project: ["src/**/*.{ts,tsx}"],
+      ignoreDependencies: [
+        // create-vinext-app bundles vinext init helpers into dist. These are
+        // imported by the bundled helper modules, not by src/index.ts directly.
+        "am-i-vibing",
+        "magic-string",
+        // Kept as an explicit package-local Vite+ toolchain dependency.
+        "vite",
+      ],
+    },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [
-    "@typescript/native-preview",
-
     // Declared at root package.json but imported from workspace/example code:
     //   @mdx-js/react — no direct imports; retained for MDX runtime resolution.
     //   @mdx-js/rollup — imported from examples/app-router-playground/vite.config.ts
@@ -117,8 +132,10 @@ export default {
     "vinext",
     // system/user-project binaries invoked by runtime scripts
     "ps",
+    "taskkill",
     "eslint",
     "gh",
+    "jq",
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",

@@ -30,6 +30,17 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/app/middleware-node.js
+  if (url.pathname === "/middleware-general-ssr") {
+    url.pathname = "/ssr";
+    return NextResponse.rewrite(url);
+  }
+
+  if (url.pathname === "/middleware-general-error-throw" && request.__isData) {
+    throw new Error("middleware data request failure");
+  }
+
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
   // request's query params on the rewrite target so getServerSideProps
   // sees them. Middleware preserves query by mutating `request.nextUrl`

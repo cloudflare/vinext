@@ -1,23 +1,39 @@
 "use client";
 
+import { Suspense } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Table } from "@cloudflare/kumo/components/table";
 import {
   PerformanceResultsTable,
   PerformanceTrends,
+  type PerformanceMeasurement,
   type PerformanceRun,
 } from "./performance-results";
+import { CustomProfileViewer } from "./custom-profile-viewer";
+
+const RECENT_BASELINE_RUNS = 10;
 
 export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
   if (runs.length === 0) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center text-gray-400">
-        No benchmark data yet. Results will appear after the first merge to main.
+      <div className="space-y-8">
+        <div className="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center text-gray-400">
+          No benchmark data yet. Results will appear after the first merge to main.
+        </div>
+        <CustomProfileViewer />
       </div>
     );
   }
 
   const latest = runs[0];
+  const baselineRuns = runs.slice(1, RECENT_BASELINE_RUNS + 1);
+  const bundleMeasurements = latest.measurements.filter(
+    (measurement) => measurement.unit === "bytes",
+  );
+  const otherMeasurements = latest.measurements.filter(
+    (measurement) => measurement.unit !== "bytes",
+  );
+  const baselineMeasurements = recentMedianMeasurements(bundleMeasurements, baselineRuns);
 
   return (
     <div className="space-y-8">
@@ -31,20 +47,77 @@ export function Dashboard({ runs }: { runs: PerformanceRun[] }) {
             {new Date(latest.measuredAt).toLocaleDateString()}
           </span>
         </div>
-        <PerformanceResultsTable measurements={latest.measurements} />
+        <div className="space-y-5">
+          {otherMeasurements.length > 0 && (
+            <PerformanceResultsTable measurements={otherMeasurements} />
+          )}
+          {bundleMeasurements.length > 0 && (
+            <div>
+              <div className="mb-2 flex items-baseline gap-2">
+                <h3 className="font-medium">Bundle sizes</h3>
+                {baselineRuns.length > 0 && (
+                  <span className="text-xs text-gray-500">
+                    vs prior {baselineRuns.length}-run median
+                  </span>
+                )}
+              </div>
+              <PerformanceResultsTable
+                measurements={bundleMeasurements}
+                baselineMeasurements={baselineRuns.length > 0 ? baselineMeasurements : undefined}
+                baselineLabel={`Prior ${baselineRuns.length}-run median`}
+              />
+            </div>
+          )}
+        </div>
       </section>
 
       <section>
         <h2 className="mb-3 text-lg font-semibold">Performance Trends</h2>
-        <PerformanceTrends runs={[...runs].reverse()} />
+        <Suspense
+          fallback={
+            <div className="h-[374px] animate-pulse rounded-lg border border-gray-200 bg-gray-50" />
+          }
+        >
+          <PerformanceTrends runs={[...runs].reverse()} />
+        </Suspense>
       </section>
 
       <section>
         <h2 className="mb-3 text-lg font-semibold">Recent Main Runs</h2>
         <PerformanceRunHistory runs={runs} />
       </section>
+
+      <CustomProfileViewer />
     </div>
   );
+}
+
+export function recentMedianMeasurements(
+  currentMeasurements: PerformanceMeasurement[],
+  baselineRuns: PerformanceRun[],
+): PerformanceMeasurement[] {
+  return currentMeasurements.flatMap((current) => {
+    const historical = baselineRuns.flatMap((run) => {
+      const measurement = run.measurements.find(
+        (candidate) => candidate.benchmarkId === current.benchmarkId,
+      );
+      return measurement ? [measurement] : [];
+    });
+    if (historical.length === 0) return [];
+
+    return [
+      {
+        ...current,
+        median: median(historical.map((measurement) => measurement.median)),
+      },
+    ];
+  });
+}
+
+function median(values: number[]) {
+  const sorted = values.toSorted((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
 }
 
 function PerformanceRunHistory({ runs }: { runs: PerformanceRun[] }) {

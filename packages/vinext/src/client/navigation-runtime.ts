@@ -11,6 +11,8 @@ export type NavigationRuntimeRscChunk = string | [3, string];
 
 export type NavigationRuntimeRscBootstrap = {
   done?: boolean;
+  dynamicStaleTimeSeconds?: number;
+  initialCacheKind?: "dynamic" | "static";
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
   rsc: NavigationRuntimeRscChunk[];
@@ -154,6 +156,8 @@ function isNavigationRuntimeParams(value: unknown): value is Record<string, stri
 function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRuntimeRscBootstrap {
   if (!isUnknownRecord(value)) return false;
   const done = Reflect.get(value, "done");
+  const dynamicStaleTimeSeconds = Reflect.get(value, "dynamicStaleTimeSeconds");
+  const initialCacheKind = Reflect.get(value, "initialCacheKind");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
   const rsc = Reflect.get(value, "rsc");
@@ -162,6 +166,13 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   // hydration consumes it instead of caching a stale validation result.
   return (
     (done === undefined || typeof done === "boolean") &&
+    (dynamicStaleTimeSeconds === undefined ||
+      (typeof dynamicStaleTimeSeconds === "number" &&
+        Number.isFinite(dynamicStaleTimeSeconds) &&
+        dynamicStaleTimeSeconds >= 0)) &&
+    (initialCacheKind === undefined ||
+      initialCacheKind === "dynamic" ||
+      initialCacheKind === "static") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
     Array.isArray(rsc) &&

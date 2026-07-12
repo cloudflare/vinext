@@ -3,7 +3,7 @@ import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.j
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { executeMiddleware, type MiddlewareModule } from "./middleware-runtime.js";
 import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pipeline.js";
@@ -19,11 +19,11 @@ export type ApplyAppMiddlewareOptions = {
   basePath?: string;
   cleanPathname: string;
   context: AppMiddlewareContext;
+  hadBasePath?: boolean;
   i18nConfig?: NextI18nConfig | null;
   /**
-   * Whether the inbound request was a `_next/data` fetch. Captured from the
-   * raw incoming headers by the caller, because `x-nextjs-data` is in
-   * INTERNAL_HEADERS and is stripped before this function runs.
+   * Whether the inbound request was recognized as a `_next/data` fetch from
+   * trusted URL normalization before internal headers were stripped.
    */
   isDataRequest?: boolean;
   filePath?: string;
@@ -43,6 +43,7 @@ export type ApplyAppMiddlewareResult =
   | {
       kind: "continue";
       cleanPathname: string;
+      rewritten: boolean;
       search: string | null;
     }
   | {
@@ -211,6 +212,7 @@ export async function applyAppMiddleware(
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
   const middlewareRequest = requestWithoutFlightHeaders(options.request);
   let cleanPathname = options.cleanPathname;
+  let rewritten = false;
   let search: string | null = null;
 
   if (forwarded.rewriteUrl) {
@@ -227,6 +229,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(forwarded.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
+      rewritten = true;
       search = rewriteParsed.search;
     } catch (e) {
       console.error("[vinext] Failed to apply forwarded middleware rewrite:", e);
@@ -237,12 +240,7 @@ export async function applyAppMiddleware(
   if (!forwarded.applied) {
     const result = await executeMiddleware({
       basePath: options.basePath,
-      // The App Router only reaches middleware when the request was under
-      // basePath (already stripped by normalizeRscRequest) or basePath is
-      // empty — see the basePathState comment in app-rsc-handler.ts. The
-      // request URL here is basePath-stripped, so hadBasePath cannot be
-      // derived from it and must be asserted explicitly.
-      hadBasePath: true,
+      hadBasePath: options.hadBasePath ?? true,
       filePath: options.filePath,
       i18nConfig: options.i18nConfig,
       isDataRequest: options.isDataRequest,
@@ -287,6 +285,7 @@ export async function applyAppMiddleware(
       }
       const rewriteParsed = new URL(result.rewriteUrl, middlewareRequest.url);
       cleanPathname = rewriteParsed.pathname;
+      rewritten = true;
       search = rewriteParsed.search;
     }
   }
@@ -297,5 +296,5 @@ export async function applyAppMiddleware(
     processMiddlewareHeaders(options.context.headers);
   }
 
-  return { kind: "continue", cleanPathname, search };
+  return { kind: "continue", cleanPathname, rewritten, search };
 }

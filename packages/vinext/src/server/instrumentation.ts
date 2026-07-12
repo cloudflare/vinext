@@ -37,7 +37,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**
@@ -74,10 +74,7 @@ function findInstrumentationHookFile(
 ): string | null {
   for (const dir of INSTRUMENTATION_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
-      // `root` is normalized to forward slashes by the config hook before it
-      // reaches here, so keep the result forward-slash with path.posix.join
-      // instead of letting win32 path.join reintroduce backslashes.
-      const fullPath = path.posix.join(root, dir, `${basename}${ext}`);
+      const fullPath = path.join(root, dir, `${basename}${ext}`);
       if (fs.existsSync(fullPath)) {
         return fullPath;
       }

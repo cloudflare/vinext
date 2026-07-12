@@ -6,6 +6,7 @@ import {
   type MiddlewareResult,
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 
 // Helpers
 
@@ -24,6 +25,7 @@ function baseDeps(overrides?: Partial<PagesPipelineDeps>): PagesPipelineDeps {
     hadBasePath: true,
     isDataReq: false,
     isDataRequest: false,
+    hasMiddleware: false,
     ...overrides,
   };
 }
@@ -93,6 +95,40 @@ describe("config redirects", () => {
     expect(result.response.headers.get("Location")).toBe("/new");
   });
 
+  it("keeps the real redirect status for trusted data requests", async () => {
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
+    const result = await runPagesRequest(
+      makeRequest("/old"),
+      baseDeps({
+        configRedirects: [{ source: "/old", destination: "/new", permanent: true }],
+        isDataReq: true,
+        isDataRequest: true,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/new");
+    expect(result.response.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+
+  it("does not use the soft redirect protocol for forged data headers", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/old", { "x-nextjs-data": "1" }),
+      baseDeps({
+        configRedirects: [{ source: "/old", destination: "/new", permanent: true }],
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(308);
+    expect(result.response.headers.get("Location")).toBe("/new");
+    expect(result.response.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+
   it("does not match when source does not match", async () => {
     const req = makeRequest("/other");
     const result = await runPagesRequest(
@@ -110,6 +146,283 @@ describe("config redirects", () => {
 
 // 4. Middleware redirect short-circuit → {type:"response"} status 307
 describe("middleware", () => {
+  it("adds the final matched path to rewritten data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/ssr-page-2" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr-page-2" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/ssr-page-2");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssr-page-2");
+  });
+
+  it("locale-prefixes the final matched path on i18n data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/ssr-page-2" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr-page-2" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/en/ssr-page-2");
+  });
+
+  it("preserves an explicit locale on dynamic data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/fr/source"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/fr/blog/example" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: true, pattern: "/blog/:slug" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/fr/blog/[slug]");
+  });
+
+  it("does not add matched-path routing metadata to HTML responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        runMiddleware: makeMiddleware({ rewriteUrl: "/ssr-page-2" }),
+        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
+  });
+
+  it("returns middleware data misses as JSON with the requested matched path", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unknown"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        renderPage: makeRenderPage(404, "not found"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("content-type")).toContain("application/json");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
+    expect(await result.response.text()).toBe("{}");
+  });
+
+  it("keeps data misses as JSON 404 when generated wiring provides a no-op middleware", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unknown"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: false,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue(null),
+        renderPage: makeRenderPage(404, "{}"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
+  });
+
+  it("skips middleware data prefetches for matched non-SSG pages", async () => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "server" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await result.response.json()).toEqual({});
+  });
+
+  it("falls back to normal data handling when route data kind is unknown", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false, pattern: "/ssr" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
+  });
+
+  it("does not skip middleware data prefetches for unexpected route data kinds", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr", dataKind: "none" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
+  });
+
+  it("does not skip middleware data prefetches for matched SSG pages", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gsp"}}');
+    const result = await runPagesRequest(
+      makeRequest("/ssg", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({
+          continue: true,
+          responseHeaders: [["x-middleware-cache", "no-cache"]],
+        }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssg", dataKind: "static" } }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(result.response.headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
+    expect(await result.response.text()).toBe('{"pageProps":{"message":"from gsp"}}');
+  });
+
+  it("uses the matched route pattern for dynamic data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/source"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/blog/example" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: true, pattern: "/blog/:slug" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/blog/[slug]");
+  });
+
+  it("does not add matched-path routing metadata to failed data responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({ rewriteUrl: "/ssr-page-2" }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr-page-2" } }),
+        renderPage: makeRenderPage(500, "failed"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(500);
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
+  });
+
+  it("does not add matched-path metadata when middleware overrides the response status", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/ssr-page"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware: makeMiddleware({
+          rewriteUrl: "/ssr-page-2",
+          status: 418,
+        }),
+        matchPageRoute: vi
+          .fn()
+          .mockReturnValue({ route: { isDynamic: false, pattern: "/ssr-page-2" } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(418);
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
+  });
+
   it("middleware redirect short-circuits with 307", async () => {
     const req = makeRequest("/foo");
     const result = await runPagesRequest(
@@ -389,6 +702,119 @@ describe("beforeFiles rewrites", () => {
     mockFetch.mockRestore();
   });
 
+  it("proxies basePath:false afterFiles external rewrites before rejecting outside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const req = makeRequest("/rewrite-no-basePath");
+    const proxyExternal = vi.fn(async () => new Response("from external rewrite", { status: 200 }));
+
+    const result = await runPagesRequest(
+      req,
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: false,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            {
+              source: "/rewrite-no-basepath",
+              destination: "https://example.vercel.sh",
+              basePath: false,
+            },
+          ],
+          fallback: [],
+        },
+        proxyExternal,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    expect(await result.response.text()).toBe("from external rewrite");
+    expect(proxyExternal).toHaveBeenCalledWith(expect.any(Request), "https://example.vercel.sh");
+  });
+
+  it("applies default afterFiles rewrites for requests inside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const renderPage = makeRenderPage(200, "getServerSideProps");
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/rewrite-1"
+        ? { route: { isDynamic: true, pattern: "/:slug" } }
+        : pathname === "/gssp"
+          ? { route: { isDynamic: false, pattern: "/gssp" } }
+          : null,
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/rewrite-1"),
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: true,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/rewrite-1", destination: "/gssp" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/gssp",
+      undefined,
+      expect.any(Headers),
+    );
+    expect(matchPageRoute).toHaveBeenCalledWith("/gssp", expect.any(Request));
+  });
+
+  it("does not apply basePath:false afterFiles rewrites for requests inside basePath", async () => {
+    // Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+    const renderPage = makeRenderPage(200, "slug");
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/rewrite-no-basePath"
+        ? { route: { isDynamic: true, pattern: "/:slug" } }
+        : null,
+    );
+    const proxyExternal = vi.fn(async () => new Response("from external rewrite", { status: 200 }));
+
+    const result = await runPagesRequest(
+      makeRequest("/rewrite-no-basePath"),
+      baseDeps({
+        basePath: "/docs",
+        hadBasePath: true,
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            {
+              source: "/rewrite-no-basepath",
+              destination: "https://example.vercel.sh",
+              basePath: false,
+            },
+          ],
+          fallback: [],
+        },
+        matchPageRoute,
+        proxyExternal,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/rewrite-no-basePath",
+      undefined,
+      expect.any(Headers),
+    );
+    expect(proxyExternal).not.toHaveBeenCalled();
+  });
+
   it("beforeFiles rewrite changes resolved URL", async () => {
     const renderPage = makeRenderPage(200);
     const req = makeRequest("/from");
@@ -561,7 +987,7 @@ describe("API routes", () => {
     const result = await runPagesRequest(req, baseDeps({ renderPage: makeRenderPage(200) }));
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.defaultContentType).toBe("text/html");
+    expect(result.defaultContentType).toBe("text/html; charset=utf-8");
   });
 
   it("matches /api exactly", async () => {
@@ -892,6 +1318,84 @@ describe("afterFiles rewrites", () => {
       undefined,
       expect.any(Headers),
     );
+  });
+
+  it("classifies middleware prefetches after afterFiles rewrites to SSG pages", async () => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gsp"}}');
+    const matchPageRoute = vi.fn((pathname: string) => {
+      if (pathname === "/article/first") {
+        return {
+          route: { isDynamic: true, pattern: "/article/[slug]", dataKind: "server" as const },
+        };
+      }
+      if (pathname === "/ssg") {
+        return { route: { isDynamic: false, pattern: "/ssg", dataKind: "static" as const } };
+      }
+      return null;
+    });
+
+    const result = await runPagesRequest(
+      makeRequest("/article/first", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/article/:slug", destination: "/ssg" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/ssg?slug=first",
+      { isDataReq: true },
+      expect.any(Headers),
+    );
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
+  });
+
+  it("skips middleware prefetches after afterFiles rewrites to non-SSG pages", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
+    const matchPageRoute = vi.fn((pathname: string) =>
+      pathname === "/ssr"
+        ? { route: { isDynamic: false, pattern: "/ssr", dataKind: "server" as const } }
+        : null,
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/afterfiles-ssr", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/afterfiles-ssr", destination: "/ssr" }],
+          fallback: [],
+        },
+        matchPageRoute,
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.headers.get("x-matched-path")).toBe("/ssr");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await result.response.json()).toEqual({});
   });
 });
 

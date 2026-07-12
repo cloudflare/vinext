@@ -7,13 +7,14 @@
  *
  * Extracted from index.ts.
  */
+import { readFile } from "node:fs/promises";
 import { resolveEntryPath } from "./runtime-entry-module.js";
-import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -25,6 +26,13 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
+
+async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+  const source = await readFile(filePath, "utf8");
+  if (hasExportedName(source, "getStaticProps")) return "static";
+  if (hasExportedName(source, "getServerSideProps")) return "server";
+  return "none";
+}
 
 /**
  * Generate the virtual SSR server entry module.
@@ -42,21 +50,21 @@ export async function generateServerEntry(
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
-  const pageImports = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const pageImports = pageRoutes.map(
+    (r: Route, i: number) => `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
-  const apiImports = apiRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-  });
+  const apiImports = apiRoutes.map(
+    (r: Route, i: number) => `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  );
 
   // Build the route table — include filePath for SSR manifest lookup
-  const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-    const absPath = normalizePathSeparators(r.filePath);
-    return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-  });
+  const pageRouteEntries = await Promise.all(
+    pageRoutes.map(async (r: Route, i: number) => {
+      const dataKind = await getPagesDataKind(r.filePath);
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+    }),
+  );
 
   const apiRouteEntries = apiRoutes.map(
     (r: Route, i: number) =>
@@ -87,7 +95,7 @@ export async function generateServerEntry(
   const errorImportCode =
     errorFilePath !== null
       ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
-      : `const ErrorPageModule = null;`;
+      : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -142,7 +150,7 @@ export async function generateServerEntry(
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
-    ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};`
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};`
     : "";
 
   const instrumentationInitCode = instrumentationPath
@@ -161,7 +169,7 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};`
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
 
   // The matcher config is read from the middleware module at request time.
@@ -174,7 +182,7 @@ export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
-    filePath: ${JSON.stringify(normalizePathSeparators(middlewarePath))},
+    filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
@@ -202,6 +210,8 @@ import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReady
 import { _runWithCacheState } from "vinext/shims/cache-request-state";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
+import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import "vinext/router-state";
@@ -236,9 +246,14 @@ const i18nConfig = ${i18nConfigJson};
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
 export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(request, buildId);
+  return __normalizePagesDataRequest(
+    request,
+    buildId,
+    vinextConfig.basePath,
+    hasMiddleware && vinextConfig.trailingSlash,
+  );
 }
-const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
+export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -286,16 +301,14 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
-const _errorPageRoute = ErrorPageModule
-  ? {
-      pattern: "/_error",
-      patternParts: ["_error"],
-      isDynamic: false,
-      params: [],
-      module: ErrorPageModule,
-      filePath: ${errorAssetPathJson},
-    }
-  : null;
+const _errorPageRoute = {
+  pattern: "/_error",
+  patternParts: ["_error"],
+  isDynamic: false,
+  params: [],
+  module: ErrorPageModule,
+  filePath: ${errorAssetPathJson},
+};
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -345,6 +358,7 @@ export function matchApiRoute(url, request) {
 // All next/*-derived values are passed as closures so the handler module
 // stays importable in test environments (the root vite.config.ts only
 // aliases vinext/shims/*, not next/*).
+__setPagesClientAssets(__pagesClientAssets);
 const _renderPage = __createPagesPageHandler({
   pageRoutes,
   errorPageRoute: _errorPageRoute,
@@ -360,7 +374,7 @@ const _renderPage = __createPagesPageHandler({
     disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
   },
   buildId,
-  hasMiddleware: __hasMiddleware,
+  hasMiddleware,
   appAssetPath: _appAssetPath,
   hasRewrites:
     vinextConfig.rewrites.beforeFiles.length > 0 ||

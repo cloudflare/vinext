@@ -1,3 +1,4 @@
+import path, { toSlash } from "pathslash";
 import type { Rolldown } from "vite";
 
 /**
@@ -46,7 +47,7 @@ type EmitRestoredCssUrlAsset = (asset: { fileName: string; source: BundleAsset["
 // --- small URL/path helpers -------------------------------------------------
 
 function basename(value: string): string {
-  const normalized = value.replaceAll("\\", "/");
+  const normalized = toSlash(value);
   const slash = normalized.lastIndexOf("/");
   return slash === -1 ? normalized : normalized.slice(slash + 1);
 }
@@ -163,6 +164,25 @@ export function markCssUrlAssetReferences(code: string, id: string): string | nu
     if (!CSS_ASSET_EXT_RE.test(lower) || lower.endsWith(".css")) return null;
     const param = `${CSS_URL_ASSET_MARKER}=${encodeURIComponent(basename(parts.path))}`;
     return joinUrl({ ...parts, query: parts.query ? `${parts.query}&${param}` : param });
+  });
+}
+
+/** Rebase relative asset URLs when Sass inlines a partial into an entry file. */
+export function rebaseCssUrlAssetReferences(
+  code: string,
+  sourceDirectory: string,
+  targetDirectory: string,
+): string | null {
+  return rewriteCssUrls(code, (rawUrl) => {
+    const parts = splitUrl(rawUrl.trim());
+    if (!isRelativeAssetUrl(parts.path)) return null;
+    const lower = parts.path.toLowerCase();
+    if (!CSS_ASSET_EXT_RE.test(lower) || lower.endsWith(".css")) return null;
+
+    const absolutePath = path.resolve(sourceDirectory, parts.path);
+    let rebasedPath = path.relative(targetDirectory, absolutePath);
+    if (!rebasedPath.startsWith(".")) rebasedPath = `./${rebasedPath}`;
+    return joinUrl({ ...parts, path: rebasedPath });
   });
 }
 

@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
-import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
+import {
+  isAppRouterRscRequestForPath,
+  isAppRouterServerActionRequestForPath,
+  waitForAppRouterHydration,
+} from "../helpers";
 
 const BASE = "http://localhost:4174";
 const FEED_DRAFT_VALUE = "source draft survives";
@@ -78,9 +82,63 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 
+  test("soft navigation preserves the active children branch over target defaults", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts
+    await page.goto(`${BASE}/parallel-layouts`);
+    await waitForAppRouterHydration(page);
+
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Primary page");
+    await expect(page.getByTestId("parallel-layouts-foo-page")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-bar-page")).toBeVisible();
+
+    await page.getByTestId("parallel-layouts-subroute-link").click();
+    await expect(page).toHaveURL(`${BASE}/parallel-layouts/subroute`);
+    await expect(page.getByTestId("parallel-layouts-bar-subroute")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Primary page");
+    await expect(page.getByTestId("parallel-layouts-foo-page")).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Default page");
+    await expect(page.getByTestId("parallel-layouts-foo-default")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-foo-layout")).not.toBeVisible();
+  });
+
+  test("soft navigation preserves a real children route for a slot-only target", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/parallel-layouts/settings`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-settings-page")).toBeVisible();
+
+    await page.getByTestId("parallel-layouts-modal-link").click();
+    await expect(page).toHaveURL(`${BASE}/parallel-layouts/modal`);
+    await expect(page.getByTestId("parallel-layouts-bar-modal")).toBeVisible();
+    await expect(page.getByTestId("parallel-layouts-settings-page")).toBeVisible();
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("parallel-layouts-children")).toHaveText("Default page");
+  });
+
   test("slot directories are not accessible as direct routes", async ({ page }) => {
     const response = await page.goto(`${BASE}/dashboard/team`);
     expect(response?.status()).toBe(404);
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/parallel-routes-leaf-segments.no-build-error.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/parallel-routes-leaf-segments.no-build-error.test.ts
+  test("slot-only leaf route renders the children default", async ({ page }) => {
+    await page.goto(`${BASE}/parallel-leaf-default/other`);
+
+    await expect(page.getByTestId("parallel-leaf-slot")).toHaveText("Parallel leaf other slot");
+    await expect(page.getByTestId("parallel-leaf-children")).toHaveText(
+      "Parallel leaf children default",
+    );
   });
 });
 
@@ -354,6 +412,38 @@ test.describe("Intercepting Routes", () => {
     await waitForAppRouterHydration(page);
     await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  });
+
+  test("revalidating server action from dynamic intercepted modal returns a result", async ({
+    page,
+  }) => {
+    // Ported from Next.js: test/e2e/app-dir/dynamic-interception-route-revalidate/dynamic-interception-route-revalidate.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-interception-route-revalidate/dynamic-interception-route-revalidate.test.ts
+    await page.goto(`${BASE}/dynamic-interception-revalidate/en`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("[href='/dynamic-interception-revalidate/en/photos/1/view']");
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).toBeVisible();
+    await expect(page.locator("h2")).toHaveText("Photo Id: 1");
+
+    const actionRequest = page.waitForRequest((request) =>
+      isAppRouterServerActionRequestForPath(
+        request,
+        "/dynamic-interception-revalidate/en/photos/1/view",
+      ),
+    );
+    await page.click("#dynamic-interception-revalidate-button");
+    expect((await actionRequest).headers()["x-vinext-interception-context"]).toBe(
+      "/dynamic-interception-revalidate/en",
+    );
+    await expect(page.locator("#dynamic-interception-revalidate-loading")).toBeVisible();
+    await expect(page.locator("#dynamic-interception-revalidate-result")).toHaveText("Result: 0");
+
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).toBeVisible();
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#dynamic-interception-revalidate-intercepted")).not.toBeVisible();
+    await expect(page.locator("#dynamic-interception-revalidate-full")).toBeVisible();
   });
 
   test("sibling (..) intercepted navigation mounts the modal slot", async ({ page }) => {

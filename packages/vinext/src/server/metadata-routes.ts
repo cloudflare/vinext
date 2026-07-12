@@ -16,7 +16,7 @@
  * Static versions (xml/txt/json/png/etc.) are served as-is.
  */
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathslash";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 
 // -------------------------------------------------------------------
@@ -438,7 +438,7 @@ function computeMetadataRouteSuffix(
 }
 
 function getMetadataRouteFilename(appDirPath: string, lastSegment: string): string {
-  const ext = path.posix.extname(lastSegment);
+  const ext = path.extname(lastSegment);
   const name = lastSegment.slice(0, -ext.length || undefined);
   const { suffix } = computeMetadataRouteSuffix(appDirPath, name);
   const routeSuffix = suffix ? `-${suffix}` : "";
@@ -566,8 +566,8 @@ function metadataRouteSuffix(parentSegments: string[], metaType: string): string
 
 function withMetadataSuffix(urlPath: string, suffix: string): string {
   if (!suffix) return urlPath;
-  const parsed = path.posix.parse(urlPath);
-  return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+  const parsed = path.parse(urlPath);
+  return path.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
 }
 
 function getMetadataServedUrl(
@@ -628,10 +628,29 @@ export function matchMetadataFileBaseName(metaType: string, baseName: string): s
   return null;
 }
 
+// Cache the metadata-file scan per appDir. `scanMetadataFiles` runs once per
+// build pass that loads the RSC entry (measured: twice per `vinext build`), and
+// an app's metadata files don't change within a build, so memoizing the full
+// recursive scan avoids re-walking the whole app tree — mirroring app-router's
+// `cachedGraph`. In dev it is invalidated alongside the route graph when app
+// files change (see `invalidateMetadataFileCache`).
+let cachedMetadataRoutes: MetadataFileRoute[] | null = null;
+let cachedMetadataAppDir: string | null = null;
+
+/** Clear the {@link scanMetadataFiles} cache (call when app files change in dev). */
+export function invalidateMetadataFileCache(): void {
+  cachedMetadataRoutes = null;
+  cachedMetadataAppDir = null;
+}
+
 /**
  * Scan an app directory for metadata files.
  */
 export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
+  if (cachedMetadataRoutes && cachedMetadataAppDir === appDir) {
+    return cachedMetadataRoutes;
+  }
+
   const routes: MetadataFileRoute[] = [];
 
   // Scan the app directory recursively
@@ -723,7 +742,9 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
     // If both are static or both dynamic, keep the first one found
   }
-  return Array.from(byUrl.values());
+  cachedMetadataRoutes = Array.from(byUrl.values());
+  cachedMetadataAppDir = appDir;
+  return cachedMetadataRoutes;
 }
 
 function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {

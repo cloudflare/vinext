@@ -3,6 +3,8 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
+const VINEXT_SRC = path.resolve(import.meta.dirname, "packages/vinext/src");
+const CLOUDFLARE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 
 // Resolve own-workspace sources directly in tests so the vinext <->
@@ -10,7 +12,10 @@ const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 // no prior build required). Shared by both test projects below.
 const WORKSPACE_SRC_ALIAS = {
   "vinext/shims": SHIMS_SRC,
+  "vinext/internal": VINEXT_SRC,
+  "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
   "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
+  "@vinext/cloudflare/images": path.resolve(import.meta.dirname, "packages/cloudflare/src/images"),
 };
 
 export default defineConfig({
@@ -88,6 +93,25 @@ export default defineConfig({
           "import/no-self-import": "error",
           "unicorn/throw-new-error": "error",
           "unicorn/error-message": "error",
+          // Source path handling goes through pathslash so every join/resolve/
+          // relative emits canonical forward-slash output on Windows. Files
+          // that genuinely work in native-separator space (build/standalone.ts)
+          // disable this inline with a reason.
+          "no-restricted-imports": [
+            "error",
+            {
+              paths: [
+                {
+                  name: "node:path",
+                  message: 'Import path from "pathslash" instead (canonical forward-slash output).',
+                },
+                {
+                  name: "path",
+                  message: 'Import path from "pathslash" instead (canonical forward-slash output).',
+                },
+              ],
+            },
+          ],
         },
       },
       {
@@ -154,6 +178,7 @@ export default defineConfig({
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
             "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-deployment-id.test.ts",
             "tests/app-router-dev-server.test.ts",
             "tests/app-router-external-rewrite.test.ts",
             "tests/app-router-font-google-prod.test.ts",
@@ -173,6 +198,7 @@ export default defineConfig({
             "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
+            "tests/client-global-define.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/features.test.ts",
@@ -212,6 +238,7 @@ export default defineConfig({
           // `setupServer` rather than reverting this exclusion.
           include: [
             "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-deployment-id.test.ts",
             "tests/app-router-dev-server.test.ts",
             "tests/app-router-external-rewrite.test.ts",
             "tests/app-router-font-google-prod.test.ts",
@@ -231,6 +258,7 @@ export default defineConfig({
             "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
+            "tests/client-global-define.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/favicon-short-circuit.test.ts",

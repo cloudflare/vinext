@@ -30,8 +30,22 @@ export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
  */
 export const VINEXT_IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 
-/** Returns true when `pathname` is either supported image optimization endpoint. */
+/**
+ * Returns true when `pathname` is either supported image optimization
+ * endpoint.
+ *
+ * A single trailing slash is accepted (`/_next/image/`): with
+ * `trailingSlash: true`, Next.js 308-redirects `/_next/image?url=...` to
+ * `/_next/image/?url=...` and then serves the slashed form — its route
+ * matching strips a trailing slash before matching internal paths (see
+ * getItem in packages/next/src/server/lib/router-utils/filesystem.ts).
+ * Rejecting the slashed form 404'd every dev-mode next/image request under
+ * `trailingSlash: true`.
+ */
 export function isImageOptimizationPath(pathname: string): boolean {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    pathname = pathname.slice(0, -1);
+  }
   return pathname === IMAGE_OPTIMIZATION_PATH || pathname === VINEXT_IMAGE_OPTIMIZATION_PATH;
 }
 
@@ -119,7 +133,7 @@ export function parseImageParams(
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
   // parameters so semantically identical transforms cannot occupy distinct
   // cache keys and amplify image transformation work.
-  const allowedParamNames = new Set(["url", "w", "q"]);
+  const allowedParamNames = new Set(["url", "w", "q", "dpl"]);
   for (const name of url.searchParams.keys()) {
     if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
   }
@@ -359,4 +373,104 @@ export async function handleImageOptimization(
 
     return createPassthroughImageResponse(refetchedSource, imageConfig);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Configured image optimizer registry.
+//
+// The image optimizer is the pluggable transform backend (e.g. Cloudflare
+// Images via `env.IMAGES`). It is configured declaratively through the
+// `images` option on the `vinext()` plugin — see `image/image-adapters-virtual.ts`
+// — and registered on the first request by the generated
+// `virtual:vinext-image-adapters` module, which imports `setImageOptimizer`
+// from here.
+//
+// The active optimizer is stored on `globalThis` via `Symbol.for` so a single
+// registration is visible across the separate RSC and SSR Vite environments
+// (they load distinct module instances), mirroring the data-cache handler
+// resolution in `shims/cache.ts`. When no optimizer is registered (no adapter
+// configured, or the adapter factory threw on a runtime without the required
+// binding — e.g. Node.js / dev), image requests fall back to serving the
+// original asset unoptimized.
+// ---------------------------------------------------------------------------
+
+/**
+ * A server-side image optimizer: the transform backend that resizes/transcodes
+ * a source image. Produced by an adapter factory (e.g. `imagesOptimizer()` from
+ * `@vinext/cloudflare/images/images-optimizer`) and registered via
+ * {@link setImageOptimizer}.
+ */
+export type ImageOptimizer = {
+  /** Transform the source image (resize, format, quality). */
+  transformImage: (
+    body: ReadableStream,
+    options: { width: number; format: string; quality: number },
+  ) => Promise<Response>;
+};
+
+const _IMAGE_OPTIMIZER_KEY = Symbol.for("vinext.imageOptimizer");
+const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptimizer | undefined>;
+
+/**
+ * Register the active image optimizer (transform backend). An explicit
+ * registration always wins; passing `null` clears it (falling back to
+ * unoptimized passthrough).
+ *
+ * Configure this declaratively via the `images.optimizer` option on the
+ * `vinext()` plugin in your `vite.config.ts` rather than calling it directly.
+ * On Cloudflare Workers:
+ *
+ * ```ts
+ * import { vinext } from "vinext";
+ * import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
+ *
+ * export default defineConfig({
+ *   plugins: [vinext({ images: { optimizer: imagesOptimizer() } })],
+ * });
+ * ```
+ *
+ * The plugin registers the optimizer across every runtime/router entry, so you
+ * don't have to wire `env.IMAGES` into a custom worker entry. This setter
+ * remains the internal registration target.
+ */
+export function setImageOptimizer(optimizer: ImageOptimizer | null): void {
+  _gImageOptimizer[_IMAGE_OPTIMIZER_KEY] = optimizer ?? undefined;
+}
+
+/** Get the active image optimizer, or `null` when none is configured. */
+export function getImageOptimizer(): ImageOptimizer | null {
+  return _gImageOptimizer[_IMAGE_OPTIMIZER_KEY] ?? null;
+}
+
+/**
+ * Handle an image optimization request using the configured optimizer (if any).
+ *
+ * This is the single entry point every runtime/router seam (App Router worker,
+ * Pages worker, Node prod server) should call: it reads the registered
+ * {@link ImageOptimizer} and wires its `transformImage` into
+ * {@link handleImageOptimization}, with the caller supplying the runtime's
+ * `fetchAsset` (e.g. the Cloudflare `ASSETS` binding, or filesystem reads on
+ * Node). When no optimizer is registered, the request is served unoptimized
+ * (passthrough) with the same security/cache headers.
+ */
+export function handleConfiguredImageOptimization(
+  request: Request,
+  fetchAsset: (path: string, request: Request) => Promise<Response>,
+  allowedWidths?: number[],
+  imageConfig?: ImageConfig,
+): Promise<Response> {
+  const optimizer = getImageOptimizer();
+  return handleImageOptimization(
+    request,
+    {
+      fetchAsset,
+      // Wrap rather than detach the method so an optimizer implemented as a
+      // class instance keeps its `this` binding.
+      transformImage: optimizer
+        ? (body, options) => optimizer.transformImage(body, options)
+        : undefined,
+    },
+    allowedWidths,
+    imageConfig,
+  );
 }

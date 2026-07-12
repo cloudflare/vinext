@@ -19,8 +19,7 @@ import {
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
   createClientManualChunks,
-  clientTreeshakeConfig,
-  getClientTreeshakeConfigForVite,
+  getClientTreeshakeConfig,
   createRscFrameworkChunkOutputConfig,
   RSC_FRAMEWORK_CHUNK_TEST,
   isRscFrameworkModule,
@@ -31,9 +30,11 @@ import {
 } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { aliasEntriesToRecord } from "./helpers.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -69,27 +70,12 @@ afterEach(() => {
 });
 
 function getBuildBundlerOptions(result: any) {
-  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+  return result.build?.rolldownOptions;
 }
 
 function getEnvBuildBundlerOptions(env: any) {
-  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+  return env?.build?.rolldownOptions;
 }
-
-// ─── clientTreeshakeConfig ────────────────────────────────────────────────────
-
-describe("clientTreeshakeConfig", () => {
-  it("uses 'recommended' preset for safe defaults", () => {
-    expect(clientTreeshakeConfig.preset).toBe("recommended");
-  });
-
-  it("sets moduleSideEffects to 'no-external' for aggressive vendor DCE", () => {
-    // 'no-external' marks node_modules as side-effect-free (enabling DCE for
-    // barrel-heavy libraries) while preserving side effects for local modules
-    // (CSS imports, polyfills).
-    expect(clientTreeshakeConfig.moduleSideEffects).toBe("no-external");
-  });
-});
 
 // ─── clientManualChunks ───────────────────────────────────────────────────────
 
@@ -106,7 +92,7 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
 
-  it("returns undefined for other node_modules (Rollup default splitting)", () => {
+  it("returns undefined for other node_modules (default graph splitting)", () => {
     expect(clientManualChunks("/node_modules/mermaid/dist/mermaid.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/lodash-es/lodash.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/@mui/material/index.js")).toBeUndefined();
@@ -200,6 +186,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
+      expect(result.environments.ssr.resolve.external).toContain("typescript");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
+      expect(
+        aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
+      ).toMatch(/server\/pages-client-assets\.ts$/);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -318,6 +309,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+      expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
       for (const shimExclude of rscClientShimExcludes) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
@@ -601,6 +593,137 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optdeps-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const workerEnvConfig = {
+        optimizeDeps: {
+          entries: ["already-present.ts"],
+          include: ["already-included"],
+          exclude: ["already-excluded"],
+        },
+      };
+      (mainPlugin as any).configEnvironment("worker", workerEnvConfig);
+
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
+      expect(workerEnvConfig.optimizeDeps.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
+      expect(workerEnvConfig.optimizeDeps.include).toContain(
+        "use-sync-external-store/with-selector",
+      );
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-pages-dev-optwarn-"));
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const warned: string[] = [];
+      const logger = {
+        hasWarned: false,
+        info() {},
+        warn(msg: string) {
+          warned.push(msg);
+        },
+        warnOnce(msg: string) {
+          warned.push(msg);
+        },
+        error() {},
+        clearScreen() {},
+        hasErrorLogged() {
+          return false;
+        },
+      };
+
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, "node_modules", ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: {},
+        logger,
+        plugins: [],
+      });
+
+      logger.warn(
+        "Failed to resolve dependency: use-sync-external-store/with-selector, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: \x1b[36muse-sync-external-store/with-selector\x1b[39m, present in worker 'optimizeDeps.include'",
+      );
+      logger.warn(
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      );
+
+      expect(warned).toEqual([
+        "Failed to resolve dependency: other-package, present in worker 'optimizeDeps.include'",
+      ]);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────
@@ -810,6 +933,7 @@ describe("treeshake config integration", () => {
 
       // treeshake should NOT be set for SSR builds
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.ssr.external).toContain("typescript");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -827,8 +951,7 @@ describe("treeshake config integration", () => {
     );
     const clientAssetsDefaultsPlugin = plugins.find(
       (p: any) =>
-        p.name === "vinext:client-css-url-assets-defaults" &&
-        typeof p.configEnvironment === "function",
+        p.name === "vinext:css-url-assets-defaults" && typeof p.configEnvironment === "function",
     );
     expect(mainPlugin).toBeDefined();
     expect(clientAssetsDefaultsPlugin).toBeDefined();
@@ -886,6 +1009,39 @@ describe("treeshake config integration", () => {
       });
       expect(
         (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toEqual({
+        build: {
+          rolldownOptions: {
+            output: {
+              assetFileNames: expect.any(Function),
+            },
+          },
+        },
+      });
+      const customAssetFileNames = "custom/[name][extname]";
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: { output: { assetFileNames: customAssetFileNames } },
+            },
+          },
+          { command: "build" },
+        ),
+      ).toBeNull();
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment(
+          "ssr",
+          {
+            build: {
+              rolldownOptions: {
+                output: [{ entryFileNames: "first.js" }, { chunkFileNames: "second.js" }],
+              },
+            },
+          },
+          { command: "build" },
+        ),
       ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -2101,14 +2257,11 @@ describe("collectAssetTags lazy chunk filtering", () => {
   // Drive the REAL exported `collectAssetTags` (server/pages-asset-tags.ts) so
   // these tests can't drift from production. The thin adapter keeps the original
   // `(ssrManifestFiles, lazyChunks) -> string[]` shape: it wires the lazy set
-  // through the `globalThis.__VINEXT_LAZY_CHUNKS__` global the function actually
-  // reads, feeds the files as a single page module, and disables optimized
+  // through the runtime asset registry the function actually reads, feeds the
+  // files as a single page module, and disables optimized
   // loading (no `defer`) to match the legacy assertions.
   function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
-    const prevLazy = globalThis.__VINEXT_LAZY_CHUNKS__;
-    const prevEntry = globalThis.__VINEXT_CLIENT_ENTRY__;
-    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-    delete globalThis.__VINEXT_CLIENT_ENTRY__;
+    setPagesClientAssets({ lazyChunks });
     try {
       const html = collectAssetTags({
         manifest: { "page.js": ssrManifestFiles },
@@ -2117,9 +2270,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
       });
       return html ? html.split("\n  ") : [];
     } finally {
-      if (prevLazy === undefined) delete globalThis.__VINEXT_LAZY_CHUNKS__;
-      else globalThis.__VINEXT_LAZY_CHUNKS__ = prevLazy;
-      if (prevEntry !== undefined) globalThis.__VINEXT_CLIENT_ENTRY__ = prevEntry;
+      setPagesClientAssets(undefined);
     }
   }
 
@@ -2299,7 +2450,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
   });
 
   it("deduplicates entries when SSR manifest has leading slashes and client entry does not", () => {
-    // The client entry (from __VINEXT_CLIENT_ENTRY__) uses values without
+    // The client entry from the Pages client asset descriptor uses values without
     // leading slashes ("assets/entry.js"), while SSR manifest values have
     // them ("/assets/entry.js"). After normalization, both should resolve
     // to the same key and the entry should appear only once.
@@ -3336,32 +3487,12 @@ export const getStaticPaths = () => [
   });
 });
 
-// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+// ─── getClientTreeshakeConfig ─────────────────────────────────────────────────
 
-describe("getClientTreeshakeConfigForVite", () => {
-  it("returns preset for Vite 7 (Rollup compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(7);
+describe("getClientTreeshakeConfig", () => {
+  it("returns Rolldown treeshake config without a Rollup preset", () => {
+    const config = getClientTreeshakeConfig();
     expect(config).toEqual({
-      preset: "recommended",
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(8);
-    expect(config).toEqual({
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 9+", () => {
-    const config9 = getClientTreeshakeConfigForVite(9);
-    expect(config9).toEqual({
-      moduleSideEffects: "no-external",
-    });
-
-    const config10 = getClientTreeshakeConfigForVite(10);
-    expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
   });
@@ -3370,68 +3501,11 @@ describe("getClientTreeshakeConfigForVite", () => {
 // ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
 
 describe("createRscFrameworkChunkOutputConfig", () => {
-  it("returns manualChunks for Vite 7 (Rollup) routing framework modules to 'framework'", () => {
-    const config = createRscFrameworkChunkOutputConfig(7);
-    expect(config).not.toHaveProperty("codeSplitting");
-    expect(config).toHaveProperty("manualChunks");
-    const manualChunks = (
-      config as {
-        manualChunks: (
-          id: string,
-          meta: {
-            getModuleInfo(id: string): { importers: string[]; isEntry: boolean } | null;
-          },
-        ) => string | undefined;
-      }
-    ).manualChunks;
-    const moduleInfo = new Map([
-      ["/app/src/entry.js", { importers: [], isEntry: true }],
-      ["/app/src/middleman.js", { importers: ["/app/src/entry.js"], isEntry: false }],
-      ["/app/src/lazy.js", { importers: [], isEntry: false }],
-      [
-        "/app/node_modules/react/index.js",
-        { importers: ["/app/src/middleman.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-server-dom-webpack/client.js",
-        { importers: ["/app/src/entry.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-dom/server.react-server.js",
-        { importers: ["/app/src/lazy.js"], isEntry: false },
-      ],
-    ]);
-    const meta = { getModuleInfo: (id: string) => moduleInfo.get(id) ?? null };
-    expect(manualChunks("/app/node_modules/react/index.js", meta)).toBe("framework");
-    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js", meta)).toBe(
-      "framework",
-    );
-    expect(
-      manualChunks("/app/node_modules/react-dom/server.react-server.js", meta),
-    ).toBeUndefined();
-    // Non-framework node_modules and local files are left to the default algo.
-    expect(manualChunks("/app/node_modules/react-icons/lib/index.js", meta)).toBeUndefined();
-    expect(manualChunks("/app/src/page.tsx", meta)).toBeUndefined();
-  });
-
-  it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
-    const config = createRscFrameworkChunkOutputConfig(8);
+  it("returns Rolldown codeSplitting, not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig();
     expect(config).not.toHaveProperty("advancedChunks");
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
-      codeSplitting: {
-        groups: [
-          {
-            name: "framework",
-            test: RSC_FRAMEWORK_CHUNK_TEST,
-            entriesAware: true,
-          },
-        ],
-      },
-    });
-
-    // Vite 9+ uses the same Rolldown shape.
-    expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
       codeSplitting: {
         groups: [
           {
@@ -3455,8 +3529,6 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-server-dom-webpack/client.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
-    // Windows-style path used by the Vite 7 getPackageName predicate.
-    "C:\\app\\node_modules\\react-dom\\server.js",
   ];
   const notMatching = [
     "/app/node_modules/react-icons/lib/index.js",
@@ -3481,5 +3553,11 @@ describe("RSC framework package matching", () => {
     for (const id of notMatching) {
       expect(isRscFrameworkModule(id)).toBe(false);
     }
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")("recognizes Windows-style ids", () => {
+    expect(RSC_FRAMEWORK_CHUNK_TEST.test("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
+    expect(isRscFrameworkModule("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
   });
 });

@@ -14,6 +14,7 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
@@ -46,6 +47,44 @@ export type VinextCacheConfig = {
 
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";
+
+// Custom metadata key attached to vinext's config plugin so deploy commands can
+// inspect the normalized cache descriptors after loading the user's Vite config.
+export const VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY = "__vinextCacheConfig";
+
+type VinextCacheConfigPlugin = {
+  [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]?: VinextCacheConfig | null;
+};
+
+type ViteConfigLoader = {
+  loadConfigFromFile: typeof import("vite").loadConfigFromFile;
+};
+
+export async function findVinextCacheConfigInPlugins(
+  plugins: import("vite").PluginOption[] | undefined,
+): Promise<VinextCacheConfig | null> {
+  const flattened = await flattenPluginOptions(plugins);
+
+  for (const plugin of flattened) {
+    if (!plugin || typeof plugin !== "object") continue;
+    const cacheConfig = (plugin as VinextCacheConfigPlugin)[VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY];
+    if (cacheConfig) return cacheConfig;
+  }
+
+  return null;
+}
+
+export async function loadVinextCacheConfigFromViteConfig(
+  vite: ViteConfigLoader,
+  root: string,
+): Promise<VinextCacheConfig | null> {
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  return await findVinextCacheConfigInPlugins(loaded?.config.plugins);
+}
 
 /**
  * Serialize descriptor options into a JS expression for inlining. Plain JSON is
@@ -98,9 +137,19 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "",
     "// A factory that throws (e.g. a missing binding on an incompatible runtime)",
     "// is logged and skipped so the default handler stays in place.",
+    "function __vinextFormatAdapterError(error) {",
+    "  if (error instanceof Error && error.message) return error.message;",
+    "  try {",
+    "    return String(error);",
+    "  } catch {",
+    "    return '<unknown error>';",
+    "  }",
+    "}",
+    "",
     "let __vinextCacheAdaptersRegistered = false;",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
+    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     "  if (__vinextCacheAdaptersRegistered) return;",
     "  __vinextCacheAdaptersRegistered = true;",
   );
@@ -113,7 +162,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       )} }));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
-        'using the default handler.", error);',
+        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
       "  }",
     );
   }
@@ -126,7 +175,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       )} }));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
-        'using the default adapter.", error);',
+        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
       "  }",
     );
   }

@@ -12,6 +12,44 @@ import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
 
 describe("middleware redirect protocol", () => {
+  it("exposes trusted data-request state to middleware", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBe(true);
+    expect(Object.keys(capturedRequest ?? {})).not.toContain("__isData");
+  });
+
+  it("does not expose data-request state for ordinary requests", async () => {
+    let capturedRequest: NextRequest | undefined;
+    const module = {
+      default: (request: NextRequest) => {
+        capturedRequest = request;
+        return undefined;
+      },
+    };
+
+    await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost:3000/error-throw"),
+    });
+
+    expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBeUndefined();
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {
@@ -102,6 +140,35 @@ describe("middleware redirect protocol", () => {
     // No HTTP redirect should be surfaced to upstream callers.
     expect(result.redirectUrl).toBeUndefined();
     expect(result.redirectStatus).toBeUndefined();
+  });
+
+  it("preserves middleware cache opt-out when shaping data-request redirects", async () => {
+    const module = {
+      default: (req: Request) =>
+        new Response(null, {
+          status: 307,
+          headers: {
+            Location: new URL("/new-home", req.url).toString(),
+            "x-middleware-cache": "no-cache",
+            "x-middleware-rewrite": "/internal",
+          },
+        }),
+    };
+
+    const result = await executeMiddleware({
+      isProxy: false,
+      module,
+      isDataRequest: true,
+      request: new Request("http://localhost:3000/old-home"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(200);
+    expect(result.response?.headers.get("x-nextjs-redirect")).toBe("/new-home");
+    expect(result.response?.headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(result.response?.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(result.response?.headers.get("Location")).toBeNull();
+    expect(result.redirectUrl).toBeUndefined();
   });
 
   it("translates external redirects to x-nextjs-redirect for data requests", async () => {

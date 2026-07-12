@@ -109,6 +109,86 @@ describe("app page request helpers", () => {
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
+  it("enforces generateStaticParams from a parallel page", async () => {
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams: () => [{ slug: "static-123" }] },
+            paramNames: ["locale", "slug"],
+            patternParts: [":locale", "gsp", "stories", ":slug"],
+            routeSegments: ["stories", "[slug]"],
+          },
+        ],
+        routePatternParts: [":locale", "gsp", "stories", ":slug"],
+        routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+      }),
+      isDynamicRoute: true,
+      params: { locale: "en", slug: "dynamic-123" },
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it("remaps parallel page params before validating generateStaticParams", async () => {
+    const generateStaticParams = vi.fn(() => [{ name: "post" }]);
+    const response = await validateAppPageDynamicParams({
+      clearRequestContext() {},
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        parallelBranches: [
+          {
+            page: { generateStaticParams },
+            paramNames: ["name"],
+            patternParts: [":name"],
+            routeSegments: ["[name]"],
+          },
+        ],
+        routePatternParts: [":id"],
+        routeSegments: ["[id]"],
+      }),
+      isDynamicRoute: true,
+      params: { id: "post" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("collects generateStaticParams from active parallel layouts", async () => {
+    const rootLayoutGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const nestedLayoutGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      parallelBranches: [
+        {
+          layout: { generateStaticParams: rootLayoutGenerateStaticParams },
+          configLayouts: [null, { generateStaticParams: nestedLayoutGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        clearRequestContext() {},
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("static-123")).resolves.toBeNull();
+    await expect(validate("dynamic-123")).resolves.toMatchObject({ status: 404 });
+    expect(rootLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(nestedLayoutGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+  });
+
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.test.ts
   it("throws when generateStaticParams throws", async () => {
@@ -189,7 +269,7 @@ describe("app page request helpers", () => {
     const buildPageElementMock = vi.fn(async () => ({ type: "intercept-element" }));
     const renderInterceptResponse = vi.fn(async () => new Response("intercepted"));
     const currentRoute = { params: ["id"], pattern: "/photos/[id]" };
-    const sourceRoute = { params: [], pattern: "/feed" };
+    const sourceRoute = { params: ["locale", "tab"], pattern: "/[locale]/feed/[tab]" };
 
     const result = await resolveAppPageIntercept({
       buildPageElement: buildPageElementMock,
@@ -197,7 +277,8 @@ describe("app page request helpers", () => {
       currentRoute,
       findIntercept() {
         return {
-          matchedParams: { id: "123" },
+          matchedParams: { locale: "en", id: "123" },
+          sourceMatchedParams: { locale: "en", tab: "recent" },
           page: { default: "modal-page" },
           slotKey: "modal@app/feed/@modal",
           sourceRouteIndex: 0,
@@ -228,16 +309,21 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toBeUndefined();
     expect(result.response).toBeInstanceOf(Response);
     expect(setNavigationContext).toHaveBeenCalledWith({
-      params: { id: "123", catchAll: ["photos", "123"] },
+      params: {
+        locale: "en",
+        tab: "recent",
+        id: "123",
+        catchAll: ["photos", "123"],
+      },
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
     expect(buildPageElementMock).toHaveBeenCalledWith(
       sourceRoute,
-      {},
+      { locale: "en", tab: "recent" },
       {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
@@ -511,6 +597,7 @@ describe("resolveAppPageInterceptMatch", () => {
       currentRoute,
       findIntercept: () => ({
         matchedParams,
+        sourceMatchedParams: { category: "nature", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/[category]/@modal",
         sourceRouteIndex: 0,
@@ -644,18 +731,23 @@ describe("resolveAppPageActionRerenderTarget", () => {
   });
 
   it("rerenders the intercepted source route when an intercept match applies", async () => {
+    const descendantSourceRoute = {
+      params: ["locale", "tab"],
+      pattern: "/[locale]/feed/[tab]",
+    };
     const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
       findIntercept: () => ({
-        matchedParams: { id: "123" },
+        matchedParams: { locale: "en", id: "123" },
+        sourceMatchedParams: { locale: "en", tab: "recent" },
         page: { default: "modal-page" },
         slotKey: "modal@app/feed/@modal",
         sourceRouteIndex: 0,
       }),
       getRouteParamNames: (route) => route.params,
-      getSourceRoute: () => sourceRoute,
+      getSourceRoute: () => descendantSourceRoute,
       isRscRequest: true,
       toInterceptOpts,
     });
@@ -663,12 +755,12 @@ describe("resolveAppPageActionRerenderTarget", () => {
     expect(result).toEqual({
       interceptOpts: {
         interceptPage: { default: "modal-page" },
-        interceptParams: { id: "123" },
+        interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
       },
-      navigationParams: { id: "123" },
-      params: {},
-      route: sourceRoute,
+      navigationParams: { locale: "en", tab: "recent", id: "123" },
+      params: { locale: "en", tab: "recent" },
+      route: descendantSourceRoute,
     });
   });
 });

@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import path from "node:path";
+import path from "pathslash";
 import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
@@ -25,9 +25,7 @@ import "./.next/types/routes.d.ts";
 
 export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
   const root = path.resolve(options.root);
-  const appDir = options.appDir
-    ? path.resolve(options.appDir)
-    : findDir(root, "app", path.join("src", "app"));
+  const appDir = options.appDir ? path.resolve(options.appDir) : findDir(root, "app", "src/app");
   const outPath = path.join(root, ".next", "types", "routes.d.ts");
 
   const content = appDir

@@ -86,6 +86,31 @@ describe("App Router trailingSlash: true (#1332)", () => {
     const html = await res.text();
     expect(html).toMatch(/href="\/about\/"/);
   });
+
+  // Baseline `next dev` (16.2.10) with trailingSlash: true 308-redirects
+  // /_next/image?url=... to /_next/image/?url=... and then SERVES the slashed
+  // form — its route matching strips a trailing slash before matching
+  // internal paths (packages/next/src/server/lib/router-utils/filesystem.ts,
+  // getItem). vinext 404'd the slashed form, breaking every dev-mode
+  // next/image request (repro: tailwind-nextjs-starter-blog).
+  it("serves /_next/image/ (trailing-slash form) instead of 404ing", async () => {
+    const res = await fetch(
+      `${baseUrl}/_next/image/?url=${encodeURIComponent("/logo/logo.svg")}&w=640&q=75`,
+      { redirect: "manual" },
+    );
+    // Dev-mode image optimization is a passthrough redirect to the source
+    // asset. The important part: it must not be a 404.
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe("/logo/logo.svg");
+  });
+
+  it("next/image requests resolve to the image through the redirect chain", async () => {
+    const res = await fetch(
+      `${baseUrl}/_next/image?url=${encodeURIComponent("/logo/logo.svg")}&w=640&q=75`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/svg");
+  });
 });
 
 describe("App Router trailingSlash: false (#1332)", () => {
