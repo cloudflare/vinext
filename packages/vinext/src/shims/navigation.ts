@@ -38,6 +38,7 @@ import {
 } from "../server/app-rsc-cache-busting.js";
 import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
 import {
+  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -2218,6 +2219,16 @@ const _appRouter: AppRouterInstance = {
       const headers = createRscRequestHeaders({ interceptionContext });
       if (mountedSlotsHeader) {
         headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+      }
+      // Set Next-Router-State-Tree so the prefetch URL hash varies on the same
+      // state projection as navigation RSC requests. This keeps prefetch and
+      // navigation cache keys derived from the same variant inputs, matching
+      // Next.js behavior where the current router tree is always sent on flight
+      // requests (both navigation and prefetch).
+      const prefetchRuntime = getNavigationRuntime();
+      const prefetchStateTree = prefetchRuntime?.functions.getRscStateTreeHeaderValue?.();
+      if (prefetchStateTree) {
+        headers.set(NEXT_ROUTER_STATE_TREE_HEADER, prefetchStateTree);
       }
       const rscUrl = await createRscRequestUrl(fullHref, headers);
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);

@@ -491,6 +491,7 @@ function prefetchUrl(
         const { createRscRequestHeaders, createRscRequestUrl } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
+          NEXT_ROUTER_STATE_TREE_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
           VINEXT_MOUNTED_SLOTS_HEADER,
         } = headersModule;
@@ -549,6 +550,15 @@ function prefetchUrl(
         } else if (shouldSendSegmentPrefetchHeaders) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+        }
+        // Set Next-Router-State-Tree so the prefetch URL hash varies on the same
+        // state projection as navigation RSC requests. This keeps prefetch and
+        // navigation cache keys derived from the same variant inputs, matching
+        // Next.js behavior where the current router tree is always sent on flight
+        // requests (both navigation and prefetch).
+        const stateTree = getNavigationRuntime()?.functions.getRscStateTreeHeaderValue?.();
+        if (stateTree) {
+          headers.set(NEXT_ROUTER_STATE_TREE_HEADER, stateTree);
         }
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
@@ -701,6 +711,11 @@ function prefetchUrl(
                 shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
                 if (mountedSlotsHeader) {
                   shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+                }
+                const shellStateTree =
+                  getNavigationRuntime()?.functions.getRscStateTreeHeaderValue?.();
+                if (shellStateTree) {
+                  shellHeaders.set(NEXT_ROUTER_STATE_TREE_HEADER, shellStateTree);
                 }
                 const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
                 const shellCacheKey = AppElementsWire.encodeCacheKey(

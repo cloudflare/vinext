@@ -63,6 +63,14 @@ export type NavigationRuntimeFunctions = {
    */
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
+  /**
+   * Returns the Next-Router-State-Tree header value for the current router
+   * state. Used by prefetch to compute a state-aware RSC URL hash alongside
+   * navigation. Vinext's server does not parse this value — it only contributes
+   * to the cache-busting hash — but sending a stable value keeps prefetch and
+   * navigation URLs derived from the same variant contract.
+   */
+  getRscStateTreeHeaderValue?: () => string;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -116,7 +124,8 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
+    isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "getRscStateTreeHeaderValue"))
   );
 }
 

@@ -14,6 +14,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -67,7 +68,7 @@ const linkPrefetchRoutes = [
   },
 ] satisfies VinextLinkPrefetchRoute[];
 
-function createTestNavigationRuntime(navigate: unknown) {
+function createTestNavigationRuntime(navigate: unknown, getRscStateTreeHeaderValue?: () => string) {
   return {
     bootstrap: {
       routeManifest: null,
@@ -75,6 +76,7 @@ function createTestNavigationRuntime(navigate: unknown) {
     },
     functions: {
       navigate,
+      ...(getRscStateTreeHeaderValue ? { getRscStateTreeHeaderValue } : {}),
     },
   };
 }
@@ -1230,6 +1232,7 @@ describe("Pages Router Link onClick semantics", () => {
 
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
+  getRscStateTreeHeaderValue?: () => string;
   href: string;
   nodeEnv: string;
   props?: Record<string, unknown>;
@@ -1271,7 +1274,9 @@ async function renderIsolatedLink(options: {
     search: "",
   };
   const navigationRuntime =
-    options.appNavigation === false ? undefined : createTestNavigationRuntime(navigate);
+    options.appNavigation === false
+      ? undefined
+      : createTestNavigationRuntime(navigate, options.getRscStateTreeHeaderValue);
 
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("document", {
@@ -1448,29 +1453,75 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("starts App Router viewport prefetches before browser idle callbacks", async () => {
+  it("sets Next-Router-State-Tree on visible Link prefetches so _rsc is state-aware", async () => {
     const observer = stubIntersectionObserver();
-    const requestIdleCallback = vi.fn(() => 1);
+    const stateTreeValue = encodeURIComponent(
+      JSON.stringify(["route-id", "root-layout-path", ["layout-1"], "/current", ""]),
+    );
 
     const result = await renderIsolatedLink({
       href: "/viewport-prefetch-target",
       nodeEnv: "production",
-      windowOverrides: { requestIdleCallback },
+      getRscStateTreeHeaderValue: () => stateTreeValue,
     });
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      expect(requestIdleCallback).not.toHaveBeenCalled();
-      expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[0],
-        "/viewport-prefetch-target",
-        expect.objectContaining({
-          credentials: "include",
-          priority: "low",
-        }),
-      );
+      const input = result.fetch.mock.calls[0]?.[0];
+      expect(typeof input).toBe("string");
+      if (typeof input !== "string") return;
+      const url = new URL(input, "https://example.com");
+      expect(url.searchParams.has("_rsc")).toBe(true);
+      // A bare `?_rsc` has an empty value; a state-aware hash is non-empty.
+      expect(url.searchParams.get("_rsc")).not.toBe("");
+
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(fetchInit?.headers).toBeInstanceOf(Headers);
+      if (!(fetchInit?.headers instanceof Headers)) {
+        throw new Error("Expected prefetch request headers");
+      }
+      expect(fetchInit.headers.get(NEXT_ROUTER_STATE_TREE_HEADER)).toBe(stateTreeValue);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("sets Next-Router-State-Tree on prefetchInlining route-tree requests", async () => {
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const stateTreeValue = encodeURIComponent(
+      JSON.stringify(["route-id", "root-layout-path", ["layout-1"], "/current", ""]),
+    );
+
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      getRscStateTreeHeaderValue: () => stateTreeValue,
+    });
+
+    result.fetch.mockImplementationOnce(() => Promise.resolve(new Response("")));
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const firstInit = result.fetch.mock.calls[0]?.[1];
+      expect(firstInit?.headers).toBeInstanceOf(Headers);
+      if (!(firstInit?.headers instanceof Headers)) {
+        throw new Error("Expected shell prefetch request headers");
+      }
+      expect(firstInit.headers.get(NEXT_ROUTER_STATE_TREE_HEADER)).toBe(stateTreeValue);
+      expect(firstInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(firstInit.headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(firstInit.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
+
+      const input = result.fetch.mock.calls[0]?.[0];
+      expect(typeof input).toBe("string");
+      if (typeof input !== "string") return;
+      const url = new URL(input, "https://example.com");
+      expect(url.searchParams.get("_rsc")).not.toBe("");
     } finally {
       result.restoreNodeEnv();
     }

@@ -84,6 +84,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js: test/e2e/app-dir/rsc-query-routing/next.config.js
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/redirect/source",
+        destination: "/redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -151,6 +158,12 @@ const nextConfig: NextConfig = {
         {
           source: "/rewritten-use-pathname",
           destination: "/nextjs-compat/hooks-search",
+        },
+        // Ported from Next.js: test/e2e/app-dir/rsc-query-routing/next.config.js
+        // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/rewrite/source",
+          destination: "/rewrite/dest",
         },
       ],
       fallback: [

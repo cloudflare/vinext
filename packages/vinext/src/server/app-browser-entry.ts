@@ -174,6 +174,7 @@ import {
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import {
+  NEXT_ROUTER_STATE_TREE_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
@@ -312,6 +313,22 @@ function parseEncodedJsonHeader<T>(value: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+function createNavigationStateTreeHeaderValue(state: AppRouterState): string {
+  const snapshot = state.navigationSnapshot;
+  // Next.js always sends an encoded current router tree on RSC navigations.
+  // Vinext's server does not parse the value, but the cache-busting hash must
+  // still vary on a stable representation of the visible router state.
+  return encodeURIComponent(
+    JSON.stringify([
+      state.routeId,
+      state.rootLayoutTreePath,
+      state.layoutIds,
+      snapshot.pathname,
+      snapshot.searchParams.toString(),
+    ]),
+  );
 }
 
 function isRouterStatePromise(
@@ -1770,6 +1787,10 @@ function bootstrapHydration(
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
         });
+        requestHeaders.set(
+          NEXT_ROUTER_STATE_TREE_HEADER,
+          createNavigationStateTreeHeaderValue(routerStateAtNavStart),
+        );
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const rewrittenNavigationHref =
           navigationKind === "navigate"
@@ -2306,6 +2327,7 @@ function bootstrapHydration(
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
+    getRscStateTreeHeaderValue: () => createNavigationStateTreeHeaderValue(getBrowserRouterState()),
     navigate: navigateRsc,
   });
 
