@@ -59,10 +59,18 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
   // back to the HTML extraction path; the URL changes and the new page renders,
   // so every other navigation test still passes, but the JSON-path optimisation
   // is gone. This test fails loudly in that scenario by asserting (a) the data
-  // URL was fetched, and (b) a window-scoped sentinel installed before the
-  // click survives — a document reload would wipe globals, an in-place
-  // re-render preserves them.
-  test("Link click fetches /_next/data JSON, not full HTML", async ({ page }) => {
+  // URL was fetched or reused from prefetch, and (b) a window-scoped sentinel
+  // installed before the click survives — a document reload would wipe globals,
+  // an in-place re-render preserves them.
+  test("Link click uses /_next/data JSON, not full HTML", async ({ page }) => {
+    const dataRequests: string[] = [];
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes("/_next/data/") && url.endsWith("/ssr.json")) {
+        dataRequests.push(url);
+      }
+    });
+
     await page.goto(BASE + "/");
     // Wait for hydration to expose the loader manifest.
     await page.waitForFunction(() => (window as any).__VINEXT_HYDRATED_AT !== undefined);
@@ -76,19 +84,19 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
       (window as any).__navTestSentinel = "alive";
     });
 
-    const dataRequests: string[] = [];
-    page.on("request", (req) => {
-      if (req.url().includes(`/_next/data/${buildId}/ssr.json`)) {
-        dataRequests.push(req.url());
-      }
-    });
+    await page.hover('a[href="/ssr"]');
+    await expect.poll(() => dataRequests.length).toBeGreaterThanOrEqual(1);
+    expect(dataRequests[0]).toContain(`/_next/data/${buildId}/ssr.json`);
+    const preClickDataRequestCount = dataRequests.length;
 
     await page.click('a[href="/ssr"]');
     await page.waitForURL("**/ssr");
     await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
 
-    // The JSON endpoint must have been hit (proves the data path ran).
-    expect(dataRequests.length).toBeGreaterThan(0);
+    // SSR middleware prefetches are intentionally not persisted in the client
+    // cache; navigation should still use the JSON endpoint, not full HTML.
+    await expect.poll(() => dataRequests.length).toBeGreaterThan(preClickDataRequestCount);
+    expect(dataRequests.at(-1)).toContain(`/_next/data/${buildId}/ssr.json`);
     // No document reload — sentinel survived the navigation.
     const sentinel = await page.evaluate(() => (window as any).__navTestSentinel);
     expect(sentinel).toBe("alive");

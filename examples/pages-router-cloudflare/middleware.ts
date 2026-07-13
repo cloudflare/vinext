@@ -7,6 +7,12 @@ import { NextRequest, NextResponse } from "next/server";
  * that middleware actually ran (and didn't crash with the outsideEmitter bug).
  */
 export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/_next/static/middleware-rewrite.js") {
+    return new Response("rewritten missing asset", {
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   if (request.nextUrl.pathname === "/headers-before-middleware-rewrite") {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
@@ -31,5 +37,6 @@ export const config = {
     "/headers-before-middleware-rewrite",
     "/redirect-before-middleware-rewrite",
     "/redirect-before-middleware-response",
+    "/_next/static/middleware-rewrite.js",
   ],
 };

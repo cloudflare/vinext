@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { ArrowSquareOut, Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
@@ -10,7 +10,7 @@ import { PerformanceResultsTable, type PerformanceMeasurement } from "./performa
 import { profileToFlameGraph, readGzipProfile } from "./profile";
 import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
 
-type FlameGraphNode = FlameGraphData;
+export type FlameGraphNode = FlameGraphData;
 
 const TRACE_CATEGORIES: Array<{ category: TraceCategory; color: string; label: string }> = [
   { category: "vinext", color: "#f97316", label: "vinext" },
@@ -19,6 +19,11 @@ const TRACE_CATEGORIES: Array<{ category: TraceCategory; color: string; label: s
   { category: "node", color: "#22c55e", label: "Node.js" },
   { category: "other", color: "#60a5fa", label: "Other" },
 ];
+const DEFAULT_TRACE_FILTERS = new Set<TraceCategory>(["vinext", "vite", "rolldown", "node"]);
+
+function defaultTraceFilters() {
+  return new Set(DEFAULT_TRACE_FILTERS);
+}
 
 export type Comparison = PerformanceComparisonData;
 
@@ -243,23 +248,33 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
               The raw profile could not be loaded.
             </div>
           )}
-          {flameGraph && <FlameGraph measurement={measurement} flameGraph={flameGraph} />}
+          {flameGraph && (
+            <FlameGraph
+              flameGraph={flameGraph}
+              ariaLabel={`${measurement.implementationLabel} ${measurement.label} interactive flame graph`}
+            />
+          )}
         </div>
       </Dialog>
     </Dialog.Root>
   );
 }
 
-function FlameGraph({
-  measurement,
+export function FlameGraph({
+  ariaLabel,
   flameGraph,
 }: {
-  measurement: Comparison["measurements"][number];
   flameGraph: FlameGraphNode;
+  ariaLabel: string;
 }) {
   const fullGraph = flameGraph;
-  const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(null);
-  const activeGraph = filteredTraceGraph(fullGraph, categoryFilters);
+  const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(
+    defaultTraceFilters,
+  );
+  const activeGraph = useMemo(
+    () => graphForFilters(fullGraph, categoryFilters),
+    [fullGraph, categoryFilters],
+  );
   const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(activeGraph ? [activeGraph] : []);
   const [frameQuery, setFrameQuery] = useState("");
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
@@ -279,6 +294,15 @@ function FlameGraph({
   const height = (maxDepth + 1) * rowHeight;
 
   useEffect(() => {
+    const nextFilters = defaultTraceFilters();
+    const nextRoot = graphForFilters(fullGraph, nextFilters);
+    setCategoryFilters(nextFilters);
+    setFocusPath(nextRoot ? [nextRoot] : []);
+    setFrameQuery("");
+    setHovered(null);
+  }, [fullGraph]);
+
+  useEffect(() => {
     const viewport = graphViewportRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [activeGraph, root, height]);
@@ -287,7 +311,7 @@ function FlameGraph({
 
   const toggleCategory = (category: TraceCategory) => {
     const nextFilters = nextCategoryFilters(categoryFilters, category);
-    const nextRoot = filteredTraceGraph(fullGraph, nextFilters);
+    const nextRoot = graphForFilters(fullGraph, nextFilters);
     if (!nextRoot) return;
     setCategoryFilters(nextFilters);
     setFocusPath([nextRoot]);
@@ -327,7 +351,8 @@ function FlameGraph({
       <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-5 text-slate-300">
         Width is inclusive sampled thread time per benchmark round, not elapsed wall time. Click
         categories to include every stack containing that type, then add more categories to compare
-        their call relationships. Unselected frames are collapsed into the nearest selected frame.
+        their call relationships. Ancestor frames are kept for context, while unrelated branches are
+        hidden.
       </div>
       <div className="mb-4 flex flex-wrap gap-2 text-xs text-slate-300">
         {TRACE_CATEGORIES.map(({ category, color, label }) => (
@@ -368,7 +393,7 @@ function FlameGraph({
           height={height}
           className="block min-w-[960px]"
           role="group"
-          aria-label={`${measurement.implementationLabel} ${measurement.label} interactive flame graph`}
+          aria-label={ariaLabel}
         >
           {frames.map((frame) => {
             const y = (maxDepth - frame.depth) * rowHeight;
@@ -534,6 +559,11 @@ function FlameGraph({
       )}
     </div>
   );
+}
+
+function graphForFilters<T extends FlameGraphNode>(graph: T, filters: Set<TraceCategory> | null) {
+  const filteredGraph = filteredTraceGraph(graph, filters);
+  return filteredGraph && filteredGraph.value > 0 ? filteredGraph : graph;
 }
 
 function hottestFrames(root: FlameGraphNode) {

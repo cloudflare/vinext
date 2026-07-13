@@ -199,10 +199,10 @@ export async function runDocumentRenderPage(
   };
 
   const docInitialProps = await DocCtor.getInitialProps({
-    // Minimal `DocumentContext` shim — vinext does not yet thread the full
-    // context (req/res/AppTree/locale). Subclasses that just forward to
-    // `ctx.renderPage` (the styled-components / emotion pattern) work
-    // without those fields.
+    // Pages renderers pass the request-scoped context they can provide
+    // (pathname/query/asPath plus req/res when available). Subclasses that
+    // forward to `ctx.renderPage` (the styled-components / emotion pattern)
+    // also work through the defaultGetInitialProps helper below.
     renderPage,
     defaultGetInitialProps: async (ctx: { renderPage: typeof renderPage }) => {
       // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an

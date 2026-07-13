@@ -15,11 +15,10 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
-import { normalizePathSeparators } from "../utils/path.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
@@ -311,18 +310,18 @@ async function resolvePackageEntry(
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
-          return normalizePathSeparators(path.resolve(pkgDir, entryPath));
+          return path.resolve(pkgDir, entryPath);
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return normalizePathSeparators(path.resolve(pkgDir, entryField));
+      return path.resolve(pkgDir, entryField);
     }
 
     const req = createRequire(path.join(projectRoot, "package.json"));
-    return normalizePathSeparators(req.resolve(packageName));
+    return toSlash(req.resolve(packageName));
   } catch {
     return null;
   }
@@ -378,9 +377,7 @@ async function buildExportMapFromFile(
   >();
   const localDeclarations = new Set<string>();
 
-  // filePath is already normalized POSIX (every producer normalizes), so
-  // path.posix.dirname is safe.
-  const fileDir = path.posix.dirname(filePath);
+  const fileDir = path.dirname(filePath);
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -388,7 +385,7 @@ async function buildExportMapFromFile(
    * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
    */
   function normalizeSource(source: string): string {
-    return source.startsWith(".") ? path.posix.join(fileDir, source) : source;
+    return source.startsWith(".") ? path.join(fileDir, source) : source;
   }
 
   function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
@@ -466,7 +463,7 @@ async function buildExportMapFromFile(
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
-            const subPath = path.posix.join(fileDir, rawSource);
+            const subPath = path.join(fileDir, rawSource);
             // Try with the path as-is first, then with common extensions.
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may

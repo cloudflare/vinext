@@ -1,4 +1,8 @@
 import fs from "node:fs";
+// Standalone output assembly works entirely in native-separator space: it
+// copies directory trees with fs.cpSync filters that split on path.sep and
+// never feeds paths back into id/URL comparisons, so pathslash buys nothing.
+// oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { createRequire } from "node:module";
 import { readJsonFile } from "../utils/safe-json-file.js";
@@ -276,6 +280,10 @@ export function emitStandaloneOutput(options: StandaloneBuildOptions): Standalon
     dereference: true,
     filter: (src) => !path.relative(serverDir, src).split(path.sep).includes("node_modules"),
   });
+  const clientAssetsSidecar = path.join(outDir, "vinext-client-assets.js");
+  if (fs.existsSync(clientAssetsSidecar)) {
+    fs.copyFileSync(clientAssetsSidecar, path.join(standaloneDistDir, "vinext-client-assets.js"));
+  }
 
   const publicDir = path.join(root, "public");
   if (fs.existsSync(publicDir)) {

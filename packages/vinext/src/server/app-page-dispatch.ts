@@ -1,4 +1,4 @@
-import React, { type ReactNode } from "react";
+import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
@@ -8,24 +8,21 @@ import {
 } from "vinext/shims/cache-request-state";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
+import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
   consumeInvalidDynamicUsageError,
   getAndClearPendingCookies,
   getDraftModeCookieHeader,
+  getHeadersContext,
   isDraftModeRequest,
   markDynamicUsage,
+  peekDynamicUsage,
   peekRenderRequestApiUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
-import {
-  beginPprFallbackShellFinalRender,
-  createPprFallbackShellState,
-  getPprFallbackShellState,
-  runWithPprFallbackShellState,
-} from "vinext/shims/ppr-fallback-shell";
 import {
   ensureFetchPatch,
   type FetchCacheMode,
@@ -35,9 +32,11 @@ import {
   setCurrentFetchCacheMode,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
+  setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
+import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
   resolveAppPageParentHttpAccessBoundary,
   resolveAppPageParentHttpAccessBoundaryModule,
@@ -50,6 +49,7 @@ import {
   type AppPageSpecialError,
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
+import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
@@ -72,15 +72,17 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
-  shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
@@ -92,8 +94,8 @@ import {
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
-type AppPageRenderableElement = ReactNode | AppOutgoingElements;
-type AppPageBoundaryOnError = (
+export type AppPageRenderableElement = ReactNode | AppOutgoingElements;
+export type AppPageBoundaryOnError = (
   error: unknown,
   requestInfo: unknown,
   errorContext: unknown,
@@ -124,7 +126,10 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   // transport-level `interceptLayouts` on the route-matching/request types so an
   // intercept match flows through `toInterceptOptions` in both directions.
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   slotId?: string | null;
   slotKey: string;
@@ -135,6 +140,8 @@ type AppPageDispatchIntercept<TPage = unknown> = {
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -166,7 +173,7 @@ type EffectiveLayoutClassifications = Readonly<{
   buildTimeReasons: ReadonlyMap<number, ClassificationReason> | null | undefined;
 }>;
 
-type AppPageDispatchRoute = {
+export type AppPageDispatchRoute = {
   __buildTimeClassifications?: LayoutClassificationOptions["buildTimeClassifications"];
   __buildTimeReasons?: LayoutClassificationOptions["buildTimeReasons"];
   error?: AppPageModule | null;
@@ -197,7 +204,23 @@ function resolveAppPageRouteBoundaryModule(
   return null;
 }
 
-type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
+export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
+  beginFinalRender(state: AppPagePprState): void;
+  getState(): AppPagePprState | null;
+  run<T>(shell: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackShell"]>, fn: () => T): T;
+  tryServe(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+    isDraftMode: boolean,
+    isForceStatic: boolean,
+    isForceDynamic: boolean,
+  ): Promise<Response | null>;
+  warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
+};
+
+export type AppPagePprState = PprFallbackShellState;
+
+export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
   /**
@@ -218,6 +241,11 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    options?: {
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+      serveStreamingMetadata?: boolean;
+    },
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
@@ -276,6 +304,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     fallbackParamNames: readonly string[];
     routePattern: string;
   };
+  pprRuntime?: AppPagePprRuntime<TRoute>;
   /**
    * Set of concrete URL paths that were pre-rendered at build time for this
    * route. When the exact cache entry for a known pregenerated path is absent
@@ -288,9 +317,12 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
-  probePage: () => unknown;
+  probePage: (searchParams?: URLSearchParams) => unknown;
   expireSeconds?: number;
-  renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
+  renderErrorBoundaryPage: (
+    error: unknown,
+    errorOrigin?: "rsc" | "ssr",
+  ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
     opts: {
@@ -311,6 +343,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   request: Request;
   revalidateSeconds: number | null;
+  renderedPathAndSearch?: string | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
@@ -410,7 +443,7 @@ function getEffectiveLayoutClassifications(
   return createEffectiveLayoutClassifications(route, debugClassification !== undefined);
 }
 
-function shouldReadAppPageCache(options: {
+export function shouldReadAppPageCache(options: {
   isProgressiveActionRender: boolean;
   isDraftMode: boolean;
   isForceDynamic: boolean;
@@ -429,7 +462,21 @@ function shouldReadAppPageCache(options: {
   );
 }
 
-function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
+function resolveAppPageCacheReadRevalidateSeconds(options: {
+  isDynamicError: boolean;
+  isForceStatic: boolean;
+  revalidateSeconds: number | null;
+}): number {
+  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
+    return Infinity;
+  }
+
+  // cacheLife-only routes discover their actual revalidate during the fresh
+  // render; this seed only gets them into the cache read path.
+  return options.revalidateSeconds ?? 0;
+}
+
+export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
   return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
 }
 
@@ -454,6 +501,7 @@ async function runAppPageRevalidationContext<
 ): Promise<TResult> {
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "page",
@@ -469,6 +517,7 @@ async function runAppPageRevalidationContext<
 
   return runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
+    setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
       pathname: options.displayPathname ?? options.cleanPathname,
@@ -479,18 +528,6 @@ async function runAppPageRevalidationContext<
   });
 }
 
-type PprFallbackShellEligibility =
-  | { kind: "probe-fallback-shells"; fallbackShells: readonly AppPagePprFallbackCacheShell[] }
-  | {
-      kind:
-        | "skip-known-pregenerated-route"
-        | "skip-no-fallback-shells"
-        | "skip-rsc-request"
-        | "skip-non-get"
-        | "skip-search-params"
-        | "skip-cache-disabled";
-    };
-
 function toInterceptOptions(
   interceptionContext: string | null,
   intercept: AppPageDispatchIntercept,
@@ -498,6 +535,8 @@ function toInterceptOptions(
   return {
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
+    interceptLayoutSegments: intercept.interceptLayoutSegments,
+    interceptBranchSegments: intercept.interceptBranchSegments,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,
@@ -507,138 +546,15 @@ function toInterceptOptions(
   };
 }
 
-/**
- * Request-phase fallback-shell gate. Callers must run the exact cache read and
- * static-param validation before this classification step.
- */
-function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  currentRevalidateSeconds: number | null,
-  isDraftMode: boolean,
-  isForceStatic: boolean,
-  isForceDynamic: boolean,
-): PprFallbackShellEligibility {
-  // Serving a reusable fallback shell is only safe for an unknown dynamic
-  // child path. If this concrete URL was pregenerated, a missing exact cache
-  // entry is a cache availability problem, not a routing signal. Fall through
-  // to fresh render instead.
-  const isKnownPregeneratedRoute =
-    options.renderedConcreteUrlPaths?.has(options.cleanPathname) === true;
-  if (isKnownPregeneratedRoute) {
-    return { kind: "skip-known-pregenerated-route" };
-  }
-
-  const fallbackShells = options.pprFallbackCacheShells;
-  if (!fallbackShells || fallbackShells.length === 0) {
-    return { kind: "skip-no-fallback-shells" };
-  }
-  if (options.isRscRequest) {
-    return { kind: "skip-rsc-request" };
-  }
-  if (options.request.method !== "GET") {
-    return { kind: "skip-non-get" };
-  }
-  if (!isForceStatic && hasSearchParams(options.searchParams)) {
-    return { kind: "skip-search-params" };
-  }
-  if (
-    !shouldReadAppPageCache({
-      isDraftMode,
-      isForceDynamic,
-      isProgressiveActionRender: options.isProgressiveActionRender === true,
-      isProduction: options.isProduction,
-      isRscRequest: false,
-      revalidateSeconds: currentRevalidateSeconds,
-      scriptNonce: options.scriptNonce,
-    })
-  ) {
-    return { kind: "skip-cache-disabled" };
-  }
-
-  return { kind: "probe-fallback-shells", fallbackShells };
-}
-
-async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  route: TRoute,
-  fallbackShells: readonly AppPagePprFallbackCacheShell[],
-  currentRevalidateSeconds: number | null,
-): Promise<Response | null> {
-  const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
-  const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
-  for (const fallbackShell of fallbackShells) {
-    const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
-      clearRequestContext: options.clearRequestContext,
-      expireSeconds: options.expireSeconds,
-      fallbackPathname: fallbackShell.pathname,
-      isEdgeRuntime: options.isEdgeRuntime,
-      isrDebug: options.isrDebug,
-      isrGet: options.isrGet,
-      isrHtmlKey: options.isrHtmlKey,
-      middlewareHeaders: options.middlewareContext.headers,
-      middlewareStatus: options.middlewareContext.status,
-      revalidateSeconds: currentRevalidateSeconds ?? 0,
-      rewriteHtml(html) {
-        return rewriteAppPprFallbackShellHtmlNavigation({
-          html,
-          params: options.params,
-          pathname: options.cleanPathname,
-          searchParams: options.searchParams,
-        });
-      },
-    });
-    if (fallbackShellResponse) {
-      return fallbackShellResponse;
-    }
-  }
-
-  return null;
-}
-
-async function tryServePprFallbackShell<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  route: TRoute,
-  currentRevalidateSeconds: number | null,
-  isDraftMode: boolean,
-  isForceStatic: boolean,
-  isForceDynamic: boolean,
-): Promise<Response | null> {
-  const decision = classifyPprFallbackShellEligibility(
-    options,
-    currentRevalidateSeconds,
-    isDraftMode,
-    isForceStatic,
-    isForceDynamic,
-  );
-
-  switch (decision.kind) {
-    case "skip-known-pregenerated-route":
-    case "skip-no-fallback-shells":
-    case "skip-rsc-request":
-    case "skip-non-get":
-    case "skip-search-params":
-    case "skip-cache-disabled":
-      return null;
-    case "probe-fallback-shells":
-      return await probePprFallbackShellCache(
-        options,
-        route,
-        decision.fallbackShells,
-        currentRevalidateSeconds,
-      );
-  }
-}
-
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
-  if (!options.pprFallbackShell) {
+  if (!options.pprFallbackShell || !options.pprRuntime) {
     return await dispatch();
   }
 
-  const fallbackShellState = createPprFallbackShellState(options.pprFallbackShell);
-  return await runWithPprFallbackShellState(fallbackShellState, dispatch);
+  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -650,8 +566,27 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  const serveStreamingMetadata = shouldServeStreamingMetadata(
+    options.request.headers.get("user-agent") ?? "",
+    options.htmlLimitedBots,
+  );
+  // Full static artifacts resolve generated metadata into <head>. PPR fallback
+  // shells keep request-time placement until metadata staticness can be tracked
+  // independently from the route's staticness.
+  const placeGeneratedMetadataInBody =
+    (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
+  const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  const requestHeadersContext = getHeadersContext();
+  const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
+  const hasRequestSearchParams =
+    !shouldUseEmptySearchParams && hasSearchParams(options.searchParams);
+  const pageSearchParams = shouldUseEmptySearchParams
+    ? new URLSearchParams()
+    : options.searchParams;
   const layoutParamAccess = createAppLayoutParamAccessTracker();
+  const hasActiveLoadingBoundary = Boolean(route.loading?.default);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -675,10 +610,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return methodResponse;
   }
 
-  if ((isForceStatic || isDynamicError) && !isDraftMode) {
+  if (isForceStatic || isDynamicError) {
     const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeEnabled: isDraftMode,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig,
         routeKind: "page",
@@ -713,7 +649,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
-      hasRequestSearchParams: !isForceStatic && hasSearchParams(options.searchParams),
+      hasRequestSearchParams,
       isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
@@ -727,9 +663,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
-      // cacheLife-only routes discover their actual revalidate during the
-      // fresh render; this seed only gets them into the cache read path.
-      revalidateSeconds: currentRevalidateSeconds ?? 0,
+      revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
+        isDynamicError,
+        isForceStatic,
+        revalidateSeconds: currentRevalidateSeconds,
+      }),
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,
@@ -763,6 +701,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         // Hydrate the (possibly different) source route before reading its
         // page module for fetch-cache-mode resolution.
         await options.ensureRouteLoaded?.(revalidationTarget.route);
+        const revalidationDynamicConfig =
+          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+          (revalidationTarget.route === route ? dynamicConfig : undefined);
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
@@ -771,9 +712,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig:
-              options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? dynamicConfig : undefined),
+            dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
@@ -786,6 +725,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationTarget.params,
               revalidationTarget.interceptOpts,
               new URLSearchParams(),
+              undefined,
+              {
+                observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                // Cache regeneration produces a complete static artifact, so metadata
+                // must be resolved into <head> before the artifact is stored.
+                serveStreamingMetadata: false,
+              },
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
@@ -817,6 +764,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             return {
               html: rendered.html,
               htmlRenderObservation: rendered.htmlRenderObservation,
+              linkHeader: rendered.linkHeader,
               rscData: rendered.rscData!,
               rscRenderObservation: rendered.rscRenderObservation,
               tags: rendered.tags,
@@ -851,18 +799,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  const fallbackShellResponse = await tryServePprFallbackShell(
-    options,
-    route,
-    currentRevalidateSeconds,
-    isDraftMode,
-    isForceStatic,
-    isForceDynamic,
-  );
+  const fallbackShellResponse = options.pprRuntime
+    ? await options.pprRuntime.tryServe(
+        options,
+        currentRevalidateSeconds,
+        isDraftMode,
+        isForceStatic,
+        isForceDynamic,
+      )
+    : null;
   if (fallbackShellResponse) {
     return fallbackShellResponse;
   }
 
+  let interceptDynamicConfig: string | null | undefined;
+  let interceptDynamicConfigResolved = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -876,24 +827,42 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       interceptSearchParams,
       interceptLayoutParamAccess,
     ) {
-      // Hydrate the intercept source route before reading its page module.
-      await options.ensureRouteLoaded?.(interceptRoute);
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
+      const sourceDynamicConfig = interceptDynamicConfigResolved
+        ? interceptDynamicConfig
+        : options.resolveRouteDynamicConfig?.(interceptRoute);
+      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+        const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
+        setHeadersContext(
+          createStaticGenerationHeadersContext({
+            draftModeEnabled: isDraftMode,
+            draftModeSecret: options.draftModeSecret,
+            dynamicConfig: sourceDynamicConfig,
+            routeKind: "page",
+            routePattern: interceptRoute.pattern,
+          }),
+        );
+      } else {
+        setHeadersContext(requestHeadersContext);
+      }
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentForceDynamicFetchDefault(
-        options.resolveRouteDynamicConfig?.(interceptRoute) === "force-dynamic",
-      );
+      setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
         interceptSearchParams,
         interceptLayoutParamAccess,
+        {
+          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          serveStreamingMetadata: placeGeneratedMetadataInBody,
+        },
       );
     },
     cleanPathname: options.cleanPathname,
@@ -928,10 +897,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       });
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
+      applyRscDeploymentIdHeader(interceptHeaders);
       return new Response(interceptStream, {
         status: options.middlewareContext.status ?? 200,
         headers: interceptHeaders,
       });
+    },
+    async resolveSearchParams(sourceRoute, searchParams) {
+      await options.ensureRouteLoaded?.(sourceRoute);
+      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
+      interceptDynamicConfigResolved = true;
+      return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
     },
     searchParams: options.searchParams,
     setNavigationContext: options.setNavigationContext,
@@ -953,19 +929,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           route,
           options.params,
           interceptResult.interceptOpts,
-          options.searchParams,
+          pageSearchParams,
           layoutParamAccess,
+          {
+            observeMetadataSearchParamsAccess: !isForceStatic,
+            observePageSearchParamsAccess: !isForceStatic,
+            serveStreamingMetadata: placeGeneratedMetadataInBody,
+          },
         );
       },
       async probePageSpecialError() {
-        if (
-          !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) &&
-          route.loading?.default
-        ) {
+        if (route.loading?.default) {
           return null;
         }
         const pageError = await probeAppPageThrownError({
-          probePage: options.probePage,
+          probePage: () => options.probePage(pageSearchParams),
           runWithSuppressedHookWarning(probe) {
             return options.runWithSuppressedHookWarning(probe);
           },
@@ -976,19 +954,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return options.renderErrorBoundaryPage(buildError);
       },
       renderSpecialError(specialError) {
-        return renderPageSpecialError(options, specialError);
+        return renderPageSpecialError(options, specialError, serveStreamingMetadata);
       },
       resolveSpecialError: resolveAppPageSpecialError,
     });
 
-  const fallbackShellState = getPprFallbackShellState();
+  const fallbackShellState = options.pprRuntime?.getState() ?? null;
   if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
-    await warmPprFallbackShellCaches({
+    await options.pprRuntime!.warm({
       element: warmupBuildResult.element,
       onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
       renderToReadableStream: options.renderToReadableStream,
@@ -1001,6 +978,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (pageBuildResult.response) {
     return pageBuildResult.response;
   }
+
   const navigationParams = resolveAppPageNavigationParams(
     route,
     options.params,
@@ -1009,7 +987,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   );
   options.setNavigationContext({
     pathname: options.displayPathname ?? options.cleanPathname,
-    searchParams: options.searchParams,
+    searchParams: pageSearchParams,
     params: navigationParams,
   });
 
@@ -1017,9 +995,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     route,
     options.debugClassification,
   );
-  const activeFallbackShellState = getPprFallbackShellState();
+  const activeFallbackShellState = options.pprRuntime?.getState() ?? null;
   const pprFallbackShellSignal = activeFallbackShellState?.abortController.signal;
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
+  const isSpeculativePrerender =
+    isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
@@ -1028,6 +1008,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,
+    peekDynamicUsage,
     consumeInvalidDynamicUsageError,
     consumeRenderObservationState: consumeAppPageRenderObservationState,
     createRscOnErrorHandler(pathname, routePath) {
@@ -1050,11 +1031,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return _peekRequestScopedCacheLife();
     },
     handlerStart: options.handlerStart,
-    hasLoadingBoundary: shouldSuppressLoadingBoundaries(
-      options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    )
-      ? false
-      : Boolean(route.loading?.default),
+    hasLoadingBoundary: hasActiveLoadingBoundary,
+    omitPendingDynamicCacheState: hasRequestSearchParams,
     formState: options.formState ?? null,
     isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
@@ -1062,7 +1040,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isForceDynamic,
     isForceStatic,
     isEdgeRuntime: options.isEdgeRuntime === true,
-    isPrerender: process.env.VINEXT_PRERENDER === "1",
+    isPrerender,
+    isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     isrDebug: options.isrDebug,
@@ -1078,9 +1057,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     params: options.params,
     pprFallbackShellSignal,
     pprFallbackShellReactSignal,
+    renderedPathAndSearch: options.renderedPathAndSearch,
     abortPprFallbackShell: activeFallbackShellState
       ? () => {
-          beginPprFallbackShellFinalRender(activeFallbackShellState);
+          options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
     layoutParamAccess,
@@ -1095,8 +1075,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
     probePage() {
-      return options.probePage();
+      return options.probePage(pageSearchParams);
     },
+    probePageBeforeRender: options.isRscRequest,
     classification: {
       getLayoutId(index) {
         const treePosition = route.layoutTreePositions?.[index] ?? 0;
@@ -1128,14 +1109,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    renderErrorBoundaryResponse(renderError) {
-      return options.renderErrorBoundaryPage(renderError);
+    renderErrorBoundaryResponse(renderError, errorOrigin) {
+      return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
     renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(options, specialError, layoutIndex);
+      return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
     },
     renderPageSpecialError(specialError) {
-      return renderPageSpecialError(options, specialError);
+      return renderPageSpecialError(options, specialError, serveStreamingMetadata);
     },
     renderToReadableStream: options.renderToReadableStream,
     hasCustomGlobalError: options.hasCustomGlobalError,
@@ -1151,50 +1132,22 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   });
 }
 
-/**
- * Builds an RSC flight payload that encodes a redirect as a React error chunk.
- * We render a tiny element that immediately throws an `Error` whose `digest`
- * is the canonical `NEXT_REDIRECT;...` string. `renderToReadableStream`'s
- * `onError` returns that digest, react-server-dom-webpack serializes the
- * error into the stream, and the client's `RedirectErrorBoundary` decodes it
- * via `getURLFromRedirectError` / `getRedirectTypeFromError`.
- *
- * The thrown error's digest matches Next.js's well-known router error format,
- * so neither vinext's RSC error handler nor Next.js's reporter logs it as a
- * "real" server error. Mirrors `app-render.tsx generateDynamicFlightRenderResult`
- * where a redirect thrown during RSC rendering propagates through
- * `renderToFlightStream`'s `onError` callback into the flight payload.
- */
-function buildRscRedirectFlightStream<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-  digest: string,
-): ReadableStream<Uint8Array> {
-  const throwingElement = React.createElement(function NextRedirectFlightThrower() {
-    const err = new Error("NEXT_REDIRECT") as Error & { digest: string };
-    err.digest = digest;
-    throw err;
-  });
-
-  return options.renderToReadableStream(throwingElement, {
-    onError: () => digest,
-  });
-}
-
 async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
   layoutIndex: number,
+  serveStreamingMetadata: boolean,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream(options, rscOptions.digest),
+      buildRscRedirectFlightStream({
+        renderToReadableStream: options.renderToReadableStream,
+        digest: rscOptions.digest,
+      }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
-    serveStreamingMetadata: shouldServeStreamingMetadata(
-      options.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    ),
+    serveStreamingMetadata,
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
@@ -1227,17 +1180,18 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
+  serveStreamingMetadata: boolean,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
     buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream(options, rscOptions.digest),
+      buildRscRedirectFlightStream({
+        renderToReadableStream: options.renderToReadableStream,
+        digest: rscOptions.digest,
+      }),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
-    serveStreamingMetadata: shouldServeStreamingMetadata(
-      options.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    ),
+    serveStreamingMetadata,
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,

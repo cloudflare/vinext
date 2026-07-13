@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   createValidFileMatcher,
   normalizePageExtensions,
+  scanWithExtensions,
 } from "../packages/vinext/src/routing/file-matcher.js";
 import { shouldInvalidateAppRouteFile } from "../packages/vinext/src/server/dev-route-files.js";
 
@@ -41,6 +45,32 @@ describe("file matcher", () => {
     expect(matcher.stripExtension("about.mdx")).toBe("about");
     expect(matcher.stripExtension("index.m+d")).toBe("index");
     expect(matcher.stripExtension("about.tsx")).toBe("about.tsx");
+  });
+
+  it("scans route files inside dot-directories", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "vinext-dot-route-scan-"));
+    try {
+      await mkdir(path.join(tmpDir, "api"), { recursive: true });
+      await mkdir(path.join(tmpDir, ".well-known", "openid-configuration"), {
+        recursive: true,
+      });
+      await writeFile(path.join(tmpDir, "route.ts"), "");
+      await writeFile(path.join(tmpDir, "api", "route.ts"), "");
+      await writeFile(path.join(tmpDir, ".well-known", "openid-configuration", "route.ts"), "");
+
+      const files = [];
+      for await (const file of scanWithExtensions("**/route", tmpDir, ["ts"])) {
+        files.push(file);
+      }
+
+      expect(files.sort()).toEqual([
+        ".well-known/openid-configuration/route.ts",
+        "api/route.ts",
+        "route.ts",
+      ]);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("classifies only app route structure files as dev route invalidations", () => {

@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  individualRunsVisibilityUrl,
+  resolveIndividualRunsVisibilityFromSearch,
+} from "./benchmark-url-state";
+import { visibleMarkerMask } from "./chart-points";
+import { hasRollingMedian, rollingMedian } from "./trend";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -27,6 +34,7 @@ type TrendChartProps = {
 // ─── SVG Trend Chart ─────────────────────────────────────────────────────────
 
 const PADDING = { top: 20, right: 20, bottom: 40, left: 70 };
+const TREND_WINDOW = 7;
 
 export function TrendChart({
   labels,
@@ -37,12 +45,36 @@ export function TrendChart({
   formatY = (v) => String(v),
   height = 300,
 }: TrendChartProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const svgRef = useRef<SVGSVGElement>(null);
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
+  const [showIndividualRuns, setShowIndividualRuns] = useState(true);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
     content: string;
+    pointId: string;
   } | null>(null);
+  const hasTrend = series.some((item) => hasRollingMedian(item.values, TREND_WINDOW));
+
+  useEffect(() => {
+    const requestedVisibility = resolveIndividualRunsVisibilityFromSearch(window.location.search);
+    setShowIndividualRuns(hasTrend ? requestedVisibility : true);
+
+    if (!hasTrend && !requestedVisibility) {
+      router.replace(
+        individualRunsVisibilityUrl(
+          pathname,
+          new URLSearchParams(window.location.search),
+          true,
+          window.location.hash,
+        ),
+        { scroll: false },
+      );
+    }
+  }, [hasTrend, pathname, router, searchParams]);
 
   // Collect all non-null values to determine y-axis bounds
   const allValues = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
@@ -84,6 +116,24 @@ export function TrendChart({
       xAxisTickCount === 1 ? 0 : Math.round((i * (numPoints - 1)) / (xAxisTickCount - 1)),
     ),
   );
+
+  function buildPath(values: readonly (number | null)[]): string {
+    const segments: string[] = [];
+    let inSegment = false;
+
+    for (let i = 0; i < values.length; i++) {
+      const value = values[i];
+      if (value === null) {
+        inSegment = false;
+        continue;
+      }
+      const command = inSegment ? "L" : "M";
+      segments.push(`${command} ${scaleX(i)} ${scaleY(value)}`);
+      inSegment = true;
+    }
+
+    return segments.join(" ");
+  }
 
   return (
     <div className="relative">
@@ -127,70 +177,93 @@ export function TrendChart({
           );
         })}
 
-        {/* Series lines + dots */}
+        {/* Rolling median trendlines */}
         {series.map((s) => {
-          // Build path segments, breaking on null values
-          const segments: string[] = [];
-          let inSegment = false;
+          if (hiddenSeries.has(s.name)) return null;
+          const pathD = buildPath(rollingMedian(s.values, TREND_WINDOW));
+          if (!pathD) return null;
+          return (
+            <path
+              key={`${s.name}-trend`}
+              d={pathD}
+              fill="none"
+              stroke={s.color}
+              strokeWidth="2.5"
+              strokeDasharray="6 4"
+              strokeLinecap="round"
+              opacity="0.45"
+              pointerEvents="none"
+            />
+          );
+        })}
 
-          for (let i = 0; i < s.values.length; i++) {
-            const v = s.values[i];
-            if (v === null) {
-              inSegment = false;
-              continue;
-            }
-            const x = scaleX(i);
-            const y = scaleY(v);
-            if (!inSegment) {
-              segments.push(`M ${x} ${y}`);
-              inSegment = true;
-            } else {
-              segments.push(`L ${x} ${y}`);
-            }
-          }
-
-          if (segments.length === 0) return null;
-          const pathD = segments.join(" ");
+        {/* Individual run lines + dots */}
+        {series.map((s, seriesIndex) => {
+          if (hiddenSeries.has(s.name)) return null;
+          const pathD = buildPath(s.values);
+          if (!pathD) return null;
+          const visibleMarkers = visibleMarkerMask(s.values, formatY);
 
           return (
             <g key={s.name}>
               {/* Line */}
-              <path d={pathD} fill="none" stroke={s.color} strokeWidth="2" />
-              {/* Dots — only for non-null values */}
+              <path
+                d={pathD}
+                fill="none"
+                stroke={s.color}
+                strokeWidth="2"
+                opacity={showIndividualRuns ? 1 : 0}
+                pointerEvents="none"
+              />
+              {/* Every point remains interactive; repeated plateau markers stay hidden. */}
               {s.values.map((v, i) => {
                 if (v === null) return null;
-                const circle = (
-                  <circle
-                    cx={scaleX(i)}
-                    cy={scaleY(v)}
-                    r="3.5"
-                    fill={s.color}
-                    stroke="white"
-                    strokeWidth="1.5"
-                    className="cursor-pointer"
-                    onMouseEnter={(e) => {
-                      const rect = svgRef.current?.getBoundingClientRect();
-                      if (!rect) return;
-                      setTooltip({
-                        x: e.clientX - rect.left,
-                        y: e.clientY - rect.top - 10,
-                        content: `${s.name}: ${formatY(v)} (${labels[i]})`,
-                      });
-                    }}
-                    onMouseLeave={() => setTooltip(null)}
-                  />
+                const pointId = `${seriesIndex}-${pointKeys[i]}`;
+                const point = (
+                  <g key={`${pointKeys[i]}-${s.name}`}>
+                    <circle
+                      cx={scaleX(i)}
+                      cy={scaleY(v)}
+                      r="3.5"
+                      fill={s.color}
+                      stroke="white"
+                      strokeWidth="1.5"
+                      opacity={
+                        (showIndividualRuns && visibleMarkers[i]) || tooltip?.pointId === pointId
+                          ? 1
+                          : 0
+                      }
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={scaleX(i)}
+                      cy={scaleY(v)}
+                      r="8"
+                      fill="transparent"
+                      className="cursor-pointer"
+                      onMouseEnter={(e) => {
+                        const rect = svgRef.current?.getBoundingClientRect();
+                        if (!rect) return;
+                        setTooltip({
+                          x: e.clientX - rect.left,
+                          y: e.clientY - rect.top - 10,
+                          content: `${s.name}: ${formatY(v)} (${labels[i]})`,
+                          pointId,
+                        });
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                    />
+                  </g>
                 );
                 const href = pointHrefs?.[i];
-                if (!href) {
-                  return <g key={`${pointKeys[i]}-${s.name}`}>{circle}</g>;
-                }
+                if (!href) return point;
                 return (
                   <a
                     key={`${pointKeys[i]}-${s.name}`}
                     href={href}
                     aria-label={`View commit ${labels[i]} benchmark results`}
                   >
-                    {circle}
+                    {point}
                   </a>
                 );
               })}
@@ -213,18 +286,61 @@ export function TrendChart({
         )}
       </svg>
 
-      {/* Legend */}
-      <div className="mt-3 flex justify-center gap-6 text-xs text-gray-500">
+      {/* Chart visibility controls */}
+      <div className="mt-3 flex flex-wrap justify-center gap-2 text-xs text-gray-500">
         {series.map((s) => (
-          <div key={s.name} className="flex items-center gap-1.5">
+          <button
+            key={s.name}
+            type="button"
+            aria-pressed={!hiddenSeries.has(s.name)}
+            className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-gray-100 aria-pressed:text-gray-700 aria-pressed:[&>span]:opacity-100"
+            onClick={() => {
+              setTooltip(null);
+              setHiddenSeries((current) => {
+                const next = new Set(current);
+                if (next.has(s.name)) next.delete(s.name);
+                else next.add(s.name);
+                return next;
+              });
+            }}
+          >
             <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
+              className="inline-block h-2.5 w-2.5 rounded-full opacity-30"
               style={{ backgroundColor: s.color }}
             />
             {s.name}
-          </div>
+          </button>
         ))}
+        {hasTrend && (
+          <button
+            type="button"
+            aria-pressed={showIndividualRuns}
+            className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-gray-100 aria-pressed:text-gray-700 aria-pressed:[&>span]:opacity-100"
+            onClick={() => {
+              setTooltip(null);
+              const visible = !showIndividualRuns;
+              setShowIndividualRuns(visible);
+              router.replace(
+                individualRunsVisibilityUrl(
+                  pathname,
+                  new URLSearchParams(window.location.search),
+                  visible,
+                  window.location.hash,
+                ),
+                { scroll: false },
+              );
+            }}
+          >
+            <span className="inline-block w-4 border-t-2 border-gray-500 opacity-30" />
+            Individual runs
+          </button>
+        )}
       </div>
+      {hasTrend && (
+        <div className="mt-1 text-center text-[11px] text-gray-400">
+          Dashed lines show the {TREND_WINDOW}-run rolling median · Select controls to show or hide
+        </div>
+      )}
 
       {/* Tooltip */}
       {tooltip && (

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 

@@ -14,6 +14,28 @@ export type ErrorBoundaryProps = {
   resetKey?: string | null;
 };
 
+export type SerializedBoundaryError = {
+  digest?: string;
+  message: string;
+  name?: string;
+  stack?: string;
+};
+
+export function SerializedErrorBoundary({
+  fallback: Fallback,
+  error,
+}: {
+  fallback: React.ComponentType<{ error: Error & { digest?: string }; reset: () => void }>;
+  error: SerializedBoundaryError;
+}) {
+  const reconstructedError = Object.assign(new Error(error.message), {
+    digest: error.digest,
+    name: error.name ?? "Error",
+    stack: error.stack,
+  });
+  return <Fallback error={reconstructedError} reset={() => globalThis.location?.reload()} />;
+}
+
 type CapturedError = {
   thrownValue: unknown;
 };
@@ -134,9 +156,7 @@ export class RedirectErrorBoundary extends React.Component<
 
       const result = decodeRedirectError(error.digest);
       if (!result) {
-        // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
-        // segment). The server-side parser at next-error-digest.ts:51 also
-        // rejects this. Re-throw so the error reaches a regular error
+        // Re-throw malformed digests so the error reaches a regular error
         // boundary instead of being silently swallowed.
         throw error;
       }

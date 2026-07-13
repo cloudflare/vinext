@@ -10,74 +10,134 @@
  * `next/error`'s public surface.
  */
 import React from "react";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import Head from "./head.js";
 import { isNextRouterError } from "./navigation.js";
 import { useUntrackedPathname } from "./internal/navigation-untracked.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 
-type ErrorProps = {
+const statusCodes: Record<number, string> = {
+  400: "Bad Request",
+  404: "This page could not be found",
+  405: "Method Not Allowed",
+  500: "Internal Server Error",
+};
+
+export type ErrorProps = {
   statusCode: number;
+  hostname?: string;
   title?: string;
   withDarkMode?: boolean;
 };
 
-function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
-  const defaultTitle =
-    statusCode === 404 ? "This page could not be found" : "Internal Server Error";
+type ErrorPageContext = {
+  err?: (Error & { statusCode?: number }) | null;
+  req?: IncomingMessage;
+  res?: ServerResponse;
+};
 
-  const displayTitle = title ?? defaultTitle;
+function getErrorInitialProps({ err, req, res }: ErrorPageContext): ErrorProps {
+  const statusCode = res?.statusCode ? res.statusCode : err ? err.statusCode! : 404;
+  let hostname: string | undefined;
 
-  return React.createElement(
-    "div",
-    {
-      style: {
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-        height: "100vh",
-        textAlign: "center" as const,
-        display: "flex",
-        flexDirection: "column" as const,
-        alignItems: "center",
-        justifyContent: "center",
-      },
-    },
-    React.createElement(
+  if (typeof window !== "undefined") {
+    hostname = window.location.hostname;
+  } else if (req) {
+    if (req.url) {
+      try {
+        hostname = new URL(req.url).hostname;
+      } catch {
+        // Node Pages requests commonly expose a path-only URL, so use the
+        // request Host header below when no absolute request URL is available.
+      }
+    }
+
+    if (!hostname) {
+      const host = Array.isArray(req.headers?.host) ? req.headers.host[0] : req.headers?.host;
+      if (host) hostname = new URL(`http://${host}`).hostname;
+    }
+  }
+
+  return { statusCode, hostname };
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  error: {
+    fontFamily:
+      'system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji"',
+    height: "100vh",
+    textAlign: "center",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  desc: { lineHeight: "48px" },
+  h1: {
+    display: "inline-block",
+    margin: "0 20px 0 0",
+    paddingRight: 23,
+    fontSize: 24,
+    fontWeight: 500,
+    verticalAlign: "top",
+  },
+  h2: { fontSize: 14, fontWeight: 400, lineHeight: "28px" },
+  wrap: { display: "inline-block" },
+};
+
+class ErrorComponent<P = {}> extends React.Component<P & ErrorProps> {
+  static displayName = "ErrorPage";
+  static getInitialProps = getErrorInitialProps;
+  static origGetInitialProps = getErrorInitialProps;
+
+  render(): React.ReactElement {
+    const { statusCode, hostname, title: customTitle, withDarkMode = true } = this.props;
+    const title = customTitle || statusCodes[statusCode] || "An unexpected error has occurred";
+
+    return React.createElement(
       "div",
-      null,
+      { style: styles.error },
       React.createElement(
-        "h1",
-        {
-          style: {
-            display: "inline-block",
-            margin: "0 20px 0 0",
-            padding: "0 23px 0 0",
-            fontSize: 24,
-            fontWeight: 500,
-            verticalAlign: "top",
-            lineHeight: "49px",
-            borderRight: "1px solid rgba(0, 0, 0, .3)",
-          },
-        },
-        statusCode,
+        Head,
+        null,
+        React.createElement(
+          "title",
+          null,
+          statusCode
+            ? `${statusCode}: ${title}`
+            : "Application error: a client-side exception has occurred",
+        ),
       ),
       React.createElement(
         "div",
-        { style: { display: "inline-block" } },
-        React.createElement(
-          "h2",
-          {
-            style: {
-              fontSize: 14,
-              fontWeight: 400,
-              lineHeight: "49px",
-              margin: 0,
-            },
+        { style: styles.desc },
+        React.createElement("style", {
+          dangerouslySetInnerHTML: {
+            __html: `body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}${
+              withDarkMode
+                ? "@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"
+                : ""
+            }`,
           },
-          displayTitle + ".",
+        }),
+        statusCode
+          ? React.createElement("h1", { className: "next-error-h1", style: styles.h1 }, statusCode)
+          : null,
+        React.createElement(
+          "div",
+          { style: styles.wrap },
+          React.createElement(
+            "h2",
+            { style: styles.h2 },
+            customTitle || statusCode
+              ? `${title}.`
+              : `Application error: a client-side exception has occurred${hostname ? ` while loading ${hostname}` : ""} (see the browser console for more information).`,
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 export default ErrorComponent;

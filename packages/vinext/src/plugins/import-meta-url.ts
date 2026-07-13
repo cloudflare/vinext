@@ -11,9 +11,9 @@
 //      breaking Vite's asset detection for that expression. Only the direct
 //      `new URL("./file", import.meta.url)` form is preserved.
 // Both are edge cases that are unlikely in real Next.js apps.
-import { normalizePath, parseAst, type Plugin } from "vite";
+import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
@@ -38,7 +38,6 @@ type RewriteResult = {
 type RootPaths = {
   root: string;
   canonicalRoot: string;
-  normalizedRoot: string;
   excludedRelativePrefixes: string[];
 };
 
@@ -187,12 +186,10 @@ function cleanModuleId(id: string): string {
 
 function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
   const canonicalRoot = canonicalizePath(root);
-  const normalizedRoot = normalizePath(canonicalRoot);
   return {
     root,
     canonicalRoot,
-    normalizedRoot,
-    excludedRelativePrefixes: excludedRelativePrefixes(canonicalRoot, normalizedRoot, options),
+    excludedRelativePrefixes: excludedRelativePrefixes(canonicalRoot, options),
   };
 }
 
@@ -202,19 +199,19 @@ function createRootPaths(root: string, options: { outputDirs?: string[] } = {}):
 function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): string | null {
   if (!id || id.startsWith(VIRTUAL_PREFIX)) return null;
   if (!path.isAbsolute(id)) return null;
-  const normalizedInputId = normalizePath(id);
+  // Bundler-provided ids can arrive with native separators on Windows.
+  const slashedInputId = toSlash(id);
   // Early-exit optimization: skip the realpathSync below for node_modules
   // paths, which are the majority of modules in a typical project. The
   // isPathWithin check below provides a second safety net in case a
   // symlink causes the canonical path to land outside node_modules.
-  if (normalizedInputId.includes("/node_modules/")) return null;
-  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(normalizedInputId))) return null;
+  if (slashedInputId.includes("/node_modules/")) return null;
+  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(slashedInputId))) return null;
 
   const canonicalId = canonicalizePath(id);
-  const normalizedId = normalizePath(canonicalId);
-  if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return null;
+  if (!isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
 
-  const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
+  const relativePath = path.relative(rootPaths.canonicalRoot, canonicalId);
   if (isExcludedRelativePath(relativePath, rootPaths.excludedRelativePrefixes)) return null;
   return canonicalId;
 }
@@ -229,7 +226,6 @@ function mayContainServerCjsGlobal(code: string): boolean {
 
 function excludedRelativePrefixes(
   canonicalRoot: string,
-  normalizedRoot: string,
   options: { outputDirs?: string[] },
 ): string[] {
   // Static list of known output/build directories whose modules must
@@ -244,10 +240,9 @@ function excludedRelativePrefixes(
       ? outputDir
       : path.resolve(canonicalRoot, outputDir);
     const canonicalOutputDir = canonicalizePath(absoluteOutputDir);
-    const normalizedOutputDir = normalizePath(canonicalOutputDir);
-    if (!isPathWithin(normalizedOutputDir, normalizedRoot)) continue;
+    if (!isPathWithin(canonicalOutputDir, canonicalRoot)) continue;
 
-    const relativePath = normalizePath(path.relative(canonicalRoot, canonicalOutputDir));
+    const relativePath = path.relative(canonicalRoot, canonicalOutputDir);
     if (relativePath && relativePath !== ".") prefixes.add(relativePath);
   }
 
@@ -270,7 +265,7 @@ function importMetaUrlValue(
   environment: ImportMetaUrlEnvironment,
 ): string {
   if (environment === "client") {
-    const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
+    const relativePath = path.relative(rootPaths.canonicalRoot, canonicalId);
     return `file:///ROOT/${relativePath}`;
   }
 
@@ -278,7 +273,8 @@ function importMetaUrlValue(
 }
 
 function canonicalizePath(value: string): string {
-  return tryRealpathSync(value) ?? path.resolve(value);
+  const real = tryRealpathSync(value);
+  return real === null ? path.resolve(value) : toSlash(real);
 }
 
 function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: number }> {

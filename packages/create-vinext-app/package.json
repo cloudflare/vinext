@@ -1,32 +1,39 @@
 {
   "name": "create-vinext-app",
-  "version": "0.0.5",
-  "description": "Scaffold a new vinext project targeting Cloudflare Workers",
+  "version": "1.0.0-beta.0",
+  "description": "Create a vinext app for Cloudflare Workers.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudflare/vinext.git"
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/create-vinext-app"
   },
   "bin": {
-    "create-vinext-app": "dist/index.mjs"
+    "create-vinext-app": "dist/index.js"
   },
   "files": [
-    "dist",
-    "templates"
+    "dist"
   ],
   "type": "module",
-  "main": "dist/index.mjs",
-  "scripts": {
-    "dev": "tsx src/index.ts",
-    "build": "vp pack && node scripts/bake-versions.mjs",
-    "test": "vp test"
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
-  "dependencies": {
-    "@clack/prompts": "^1.3.0",
-    "yaml": "^2.8.0"
+  "scripts": {
+    "build": "vp pack",
+    "prepack": "vp run build",
+    "dev": "vp pack --watch"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "am-i-vibing": "catalog:",
+    "magic-string": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

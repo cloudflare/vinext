@@ -17,6 +17,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Ported from Next.js: test/e2e/app-dir/app/middleware.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
+  // The source also exists in pages/, so the client must honor the middleware
+  // rewrite to the App Router destination instead of committing a Pages SPA navigation.
+  if (pathname === "/exists-but-not-routed") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+
+  // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
+  if (pathname === "/_next/static/middleware-rewrite.js") {
+    return new Response("rewritten missing asset", {
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
@@ -257,7 +273,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Scoped exclusively to /interception-mw/* to avoid interfering with other tests.
   // Mirrors Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
-  if (pathname.startsWith("/interception-mw/")) {
+  if (pathname === "/interception-mw" || pathname.startsWith("/interception-mw/")) {
     const withoutPrefix = pathname.slice("/interception-mw".length); // → /foo/p/1
     const locale = "en";
     const hasLocale = withoutPrefix.startsWith(`/${locale}/`) || withoutPrefix === `/${locale}`;
@@ -345,6 +361,7 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     "/about",
+    "/exists-but-not-routed",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
@@ -376,6 +393,7 @@ export const config = {
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",
+    "/_next/static/middleware-rewrite.js",
     {
       source: "/mw-object-gated",
       has: [{ type: "header", key: "x-mw-allow", value: "1" }],

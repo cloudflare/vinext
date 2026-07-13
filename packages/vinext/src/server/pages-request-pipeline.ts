@@ -29,6 +29,7 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "../config/config-matchers.js";
+import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import {
   applyConfigHeadersToHeaderRecord,
   cloneRequestWithUrl,
@@ -39,6 +40,7 @@ import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -48,6 +50,10 @@ export type PagesRenderOptions = {
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
+
+type PageRouteMatch = {
+  route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
+};
 
 export async function fetchWorkerFilesystemRoute(
   request: Request,
@@ -100,6 +106,7 @@ export type PagesPipelineDeps = {
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
+  hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
@@ -108,9 +115,7 @@ export type PagesPipelineDeps = {
   rawSearch?: string;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?:
-    | ((pathname: string, request: Request) => { route: { isDynamic: boolean } } | null)
-    | null;
+  matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
   runMiddleware?:
     | ((
         request: Request,
@@ -180,7 +185,7 @@ export function wrapMiddlewareWithBasePath(
 // The result discriminated union
 export type PagesPipelineResult =
   // `defaultContentType` is the Content-Type a buffering caller (Node) should apply
-  // when the response carries none: "text/html" for page renders,
+  // when the response carries none: "text/html; charset=utf-8" for page renders,
   // "application/octet-stream" for API routes (arbitrary data). It is left UNSET for
   // passthrough responses (middleware short-circuits, external proxies, redirects),
   // which Node sends verbatim without injecting a Content-Type — matching the
@@ -417,6 +422,42 @@ export async function runPagesRequest(
 
   const matchResolvedPathname = (p: string): string =>
     i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
+  const matchedPathnameForRoute = (routePattern: string | undefined): string => {
+    const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
+    if (!i18nConfig) return matchedPathname;
+    const resolvedLocale = resolvedPathname.split("/", 3)[1];
+    if (resolvedLocale && i18nConfig.locales.includes(resolvedLocale)) {
+      return matchedPathname === "/"
+        ? `/${resolvedLocale}`
+        : `/${resolvedLocale}${matchedPathname}`;
+    }
+    return matchResolvedPathname(matchedPathname);
+  };
+  const buildMiddlewarePrefetchSkipResult = (
+    match: PageRouteMatch | null,
+  ): PagesPipelineResult | null => {
+    if (!match) return null;
+
+    const dataKind = match.route.dataKind;
+    if (
+      dataKind !== "server" ||
+      !isDataRequest ||
+      !deps.hasMiddleware ||
+      request.headers.get("x-middleware-prefetch") !== "1"
+    ) {
+      return null;
+    }
+
+    return {
+      type: "response",
+      response: mergeHeaders(
+        buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
+        middlewareHeaders,
+        undefined,
+      ),
+      defaultContentType: "application/json",
+    };
+  };
 
   // Step 7: Config headers staging
   if (configHeaders.length) {
@@ -482,18 +523,17 @@ export async function runPagesRequest(
     if (beforeFilesResult) return beforeFilesResult;
   }
 
-  // Step 10: Out-of-basePath reject
-  if (basePath && !hadBasePath && !configRewriteFired) {
-    return {
-      type: "response",
-      response: new Response("This page could not be found", {
-        status: 404,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      }),
-    };
-  }
+  const isOutsideBasePathUnclaimed = () => basePath && !hadBasePath && !configRewriteFired;
+  const outOfBasePathNotFound = (): PagesPipelineResult => ({
+    type: "response",
+    response: new Response("This page could not be found", {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }),
+  });
 
   const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
+    if (isOutsideBasePathUnclaimed()) return null;
     const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
     const apiLookupPathname = apiLookupUrl.split("?")[0];
     if (!apiLookupPathname.startsWith("/api/") && apiLookupPathname !== "/api") return null;
@@ -530,7 +570,10 @@ export async function runPagesRequest(
   if (apiResult) return apiResult;
 
   // Step 12: afterFiles rewrites
-  let pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  let pageMatch =
+    !isOutsideBasePathUnclaimed() && deps.matchPageRoute
+      ? deps.matchPageRoute(resolvedPathname, request)
+      : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles
   // actually rewrote resolvedPathname (the common case leaves it unchanged).
   let resolvedPathnameChanged = false;
@@ -549,6 +592,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         resolvedPathnameChanged = true;
         const afterFilesFilesystemResult = await serveFilesystemRoute(
           resolvedPathname,
@@ -580,7 +624,11 @@ export async function runPagesRequest(
   if (typeof deps.renderPage === "function") {
     // Reuse the Step 12 match unless afterFiles changed the pathname.
     let renderPageMatch = pageMatch;
-    if ((isDataReq || isDataRequest) && !renderPageMatch && configRewrites.fallback?.length) {
+    if (
+      (isOutsideBasePathUnclaimed() || isDataReq || isDataRequest) &&
+      !renderPageMatch &&
+      configRewrites.fallback?.length
+    ) {
       for (const rewrite of configRewrites.fallback) {
         const fallbackRewrite = matchRewrite(
           matchResolvedPathname(resolvedPathname),
@@ -597,6 +645,7 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
@@ -608,6 +657,9 @@ export async function runPagesRequest(
         if (renderPageMatch) break;
       }
     }
+    const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(renderPageMatch);
+    if (prefetchSkipResult) return prefetchSkipResult;
+    if (isOutsideBasePathUnclaimed()) return outOfBasePathNotFound();
     // A data request must not defer-render the error page or run fallback rewrites.
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
@@ -652,10 +704,14 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        configRewriteFired = true;
         const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
         if (fallbackFilesystemResult) return fallbackFilesystemResult;
         const fallbackApiResult = await handleResolvedApiRoute();
         if (fallbackApiResult) return fallbackApiResult;
+        renderPageMatch = deps.matchPageRoute
+          ? deps.matchPageRoute(resolvedPathname, request)
+          : null;
         response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
@@ -667,7 +723,34 @@ export async function runPagesRequest(
       response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
     }
 
-    const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+    const matchedPathHeaders = { ...middlewareHeaders };
+    if (
+      (isDataReq || isDataRequest) &&
+      deps.hasMiddleware &&
+      !renderPageMatch &&
+      response.status === 404 &&
+      (middlewareStatus === undefined || middlewareStatus === 200 || middlewareStatus === 404)
+    ) {
+      const headers = new Headers(response.headers);
+      headers.set("content-type", "application/json");
+      headers.set("x-nextjs-matched-path", matchResolvedPathname(pathname));
+      const notFoundResponse = new Response("{}", { status: 200, headers });
+      return {
+        type: "response",
+        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        defaultContentType: "application/json",
+      };
+    }
+    if (
+      (isDataReq || isDataRequest) &&
+      renderPageMatch &&
+      (middlewareStatus ?? response.status) === 200
+    ) {
+      matchedPathHeaders["x-nextjs-matched-path"] = matchedPathnameForRoute(
+        renderPageMatch?.route.pattern,
+      );
+    }
+    const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.
@@ -677,18 +760,20 @@ export async function runPagesRequest(
       ).__vinextStreamedHtmlResponse;
     }
     // Page renders default a missing content-type to text/html.
-    return { type: "response", response: merged, defaultContentType: "text/html" };
+    return { type: "response", response: merged, defaultContentType: "text/html; charset=utf-8" };
   }
   // dev: apply fallback rewrites eagerly (no renderPage to 404-gate on).
   // If matchPageRoute says there's no match, try fallback rewrites before
   // emitting the render intent — the SSR handler writes to res directly so
   // we cannot inspect its status code after the fact.
   // Reuse the Step 12 match unless afterFiles changed the pathname.
-  const devPageMatch = resolvedPathnameChanged
-    ? deps.matchPageRoute
-      ? deps.matchPageRoute(resolvedPathname, request)
-      : null
-    : pageMatch;
+  let devPageMatch = isOutsideBasePathUnclaimed()
+    ? null
+    : resolvedPathnameChanged
+      ? deps.matchPageRoute
+        ? deps.matchPageRoute(resolvedPathname, request)
+        : null
+      : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
       const fallbackRewrite = matchRewrite(
@@ -704,13 +789,18 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      configRewriteFired = true;
       const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
       if (fallbackFilesystemResult) return fallbackFilesystemResult;
       const fallbackApiResult = await handleResolvedApiRoute();
       if (fallbackApiResult) return fallbackApiResult;
-      if (deps.matchPageRoute?.(resolvedPathname, request)) break;
+      devPageMatch = deps.matchPageRoute?.(resolvedPathname, request) ?? null;
+      if (devPageMatch) break;
     }
   }
+  const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(devPageMatch);
+  if (prefetchSkipResult) return prefetchSkipResult;
+  if (isOutsideBasePathUnclaimed()) return outOfBasePathNotFound();
   refreshDataRewriteHeader();
 
   return {

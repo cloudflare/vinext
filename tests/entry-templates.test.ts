@@ -187,6 +187,47 @@ describe("App Router generated manifest construction", () => {
         siblingIntercepts: [],
       },
       {
+        pattern: "/teams/:team/dashboard",
+        patternParts: ["teams", ":team", "dashboard"],
+        pagePath: "/tmp/test/app/teams/[team]/dashboard/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx", "/tmp/test/app/teams/[team]/layout.tsx"],
+        templates: [],
+        parallelSlots: [
+          {
+            id: "slot:analytics:/teams/:team/dashboard",
+            key: "analytics:/tmp/test/app/teams/[team]/dashboard/@analytics",
+            name: "analytics",
+            ownerDir: "/tmp/test/app/teams/[team]/dashboard/@analytics",
+            ownerTreePath: "/teams/:team/dashboard",
+            hasPage: true,
+            pagePath: "/tmp/test/app/teams/[team]/dashboard/@analytics/page.tsx",
+            defaultPath: "/tmp/test/app/teams/[team]/dashboard/@analytics/default.tsx",
+            layoutPath: null,
+            loadingPath: null,
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 1,
+            routeSegments: ["teams", ":team", "dashboard", "@analytics"],
+          },
+        ],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null, null],
+        notFoundPath: null,
+        notFoundPaths: [null, null],
+        forbiddenPaths: [null, null],
+        forbiddenPath: null,
+        unauthorizedPaths: [null, null],
+        unauthorizedPath: null,
+        routeSegments: ["teams", ":team", "dashboard"],
+        templateTreePositions: [],
+        layoutTreePositions: [0, 1],
+        isDynamic: true,
+        params: ["team"],
+        siblingIntercepts: [],
+      },
+      {
         pattern: "/api",
         patternParts: ["api"],
         pagePath: null,
@@ -224,6 +265,9 @@ describe("App Router generated manifest construction", () => {
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',
@@ -834,8 +878,38 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
+    expect(withMiddleware).toContain("hadBasePath,");
+  });
+
+  it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
+    const withoutCacheComponents = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
+    const withCacheComponents = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+      { cacheComponents: true },
+    );
+
+    expect(withoutCacheComponents).not.toContain("app-page-ppr-runtime.js");
+    expect(withoutCacheComponents).not.toContain("createPprFallbackShells(route, params)");
+    expect(withoutCacheComponents).toContain("pprRuntime: undefined");
+    expect(withCacheComponents).toContain("app-page-ppr-runtime.js");
+    expect(withCacheComponents).toContain("createPprFallbackShells(route, params)");
+    expect(withCacheComponents).toContain("pprRuntime: __appPagePprRuntime");
   });
 
   it("generateRscEntry only includes metadata route response handling when routes exist", () => {
@@ -873,8 +947,11 @@ describe("App Router entry templates", () => {
       );
 
       expect(withoutMetadataRoutes).not.toContain("metadata-route-response.js");
+      expect(withoutMetadataRoutes).not.toContain("file-based-metadata.js");
       expect(withoutMetadataRoutes).not.toContain("handleMetadataRouteRequest(cleanPathname)");
       expect(withMetadataRoutes).toContain("metadata-route-response.js");
+      expect(withMetadataRoutes).toContain("file-based-metadata.js");
+      expect(withMetadataRoutes).toContain("applyFileBasedMetadata: __applyFileBasedMetadata");
       expect(withMetadataRoutes).toContain("handleMetadataRouteRequest(cleanPathname)");
       expect(withMetadataRoutes).toContain("await __loadMetadataRouteResponse()");
     } finally {
@@ -911,14 +988,33 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("handleServerActionRequest({");
   });
 
-  it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
+  it("generateRscEntry passes parallel route segment config into App page dispatch", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain(
-      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page)",
+      "parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [",
     );
+    expect(code).toContain(
+      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default)",
+    );
+    expect(code).toContain("parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({");
+    expect(code).toContain("paramNames: slot.slotParamNames");
+    expect(code).toContain("patternParts: slot.slotPatternParts");
+    expect(code).toContain("layout: slot.layout");
+    expect(code).toContain("configLayouts: slot.configLayouts");
+    expect(code).toContain("configLayoutTreePositions: slot.configLayoutTreePositions");
+    expect(code).toContain("routeSegments: slot.routeSegments");
+    expect(code).toContain("routePatternParts: route.patternParts");
+    expect(code).toContain("slot.page ?? slot.default");
+    expect(code).toContain("...(slot.configLayouts ?? [])");
+    expect(code).toContain("interceptLayoutSegments:");
+    expect(code).toContain("interceptBranchSegments:");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+    expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
+    expect(code).toContain(
+      "const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route))",
+    );
   });
 
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
@@ -934,6 +1030,7 @@ describe("App Router entry templates", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
     // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
       globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
     });
 
@@ -946,9 +1043,23 @@ describe("App Router entry templates", () => {
   });
 
   it("generateRscEntry emits a null global-not-found loader when no path is provided", () => {
-    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: true,
+    });
 
     expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: true");
+    expect(code).not.toContain("global-not-found.tsx");
+  });
+
+  it("generateRscEntry ignores global-not-found modules when the feature is disabled", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      globalNotFound: false,
+      globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
+    });
+
+    expect(code).toContain("const __loadGlobalNotFoundModule = null;");
+    expect(code).toContain("globalNotFoundEnabled: false");
     expect(code).not.toContain("global-not-found.tsx");
   });
 
@@ -994,7 +1105,10 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export function normalizeDataRequest(request)");
-      expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).toContain(
+        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+      );
+      expect(code).toContain("export const hasMiddleware = true");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1020,6 +1134,7 @@ describe("Pages Router entry template", () => {
         null,
       );
 
+      expect(code).toContain("export const hasMiddleware = false");
       const globalsImportIndex = code.indexOf("/server-globals.js");
       const firstUserImportIndex = code.indexOf(
         `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
@@ -1028,6 +1143,99 @@ describe("Pages Router entry template", () => {
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
       expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
       expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("precomputes Pages route dataKind in the server entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-kind-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "ssr.tsx"),
+        "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "plain.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toContain('pattern: "/",');
+      expect(code).toContain('dataKind: "static"');
+      expect(code).toContain('pattern: "/ssr",');
+      expect(code).toContain('dataKind: "server"');
+      expect(code).toContain('pattern: "/plain",');
+      expect(code).toContain('dataKind: "none"');
+      expect(code).not.toContain("typeof page_");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
+  // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
+  it("uses the framework error page in server and client entries when _error is absent", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-default-error-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const nextConfig = await resolveNextConfig({});
+      const matcher = createValidFileMatcher();
+      const serverCode = await generateServerEntry(pagesDir, nextConfig, matcher, null, null);
+      const clientCode = await generateClientEntry(pagesDir, nextConfig, matcher);
+
+      expect(serverCode).toContain('import * as ErrorPageModule from "next/error";');
+      expect(clientCode).toContain('"/_error": () => import("next/error")');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
+  // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
+  it("uses a custom error page in the client entry across configured page extensions", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-custom-error-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const errorFilePath = path.join(pagesDir, "_error.page.tsx");
+      fs.writeFileSync(errorFilePath, "export default function ErrorPage() { return null; }");
+
+      const nextConfig = await resolveNextConfig({ pageExtensions: ["page.tsx", "tsx"] });
+      const clientCode = await generateClientEntry(
+        pagesDir,
+        nextConfig,
+        createValidFileMatcher(nextConfig.pageExtensions),
+      );
+
+      expect(clientCode).toContain(`"/_error": () => import(${JSON.stringify(errorFilePath)})`);
+      expect(clientCode).not.toContain('"/_error": () => import("next/error")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1107,6 +1315,95 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-rewrites/test/index.test.ts
+  it("emits only getStaticProps pages in the Pages SSG prefetch manifest", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-ssg-manifest-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "ssg.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "dynamic.tsx"),
+        "export function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "public-alias.tsx"),
+        "const loader = () => ({ props: {} }); export { loader as getStaticProps }; export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "local-alias.tsx"),
+        "const getStaticProps = () => ({ props: {} }); export { getStaticProps as loader }; export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      expect(code).toContain('window.__VINEXT_PAGES_SSG_PATTERNS__ = ["/local-alias","/ssg"]');
+      expect(code).toContain('window.__VINEXT_PAGES_SSP_PATTERNS__ = ["/dynamic"]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeds the Pages middleware matcher in the client entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-mw-matcher-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { middlewareMatcher: ["/ssr", { source: "/api/:path*" }] },
+      );
+
+      expect(code).toContain(
+        'window.__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr",{"source":"/api/:path*"}]',
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the React preamble when the React plugin is disabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-preamble-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { reactPreamble: false },
+      );
+
+      expect(code).not.toContain("@vitejs/plugin-react/preamble");
+      expect(code).toContain("hydrateRoot(");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("hydrates _app with the full Pages props envelope", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-props-"));
     const pagesDir = path.join(tmpDir, "pages");
@@ -1145,7 +1442,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("if (nextData.isFallback) {");
+      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
       expect(code).toContain("await Router.replace(");
+      expect(code).toContain("routeUrl || currentUrl,");
+      expect(code).toContain("routeUrl ? currentUrl : undefined,");
       expect(code).toContain("{ _h: 1, scroll: false },");
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
@@ -1223,6 +1523,78 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("onCaughtError: overlay.devOnCaughtError");
       expect(code).toContain("onUncaughtError: overlay.devOnUncaughtError");
       expect(overlayImportIndex).toBeLessThan(pageLoadIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: `reactStrictMode` wraps the client tree in
+  // <React.StrictMode> via the `process.env.__NEXT_STRICT_MODE` branch in
+  // .nextjs-ref/packages/next/src/client/index.tsx (around line 787). vinext
+  // signals this to its router shim via `window.__VINEXT_REACT_STRICT_MODE__`,
+  // which `wrapWithRouterContext` reads so the wrap is applied on the initial
+  // hydration AND every navigation render (Next.js's `doRender` closure runs
+  // for both). For the Pages Router the default is OFF —
+  // `reactStrictMode === null ? false` in
+  // .nextjs-ref/packages/next/src/build/define-env.ts — so the flag is `true`
+  // only when the option is explicitly `true`.
+  it("publishes the reactStrictMode flag to the client entry when reactStrictMode is true", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-strict-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({ reactStrictMode: true }),
+        createValidFileMatcher(),
+      );
+
+      // The flag is set before hydrate() runs so wrapWithRouterContext sees it
+      // on the very first render.
+      const flagIndex = code.indexOf("window.__VINEXT_REACT_STRICT_MODE__ = true;");
+      const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
+
+      expect(flagIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(flagIndex).toBeLessThan(hydrateRootIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes a false reactStrictMode flag for the Pages Router by default or when disabled", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-no-strict-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      // Unset → Pages Router default is OFF (Next.js: `reactStrictMode === null ? false`).
+      const defaultCode = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+      expect(defaultCode).toContain("window.__VINEXT_REACT_STRICT_MODE__ = false;");
+      expect(defaultCode).not.toContain("window.__VINEXT_REACT_STRICT_MODE__ = true;");
+
+      // Explicit false → also OFF.
+      const disabledCode = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({ reactStrictMode: false }),
+        createValidFileMatcher(),
+      );
+      expect(disabledCode).toContain("window.__VINEXT_REACT_STRICT_MODE__ = false;");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

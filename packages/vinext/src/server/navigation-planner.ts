@@ -156,6 +156,7 @@ export type NavigationDecision =
 export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
+  restoredHistorySnapshot?: boolean;
   targetSnapshot: RouteSnapshot;
 };
 
@@ -176,6 +177,7 @@ export type RscFetchResultFacts = {
   compatibilityIdHeader: string | null;
   responseUrl: string | null;
   streamedRedirectTarget: string | null;
+  streamedRedirectType?: "push" | "replace" | null;
 };
 
 type RscRedirectFollow = {
@@ -184,6 +186,13 @@ type RscRedirectFollow = {
   previousNextUrl: string | null;
   redirectDepth: number;
 };
+
+function mergeRscRedirectHistoryMode(
+  navigationMode: "push" | "replace",
+  redirectType: "push" | "replace" | null | undefined,
+): "push" | "replace" {
+  return navigationMode === "push" || redirectType === "push" ? "push" : "replace";
+}
 
 type RscFetchResultHardNavReason =
   | "invalidRscPayload"
@@ -204,6 +213,7 @@ export type RscFetchResultDecision =
       kind: "hardNavigate";
       discardBody: boolean;
       url: string;
+      hardNavigationMode?: "assign" | "replace";
       reason: RscFetchResultHardNavReason;
       trace: NavigationTrace;
     };
@@ -393,11 +403,15 @@ function createRscFetchResultHardNavigationDecision(options: {
   reason: RscFetchResultHardNavReason;
   reasonCode: NavigationTraceReasonCode;
   redirectSignal?: RscRedirectSignal;
+  hardNavigationMode?: "assign" | "replace";
   url: string;
 }): RscFetchResultDecision {
   return {
     discardBody: options.discardBody,
     kind: "hardNavigate",
+    ...(options.hardNavigationMode !== undefined
+      ? { hardNavigationMode: options.hardNavigationMode }
+      : {}),
     reason: options.reason,
     trace: createNavigationTrace(
       options.reasonCode,
@@ -525,9 +539,13 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
   }
 
   if (facts.streamedRedirectTarget !== null) {
+    const streamedHistoryMode = mergeRscRedirectHistoryMode(
+      facts.effectiveHistoryUpdateMode,
+      facts.streamedRedirectType,
+    );
     const redirectDecision = resolveStreamedRscRedirectLifecycleHop({
       currentHref: facts.currentHref,
-      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      historyUpdateMode: streamedHistoryMode,
       origin: facts.origin,
       redirectDepth: facts.redirectDepth,
       requestPreviousNextUrl: facts.requestPreviousNextUrl,
@@ -541,6 +559,7 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
         reason: terminalReason.hardNavigationReason,
         reasonCode: terminalReason.traceReasonCode,
         redirectSignal: "streamed-header",
+        hardNavigationMode: streamedHistoryMode === "push" ? "assign" : "replace",
         url: redirectDecision.href,
       });
     }
@@ -550,7 +569,7 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
         facts,
         redirect: {
           href: redirectDecision.href,
-          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          historyUpdateMode: streamedHistoryMode,
           previousNextUrl: redirectDecision.previousNextUrl,
           redirectDepth: redirectDecision.redirectDepth,
         },
@@ -777,6 +796,12 @@ function stripInterceptionContextFromRouteId(routeId: string): string {
   return separatorIndex === -1 ? routeId : routeId.slice(0, separatorIndex);
 }
 
+function matchedUrlFromConcreteRouteId(routeId: string): string | null {
+  const normalizedRouteId = stripInterceptionContextFromRouteId(routeId);
+  if (!normalizedRouteId.startsWith("route:/")) return null;
+  return normalizedRouteId.slice("route:".length);
+}
+
 function getMatchedUrlPathname(matchedUrl: string): string {
   try {
     return new URL(matchedUrl, "https://vinext.local").pathname;
@@ -822,6 +847,16 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
   const route = options.routeManifest.segmentGraph.routes.get(routeId);
   if (route && routeManifestRouteMatchesUrl(route, options.matchedUrl)) {
     return route;
+  }
+
+  const concreteRouteMatchedUrl =
+    route === undefined ? matchedUrlFromConcreteRouteId(options.routeId) : null;
+  if (concreteRouteMatchedUrl !== null) {
+    const concreteRoute = findRouteManifestRouteByMatchedUrl(
+      options.routeManifest,
+      concreteRouteMatchedUrl,
+    );
+    if (concreteRoute !== null) return concreteRoute;
   }
 
   return findRouteManifestRouteByMatchedUrl(options.routeManifest, options.matchedUrl);
@@ -1153,8 +1188,9 @@ function getVisibleInterceptionSourceIdentity(
       routeId: snapshot.interception.sourceRouteId,
     };
   }
+  const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
-    matchedUrl: snapshot.matchedUrl,
+    matchedUrl: concreteMatchedUrl ?? snapshot.matchedUrl,
     routeId: snapshot.routeId,
   };
 }
@@ -1284,6 +1320,7 @@ function createCacheEntryProposalFields(
 function validateInterceptedPreservation(options: {
   currentSnapshot: RouteSnapshot;
   currentTopology: RouteTopologySnapshot;
+  restoredHistorySnapshot: boolean;
   routeManifest: RouteManifest | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
@@ -1305,8 +1342,9 @@ function validateInterceptedPreservation(options: {
 
   const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
   if (
-    proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
-    proof.sourceRouteId !== sourceIdentity.routeId
+    !options.restoredHistorySnapshot &&
+    (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
+      proof.sourceRouteId !== sourceIdentity.routeId)
   ) {
     return {
       kind: "rejected",
@@ -1464,6 +1502,7 @@ function planFlightResponseArrived(options: {
     const validation = validateInterceptedPreservation({
       currentSnapshot: options.state.visibleSnapshot,
       currentTopology: currentTopology.topology,
+      restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
       targetSnapshot,
       targetTopology: targetTopology.topology,

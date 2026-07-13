@@ -26,6 +26,30 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("does not expose process environment variables on the request", async () => {
+    const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
+    process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch((req, res) => {
+          res.json({ hasEnv: Object.hasOwn(req, "env") });
+        }),
+        request: new Request("https://example.com/api/env"),
+        url: "/api/env",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ hasEnv: false });
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.VINEXT_API_REQUEST_ENV_TEST;
+      } else {
+        process.env.VINEXT_API_REQUEST_ENV_TEST = previousValue;
+      }
+    }
+  });
+
   it("merges dynamic params with duplicate query-string values", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch(
@@ -191,9 +215,12 @@ describe("pages api route", () => {
   });
 
   it("res.redirect() uses 307 by default and 2-arg form uses the given status", async () => {
+    let defaultReturnedResponse: unknown;
+    let defaultHandlerResponse: unknown;
     const defaultRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect("/new-path");
+        defaultHandlerResponse = res;
+        defaultReturnedResponse = res.redirect("/new-path");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -201,10 +228,16 @@ describe("pages api route", () => {
 
     expect(defaultRedirectResponse.status).toBe(307);
     expect(defaultRedirectResponse.headers.get("location")).toBe("/new-path");
+    expect(defaultRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(defaultRedirectResponse.text()).resolves.toBe("/new-path");
+    expect(defaultReturnedResponse).toBe(defaultHandlerResponse);
 
+    let customReturnedResponse: unknown;
+    let customHandlerResponse: unknown;
     const customRedirectResponse = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
-        res.redirect(301, "/permanent");
+        customHandlerResponse = res;
+        customReturnedResponse = res.redirect(301, "/permanent");
       }),
       request: new Request("https://example.com/api/redir"),
       url: "/api/redir",
@@ -212,6 +245,26 @@ describe("pages api route", () => {
 
     expect(customRedirectResponse.status).toBe(301);
     expect(customRedirectResponse.headers.get("location")).toBe("/permanent");
+    expect(customRedirectResponse.headers.get("content-type")).toBeNull();
+    await expect(customRedirectResponse.text()).resolves.toBe("/permanent");
+    expect(customReturnedResponse).toBe(customHandlerResponse);
+  });
+
+  it.each([
+    [null, undefined],
+    [307, undefined],
+    [true, "/destination"],
+  ])("res.redirect() rejects invalid arguments %#", async (statusOrUrl, url) => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.redirect(statusOrUrl as string | number, url);
+      }),
+      request: new Request("https://example.com/api/redir"),
+      url: "/api/redir",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Internal Server Error");
   });
 
   it("res.writeHead() lowercases header keys and joins array values", async () => {

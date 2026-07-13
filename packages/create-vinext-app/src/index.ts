@@ -1,249 +1,554 @@
 #!/usr/bin/env node
+
+import fs from "node:fs";
 import path from "node:path";
-import { readFileSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { validateProjectName, resolveProjectPath, isDirectoryEmpty } from "./validate.js";
-import { detectPackageManager } from "./install.js";
-import { scaffold } from "./scaffold.js";
-import { getTemplateVersions } from "./catalog.js";
+import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+import type { Readable, Writable } from "node:stream";
+// Runtime imports use source paths so the create package bundles the shared init implementation.
+import { init } from "../../vinext/src/init";
+import { resolveInitOptions } from "../../vinext/src/init-platform";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf-8"));
-const VERSION = pkg.version;
+type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
+type InitPlatform = "cloudflare" | "node";
+type InitDataCache = "kv" | "none";
+type InitCdnCache = "data-cache" | "workers-cache";
+type InitImageOptimization = "cloudflare-images" | "none";
 
-export type CliOptions = {
-  yes: boolean;
-  skipInstall: boolean;
-  noGit: boolean;
-  help: boolean;
-  version: boolean;
-  projectName?: string;
-  template?: "app" | "pages";
-  error?: string;
+type CloudflareInitOptions = {
+  dataCache: InitDataCache;
+  cdnCache: InitCdnCache;
+  imageOptimization: InitImageOptimization;
+  warmCdnCache?: boolean;
 };
 
-export type { PromptDefaults, PromptAnswers } from "./prompts.js";
-export type { ScaffoldOptions } from "./scaffold.js";
+type PlatformPromptOptions = {
+  env?: Record<string, string | undefined>;
+  input?: Readable;
+  output?: Writable;
+  isInteractive?: boolean;
+  question?: (prompt: string) => Promise<string>;
+};
 
-export function parseArgs(argv: string[]): CliOptions {
-  const opts: CliOptions = {
-    yes: false,
-    skipInstall: false,
-    noGit: false,
-    help: false,
-    version: false,
-  };
+type ResolvedInitOptions = {
+  platform: InitPlatform;
+  cloudflare?: CloudflareInitOptions;
+  prerender: boolean;
+};
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    switch (arg) {
-      case "--help":
-      case "-h":
-        opts.help = true;
-        break;
-      case "--version":
-      case "-v":
-        opts.version = true;
-        break;
-      case "--yes":
-      case "-y":
-        opts.yes = true;
-        break;
-      case "--skip-install":
-        opts.skipInstall = true;
-        break;
-      case "--no-git":
-        opts.noGit = true;
-        break;
-      case "--template": {
-        i++;
-        const tmpl = argv[i];
-        if (tmpl !== "app" && tmpl !== "pages") {
-          return { ...opts, error: `Invalid template: "${tmpl}". Must be "app" or "pages".` };
-        }
-        opts.template = tmpl;
-        break;
-      }
-      default:
-        if (arg.startsWith("-")) {
-          return { ...opts, error: `Unknown option: ${arg}` };
-        }
-        if (!opts.projectName) {
-          opts.projectName = arg;
-        }
-        break;
+type CreateVinextAppOptions = {
+  appPath: string;
+  packageManager: PackageManagerName;
+  install?: boolean;
+  git?: boolean;
+  yes?: boolean;
+  initOptions: ResolvedInitOptions;
+  port?: number;
+  _exec?: (
+    cmd: string,
+    opts: { cwd: string; stdio: string },
+  ) => string | void | Promise<string | void>;
+};
+
+type ParsedArgs = {
+  directory?: string;
+  packageManager?: PackageManagerName;
+  install: boolean;
+  git: boolean;
+  yes: boolean;
+  help: boolean;
+  version: boolean;
+};
+
+const DEFAULT_APP_NAME = "my-vinext-app";
+
+const packageManagerFlags: Record<string, PackageManagerName> = {
+  "--use-npm": "npm",
+  "--use-pnpm": "pnpm",
+  "--use-yarn": "yarn",
+  "--use-bun": "bun",
+};
+
+function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<string, string> {
+  const isCloudflare = platform === "cloudflare";
+  const apiMessage = isCloudflare ? "Hello from vinext on Cloudflare Workers" : "Hello from vinext";
+  const title = isCloudflare ? "vinext on Cloudflare Workers" : "vinext app";
+  const secondaryLink = isCloudflare
+    ? `  {
+    href: "https://developers.cloudflare.com/workers/",
+    label: "Workers",
+  },`
+    : `  {
+    href: "https://vite.dev/",
+    label: "Vite",
+  },`;
+  const eyebrow = isCloudflare ? "vinext + Cloudflare Workers" : "vinext";
+  const heading = isCloudflare
+    ? "Build Next.js-style apps with Vite and deploy them to the edge."
+    : "Build Next.js-style apps with Vite.";
+  const intro = isCloudflare
+    ? "This App Router project is wired for vinext, Tailwind CSS, and Cloudflare Workers."
+    : "This App Router project is wired for vinext and Tailwind CSS.";
+  const buildOutput = isCloudflare ? "Worker-ready production output" : "production output";
+  const deployCommand = warmCdnCache
+    ? "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
+    : "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json";
+  const actionCard = isCloudflare
+    ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="font-semibold">Deploy</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with Wrangler.</p>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">${deployCommand}</code>
+          </div>`
+    : `<div className="rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="font-semibold">Start</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Start the vinext production server locally.</p>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run start:vinext</code>
+          </div>`;
+
+  return {
+    "app/api/hello/route.ts": `export function GET() {
+  return Response.json({
+    message: ${JSON.stringify(apiMessage)},
+  });
+}
+`,
+    "app/globals.css": `@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  background: #f8fafc;
+  color: #111827;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+`,
+    "app/layout.tsx": `import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: ${JSON.stringify(title)},
+  description: "Generated by create-vinext-app",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    "app/page.tsx": `const links = [
+  {
+    href: "https://github.com/cloudflare/vinext",
+    label: "vinext",
+  },
+${secondaryLink}
+];
+
+export const revalidate = 300;
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-slate-50 px-6 py-10 text-slate-950">
+      <section className="mx-auto flex max-w-4xl flex-col gap-8">
+        <div className="flex flex-col gap-4">
+          <p className="text-sm font-semibold uppercase tracking-wide text-orange-600">
+            ${eyebrow}
+          </p>
+          <h1 className="max-w-2xl text-4xl font-semibold leading-tight sm:text-5xl">
+            ${heading}
+          </h1>
+          <p className="max-w-2xl text-lg leading-8 text-slate-700">
+            ${intro}
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="font-semibold">Develop</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Run the vinext dev server locally.</p>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run dev:vinext</code>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="font-semibold">Build</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Create ${buildOutput}.</p>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run build:vinext</code>
+          </div>
+          ${actionCard}
+        </div>
+
+        <nav className="flex flex-wrap gap-3">
+          {links.map((link) => (
+            <a
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-100"
+              href={link.href}
+              key={link.href}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {link.label}
+            </a>
+          ))}
+          <a
+            className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-100"
+            href="/api/hello"
+          >
+            API route
+          </a>
+        </nav>
+      </section>
+    </main>
+  );
+}
+`,
+    ".gitignore": `node_modules
+.env*
+.next
+`,
+    "next-env.d.ts": `/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// This file is generated by create-vinext-app.
+`,
+    "next.config.ts": `import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default nextConfig;
+`,
+    "postcss.config.mjs": `const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+`,
+    "README.md": `# vinext app
+
+This project was created with create-vinext-app.
+
+## Scripts
+
+- \`pnpm run dev:vinext\` starts the vinext dev server.
+- \`pnpm run build:vinext\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
+- \`pnpm run start:vinext\` ${isCloudflare ? "starts the built Worker locally with Wrangler" : "starts the production server locally"}.
+- \`pnpm run dev\` starts Next.js for compatibility checks.
+`,
+    "tsconfig.json": `{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./*"]
     }
-  }
-
-  return opts;
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+`,
+  };
 }
 
 function printHelp(): void {
   console.log(`
-create-vinext-app v${VERSION}
+  create-vinext-app - Create a vinext app
 
-Scaffold a new vinext project targeting Cloudflare Workers.
+  Usage: create-vinext-app [directory] [options]
 
-Usage:
-  create-vinext-app [project-name] [options]
+  The generated app always uses the App Router, TypeScript, Tailwind CSS, and a
+  top-level app/ directory. vinext and Cloudflare options are resolved through
+  the same prompts and flags as vinext init.
 
-Options:
-  --template <app|pages>   Router template (default: app)
-  --yes, -y                Skip prompts, use defaults
-  --skip-install           Skip dependency installation
-  --no-git                 Skip git init
-  --help, -h               Show help
-  --version, -v            Show version
-
-Examples:
-  npm create vinext-app@latest
-  npm create vinext-app@latest my-app
-  npm create vinext-app@latest my-app --template pages
-  npm create vinext-app@latest my-app --yes --skip-install
+  Options:
+    --platform <target>          Deployment target: cloudflare or node
+    --data-cache <type>          Cloudflare data cache: kv or none
+    --cdn-cache <type>           Cloudflare CDN cache: data-cache or workers-cache
+    --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
+    --prerender                  Configure vinext to pre-render static routes
+    --no-prerender               Do not configure pre-rendering
+    --experimental-warm-cdn-cache
+                                 Add experimental CDN pre-warming to the Cloudflare deploy script
+    --no-experimental-warm-cdn-cache
+                                 Do not add experimental CDN pre-warming to the deploy script
+    --use-npm                    Use npm
+    --use-pnpm                   Use pnpm
+    --use-yarn                   Use Yarn
+    --use-bun                    Use Bun
+    --skip-install               Write files but do not install dependencies
+    --disable-git                Do not initialize a git repository
+    --yes                        Use defaults for prompts
+    -v, --version                Show the create-vinext-app version
+    -h, --help                   Show this help
 `);
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const opts = parseArgs(argv);
+function parseArgs(args: string[]): ParsedArgs {
+  const parsed: ParsedArgs = {
+    install: true,
+    git: true,
+    yes: false,
+    help: false,
+    version: false,
+  };
 
-  if (opts.error) {
-    console.error(opts.error);
-    process.exit(1);
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "-h" || arg === "--help") {
+      parsed.help = true;
+      continue;
+    }
+    if (arg === "-v" || arg === "--version") {
+      parsed.version = true;
+      continue;
+    }
+    if (arg === "--skip-install") {
+      parsed.install = false;
+      continue;
+    }
+    if (arg === "--disable-git") {
+      parsed.git = false;
+      continue;
+    }
+    if (arg === "--yes") {
+      parsed.yes = true;
+      continue;
+    }
+    if (arg in packageManagerFlags) {
+      parsed.packageManager = packageManagerFlags[arg];
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      if (
+        arg === "--platform" ||
+        arg === "--data-cache" ||
+        arg === "--cdn-cache" ||
+        arg === "--image-optimization"
+      ) {
+        index++;
+      }
+      continue;
+    }
+    if (!parsed.directory) {
+      parsed.directory = arg;
+    }
   }
 
-  if (opts.help) {
+  return parsed;
+}
+
+function validatePackageName(name: string): string | null {
+  if (name.length === 0) return "Package name cannot be empty.";
+  if (name !== name.toLowerCase()) return "Package name must be lowercase.";
+  if (name.startsWith(".") || name.startsWith("_")) {
+    return "Package name cannot start with a period or underscore.";
+  }
+  if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name)) {
+    return "Package name can only contain URL-safe lowercase characters.";
+  }
+  return null;
+}
+
+function isFolderEmpty(dir: string): boolean {
+  if (!fs.existsSync(dir)) return true;
+  return (
+    fs
+      .readdirSync(dir)
+      .filter((entry) => entry !== ".DS_Store")
+      .filter((entry) => entry !== ".git").length === 0
+  );
+}
+
+function detectPackageManager(
+  env: Record<string, string | undefined> = process.env,
+): PackageManagerName {
+  const fromUserAgent = env.npm_config_user_agent?.split(" ")[0]?.split("/")[0];
+  if (
+    fromUserAgent === "pnpm" ||
+    fromUserAgent === "yarn" ||
+    fromUserAgent === "bun" ||
+    fromUserAgent === "npm"
+  ) {
+    return fromUserAgent;
+  }
+  return "npm";
+}
+
+function getPackageManagerVersion(packageManager: PackageManagerName): string | null {
+  const result = spawnSync(packageManager, ["--version"], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function writeFile(root: string, relativePath: string, content: string): void {
+  const filePath = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, "utf-8");
+}
+
+function writePackageJson(root: string, appName: string, packageManager: PackageManagerName): void {
+  const version = getPackageManagerVersion(packageManager);
+  const pkg = {
+    name: appName,
+    version: "0.1.0",
+    private: true,
+    packageManager: version ? `${packageManager}@${version}` : packageManager,
+    scripts: {
+      dev: "next dev",
+      build: "next build",
+      start: "next start",
+    },
+    dependencies: {
+      next: "latest",
+      react: "latest",
+      "react-dom": "latest",
+    },
+    devDependencies: {
+      "@tailwindcss/postcss": "latest",
+      "@types/node": "latest",
+      "@types/react": "latest",
+      "@types/react-dom": "latest",
+      tailwindcss: "latest",
+      typescript: "latest",
+    },
+  };
+  writeFile(root, "package.json", `${JSON.stringify(pkg, null, 2)}\n`);
+}
+
+function writeTemplate(
+  root: string,
+  appName: string,
+  packageManager: PackageManagerName,
+  initOptions: ResolvedInitOptions,
+): void {
+  fs.mkdirSync(root, { recursive: true });
+  writePackageJson(root, appName, packageManager);
+  const warmCdnCache =
+    initOptions.platform === "cloudflare" && (initOptions.cloudflare?.warmCdnCache ?? false);
+  for (const [relativePath, content] of Object.entries(
+    getTemplateFiles(initOptions.platform, warmCdnCache),
+  )) {
+    writeFile(root, relativePath, content);
+  }
+}
+
+function tryGitInit(root: string): boolean {
+  const result = spawnSync("git", ["init"], {
+    cwd: root,
+    encoding: "utf-8",
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+export async function createVinextApp(options: CreateVinextAppOptions): Promise<void> {
+  const root = path.resolve(options.appPath);
+  const appName = path.basename(root);
+  const validationError = validatePackageName(appName);
+  if (validationError) {
+    throw new Error(`Could not create a project called "${appName}": ${validationError}`);
+  }
+  if (!isFolderEmpty(root)) {
+    throw new Error(`The directory "${root}" contains files that could conflict.`);
+  }
+
+  console.log(`Creating a new vinext app in ${root}.\n`);
+  writeTemplate(root, appName, options.packageManager, options.initOptions);
+
+  await init({
+    root,
+    port: options.port ?? 3001,
+    skipCheck: true,
+    force: false,
+    install: options.install ?? true,
+    _exec: options._exec,
+    ...options.initOptions,
+  });
+
+  if (options.git === false) {
+    console.log("Skipping git initialization.\n");
+  } else if (tryGitInit(root)) {
+    console.log("Initialized a git repository.\n");
+  }
+
+  console.log(`Success! Created ${appName} at ${root}`);
+}
+
+async function promptForDirectory(options: PlatformPromptOptions, yes: boolean): Promise<string> {
+  if (yes) return DEFAULT_APP_NAME;
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const isInteractive =
+    options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (!isInteractive) return DEFAULT_APP_NAME;
+
+  const readline = options.question
+    ? undefined
+    : createInterface({ input: input as Readable, output: output as Writable });
+  const question = options.question ?? ((prompt: string) => readline!.question(prompt));
+  try {
+    const answer = (await question(`  What is your project named? (${DEFAULT_APP_NAME}) `)).trim();
+    return answer || DEFAULT_APP_NAME;
+  } finally {
+    readline?.close();
+  }
+}
+
+async function main(args: string[]): Promise<void> {
+  const parsed = parseArgs(args);
+  if (parsed.help) {
     printHelp();
     return;
   }
-
-  if (opts.version) {
-    console.log(VERSION);
+  if (parsed.version) {
+    const pkg = JSON.parse(
+      fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+    ) as { version: string };
+    console.log(pkg.version);
     return;
   }
 
-  let projectName: string | undefined;
-  let template: "app" | "pages";
+  const promptOptions: PlatformPromptOptions = parsed.yes ? { env: {}, isInteractive: false } : {};
+  const directory = parsed.directory ?? (await promptForDirectory(promptOptions, parsed.yes));
+  const packageManager = parsed.packageManager ?? detectPackageManager();
+  const initOptions = await resolveInitOptions(args, promptOptions);
 
-  if (opts.yes || !process.stdin.isTTY) {
-    projectName = opts.projectName ?? "my-vinext-app";
-    template = opts.template ?? "app";
-  } else {
-    const { runPrompts } = await import("./prompts.js");
-    const answers = await runPrompts({
-      projectName: opts.projectName,
-      template: opts.template,
-    });
-    if (!answers) return;
-    projectName = answers.projectName;
-    template = answers.template;
-  }
-
-  // After initialization, projectName is always a string
-  const projectNameStr: string = projectName;
-
-  // Handle path-like project names
-  let targetDir: string | undefined;
-  const looksLikePath =
-    !projectNameStr.startsWith("@") &&
-    (path.isAbsolute(projectNameStr) ||
-      projectNameStr.startsWith("./") ||
-      projectNameStr.startsWith("../") ||
-      projectNameStr.startsWith(".\\") ||
-      projectNameStr.startsWith("..\\") ||
-      projectNameStr.includes(path.sep) ||
-      projectNameStr.includes("/"));
-
-  let finalProjectName = projectNameStr;
-
-  if (looksLikePath) {
-    targetDir = path.resolve(projectNameStr);
-    finalProjectName = path.basename(targetDir);
-  }
-
-  // Validate project name
-  let validation = validateProjectName(finalProjectName);
-  if (!validation.valid) {
-    console.error(`Invalid project name: ${validation.message}`);
-    process.exit(1);
-  }
-
-  // Handle "." (current directory)
-  if (validation.valid && "useCwd" in validation && validation.useCwd) {
-    targetDir = process.cwd();
-    finalProjectName = path.basename(process.cwd());
-    validation = validateProjectName(finalProjectName);
-    if (!validation.valid) {
-      console.error(`Invalid project name derived from cwd: ${validation.message}`);
-      process.exit(1);
-    }
-  }
-
-  const normalizedName =
-    validation.valid && "normalized" in validation && validation.normalized
-      ? validation.normalized
-      : finalProjectName;
-
-  const projectPath = targetDir ?? resolveProjectPath(normalizedName, process.cwd());
-
-  // Check directory is empty
-  if (!isDirectoryEmpty(projectPath)) {
-    console.error(`Directory "${projectPath}" is not empty.`);
-    process.exit(1);
-  }
-
-  const pm = detectPackageManager();
-  const catalogVars = getTemplateVersions();
-
-  const displayName = normalizedName.startsWith("@")
-    ? (normalizedName.split("/").pop() ?? normalizedName)
-    : normalizedName;
-
-  scaffold({
-    projectPath,
-    projectName: normalizedName,
-    displayName,
-    template,
-    install: !opts.skipInstall,
-    git: !opts.noGit,
-    pm,
-    vinextVersion: VERSION,
-    versionVars: catalogVars,
+  await createVinextApp({
+    appPath: directory,
+    packageManager,
+    install: parsed.install,
+    git: parsed.git,
+    yes: parsed.yes,
+    initOptions,
   });
-
-  // Success message
-  const relativePath = path.relative(process.cwd(), projectPath);
-  console.log("");
-  console.log(`Success! Created ${normalizedName} at ${projectPath}`);
-  console.log("");
-  console.log("Next steps:");
-  if (relativePath && relativePath !== ".") {
-    console.log(`  cd ${relativePath}`);
-  }
-  if (opts.skipInstall) {
-    const pmCmd = pm === "yarn" ? "yarn" : `${pm} install`;
-    console.log(`  ${pmCmd}`);
-  }
-  console.log(`  ${pm === "npm" ? "npm run" : pm} dev`);
-  console.log("");
 }
 
-// Auto-run when this is the entry point
-const thisFile = path.resolve(fileURLToPath(import.meta.url));
-const entryFile = process.argv[1];
-if (entryFile) {
-  const resolveReal = (p: string) => {
-    try {
-      return realpathSync(path.resolve(p));
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  const resolvedEntry = resolveReal(entryFile);
-  const resolvedThis = resolveReal(thisFile);
-  if (resolvedEntry === resolvedThis || resolvedEntry === resolvedThis.replace(/\.ts$/, ".js")) {
-    main().catch((err) => {
-      console.error(err);
-      process.exit(1);
-    });
-  }
+if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) {
+  main(process.argv.slice(2)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 }

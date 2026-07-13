@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { type ViteDevServer } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
 describe("App Router external rewrite proxy credential forwarding", () => {

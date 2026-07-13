@@ -6,7 +6,10 @@ import {
   initPregeneratedPathsFromGlobals,
   normalizePregeneratedPathname,
 } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
-import { isFallbackShellArtifactPath } from "../packages/vinext/src/server/prerender-manifest.js";
+import {
+  getPrerenderedConcretePaths,
+  isFallbackShellArtifactPath,
+} from "../packages/vinext/src/server/prerender-manifest.js";
 
 describe("pregenerated concrete paths", () => {
   afterEach(() => {
@@ -125,6 +128,125 @@ describe("pregenerated concrete paths", () => {
           router: "app",
         }),
       ).toBe(false);
+    });
+  });
+
+  describe("getPrerenderedConcretePaths", () => {
+    it("selects unique rendered App and Pages paths and skips fallback shells by default", () => {
+      expect(
+        getPrerenderedConcretePaths({
+          routes: [
+            { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
+            {
+              route: "/blog/:slug",
+              path: "/blog/hello",
+              status: "rendered",
+              router: "app",
+              revalidate: 60,
+              fallback: false,
+            },
+            {
+              route: "/blog/:slug",
+              path: "/blog/[slug]",
+              status: "rendered",
+              router: "app",
+              revalidate: 60,
+              fallback: true,
+            },
+            {
+              route: "/docs/:slug",
+              path: "/docs/intro",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/404",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/500",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/_error",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            {
+              route: "/docs/:slug",
+              path: "/docs/intro",
+              status: "rendered",
+              router: "pages",
+              revalidate: false,
+              fallback: false,
+            },
+            { route: "/api/hello", status: "skipped" },
+          ],
+        }),
+      ).toEqual(["/", "/blog/hello", "/docs/intro"]);
+    });
+
+    it("can include error documents when explicitly requested", () => {
+      expect(
+        getPrerenderedConcretePaths(
+          {
+            routes: [
+              {
+                route: "/404",
+                status: "rendered",
+                router: "pages",
+                revalidate: false,
+                fallback: false,
+              },
+              {
+                route: "/500",
+                status: "rendered",
+                router: "pages",
+                revalidate: false,
+                fallback: false,
+              },
+              {
+                route: "/_error",
+                status: "rendered",
+                router: "pages",
+                revalidate: false,
+                fallback: false,
+              },
+            ],
+          },
+          { includeErrorDocuments: true },
+        ),
+      ).toEqual(["/404", "/500", "/_error"]);
+    });
+
+    it("can include fallback-shell placeholder paths for explicit warmup requests", () => {
+      expect(
+        getPrerenderedConcretePaths(
+          {
+            routes: [
+              {
+                route: "/blog/:slug",
+                path: "/blog/[slug]",
+                status: "rendered",
+                router: "app",
+                revalidate: 60,
+                fallback: true,
+              },
+            ],
+          },
+          { includeFallbackShells: true },
+        ),
+      ).toEqual(["/blog/[slug]"]);
     });
   });
 });

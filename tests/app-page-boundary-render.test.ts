@@ -8,6 +8,7 @@ import {
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,6 +48,7 @@ function createCommonOptions() {
   }));
 
   return {
+    applyFileBasedMetadata,
     buildFontLinkHeader(preloads: readonly { href: string; type: string }[] | null | undefined) {
       if (!preloads || preloads.length === 0) {
         return "";
@@ -80,6 +82,7 @@ function createCommonOptions() {
     },
     metadataRoutes: [],
     renderToReadableStream: renderElementToStream,
+    request: new Request("https://example.com/posts/missing"),
     requestUrl: "https://example.com/posts/missing",
     resolveChildSegments() {
       return [];
@@ -136,6 +139,10 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
   return React.createElement("p", { "data-boundary": "global-error" }, `global:${error.message}`);
 }
 
+function GlobalErrorBoundaryWithStack({ error }: { error: Error }) {
+  return React.createElement("p", { "data-boundary": "global-error" }, error.stack);
+}
+
 type TestModule = {
   default: React.ComponentType<any>;
   metadata?: { description?: string; title?: string };
@@ -156,6 +163,28 @@ const notFoundModule = {
   default: NotFoundBoundary,
 } satisfies TestModule;
 
+function RedirectingRootLayout(): React.ReactNode {
+  const error = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/login;307;",
+  });
+  throw error;
+}
+
+const redirectingRootLayoutModule = {
+  default: RedirectingRootLayout,
+} satisfies TestModule;
+
+function NotFoundThrowingRootLayout(): React.ReactNode {
+  // Mimics notFound() re-thrown while the route-miss boundary itself is
+  // rendering — the shape that has no parent boundary to climb to.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const notFoundThrowingRootLayoutModule = {
+  default: NotFoundThrowingRootLayout,
+} satisfies TestModule;
+
 const notFoundModuleWithMetadata = {
   default: NotFoundBoundary,
   metadata: { title: "notfound title" },
@@ -167,6 +196,10 @@ const routeErrorModule = {
 
 const globalErrorModule = {
   default: GlobalErrorBoundary,
+} satisfies TestModule;
+
+const globalErrorModuleWithStack = {
+  default: GlobalErrorBoundaryWithStack,
 } satisfies TestModule;
 
 function ThrowingGlobalErrorBoundary(): React.ReactNode {
@@ -207,6 +240,50 @@ describe("app page boundary render helpers", () => {
     expect(response).toBeNull();
     expect(common.loadSsrHandler).not.toHaveBeenCalled();
     expect(common.clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [redirectingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(307);
+    const location = response?.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(new URL(location!, common.request.url).pathname).toBe("/login");
+    expect(common.clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates with a status-text response when an http-access signal is thrown while rendering the boundary", async () => {
+    // Scope boundary for the route-miss redirect fix. Redirects thrown during
+    // boundary rendering are fully handled (see the test above), but a
+    // notFound()/forbidden()/unauthorized() re-thrown *inside* the boundary has
+    // no parent boundary to climb to. renderBoundarySpecialErrorResponse omits
+    // renderFallbackPage precisely so it cannot recurse on the same boundary,
+    // so it falls through to a plain status-text response rather than the
+    // boundary UI. Pins that deliberate terminal behavior.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [notFoundThrowingRootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const body = await response?.text();
+    expect(body).toBe("Not Found");
+    expect(body).not.toContain('data-boundary="not-found"');
   });
 
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
@@ -518,6 +595,57 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('data-layout="root"');
     expect(html).toContain('data-boundary="route-error"');
     expect(html).toContain("route:safe:secret");
+  });
+
+  it("does not serialize production SSR stacks into the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const common = createCommonOptions();
+    const error = new Error("client page error");
+    error.stack = "/private/deployment/server.js:42";
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "ssr",
+        globalErrorModule,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("client page error");
+      expect(html).not.toContain("/private/deployment/server.js:42");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves development RSC stacks in the global error payload", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const common = createCommonOptions();
+    const error = Object.assign(new Error("server page error"), {
+      digest: "12345",
+      stack: "/app/rsc/page.tsx:2",
+    });
+
+    try {
+      const response = await renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error,
+        errorOrigin: "rsc",
+        globalErrorModule: globalErrorModuleWithStack,
+        sanitizeErrorForClient(value: Error) {
+          return value;
+        },
+      });
+
+      const html = await response?.text();
+      expect(html).toContain("/app/rsc/page.tsx:2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("preserves middleware headers on error boundary responses", async () => {

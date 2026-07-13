@@ -3,21 +3,60 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import * as Sentry from "@sentry/nextjs";
 import { createServer } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findInstrumentationClientFile,
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 const RESOLVED_INSTRUMENTATION_CLIENT = "\0private-next-instrumentation-client.mjs";
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "..", "node_modules");
 
+type SentryEnvelopeEvent = {
+  exception?: {
+    values?: Array<{
+      value?: string;
+    }>;
+  };
+  contexts?: {
+    nextjs?: {
+      request_path?: string;
+      router_kind?: string;
+      router_path?: string;
+      route_type?: string;
+    };
+  };
+  transaction?: string;
+};
+
 function getLoadedCode(loaded: unknown): string {
   return typeof loaded === "string" ? loaded : ((loaded as { code?: string })?.code ?? "");
+}
+
+function parseSentryEnvelopeEvents(envelope: unknown): SentryEnvelopeEvent[] {
+  if (Array.isArray(envelope)) {
+    const [, items] = envelope as [unknown, Array<[unknown, SentryEnvelopeEvent]>];
+    return (items ?? []).map(([, payload]) => payload).filter((payload) => payload.exception);
+  }
+
+  if (typeof envelope !== "string") return [];
+
+  const events: SentryEnvelopeEvent[] = [];
+  for (const line of envelope.split("\n")) {
+    if (!line.trim().startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line) as SentryEnvelopeEvent;
+      if (parsed.exception) events.push(parsed);
+    } catch {
+      /* Sentry envelope item headers are JSON too; ignore anything else. */
+    }
+  }
+  return events;
 }
 
 function setupInjectProject(options: {
@@ -98,7 +137,7 @@ describe("findInstrumentationFile", () => {
     // Production always passes a forward-slash root (the config hook normalizes
     // it), so mirror that here — findInstrumentationFile now returns
     // forward-slash paths via path.posix.join.
-    tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-")));
+    tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-")));
   });
 
   afterEach(() => {
@@ -145,9 +184,7 @@ describe("findInstrumentationClientFile", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = normalizePathSeparators(
-      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-")),
-    );
+    tmpDir = toSlash(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-")));
   });
 
   afterEach(() => {
@@ -358,6 +395,10 @@ describe("reportRequestError", () => {
     runWithExecutionContext = ctxMod.runWithExecutionContext;
   });
 
+  afterEach(() => {
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+  });
+
   it("calls the registered handler with correct args", async () => {
     const onRequestError = vi.fn();
     const runner = {
@@ -425,6 +466,103 @@ describe("reportRequestError", () => {
 
     expect(onRequestError).toHaveBeenCalledOnce();
   });
+
+  it("lets real @sentry/nextjs captureRequestError flush through Workers waitUntil", async () => {
+    const envelopes: unknown[] = [];
+
+    Sentry.init({
+      dsn: "http://public@sentry.test/42",
+      defaultIntegrations: false,
+      tracesSampleRate: 0,
+      transport: () => ({
+        send(envelope: unknown) {
+          envelopes.push(envelope);
+          return Promise.resolve({});
+        },
+        flush() {
+          return Promise.resolve(true);
+        },
+      }),
+    });
+
+    globalThis.__VINEXT_onRequestErrorHandler__ = Sentry.captureRequestError;
+    const waitUntil = vi.fn();
+    const ctx = { waitUntil };
+
+    const cases = [
+      {
+        error: new Error("Server component error"),
+        request: { path: "/error-server-test", method: "GET", headers: {} },
+        context: {
+          routerKind: "App Router" as const,
+          routePath: "/error-server-test",
+          routeType: "render" as const,
+        },
+      },
+      {
+        error: new Error("Pages API error"),
+        request: { path: "/api/error-route", method: "GET", headers: {} },
+        context: {
+          routerKind: "Pages Router" as const,
+          routePath: "/api/error-route",
+          routeType: "route" as const,
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      await runWithExecutionContext(ctx, () =>
+        reportRequestError(testCase.error, testCase.request, testCase.context),
+      );
+    }
+
+    expect(waitUntil).toHaveBeenCalledTimes(4);
+    await Promise.all(waitUntil.mock.calls.map(([promise]) => promise));
+
+    const events = envelopes.flatMap(parseSentryEnvelopeEvents);
+    expect(events.map((event) => event.exception?.values?.[0]?.value)).toEqual([
+      "Server component error",
+      "Pages API error",
+    ]);
+    expect(events.map((event) => event.contexts?.nextjs)).toEqual([
+      {
+        request_path: "/error-server-test",
+        router_kind: "App Router",
+        router_path: "/error-server-test",
+        route_type: "render",
+      },
+      {
+        request_path: "/api/error-route",
+        router_kind: "Pages Router",
+        router_path: "/api/error-route",
+        route_type: "route",
+      },
+    ]);
+
+    await (
+      Sentry as unknown as { default?: { close?: (timeout?: number) => Promise<boolean> } }
+    ).default?.close?.(0);
+  });
+});
+
+describe("Sentry Next.js internal compatibility", () => {
+  it("aliases Sentry's .js Next async-storage internals to vinext shims", async () => {
+    await withInjectClientServer({ instrumentationClientInject: [] }, async ({ container }) => {
+      const sentryAsyncStorageImports = [
+        "next/dist/client/components/request-async-storage.js",
+        "next/dist/client/components/request-async-storage.external.js",
+        "next/dist/server/app-render/work-unit-async-storage.external.js",
+        "next/dist/client/components/work-unit-async-storage.external.js",
+      ];
+
+      for (const id of sentryAsyncStorageImports) {
+        const resolved = await container.resolveId(id);
+        expect(toSlash(resolved?.id ?? "")).toContain(
+          "/packages/vinext/src/shims/internal/work-unit-async-storage",
+        );
+      }
+    });
+  });
 });
 
 // Ported from Next.js: packages/next/src/build/webpack/loaders/next-instrumentation-client-loader.ts
@@ -454,7 +592,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
         const resolved = await container.resolveId("private-next-instrumentation-client");
         expect(resolved).toBeTruthy();
         expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-        expect(resolved!.id.replace(/\\/g, "/")).toContain("instrumentation-client.js");
+        expect(toSlash(resolved!.id)).toContain("instrumentation-client.js");
       },
     );
   });
@@ -464,7 +602,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
       const resolved = await container.resolveId("private-next-instrumentation-client");
       expect(resolved).toBeTruthy();
       expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
-      expect(resolved!.id.replace(/\\/g, "/")).toContain("empty-module");
+      expect(toSlash(resolved!.id)).toContain("empty-module");
     });
   });
 

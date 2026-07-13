@@ -11,10 +11,9 @@
  * Issue: https://github.com/cloudflare/vinext/issues/1365
  */
 import { describe, expect, it } from "vite-plus/test";
-import {
-  generateAppRouterWorkerEntry,
-  generatePagesRouterWorkerEntry,
-} from "../packages/vinext/src/deploy.js";
+import fs from "node:fs";
+import path from "node:path";
+import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
 type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
@@ -143,20 +142,23 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     //
     // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
     // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
-    const content = generatePagesRouterWorkerEntry();
+    const content = readPagesRouterEntrySource();
     expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
   });
 });
 
 describe("after() in deploy mode — App Router worker entry", () => {
   it("delegates to handler.fetch with ctx so vinext/server/app-router-entry can wrap with runWithExecutionContext", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("handler.fetch(request, env, ctx)");
+    const content = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      "utf-8",
+    );
+    expect(content).toContain("runWithExecutionContext(ctx");
   });
 });
 

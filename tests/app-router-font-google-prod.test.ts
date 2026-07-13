@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createBuilder } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
 describe("App Router Production server self-hosted next/font/google headers", () => {

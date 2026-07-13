@@ -1,6 +1,7 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { loadAppInterceptLayouts } from "./app-route-module-loader.js";
@@ -15,7 +16,20 @@ type GenerateStaticParamsModule = {
 
 type GenerateStaticParamsSource = {
   generateStaticParams: GenerateStaticParams;
+  paramAliases?: Readonly<Record<string, string>>;
+  paramPatternParts?: readonly string[];
+  routePatternParts?: readonly string[];
   parentParamNames: readonly string[];
+};
+
+type ParallelGenerateStaticParamsBranch = {
+  configLayouts?: readonly (GenerateStaticParamsModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
+  layout?: GenerateStaticParamsModule | null;
+  page?: GenerateStaticParamsModule | null;
+  paramNames?: readonly string[] | null;
+  patternParts?: readonly string[] | null;
+  routeSegments?: readonly string[] | null;
 };
 
 export type ValidateAppPageDynamicParamsOptions = {
@@ -34,6 +48,8 @@ type ResolveAppPageGenerateStaticParamsSourcesOptions = {
   layouts?: readonly (GenerateStaticParamsModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: GenerateStaticParamsModule | null;
+  parallelBranches?: readonly (ParallelGenerateStaticParamsBranch | null | undefined)[];
+  routePatternParts?: readonly string[];
   routeSegments: readonly string[];
 };
 
@@ -52,8 +68,11 @@ type BuildAppPageElementResult<TElement> = {
 
 type AppPageInterceptMatch<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
+  interceptLayoutSegments?: readonly (readonly string[])[] | null;
+  interceptBranchSegments?: readonly string[] | null;
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   matchedParams: AppPageParams;
+  sourceMatchedParams?: AppPageParams;
   page: TPage;
   __pageLoader?: (() => Promise<TPage>) | null;
   __loadState?: {
@@ -120,6 +139,10 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
+    buildOptions?: {
+      observeMetadataSearchParamsAccess?: boolean;
+      observePageSearchParamsAccess?: boolean;
+    },
   ) => Promise<TElement>;
   cleanPathname: string;
   currentRoute: TRoute;
@@ -135,6 +158,10 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
   renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  resolveSearchParams?: (
+    route: TRoute,
+    searchParams: URLSearchParams,
+  ) => Awaitable<URLSearchParams>;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
     params: AppPageParams;
@@ -165,6 +192,46 @@ function pickRouteParams(
   return params;
 }
 
+function remapRouteParams(
+  matchedParams: AppPageParams,
+  source: Pick<
+    GenerateStaticParamsSource,
+    "paramAliases" | "paramPatternParts" | "routePatternParts"
+  >,
+): AppPageParams {
+  if (source.paramPatternParts && source.routePatternParts) {
+    const urlParts: string[] = [];
+    for (const part of source.routePatternParts) {
+      if (!part.startsWith(":")) {
+        urlParts.push(part);
+        continue;
+      }
+
+      const paramName = part.slice(1).replace(/[+*]$/, "");
+      const value = matchedParams[paramName];
+      if (Array.isArray(value)) {
+        urlParts.push(...value.map(encodeURIComponent));
+      } else if (value !== undefined) {
+        urlParts.push(encodeURIComponent(value));
+      }
+    }
+
+    const slotParams = matchRoutePattern(urlParts, source.paramPatternParts);
+    if (slotParams) return slotParams;
+  }
+
+  if (!source.paramAliases) return matchedParams;
+
+  const params: AppPageParams = { ...matchedParams };
+  for (const [routeParamName, sourceParamName] of Object.entries(source.paramAliases)) {
+    const value = matchedParams[routeParamName];
+    if (value === undefined) continue;
+    delete params[routeParamName];
+    params[sourceParamName] = value;
+  }
+  return params;
+}
+
 function collectParentParamNames(
   routeSegments: readonly string[],
   boundaryPosition: number,
@@ -187,6 +254,23 @@ function getLayoutGenerateStaticParamsBoundary(layoutTreePosition: number | unde
   // generateStaticParams belongs to the [id] segment and receives only parent
   // params from segments before [id].
   return (layoutTreePosition ?? 0) - 1;
+}
+
+function getParallelParentParamNames(
+  routeParamNames: readonly string[],
+  branch: ParallelGenerateStaticParamsBranch,
+  boundaryPosition: number,
+): string[] {
+  const slotParamNames = branch.paramNames ?? routeParamNames;
+  const branchParamNames = collectParentParamNames(branch.routeSegments ?? [], boundaryPosition);
+  const branchParamNameSet = new Set(
+    (branch.routeSegments ?? []).flatMap((segment) => {
+      const name = getAppPageSegmentParamName(segment);
+      return name ? [name] : [];
+    }),
+  );
+  const ownerParamNames = slotParamNames.filter((name) => !branchParamNameSet.has(name));
+  return [...new Set([...ownerParamNames, ...branchParamNames])];
 }
 
 export function resolveAppPageGenerateStaticParamsSources(
@@ -216,6 +300,52 @@ export function resolveAppPageGenerateStaticParamsSources(
     });
   }
 
+  const routeParamNames = options.routeSegments.flatMap((segment) => {
+    const name = getAppPageSegmentParamName(segment);
+    return name ? [name] : [];
+  });
+  for (const parallelBranch of options.parallelBranches ?? []) {
+    if (!parallelBranch) continue;
+    const slotParamNames = parallelBranch.paramNames ?? routeParamNames;
+    const paramAliases = Object.fromEntries(
+      routeParamNames.flatMap((routeParamName, index) => {
+        const slotParamName = slotParamNames[index];
+        return slotParamName && slotParamName !== routeParamName
+          ? [[routeParamName, slotParamName]]
+          : [];
+      }),
+    );
+    const addParallelSource = (
+      module: GenerateStaticParamsModule | null | undefined,
+      boundaryPosition: number,
+    ) => {
+      if (typeof module?.generateStaticParams !== "function") return;
+      sources.push({
+        generateStaticParams: module.generateStaticParams,
+        ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
+        ...(parallelBranch.patternParts ? { paramPatternParts: parallelBranch.patternParts } : {}),
+        ...(options.routePatternParts ? { routePatternParts: options.routePatternParts } : {}),
+        parentParamNames: getParallelParentParamNames(
+          routeParamNames,
+          parallelBranch,
+          boundaryPosition,
+        ),
+      });
+    };
+
+    addParallelSource(parallelBranch.layout, -1);
+    parallelBranch.configLayouts?.forEach((layout, index) => {
+      addParallelSource(
+        layout,
+        getLayoutGenerateStaticParamsBoundary(parallelBranch.configLayoutTreePositions?.[index]),
+      );
+    });
+    addParallelSource(
+      parallelBranch.page,
+      Math.max(0, (parallelBranch.routeSegments?.length ?? 0) - 1),
+    );
+  }
+
   return sources;
 }
 
@@ -237,14 +367,22 @@ function areStaticParamsAllowed(
       }
 
       if (Array.isArray(value)) {
-        return JSON.stringify(value) === JSON.stringify(staticValue);
+        return (
+          Array.isArray(staticValue) &&
+          value.length === staticValue.length &&
+          value.every((part, index) =>
+            typeof staticValue[index] === "string"
+              ? part.toLowerCase() === staticValue[index].toLowerCase()
+              : part === staticValue[index],
+          )
+        );
       }
 
-      if (
-        typeof staticValue === "string" ||
-        typeof staticValue === "number" ||
-        typeof staticValue === "boolean"
-      ) {
+      if (typeof staticValue === "string") {
+        return value.toLowerCase() === staticValue.toLowerCase();
+      }
+
+      if (typeof staticValue === "number" || typeof staticValue === "boolean") {
         return String(value) === String(staticValue);
       }
 
@@ -287,12 +425,13 @@ export async function validateAppPageDynamicParams(
   }
 
   for (const source of generateStaticParamsSources) {
+    const sourceParams = remapRouteParams(options.params, source);
     const staticParams = await runWithFetchDedupe(() =>
       source.generateStaticParams({
-        params: pickRouteParams(options.params, source.parentParamNames),
+        params: pickRouteParams(sourceParams, source.parentParamNames),
       }),
     );
-    if (Array.isArray(staticParams) && !areStaticParamsAllowed(options.params, staticParams)) {
+    if (Array.isArray(staticParams) && !areStaticParamsAllowed(sourceParams, staticParams)) {
       options.clearRequestContext();
       return notFoundResponse();
     }
@@ -329,7 +468,7 @@ export async function resolveAppPageInterceptMatch<TRoute, TPage, TInterceptOpts
     interceptOpts: options.toInterceptOpts(interceptState.intercept),
     matchedParams: interceptState.intercept.matchedParams,
     sourceParams: pickRouteParams(
-      interceptState.intercept.matchedParams,
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     ),
     sourceRoute: interceptState.sourceRoute,
@@ -400,11 +539,16 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
   });
 
   if (interceptState.kind === "source-route") {
+    const sourceMatchedParams =
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
     return {
       interceptOpts: options.toInterceptOpts(interceptState.intercept),
-      navigationParams: interceptState.intercept.matchedParams,
+      navigationParams: {
+        ...sourceMatchedParams,
+        ...interceptState.intercept.matchedParams,
+      },
       params: pickRouteParams(
-        interceptState.intercept.matchedParams,
+        sourceMatchedParams,
         options.getRouteParamNames(interceptState.sourceRoute),
       ),
       route: interceptState.sourceRoute,
@@ -444,26 +588,35 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
     const interceptOpts = options.toInterceptOpts(interceptState.intercept);
+    const sourceMatchedParams =
+      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
+    const navigationParams = {
+      ...sourceMatchedParams,
+      ...interceptState.intercept.matchedParams,
+    };
+    const renderSearchParams = options.resolveSearchParams
+      ? await options.resolveSearchParams(renderRoute, options.searchParams)
+      : options.searchParams;
     const renderParams = pickRouteParams(
-      interceptState.intercept.matchedParams,
+      sourceMatchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
     options.setNavigationContext({
       params: options.resolveNavigationParams(
         renderRoute,
-        interceptState.intercept.matchedParams,
+        navigationParams,
         options.cleanPathname,
         interceptOpts,
       ),
       pathname: options.cleanPathname,
-      searchParams: options.searchParams,
+      searchParams: renderSearchParams,
     });
     const interceptElement = await options.buildPageElement(
       renderRoute,
       renderParams,
       interceptOpts,
-      options.searchParams,
+      renderSearchParams,
       options.layoutParamAccess,
     );
 

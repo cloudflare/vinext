@@ -273,7 +273,7 @@ describe("Link App Router prefetch mode", () => {
     expect(resolveLinkPrefetchMode(true, true)).toBe("disabled");
   });
 
-  it("allows automatic full RSC prefetch only for routes without loading-shell prefetches", () => {
+  it("allows automatic full RSC prefetch for routes that do not require fresh navigation", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -285,6 +285,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
@@ -294,6 +300,7 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/products/1")).toBe(true);
+      expect(canAutoPrefetchFullAppRoute("/teams/vercel/dashboard")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/settings")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
     } finally {
@@ -305,7 +312,7 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
-  it("shell-prefetches routes with loading boundaries and full-prefetches routes without them", () => {
+  it("shell-prefetches dynamic routes that require fresh navigation and routes with loading boundaries", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -317,6 +324,12 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          requiresDynamicNavigationRequest: true,
+        },
         { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
@@ -347,6 +360,11 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
+        prefetchShellFirst: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
+        cacheForNavigation: false,
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
@@ -505,6 +523,20 @@ describe("Link resolveHref", () => {
         fallbackHref: "http://localhost/rewrite-navigation/0?existing=1",
       }),
     ).toBe("/rewrite-navigation/0?");
+  });
+
+  it("resolves hash-only Pages Links against locale-free router.asPath", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    expect(
+      resolvePagesRouterQueryOnlyHref("#newhash", {
+        asPath: "/about?tab=details",
+        basePath: "",
+        fallbackHref: "http://localhost/fr/about?tab=details#hash",
+        locales: ["en", "fr"],
+      }),
+    ).toBe("/about?tab=details#newhash");
   });
 });
 
@@ -668,6 +700,20 @@ describe("Link locale handling", () => {
       React.createElement(Link, { href: "/about", locale: "fr" } as any, "x"),
     );
     expect(html).toContain('href="/fr/about"');
+  });
+
+  it("preserves URL-object hashes while applying a locale", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: { pathname: "/about", hash: "#hash" }, locale: "fr" } as any,
+        "x",
+      ),
+    );
+    expect(html).toContain('href="/fr/about#hash"');
   });
 
   it("locale string does not double-prefix", () => {

@@ -25,8 +25,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
-import { normalizePathSeparators } from "../utils/path.js";
+import path from "pathslash";
 
 const LOCK_DIR_RELATIVE = path.join(".vinext", "dev");
 const LOCK_FILE_NAME = "lock.json";
@@ -150,9 +149,10 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
     return [
       "Another vinext dev server appears to be running in this directory.",
       "",
-      // Normalized so the message reads the same on every platform — this
-      // output is meant to be parsed by AI agents and CLIs.
-      `Stale lock file: ${normalizePathSeparators(path.relative(cwd, lockfilePath))}`,
+      // pathslash's relative() emits forward slashes on every platform, so
+      // this message reads the same everywhere — it's meant to be parsed by
+      // AI agents and CLIs.
+      `Stale lock file: ${path.relative(cwd, lockfilePath)}`,
       "Remove it manually if no server is running, then re-run `vinext dev`.",
     ].join("\n");
   }

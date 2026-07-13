@@ -7,28 +7,37 @@
  * module init time — link.tsx and router.ts must remain free of circular
  * imports and SSR-side router-init side effects.
  */
-import { stripBasePath } from "../../utils/base-path.js";
+import { removeTrailingSlash, stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
-import { dedupedPagesDataFetch } from "./pages-data-fetch-dedup.js";
+import { fetchStaticPagesData, fetchUncachedPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
+import { isUnknownRecord } from "../../utils/record.js";
 
 export type PagesDataTarget = {
   /** Final fetch URL for the data endpoint, including basePath and search. */
   dataHref: string;
+  /** Locale-qualified data endpoint used by Pages Router prefetch. */
+  prefetchDataHref?: string;
   /** Matched route pattern (e.g. `/blog/[slug]`). */
   pattern: string;
   /** Dynamic params extracted from the URL by the pattern matcher. */
   params: Record<string, string | string[]>;
   /** Code-split loader thunk for the matched route's page module. */
   loader: () => Promise<{ default?: unknown; [key: string]: unknown }>;
+  /** Next.js data-fetch mode for this route. Plain pages are component-only. */
+  dataKind: "none" | "server" | "static";
+  /** Middleware-effect data URL to prefetch when the static matcher includes this route. */
+  middlewareDataHref?: string;
   /** Current buildId snapshot, used by the data URL and consistency checks. */
   buildId: string;
   /** Locale-prefixed (server-routable) page path. */
   pagePath: string;
   /** URL search string including the leading `?`. */
   search: string;
+  /** Locale selected for middleware-prefetch data URLs when the visible URL is unprefixed. */
+  prefetchLocale?: string;
   /**
    * Locale prefix detected on the URL, or `undefined` when the URL is
    * unprefixed (default locale, or no i18n configured). Lets the caller refresh
@@ -37,6 +46,113 @@ export type PagesDataTarget = {
    */
   locale: string | undefined;
 };
+
+type PagesDataNavigationTargetOptions = {
+  locale?: string | false;
+};
+
+type ClientMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: unknown[];
+  missing?: unknown[];
+};
+
+function hasVinextMiddleware(nextData: unknown): boolean {
+  if (!isUnknownRecord(nextData)) return false;
+  const vinext = nextData.__vinext;
+  return isUnknownRecord(vinext) && vinext.hasMiddleware === true;
+}
+
+function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
+  if (!isUnknownRecord(value)) return false;
+  if (typeof value.source !== "string") return false;
+  if (value.locale !== undefined && value.locale !== false) return false;
+  if (value.has !== undefined && !Array.isArray(value.has)) return false;
+  if (value.missing !== undefined && !Array.isArray(value.missing)) return false;
+  return true;
+}
+
+function stripLocaleForMiddlewareMatcher(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales || locales.length === 0 || pathname === "/") return pathname;
+  const firstSegment = pathname.split("/")[1];
+  if (!firstSegment || !locales.includes(firstSegment)) return pathname;
+  return "/" + pathname.split("/").slice(2).join("/");
+}
+
+function clientMiddlewareSourceMatches(pathname: string, source: string): boolean {
+  if (!/[\\():*+?]/.test(source)) {
+    return removeTrailingSlash(pathname) === removeTrailingSlash(source);
+  }
+
+  if (source.includes("(") || source.includes("\\")) return true;
+
+  const sourceParts = source.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  let pathIndex = 0;
+
+  for (const sourcePart of sourceParts) {
+    if (sourcePart.startsWith(":")) {
+      if (sourcePart.endsWith("*")) return true;
+      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
+      if (pathIndex >= pathParts.length) return false;
+      pathIndex++;
+      continue;
+    }
+
+    if (pathParts[pathIndex] !== sourcePart) return false;
+    pathIndex++;
+  }
+
+  return pathIndex === pathParts.length;
+}
+
+function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boolean {
+  if (matcher === undefined) return true;
+  if (typeof matcher === "string") {
+    return clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), matcher);
+  }
+  if (!Array.isArray(matcher)) return true;
+
+  for (const item of matcher) {
+    if (typeof item === "string") {
+      if (clientMiddlewareSourceMatches(stripLocaleForMiddlewareMatcher(pathname), item)) {
+        return true;
+      }
+      continue;
+    }
+    if (!isClientMiddlewareMatcherObject(item)) return true;
+    const candidate = item.locale === false ? pathname : stripLocaleForMiddlewareMatcher(pathname);
+    if (clientMiddlewareSourceMatches(candidate, item.source)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string): string | null {
+  const nextData = window.__NEXT_DATA__;
+  if (!nextData || !hasVinextMiddleware(nextData)) return null;
+  const buildId = nextData.buildId;
+  if (typeof buildId !== "string" || buildId.length === 0) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(browserUrl, window.location.href);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== window.location.origin) return null;
+
+  const pathname = stripBasePath(parsed.pathname, basePath);
+  if (!clientMiddlewareMatcherMatches(pathname, window.__VINEXT_MIDDLEWARE_MATCHER__)) {
+    return null;
+  }
+
+  return buildPagesDataHref(basePath, buildId, pathname, parsed.search);
+}
 
 /**
  * Decide whether the JSON data-endpoint navigation path is usable for this
@@ -64,6 +180,7 @@ export type PagesDataTarget = {
 export function resolvePagesDataNavigationTarget(
   browserUrl: string,
   basePath: string,
+  options: PagesDataNavigationTargetOptions = {},
 ): PagesDataTarget | null {
   if (typeof window === "undefined") return null;
 
@@ -93,28 +210,49 @@ export function resolvePagesDataNavigationTarget(
 
   const loader = loaders[match.pattern];
   if (!loader) return null;
+  const ssgPatterns = window.__VINEXT_PAGES_SSG_PATTERNS__;
+  const sspPatterns = window.__VINEXT_PAGES_SSP_PATTERNS__;
+  const dataKind = ssgPatterns?.includes(match.pattern)
+    ? "static"
+    : sspPatterns?.includes(match.pattern)
+      ? "server"
+      : // Older generated entries only exposed the SSG manifest. Preserve the
+        // previous safe behaviour with those entries; fresh builds expose both
+        // manifests and can distinguish plain pages from GSSP pages.
+        ssgPatterns === undefined || sspPatterns === undefined
+        ? "server"
+        : "none";
+  const explicitLocale =
+    options.locale === false ? window.__VINEXT_DEFAULT_LOCALE__ : options.locale;
+  const currentLocale = locale ?? explicitLocale ?? window.__VINEXT_LOCALE__;
+  const prefetchPagePath =
+    locale || !currentLocale || !window.__VINEXT_LOCALES__?.includes(currentLocale)
+      ? pagePath
+      : `/${currentLocale}${pagePath === "/" ? "" : pagePath}`;
 
   return {
     dataHref: buildPagesDataHref(basePath, buildId, pagePath, parsed.search),
+    prefetchDataHref: buildPagesDataHref(basePath, buildId, prefetchPagePath, parsed.search),
     pattern: match.pattern,
     params: match.params,
     loader,
+    dataKind,
+    middlewareDataHref: getPagesMiddlewareDataHref(browserUrl, basePath) ?? undefined,
     buildId,
     pagePath,
     search: parsed.search,
+    prefetchLocale: currentLocale,
     locale,
   };
 }
 
 /**
- * Prefetch the data JSON and kick off the code-split loader so the chunk is
- * warm by the time the user clicks.
+ * Kick off the code-split loader and, for SSG pages, prefetch the data JSON so
+ * the chunk and payload are warm by the time the user clicks.
  *
- * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch. The
- * JSON request uses `fetch()` rather than `<link rel="prefetch">` so it can
- * carry Next.js's `x-deployment-id` skew-protection header. The in-flight
- * request is shared with a racing navigation; after it settles, the browser's
- * normal HTTP cache remains responsible for reuse.
+ * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch.
+ * Matches Next.js Pages Router prefetch: non-SSG routes only warm the page
+ * chunk, while `getStaticProps` routes also fetch `/_next/data`.
  *
  * loader's returned Promise is intentionally discarded — `import()` caches the
  * result, so a subsequent navigation re-invocation hits the cache without
@@ -124,15 +262,31 @@ export function resolvePagesDataNavigationTarget(
 export function prefetchPagesData(target: PagesDataTarget): void {
   if (typeof document === "undefined") return;
 
+  void target.loader().catch(() => {});
+
+  if (target.dataKind !== "static" && !target.middlewareDataHref) return;
+
   const headers: Record<string, string> = {
     Accept: "application/json",
     purpose: "prefetch",
     "x-nextjs-data": "1",
   };
+  if (target.middlewareDataHref) headers["x-middleware-prefetch"] = "1";
   const deploymentId = getDeploymentId();
   if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
 
-  void dedupedPagesDataFetch(target.dataHref, { headers }).catch(() => {});
+  if (target.dataKind === "static") {
+    const dataHref =
+      target.middlewareDataHref && target.middlewareDataHref !== target.dataHref
+        ? target.middlewareDataHref
+        : (target.prefetchDataHref ?? target.middlewareDataHref ?? target.dataHref);
+    void fetchStaticPagesData(dataHref, { headers })
+      .then((response) => response.arrayBuffer())
+      .catch(() => {});
+    return;
+  }
 
-  void target.loader().catch(() => {});
+  if (target.middlewareDataHref) {
+    void fetchUncachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
+  }
 }

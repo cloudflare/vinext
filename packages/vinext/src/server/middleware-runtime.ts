@@ -1,7 +1,7 @@
 import "./server-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
-import path from "node:path";
+import path from "pathslash";
 import {
   getRequestExecutionContext,
   runWithExecutionContext,
@@ -15,7 +15,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
-import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
+import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 import {
@@ -321,6 +321,12 @@ export async function executeMiddleware(
     options.trailingSlash,
     hadBasePath,
   );
+  if (options.isDataRequest) {
+    Object.defineProperty(nextRequest, "__isData", {
+      enumerable: false,
+      value: true,
+    });
+  }
   const fetchEvent = new NextFetchEvent({ page: removeTrailingSlash(matchPathname) });
 
   let response: Response | undefined | void;
