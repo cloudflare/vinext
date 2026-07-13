@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import vinext from "../packages/vinext/src/index.js";
 import { generateRouteTypes } from "../packages/vinext/src/typegen.js";
+import { toSlash } from "pathslash";
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
 const EMPTY_LAYOUT = "export default function Layout({ children }: any) { return children; }\n";
@@ -60,7 +61,7 @@ describe("generateRouteTypes", () => {
       const outputPath = await generateRouteTypes({ root });
       const generated = await readFile(outputPath, "utf-8");
 
-      expect(outputPath).toBe(path.join(root, ".next/types/routes.d.ts"));
+      expect(outputPath).toBe(toSlash(path.join(root, ".next/types/routes.d.ts")));
       expect(generated).toContain("declare namespace VinextRouteTypes");
       expect(generated).toContain(
         'type PageRoute = "/" | "/[slug]" | "/_sites" | "/blog/[slug]" | "/dashboard" | "/docs/[...slug]" | "/shop/[[...slug]]";',

@@ -35,16 +35,22 @@ import "vinext/shims/router-state";
 import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  createNonceAttribute,
+  escapeHtmlAttr,
+  safeJsonStringify,
+} from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
-import path from "node:path";
+import path from "pathslash";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
+  findFileWithExts,
   findFileWithExtensions,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
@@ -62,7 +68,9 @@ import {
   matchesPagesStaticPath,
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
-import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
+import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
   loadUserDocumentInitialProps,
@@ -75,6 +83,13 @@ import {
   loadDevAppInitialProps,
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
+import { attachPagesRequestCookies } from "./pages-node-compat.js";
+import {
+  appendPagesPreviewClearCookies,
+  getPagesPreviewState,
+  PAGES_PREVIEW_CACHE_CONTROL,
+  type PagesPreviewState,
+} from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -91,6 +106,41 @@ async function renderToStringAsync(element: React.ReactElement): Promise<string>
   return new Response(stream).text();
 }
 
+function applyDevPagesPreviewHeaders(
+  headers: Record<string, string | string[] | number>,
+  preview: PagesPreviewState,
+): void {
+  const removeHeader = (name: string) => {
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === name) delete headers[key];
+    }
+  };
+  if (preview.data !== false) {
+    removeHeader("cache-control");
+    headers["Cache-Control"] = PAGES_PREVIEW_CACHE_CONTROL;
+  }
+  if (preview.shouldClear) {
+    const clearHeaders = new Headers();
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "set-cookie") continue;
+      if (Array.isArray(value)) {
+        for (const cookie of value) clearHeaders.append("Set-Cookie", String(cookie));
+      } else {
+        clearHeaders.append("Set-Cookie", String(value));
+      }
+      delete headers[key];
+    }
+    appendPagesPreviewClearCookies(clearHeaders);
+    headers["Set-Cookie"] = clearHeaders.getSetCookie();
+  }
+}
+
+function applyDevPagesPreviewResponse(res: ServerResponse, preview: PagesPreviewState): void {
+  const headers = res.getHeaders() as Record<string, string | string[] | number>;
+  applyDevPagesPreviewHeaders(headers, preview);
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+}
+
 async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<string> {
   // The cache-fill render is a second render pass for the same request.
   // Reset render-scoped state so it cannot leak from the streamed response
@@ -104,6 +154,133 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
       ),
     ),
   );
+}
+
+const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
+
+type PagesClientAssetsModule = {
+  default?: {
+    ssrManifest?: Record<string, string[]>;
+  };
+};
+
+const transformedStylesheetAssetsCache = new WeakMap<ViteDevServer, Map<string, string[]>>();
+const transformedStylesheetAssetsWatchers = new WeakSet<ViteDevServer>();
+
+function createDevInitialStylesheetHeadHTML(options: {
+  ssrManifest: Record<string, string[]> | null | undefined;
+  moduleIds: (string | null | undefined)[];
+  nonceAttr: string;
+}): string {
+  const { ssrManifest, moduleIds, nonceAttr } = options;
+  if (!ssrManifest || moduleIds.length === 0) return "";
+
+  const seen = new Set<string>();
+  let html = "";
+  for (const moduleId of moduleIds) {
+    const files = getManifestFilesForModule(ssrManifest, moduleId);
+    if (!files) continue;
+    for (const file of files) {
+      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
+      seen.add(file);
+      const href = createPagesDevAssetUrl(file);
+      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+    }
+  }
+  return html;
+}
+
+async function collectTransformedStylesheetAssets(
+  server: ViteDevServer,
+  moduleIds: (string | null | undefined)[],
+): Promise<string[]> {
+  const clientEnvironment = server.environments.client;
+  if (!clientEnvironment) return [];
+
+  const cachedServerAssets = transformedStylesheetAssetsCache.get(server);
+  const cache = cachedServerAssets ?? new Map<string, string[]>();
+  if (!cachedServerAssets) transformedStylesheetAssetsCache.set(server, cache);
+  if (!transformedStylesheetAssetsWatchers.has(server)) {
+    transformedStylesheetAssetsWatchers.add(server);
+    const clearCache = () => cache.clear();
+    server.watcher.on("add", clearCache);
+    server.watcher.on("change", clearCache);
+    server.watcher.on("unlink", clearCache);
+  }
+
+  const cacheKey = moduleIds.filter((moduleId): moduleId is string => Boolean(moduleId)).join("\0");
+  const cachedAssets = cache.get(cacheKey);
+  if (cachedAssets) return cachedAssets;
+
+  const assets = new Set<string>();
+  const seenModules = new Set<string>();
+  async function visitModule(moduleUrl: string): Promise<void> {
+    if (seenModules.has(moduleUrl)) return;
+    seenModules.add(moduleUrl);
+    try {
+      await clientEnvironment.transformRequest(moduleUrl);
+      const moduleNode = await clientEnvironment.moduleGraph.getModuleByUrl(moduleUrl);
+      if (!moduleNode) return;
+      for (const importedModule of moduleNode.importedModules) {
+        if (
+          importedModule.type === "css" ||
+          /\.(?:css|scss|sass)(?:$|[?#])/i.test(importedModule.url)
+        ) {
+          if (importedModule.url.startsWith("//")) continue;
+          const assetUrl = importedModule.url.startsWith("\0")
+            ? `/@id/__x00__${importedModule.url.slice(1)}${importedModule.url.includes("?") ? "&" : "?"}direct`
+            : importedModule.url;
+          assets.add(assetUrl);
+        } else if (importedModule.type === "js") {
+          await visitModule(importedModule.url);
+        }
+      }
+    } catch {
+      // Preserve the source-manifest fallback when a third-party client
+      // transform fails while the server render itself remains valid.
+    }
+  }
+
+  for (const moduleId of moduleIds) {
+    if (!moduleId) continue;
+    await visitModule(createPagesDevModuleUrl(server.config.root, moduleId, "/"));
+  }
+  const result = [...assets];
+  cache.set(cacheKey, result);
+  return result;
+}
+
+async function collectDevInitialStylesheetHeadHTML(
+  server: ViteDevServer,
+  runner: ModuleImporter,
+  moduleIds: (string | null | undefined)[],
+  nonceAttr: string,
+): Promise<string> {
+  let manifestHTML = "";
+  try {
+    const pagesClientAssets = (await runner.import(
+      "virtual:vinext-pages-client-assets",
+    )) as PagesClientAssetsModule;
+    manifestHTML = createDevInitialStylesheetHeadHTML({
+      ssrManifest: pagesClientAssets.default?.ssrManifest,
+      moduleIds,
+      nonceAttr,
+    });
+  } catch {
+    // If dev asset metadata is unavailable, keep the existing client-graph
+    // CSS behavior instead of failing the page render.
+  }
+
+  const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
+  if (transformedAssets.length === 0) return manifestHTML;
+
+  let html = manifestHTML;
+  for (const asset of transformedAssets) {
+    const href = asset.startsWith("/") ? asset : createPagesDevAssetUrl(asset);
+    if (html.includes(`href="${escapeHtmlAttr(href)}"`)) continue;
+    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
+  }
+  return html;
 }
 
 /**
@@ -181,6 +358,7 @@ async function streamPageToResponse(
     url: string;
     server: ViteDevServer;
     fontHeadHTML: string;
+    assetHeadHTML?: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
@@ -220,9 +398,10 @@ async function streamPageToResponse(
     url,
     server,
     fontHeadHTML,
+    assetHeadHTML = "",
     scripts,
     DocumentComponent,
-    statusCode = 200,
+    statusCode,
     extraHeaders,
     getHeadHTML,
     enhancePageElement,
@@ -247,6 +426,7 @@ async function streamPageToResponse(
     scriptNonce,
     context: documentContext,
   });
+  if (res.headersSent || res.writableEnded) return;
 
   let bodyStream: ReadableStream<Uint8Array>;
   if (documentRenderPage.status === "rendered") {
@@ -305,8 +485,11 @@ async function streamPageToResponse(
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML || fontHeadHTML || assetHeadHTML) {
+      docHtml = docHtml.replace(
+        "</head>",
+        `  ${fontHeadHTML}${headHTML}\n  ${assetHeadHTML}\n</head>`,
+      );
     }
     // Inject scripts: replace placeholder or append before </body>
     docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
@@ -322,6 +505,7 @@ async function streamPageToResponse(
 <html>
 <head>
   ${fontHeadHTML}${headHTML}
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -343,7 +527,7 @@ async function streamPageToResponse(
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
   const headers: Record<string, string> = {
-    "Content-Type": "text/html",
+    "Content-Type": "text/html; charset=utf-8",
     "Transfer-Encoding": "chunked",
   };
   if (extraHeaders) {
@@ -355,7 +539,7 @@ async function streamPageToResponse(
       }
     }
   }
-  res.writeHead(statusCode, headers);
+  res.writeHead(statusCode ?? res.statusCode, headers);
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
@@ -440,6 +624,15 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  /**
+   * Whether `reactStrictMode: true` is set in next.config. When true, the dev
+   * hydration script sets `window.__VINEXT_REACT_STRICT_MODE__` so
+   * `wrapWithRouterContext` wraps the tree in `<React.StrictMode>` on the
+   * initial hydration and every navigation. Pages Router default is OFF
+   * (Next.js: `reactStrictMode === null ? false`), so callers pass
+   * `nextConfig?.reactStrictMode === true`.
+   */
+  reactStrictMode = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -482,6 +675,7 @@ export function createSSRHandler(
     const _reqStart = now();
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
+    attachPagesRequestCookies(req);
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
@@ -565,7 +759,23 @@ export function createSSRHandler(
         return;
       }
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
+      const requestContext = createRequestContext();
+      await runWithRequestContext(requestContext, async () => {
+        await _alsRegistration;
+        await renderErrorPage(
+          server,
+          runner,
+          req,
+          res,
+          url,
+          pagesDir,
+          404,
+          undefined,
+          matcher,
+          undefined,
+          reactStrictMode,
+        );
+      });
       return;
     }
 
@@ -577,7 +787,11 @@ export function createSSRHandler(
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
     const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq ? gsspResolvedUrl : originalUrl;
+    const requestAsPath = isDataReq
+      ? gsspResolvedUrl
+      : i18nConfig
+        ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
+        : originalUrl;
     // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
     // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
     // Internal use (query merging, _app router context) keeps the matched
@@ -586,7 +800,6 @@ export function createSSRHandler(
       ? params
       : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
-
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
@@ -626,6 +839,17 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        const supportsPreview =
+          typeof pageModule.getStaticProps === "function" ||
+          typeof pageModule.getServerSideProps === "function";
+        const requestPreview = supportsPreview
+          ? getPagesPreviewState(req.headers.cookie, {
+              isOnDemandRevalidate: isOnDemandRevalidateRequest(
+                req.headers[PRERENDER_REVALIDATE_HEADER],
+              ),
+            })
+          : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
+        const requestPreviewData = requestPreview.data;
         // Try to load _app.tsx if it exists. This happens before the readiness
         // predicate so app-level getInitialProps participates in the same
         // initial Pages Router state as the client __NEXT_DATA__ payload.
@@ -640,11 +864,14 @@ export function createSSRHandler(
             // _app exists but failed to load
           }
         }
-        const pagesNextData = buildPagesReadinessNextData({
-          pageModule,
-          appComponent: AppComponent,
-          hasRewrites,
-        });
+        const pagesNextData = {
+          ...buildPagesReadinessNextData({
+            pageModule,
+            appComponent: AppComponent,
+            hasRewrites,
+          }),
+          ...(requestPreviewData === false ? {} : { isPreview: true as const }),
+        };
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
@@ -664,6 +891,7 @@ export function createSSRHandler(
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
             domainLocales,
+            isPreview: requestPreviewData !== false,
           });
         }
         // Mark end of compile phase: everything from here is rendering.
@@ -711,6 +939,7 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let renderProps: Record<string, unknown> = { pageProps };
+        if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
         let isrRevalidateSeconds: number | null = null;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
@@ -718,6 +947,7 @@ export function createSSRHandler(
         // and `useRouter().isFallback === true`, matching Next.js render.tsx.
         let isFallbackRender = false;
         let shouldPersistFallbackData = false;
+        let staticPropsPreviewData = requestPreviewData;
 
         // Handle getStaticPaths for dynamic routes: validate the path,
         // respect `fallback: false` (return 404 for unlisted paths), and
@@ -736,7 +966,7 @@ export function createSSRHandler(
             matchesPagesStaticPath(pathEntry, params, routeParams, url),
           );
 
-          if (fallback === false && !isValidPath) {
+          if (fallback === false && !isValidPath && requestPreviewData === false) {
             if (isDataReq) {
               // Data requests get a JSON 404 so the client router can
               // hard-navigate instead of trying to parse HTML as JSON.
@@ -762,6 +992,8 @@ export function createSSRHandler(
               404,
               routerShim.wrapWithRouterContext,
               matcher,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -772,7 +1004,13 @@ export function createSSRHandler(
           const userAgentHeader = req.headers["user-agent"];
           const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
           const isBotRequest = !!userAgent && isBotUserAgent(userAgent, htmlLimitedBots);
-          if (fallback === true && !isValidPath && !isDataReq && !isBotRequest) {
+          if (
+            fallback === true &&
+            !isValidPath &&
+            !isDataReq &&
+            !isBotRequest &&
+            requestPreviewData === false
+          ) {
             const fallbackCacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const generatedEntry = await isrGet(fallbackCacheKey);
             isFallbackRender = generatedEntry?.value.value?.kind !== "PAGES";
@@ -838,6 +1076,7 @@ export function createSSRHandler(
           if (appResult.kind === "render") {
             pageProps = appResult.pageProps;
             renderProps = appResult.renderProps;
+            if (requestPreviewData !== false) renderProps.__N_PREVIEW = true;
           }
           return false;
         }
@@ -849,6 +1088,15 @@ export function createSSRHandler(
           renderProps = { ...renderProps, __N_SSP: true };
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
+          const previewData = requestPreviewData;
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           const context = {
             params: userFacingParams,
@@ -859,6 +1107,7 @@ export function createSSRHandler(
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
+            ...previewContext,
           };
           const result = await pageModule.getServerSideProps(context);
           // If gSSP called res.end() directly (short-circuit pattern),
@@ -887,6 +1136,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -909,6 +1159,9 @@ export function createSSRHandler(
               pagesDir,
               404,
               routerShim.wrapWithRouterContext,
+              undefined,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -1000,6 +1253,16 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
+          const previewData = requestPreviewData;
+          staticPropsPreviewData = previewData;
+          const previewContext =
+            previewData === false
+              ? {}
+              : {
+                  draftMode: true as const,
+                  preview: true as const,
+                  previewData,
+                };
 
           if (
             !isOnDemandRevalidate &&
@@ -1008,7 +1271,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1021,7 +1285,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const hitHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("HIT"),
               "Cache-Control": hitCacheControl,
             };
@@ -1038,7 +1302,8 @@ export function createSSRHandler(
             cached.value.value?.kind === "PAGES" &&
             !cached.value.value.generatedFromDataRequest &&
             !scriptNonce &&
-            !isDataReq
+            !isDataReq &&
+            previewData === false
           ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
@@ -1269,7 +1534,7 @@ export function createSSRHandler(
               revalidateSeconds: revalidateSecs,
             });
             const staleHeaders: Record<string, string> = {
-              "Content-Type": "text/html",
+              "Content-Type": "text/html; charset=utf-8",
               ...buildCacheStateHeaders("STALE"),
               "Cache-Control": staleCacheControl,
             };
@@ -1294,9 +1559,11 @@ export function createSSRHandler(
             revalidateReason: (isOnDemandRevalidate ? "on-demand" : "stale") as
               | "on-demand"
               | "stale",
+            ...previewContext,
           };
           const generatedPageData =
             !isOnDemandRevalidate &&
+            previewData === false &&
             cached?.isStale === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest &&
@@ -1323,6 +1590,7 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            applyDevPagesPreviewResponse(res, requestPreview);
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -1345,6 +1613,9 @@ export function createSSRHandler(
               pagesDir,
               404,
               routerShim.wrapWithRouterContext,
+              undefined,
+              undefined,
+              reactStrictMode,
             );
             return;
           }
@@ -1360,9 +1631,14 @@ export function createSSRHandler(
           }
 
           // Extract revalidate period for ISR caching after render
-          if (typeof result?.revalidate === "number" && result.revalidate > 0) {
+          if (
+            previewData === false &&
+            typeof result?.revalidate === "number" &&
+            result.revalidate > 0
+          ) {
             isrRevalidateSeconds = result.revalidate;
           } else if (
+            previewData === false &&
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest
           ) {
@@ -1413,7 +1689,7 @@ export function createSSRHandler(
         // by getServerSideProps (cookies, status codes, etc.) are preserved
         // because we already let gSSP mutate `res` above.
         if (isDataReq) {
-          if (shouldPersistFallbackData) {
+          if (shouldPersistFallbackData && staticPropsPreviewData === false) {
             const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
             await isrSet(
@@ -1442,6 +1718,7 @@ export function createSSRHandler(
               dataHeaders[k] = v;
             }
           }
+          applyDevPagesPreviewHeaders(dataHeaders, requestPreview);
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
@@ -1505,6 +1782,13 @@ export function createSSRHandler(
 
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
+        const appAssetPath = AppComponent ? findFileWithExts(pagesDir, "_app", matcher) : null;
+        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+          server,
+          runner,
+          [appAssetPath, route.filePath],
+          nonceAttr,
+        );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
@@ -1573,80 +1857,13 @@ export function createSSRHandler(
           },
         };
 
-        // Hydration entry: inline script that imports the page and hydrates.
-        // Stores the React root and page loader for client-side navigation.
-        const hydrationScript = `
-<script type="module"${nonceAttr}>
-import "vinext/instrumentation-client";
-import React from "react";
-import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
-
-const nextDataElement = document.getElementById("__NEXT_DATA__");
-if (nextDataElement?.textContent) {
-  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
-  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
-  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
-  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
-}
-const nextData = window.__NEXT_DATA__;
-_initializePagesRouterReadyFromNextData(nextData);
-const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
-const rawPageProps = props.pageProps;
-const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
-window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleSource}") };
-window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
-
-async function hydrate() {
-  let hydrateRootOptions;
-  if (import.meta.env.DEV) {
-    const overlay = await import("vinext/dev-error-overlay");
-    overlay.installDevErrorOverlay();
-    overlay.installViteHmrErrorHandler(import.meta.hot);
-    overlay.reportInitialDevServerErrors();
-    hydrateRootOptions = {
-      onCaughtError: overlay.devOnCaughtError,
-      onUncaughtError: overlay.devOnUncaughtError,
-    };
-  }
-
-  const pageModule = await import("${pageModuleSource}");
-  const PageComponent = pageModule.default;
-  let element;
-  ${
-    appModuleSource
-      ? `
-  const appModule = await import("${appModuleSource}");
-  const AppComponent = appModule.default;
-  window.__VINEXT_APP__ = AppComponent;
-  element = React.createElement(AppComponent, {
-    ...props,
-    Component: PageComponent,
-    pageProps: rawPageProps,
-    router: Router,
-  });
-  `
-      : `
-  element = React.createElement(PageComponent, pageProps);
-  `
-  }
-  let resolveHydrationCommit;
-  const hydrationCommitted = new Promise((resolve) => { resolveHydrationCommit = resolve; });
-  element = wrapWithRouterContext(element, resolveHydrationCommit);
-  const root = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
-  window.__VINEXT_ROOT__ = root;
-  await hydrationCommitted;
-  const hydratedAt = performance.now();
-  window.__VINEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED = true;
-  window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
-  }
-}
-hydrate();
-</script>`;
+        const hydrationScript = createPagesDevHydrationScript({
+          appModuleSource,
+          pageModuleSource,
+          reactStrictMode: reactStrictMode === true,
+          replaceFallbackRoute: true,
+          scriptNonce,
+        });
 
         const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
           {
@@ -1693,7 +1910,7 @@ hydrate();
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (isrRevalidateSeconds) {
+        if (requestPreviewData === false && isrRevalidateSeconds) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
@@ -1701,6 +1918,7 @@ hydrate();
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
+        applyDevPagesPreviewHeaders(extraHeaders, requestPreview);
 
         // Set HTTP Link header for font preloading.
         // This lets the browser (and CDN) start fetching font files before parsing HTML.
@@ -1717,6 +1935,7 @@ hydrate();
           url,
           server,
           fontHeadHTML,
+          assetHeadHTML,
           scripts: allScripts,
           DocumentComponent,
           statusCode,
@@ -1724,11 +1943,12 @@ hydrate();
           // Forward the per-request nonce so the shared renderPage helper can
           // apply `withScriptNonce` once (it owns that responsibility).
           scriptNonce,
-          // Minimal DocumentContext for `getInitialProps`, matching prod parity.
+          // DocumentContext for `getInitialProps`, matching prod parity.
           documentContext: {
             pathname: patternToNextFormat(route.pattern),
             query,
             asPath: requestAsPath,
+            ...(pagesNextData.autoExport === true ? {} : { req, res }),
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,
@@ -1807,7 +2027,7 @@ hydrate();
           const isrBodyHtml = await renderIsrPassToStringAsync(
             withScriptNonce(isrElement, scriptNonce),
           );
-          const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+          const isrHtml = `<!DOCTYPE html><html><head>${assetHeadHTML}</head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
@@ -1851,6 +2071,7 @@ hydrate();
             undefined,
             matcher,
             e instanceof Error ? e : new Error(String(e)),
+            reactStrictMode,
           );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
@@ -1885,18 +2106,22 @@ async function renderErrorPage(
   wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
   fileMatcher?: ValidFileMatcher,
   err?: Error,
+  reactStrictMode = false,
 ): Promise<void> {
+  attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
   const candidates =
     statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
 
   for (const candidate of candidates) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    let errorRouterShim: any = null;
     try {
-      const candidatePath = path.join(pagesDir, candidate);
-      if (!findFileWithExtensions(candidatePath, matcher)) continue;
+      const errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      if (!errorAssetPath && candidate !== "_error") continue;
 
-      const errorModule = await importModule(runner, candidatePath);
+      const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1904,9 +2129,10 @@ async function renderErrorPage(
       // oxlint-disable-next-line typescript/no-explicit-any
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
+      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          const appModule = await importModule(runner, appPathErr);
+          const appModule = await importModule(runner, appAssetPath ?? appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -1914,27 +2140,62 @@ async function renderErrorPage(
       }
 
       const createElement = React.createElement;
+      res.statusCode = statusCode;
+      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
+      const errorRouter = {
+        pathname: errorPage,
+        query: parseQuery(url),
+        asPath: url,
+      };
+      try {
+        errorRouterShim = await importModule(runner, "next/router");
+        if (typeof errorRouterShim.setSSRContext === "function") {
+          errorRouterShim.setSSRContext({
+            ...errorRouter,
+            navigationIsReady: true,
+          });
+        }
+      } catch {
+        // router shim not available — continue without it
+      }
+      const serverRouter = errorRouterShim?.default ?? errorRouter;
+      const wrapFn = wrapWithRouterContext ?? errorRouterShim?.wrapWithRouterContext;
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
         err,
-        pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
-        query: parseQuery(url),
+        pathname: errorPage,
+        query: errorRouter.query,
         asPath: url,
       });
       if (res.headersSent || res.writableEnded) return;
       const errorProps = { ...initialErrorProps, statusCode };
-
-      // If the caller didn't supply wrapWithRouterContext, load it now.
-      // runner.import() caches internally so the cost is negligible.
-      let wrapFn = wrapWithRouterContext;
-      if (!wrapFn) {
-        try {
-          const errRouterShim = await importModule(runner, "next/router");
-          wrapFn = errRouterShim.wrapWithRouterContext;
-        } catch {
-          // router shim not available — continue without it
-        }
+      let renderProps: Record<string, unknown>;
+      if (AppComponent && hasPagesGetInitialProps(AppComponent)) {
+        const appInitialProps = await loadPagesGetInitialProps(AppComponent, {
+          AppTree: (appTreeProps: Record<string, unknown>) => {
+            const appTree = createElement(AppComponent, {
+              ...appTreeProps,
+              Component: ErrorComponent,
+              router: serverRouter,
+            });
+            return wrapFn ? wrapFn(appTree) : appTree;
+          },
+          Component: ErrorComponent,
+          router: serverRouter,
+          ctx: {
+            req,
+            res,
+            err,
+            pathname: errorPage,
+            query: errorRouter.query,
+            asPath: url,
+          },
+        });
+        if (res.headersSent || res.writableEnded) return;
+        renderProps = appInitialProps ?? {};
+      } else {
+        renderProps = { pageProps: errorProps };
       }
 
       // Try custom _document
@@ -1958,8 +2219,9 @@ async function renderErrorPage(
       ): React.ReactElement => {
         let errorElement: React.ReactElement = FinalApp
           ? createElement(FinalApp, {
+              ...renderProps,
               Component: FinalComponent,
-              pageProps: errorProps,
+              router: serverRouter,
             })
           : createElement(FinalComponent, errorProps);
         if (wrapFn) errorElement = wrapFn(errorElement);
@@ -1969,19 +2231,53 @@ async function renderErrorPage(
       const element = createErrorElement(AppComponent, ErrorComponent);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+      const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
+      const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
+      const nonceAttr = createNonceAttribute(scriptNonce);
+      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        server,
+        runner,
+        [appAssetPath, errorAssetPath],
+        nonceAttr,
+      );
+      const errorModuleSource = errorAssetPath
+        ? createPagesDevModuleUrl(server.config.root, errorAssetPath, "/")
+        : "next/error";
+      const appModuleSource = appAssetPath
+        ? createPagesDevModuleUrl(server.config.root, appAssetPath, "/")
+        : null;
+      const errorNextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
+        {
+          props: renderProps,
+          page: errorPage,
+          query: parseQuery(url),
+          buildId: process.env.__VINEXT_BUILD_ID,
+          isFallback: false,
+        },
+      )}</script>`;
+      const errorHydrationScript = createPagesDevHydrationScript({
+        appModuleSource,
+        forceRouterReady: true,
+        normalizePageProps: false,
+        pageModuleSource: errorModuleSource,
+        reactStrictMode: reactStrictMode === true,
+        scriptNonce,
+        setPagePatternsFromNextData: true,
+      });
+      const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
 
       if (DocumentComponent) {
-        const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
         await streamPageToResponse(res, element, {
           url,
           server,
           fontHeadHTML: "",
-          scripts: "",
+          assetHeadHTML,
+          scripts: errorScripts,
           DocumentComponent,
           statusCode,
           documentContext: {
             err,
-            pathname: errorPathname,
+            pathname: errorPage,
             query: parseQuery(url),
             asPath: url,
             req,
@@ -2012,13 +2308,15 @@ async function renderErrorPage(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${assetHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
+  ${errorScripts}
 </body>
 </html>`;
         const transformedHtml = await server.transformIndexHtml(url, html);
-        res.writeHead(statusCode, { "Content-Type": "text/html" });
+        res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
         res.end(transformedHtml);
       }
       return;
@@ -2026,14 +2324,15 @@ async function renderErrorPage(
       if (res.headersSent || res.writableEnded) return;
       // This candidate doesn't exist, try next
       continue;
+    } finally {
+      if (typeof errorRouterShim?.setSSRContext === "function") {
+        errorRouterShim.setSSRContext(null);
+      }
     }
   }
 
-  // No custom error page found — fall back to vinext's default. The 404 case
-  // renders the canonical Next.js HTML body (matching `pages/_error.tsx`) so
-  // dev-server responses include "This page could not be found." just like
-  // production. Other status codes keep the plain-text fallback because
-  // Next.js's `_error.tsx` defaults already handle those cases when present.
+  // Defensive fallback for a missing or invalid framework error module. The
+  // normal no-user-error-file path resolves `next/error` in the candidate loop.
   if (statusCode === 404) {
     const defaultResponse = buildDefaultPagesNotFoundResponse();
     const headers: Record<string, string> = {};

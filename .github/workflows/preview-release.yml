@@ -18,4 +18,4 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: vp run build
-      - run: vp dlx pkg-pr-new@0.0.66 publish --pnpm './packages/vinext' './packages/cloudflare'
+      - run: vp dlx pkg-pr-new@0.0.66 publish --pnpm './packages/vinext' './packages/cloudflare' './packages/create-vinext-app'

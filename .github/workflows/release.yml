@@ -10,7 +10,8 @@ name: Release
 #      the git tag + GitHub Release.
 #
 # `version:` runs scripts/version.mts (`changeset version` + the `## Contributors`
-# list). `publish:` is `changeset publish`, which publishes only changed packages.
+# list). `publish:` runs scripts/publish.mts, which publishes only changed packages
+# and makes prerelease versions the default npm install via the `latest` dist-tag.
 
 on:
   push:
@@ -44,11 +45,11 @@ jobs:
         run: node scripts/create-changeset.mts
 
       - name: Version PR / publish
+        id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: node scripts/version.mts
-          # `vp exec` runs the pinned, installed @changesets/cli (not a floating dlx fetch).
-          publish: vp exec changeset publish
+          publish: node scripts/publish.mts
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
@@ -56,3 +57,10 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           NPM_CONFIG_PROVENANCE: "true"
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+
+      - name: Promote beta GitHub Releases
+        if: steps.changesets.outputs.published == 'true'
+        run: node scripts/promote-github-prereleases.mts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}

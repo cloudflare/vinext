@@ -1,0 +1,4 @@
+{
+  "extends": "./packages/create-vinext-app/tsconfig.json",
+  "include": ["packages/create-vinext-app/src"]
+}

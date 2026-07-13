@@ -62,7 +62,7 @@ export default function Home() {
     build: {
       outDir: path.join(tmpDir, "dist", "server"),
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: { output: { entryFileNames: "entry.js" } },
+      rolldownOptions: { output: { entryFileNames: "entry.js" } },
     },
   });
 }

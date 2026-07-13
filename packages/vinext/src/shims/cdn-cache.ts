@@ -30,11 +30,6 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "./cache-handler.js";
-import { getRequestExecutionContext } from "./request-context.js";
-// The edge adapter lives with the Cloudflare integration; the resolver below
-// imports it to use as the built-in default when a request-context host cache
-// is present.
-import { CloudflareCdnCacheAdapter } from "@vinext/cloudflare/cache/cdn-adapter.runtime";
 
 /** A map of response header name -> value the adapter wants applied or removed. */
 export type CdnResponseHeaders = Record<string, string | null>;
@@ -170,16 +165,6 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 //      visible across Vite environments (RSC + SSR), mirroring the data cache
 //      handler resolution in cache.ts.
 //   2. Otherwise, the origin-managed DefaultCdnCacheAdapter.
-//
-// Auto-detection of a request-context host cache (e.g. the Cloudflare Workers
-// Cache at `ctx.cache`) is gated behind the VINEXT_CDN_CACHE_AUTO_DETECT env
-// flag and is OFF by default. Edge-managed page ISR needs deployment skew
-// protection to be safe (a stale isolate purging/serving against a newer build
-// can mismatch), so until that is figured out the edge adapter is only selected
-// when an operator explicitly opts in via the flag (value "1"). When enabled
-// and `ctx.cache` is present, the resolved CloudflareCdnCacheAdapter is stored
-// on the same global slot setCdnCacheAdapter() uses, so there is no separate
-// "edge" variable and it is reused on subsequent calls.
 // ---------------------------------------------------------------------------
 
 const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
@@ -215,25 +200,12 @@ export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
 }
 
 /**
- * Get the active CDN cache adapter. See the precedence note above:
- * explicit (or an already-resolved auto-detected edge adapter) → origin-managed
- * {@link DefaultCdnCacheAdapter}.
- *
- * Auto-detection of the Cloudflare Workers Cache (`ctx.cache`) only runs when
- * `VINEXT_CDN_CACHE_AUTO_DETECT === "1"`; otherwise the default adapter is used
- * unless an adapter was set explicitly.
+ * Get the active CDN cache adapter. An explicitly configured adapter wins;
+ * otherwise the origin-managed {@link DefaultCdnCacheAdapter} is used.
  */
 export function getCdnCacheAdapter(): CdnCacheAdapter {
   const active = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
   if (active) return active;
-
-  if (process.env.VINEXT_CDN_CACHE_AUTO_DETECT === "1" && getRequestExecutionContext()?.cache) {
-    // Resolve once and store on the single active-adapter slot so the explicit
-    // and auto-detected paths share one mechanism (and one reused instance).
-    const edge = new CloudflareCdnCacheAdapter();
-    _gCdn[_CDN_KEY] = edge;
-    return edge;
-  }
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());
 }

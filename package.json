@@ -2,7 +2,7 @@
   "name": "vinext-monorepo",
   "private": true,
   "scripts": {
-    "build": "vp run @vinext/cloudflare#build && vp run vinext#build",
+    "build": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build",
     "check": "vp check",
     "test": "vp test run",
     "test:unit": "vp test run --project unit",
@@ -16,7 +16,7 @@
     "knip": "knip",
     "changeset": "changeset",
     "prepare": "vp config",
-    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build"
+    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",
@@ -26,15 +26,16 @@
     "@changesets/cli": "2.31.0",
     "@mswjs/interceptors": "catalog:",
     "@playwright/test": "catalog:",
+    "@sentry/nextjs": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "@typescript/native-preview": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "knip": "catalog:",
     "msw": "catalog:",
     "next": "catalog:",
+    "pathslash": "catalog:",
     "playwright": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

@@ -227,6 +227,44 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("renders unlisted fallback false paths in preview mode without caching them", async () => {
+    const isrSet = vi.fn(async () => {});
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrSet,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: "known" } }],
+            };
+          },
+          async getStaticProps(context) {
+            return {
+              props: {
+                preview: context.preview,
+                previewData: context.previewData,
+                slug: context.params?.slug,
+              },
+            };
+          },
+        },
+        params: { slug: "missing" },
+        previewData: {},
+        query: { slug: "missing" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/missing",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isFallback: false,
+      pageProps: { preview: true, previewData: {}, slug: "missing" },
+    });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["null", null],
     ["undefined", undefined],
@@ -1223,6 +1261,7 @@ describe("pages page data", () => {
 
     expect(result).toEqual({
       kind: "render",
+      documentReqRes: null,
       gsspRes: null,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
@@ -1315,6 +1354,102 @@ describe("pages page data", () => {
     expect(received).toBe("on-demand");
   });
 
+  it("passes preview context to getStaticProps and bypasses fresh ISR hits", async () => {
+    let received: unknown = "untouched";
+    const getStaticProps = vi.fn(async (context) => {
+      received = {
+        draftMode: context.draftMode,
+        preview: context.preview,
+        previewData: context.previewData,
+      };
+      return { props: { fromPreview: true } };
+    });
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "hit",
+            value: {
+              kind: "PAGES",
+              html: "<html>cached</html>",
+              pageData: { pageProps: { cached: true } },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: { getStaticProps },
+        previewData: { hello: "world" },
+      }),
+    );
+
+    expect(getStaticProps).toHaveBeenCalledOnce();
+    expect(received).toEqual({
+      draftMode: true,
+      preview: true,
+      previewData: { hello: "world" },
+    });
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render");
+    expect(result.pageProps).toEqual({ fromPreview: true });
+  });
+
+  it("disables preview context for on-demand getStaticProps regeneration", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = {
+              draftMode: context.draftMode,
+              preview: context.preview,
+              previewData: context.previewData,
+              revalidateReason: context.revalidateReason,
+            };
+            return { props: {} };
+          },
+        },
+        previewData: { hello: "world" },
+      }),
+    );
+
+    expect(received).toEqual({
+      draftMode: undefined,
+      preview: undefined,
+      previewData: undefined,
+      revalidateReason: "on-demand",
+    });
+  });
+
+  it("passes preview context to getServerSideProps", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps(context) {
+            received = {
+              draftMode: context.draftMode,
+              preview: context.preview,
+              previewData: context.previewData,
+            };
+            return { props: {} };
+          },
+        },
+        previewData: "draft",
+      }),
+    );
+
+    expect(received).toEqual({
+      draftMode: true,
+      preview: true,
+      previewData: "draft",
+    });
+  });
+
   it("passes revalidateReason: 'stale' to getStaticProps for runtime cache-miss requests", async () => {
     let received: unknown = "untouched";
     await resolvePagesPageData(
@@ -1402,6 +1537,25 @@ describe("pages page data", () => {
     ).rejects.toThrow(
       /Error serializing `\.date` returned from `getStaticProps` in "\/non-json"\.\s*Reason: `object` \("\[object Date\]"\) cannot be serialized as JSON/,
     );
+  });
+
+  it("allows non-serializable getStaticProps props when production SSR validation is disabled", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { props: { date: new Date(0) } };
+          },
+        },
+        routePattern: "/non-json",
+        routeUrl: "/non-json",
+        validatePropsSerialization: false,
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render");
+    expect(result.pageProps.date).toBeInstanceOf(Date);
   });
 
   it("throws a Next.js-style error when getServerSideProps returns non-serializable props", async () => {

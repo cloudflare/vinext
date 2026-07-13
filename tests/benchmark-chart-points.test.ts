@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { visibleMarkerMask } from "../apps/web/app/benchmarks/components/chart-points";
 
 describe("benchmark chart point markers", () => {

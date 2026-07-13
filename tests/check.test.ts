@@ -290,9 +290,9 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
-    // reactStrictMode is reported as `partial` until vinext actually wraps the
-    // hydrated root in `<React.StrictMode>` — currently the config is read but
-    // not enforced. See `packages/vinext/src/check.ts` for the rationale.
+    // reactStrictMode is enforced for the Pages Router (client root wrapped in
+    // `<React.StrictMode>` when `true`) but the App Router is not yet wrapped,
+    // so the status is `partial`. See `packages/vinext/src/check.ts`.
     expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("partial");
   });
 
@@ -308,6 +308,20 @@ describe("analyzeConfig", () => {
     const webpackItem = items.find((i) => i.name === "webpack");
     expect(webpackItem?.status).toBe("unsupported");
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
+  });
+
+  it("detects cacheComponents as partially supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        cacheComponents: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const cacheComponentsItem = items.find((i) => i.name === "cacheComponents");
+    expect(cacheComponentsItem?.status).toBe("partial");
+    expect(cacheComponentsItem?.detail).toContain("experimental support");
   });
 
   it("does not flag webpack when it only appears in a comment", () => {

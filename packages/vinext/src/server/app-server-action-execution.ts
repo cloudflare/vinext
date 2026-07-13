@@ -43,10 +43,7 @@ import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import {
-  APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   getNextErrorDigest,
   parseNextHttpErrorDigest,
@@ -311,6 +308,7 @@ export type HandleServerActionRscRequestOptions<
 };
 
 function prepareActionPageRerenderContext(options: {
+  draftModeCookie: string | null | undefined;
   draftModeSecret: string;
   dynamicConfig: string | null | undefined;
   request: Request;
@@ -318,9 +316,13 @@ function prepareActionPageRerenderContext(options: {
   searchParams: URLSearchParams;
 }): URLSearchParams {
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
+    const rerenderRequest = createActionRerenderRequest({
+      draftModeCookie: options.draftModeCookie,
+      request: options.request,
+    });
     setHeadersContext(
       createStaticGenerationHeadersContext({
-        draftModeEnabled: isDraftModeRequest(options.request, options.draftModeSecret),
+        draftModeEnabled: isDraftModeRequest(rerenderRequest, options.draftModeSecret),
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "page",
@@ -329,6 +331,24 @@ function prepareActionPageRerenderContext(options: {
     );
   }
   return options.dynamicConfig === "force-static" ? new URLSearchParams() : options.searchParams;
+}
+
+function createActionRerenderRequest(options: {
+  draftModeCookie: string | null | undefined;
+  request: Request;
+}): Request {
+  if (!options.draftModeCookie) return options.request;
+
+  const headers = new Headers(options.request.headers);
+  const cookieHeader = applySetCookieMutationsToRequestCookieHeader(headers.get("cookie"), [
+    options.draftModeCookie,
+  ]);
+  if (cookieHeader === null) {
+    headers.delete("cookie");
+  } else {
+    headers.set("cookie", cookieHeader);
+  }
+  return new Request(options.request.url, { headers });
 }
 
 /**
@@ -1281,9 +1301,14 @@ export async function handleServerActionRscRequest<
         request: options.request,
         url: redirectTarget,
       });
-      setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      setHeadersContext(
+        headersContextFromRequest(redirectRenderRequest, {
+          draftModeSecret: options.draftModeSecret,
+        }),
+      );
       const redirectDynamicConfig = options.resolveRouteDynamicConfig?.(targetMatch.route);
       const redirectSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: redirectDynamicConfig,
         request: redirectRenderRequest,
@@ -1319,7 +1344,7 @@ export async function handleServerActionRscRequest<
               request: redirectRenderRequest,
               route: targetMatch.route,
               searchParams: redirectSearchParams,
-              renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+              renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
               observeMetadataSearchParamsAccess: redirectDynamicConfig !== "force-static",
               observePageSearchParamsAccess: redirectDynamicConfig !== "force-static",
             });
@@ -1405,6 +1430,7 @@ export async function handleServerActionRscRequest<
     const match = options.matchRoute(options.cleanPathname, options.rawCleanPathname);
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
+    const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
       const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
@@ -1414,7 +1440,7 @@ export async function handleServerActionRscRequest<
         findIntercept: options.findIntercept,
         getRouteParamNames: options.getRouteParamNames,
         getSourceRoute: options.getSourceRoute,
-        isRscRequest: options.isRscRequest,
+        isRscRequest: actionRerenderIsRscRequest,
         toInterceptOpts: options.toInterceptOpts,
       });
 
@@ -1437,6 +1463,7 @@ export async function handleServerActionRscRequest<
         actionRerenderTarget.route,
       );
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
+        draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
         dynamicConfig: actionRerenderDynamicConfig,
         request: options.request,
@@ -1460,13 +1487,13 @@ export async function handleServerActionRscRequest<
           cleanPathname: options.cleanPathname,
           rawCleanPathname: options.rawCleanPathname,
           interceptOpts: actionRerenderTarget.interceptOpts,
-          isRscRequest: options.isRscRequest,
+          isRscRequest: actionRerenderIsRscRequest,
           mountedSlotsHeader: options.mountedSlotsHeader,
           params: actionRerenderTarget.params,
           request: options.request,
           route: actionRerenderTarget.route,
           searchParams: actionRerenderSearchParams,
-          renderMode: APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
+          renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
           observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
           observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
         });

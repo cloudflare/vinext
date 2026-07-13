@@ -8,7 +8,7 @@
 // error).
 //
 // Previously duplicated between shims/error-boundary.tsx and
-// server/dev-error-overlay.tsx; consolidated here so they cannot drift.
+// client/dev-error-overlay.tsx; consolidated here so they cannot drift.
 
 function getErrorDigest(error: unknown): string | null {
   if (!error || typeof error !== "object" || !("digest" in error)) {

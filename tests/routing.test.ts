@@ -17,6 +17,12 @@ import {
   invalidateAppRouteCache,
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
+import { toSlash } from "pathslash";
+
+/** Expected canonical (forward-slash) path for router-output assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
+}
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
@@ -404,7 +410,9 @@ describe("apiRouter - route discovery", () => {
       const matchedDocs = matchRoute("/api-docs/first", pages);
       expect(matchedDocs).not.toBeNull();
       expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
-      expect(matchedDocs!.route.filePath).toBe(path.join(pagesDir, "api-docs", "[...slug].tsx"));
+      expect(matchedDocs!.route.filePath).toBe(
+        canonical(path.join(pagesDir, "api-docs", "[...slug].tsx")),
+      );
 
       const matchedInfo = matchRoute("/api-info", pages);
       expect(matchedInfo).not.toBeNull();
@@ -718,6 +726,39 @@ describe("appRouter - route discovery", () => {
       expect(patterns).toContain("/inbox");
       expect(patterns).not.toContain("/inbox/profile");
       expect(matchAppRoute("/inbox/profile", routes)).toBeNull();
+    });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  // https://github.com/vercel/next.js/tree/v16.2.6/test/e2e/app-dir/parallel-routes-leaf-segments/fixtures/no-build-error/app/no-children
+  it("discovers a nested-only slot route for a layout-only parent", async () => {
+    await withTempDir("vinext-app-slot-nested-layout-only-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "inbox", "layout.tsx"),
+        "export default function Layout({ children, modal }) { return children ?? modal }",
+      );
+      await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const match = matchAppRoute("/inbox/profile", routes);
+
+      expect(match).toMatchObject({
+        route: {
+          pagePath: canonical(path.join(appDir, "inbox", "default.tsx")),
+          parallelSlots: [
+            expect.objectContaining({
+              name: "modal",
+              pagePath: canonical(path.join(appDir, "inbox", "@modal", "profile", "page.tsx")),
+            }),
+          ],
+        },
+        params: {},
+      });
     });
   });
 
@@ -1389,7 +1430,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot!.interceptingRoutes[0]).toMatchObject({
         convention: ".",
         targetPattern: "/explicit-layout/deeper",
-        layoutPaths: [path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx")],
+        layoutPaths: [canonical(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"))],
       });
     });
   });
@@ -1425,8 +1466,8 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot).toBeDefined();
       expect(modalSlot!.interceptingRoutes).toHaveLength(1);
       expect(modalSlot!.interceptingRoutes[0]?.layoutPaths).toEqual([
-        path.join(appDir, "@modal", "(.)foo", "layout.tsx"),
-        path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"),
+        canonical(path.join(appDir, "@modal", "(.)foo", "layout.tsx")),
+        canonical(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx")),
       ]);
     });
   });
@@ -1603,7 +1644,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(route!.pagePath).toBeNull();
       expect(route!.parallelSlots.map((slot) => slot.name).sort()).toEqual(["feed", "modal"]);
       expect(route!.parallelSlots.find((slot) => slot.name === "feed")!.pagePath).toContain(
-        path.join("@feed", "page.tsx"),
+        canonical(path.join("@feed", "page.tsx")),
       );
     });
   });
@@ -1645,7 +1686,9 @@ describe("matchAppRoute - URL matching", () => {
       const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
       expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
       const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
-      expect(parallelBSlot.pagePath).toContain(path.join("@parallelB", "nested", "page.tsx"));
+      expect(parallelBSlot.pagePath).toContain(
+        canonical(path.join("@parallelB", "nested", "page.tsx")),
+      );
     });
   });
 
@@ -1730,7 +1773,7 @@ describe("matchAppRoute - URL matching", () => {
       const homeRoute = routes.find((route) => route.pattern === "/");
 
       expect(homeRoute).toBeDefined();
-      expect(homeRoute!.layouts).toEqual([path.join(appDir, "(group)", "layout.tsx")]);
+      expect(homeRoute!.layouts).toEqual([canonical(path.join(appDir, "(group)", "layout.tsx"))]);
       expect(homeRoute!.parallelSlots.find((slot) => slot.name === "modal")).toBeUndefined();
     });
   });
@@ -1751,9 +1794,11 @@ describe("matchAppRoute - URL matching", () => {
       expect(homeRoute).toBeDefined();
       const modalSlot = homeRoute!.parallelSlots.find((slot) => slot.name === "modal");
       expect(modalSlot).toBeDefined();
-      expect(modalSlot!.ownerDir).toBe(path.join(appDir, "(group)", "@modal"));
+      expect(modalSlot!.ownerDir).toBe(canonical(path.join(appDir, "(group)", "@modal")));
       expect(modalSlot!.layoutIndex).toBe(0);
-      expect(modalSlot!.defaultPath).toBe(path.join(appDir, "(group)", "@modal", "default.tsx"));
+      expect(modalSlot!.defaultPath).toBe(
+        canonical(path.join(appDir, "(group)", "@modal", "default.tsx")),
+      );
     });
   });
 
@@ -1786,10 +1831,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(sidebarSlots).toHaveLength(2);
 
       const sidebarByOwner = new Map(
-        sidebarSlots.map((slot) => [
-          path.relative(appDir, slot.ownerDir).replace(/\\/g, "/"),
-          slot,
-        ]),
+        sidebarSlots.map((slot) => [toSlash(path.relative(appDir, slot.ownerDir)), slot]),
       );
 
       expect([...sidebarByOwner.keys()].sort()).toEqual(["@sidebar", "dashboard/@sidebar"]);

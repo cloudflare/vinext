@@ -2,11 +2,23 @@ import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/c
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
+export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 
 const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
+
+const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
+
+export function shouldUseNextDeployCacheControl(): boolean {
+  return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
+}
+
+function isSharedCacheControl(cacheControl: string): boolean {
+  return SHARED_CACHE_DIRECTIVE_RE.test(cacheControl);
+}
 
 /**
  * Route a cacheable response's headers through the active CDN cache adapter and
@@ -21,6 +33,11 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
+  if (shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl)) {
+    headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+    return;
+  }
+
   const map = getCdnCacheAdapter().buildResponseHeaders(input);
   for (const [name, value] of Object.entries(map)) {
     if (value === null) {

@@ -1,12 +1,12 @@
 /**
- * CloudflareCdnCacheAdapter + auto-detection tests.
+ * CloudflareCdnCacheAdapter tests.
  *
  * Covers the edge-managed adapter backed by the Workers Cache (ctx.cache):
  *  - get null / set no-op / ownsBackgroundRevalidation false
  *  - buildResponseHeaders emits a cacheable Cache-Control + Cache-Tag
  *  - revalidateTag purges via ctx.cache.purge({ tags })
- *  - getCdnCacheAdapter() auto-switches to the Cloudflare adapter when the
- *    VINEXT_CDN_CACHE_AUTO_DETECT flag is set and ctx.cache exists.
+ *  - getCdnCacheAdapter() only selects the Cloudflare adapter when it is
+ *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
@@ -18,7 +18,6 @@ import {
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
-const AUTO_DETECT_ENV = "VINEXT_CDN_CACHE_AUTO_DETECT";
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
@@ -137,26 +136,10 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 });
 
-// ─── Auto-detection (flag-gated) ───────────────────────────────────────────
+// ─── Adapter selection ────────────────────────────────────────────────────
 
-describe("auto-switch to the Cloudflare adapter when ctx.cache exists", () => {
-  afterEach(() => {
-    delete process.env[AUTO_DETECT_ENV];
-  });
-
-  it("selects the Cloudflare adapter when the flag is on and ctx.cache exists", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
-    resetActiveAdapter();
-
-    const adapter = await runWithExecutionContext(
-      { waitUntil() {}, cache: { async purge() {} } },
-      async () => getCdnCacheAdapter(),
-    );
-    expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
-  });
-
-  it("does NOT auto-detect when the flag is off, even with ctx.cache present", async () => {
-    delete process.env[AUTO_DETECT_ENV];
+describe("CDN cache adapter selection", () => {
+  it("uses the default adapter even when ctx.cache exists", async () => {
     resetActiveAdapter();
 
     const adapter = await runWithExecutionContext(
@@ -166,17 +149,14 @@ describe("auto-switch to the Cloudflare adapter when ctx.cache exists", () => {
     expect(adapter).toBeInstanceOf(DefaultCdnCacheAdapter);
   });
 
-  it("falls back to the default adapter when ctx.cache is absent (flag on)", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
+  it("uses the default adapter when ctx.cache is absent", () => {
     resetActiveAdapter();
-    // No request context / no ctx.cache → no auto-detection.
     expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
   });
 
-  it("an explicitly set adapter wins over auto-detection", async () => {
-    process.env[AUTO_DETECT_ENV] = "1";
+  it("uses an explicitly configured adapter", async () => {
     resetActiveAdapter();
-    const explicit = new DefaultCdnCacheAdapter();
+    const explicit = new CloudflareCdnCacheAdapter();
     setCdnCacheAdapter(explicit);
 
     const adapter = await runWithExecutionContext(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mergeServerExternalPackages } from "../packages/vinext/src/config/server-external-packages.js";
 
 describe("mergeServerExternalPackages", () => {
@@ -17,6 +17,12 @@ describe("mergeServerExternalPackages", () => {
 
     expect(packages).not.toContain("shiki");
     expect(packages).not.toContain("typescript");
+  });
+
+  it("lets default and optimized transpile packages override externals", () => {
+    const packages = mergeServerExternalPackages([], ["geist", "shiki"]);
+
+    expect(packages).not.toContain("shiki");
   });
 
   it("rejects conflicts between explicit externals and transpiled packages", () => {

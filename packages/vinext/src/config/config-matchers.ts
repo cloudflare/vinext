@@ -13,12 +13,13 @@ import type {
   HasCondition,
 } from "./next-config.js";
 import {
+  MIDDLEWARE_CACHE_HEADER,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
-} from "../server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+} from "../utils/protocol-headers.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 
 /**
@@ -189,7 +190,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
       // alternation. Using anchored match to avoid partial matches.
       // The alternation comes from user config; run it through safeRegExp to
       // guard against ReDoS in pathological configs.
-      const altRe = safeRegExp("^(?:" + alternation + ")$");
+      const altRe = safeRegExp("^(?:" + alternation + ")$", "i");
       if (!altRe) {
         // Unsafe alternation — fall back to linear scan for this rule.
         linear.push([i, redirect]);
@@ -202,11 +203,12 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         redirect,
         originalIndex: i,
       };
-      const bucket = localeStatic.get(suffix);
+      const bucketKey = suffix.toLowerCase();
+      const bucket = localeStatic.get(bucketKey);
       if (bucket) {
         bucket.push(entry);
       } else {
-        localeStatic.set(suffix, [entry]);
+        localeStatic.set(bucketKey, [entry]);
       }
     } else {
       linear.push([i, redirect]);
@@ -590,7 +592,7 @@ export function applyMiddlewareRequestHeaders(
   );
 
   for (const key of Object.keys(middlewareHeaders)) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX) && key !== MIDDLEWARE_CACHE_HEADER) {
       delete middlewareHeaders[key];
     }
   }
@@ -770,19 +772,25 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *
  * The root path `"/"` is preserved as-is.
  */
-function stripTrailingSlashForConfigMatch(pathname: string): string {
-  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+function stripTrailingSlashForConfigMatch(value: string): string {
+  return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function configPathEquals(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function configPathStartsWith(pathname: string, prefix: string): boolean {
+  return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
 }
 
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  // See `stripTrailingSlashForConfigMatch` — the source pattern itself is left
-  // unchanged because catch-all patterns (`:param*` / `:param+`) and the root
-  // `/` already consume any trailing slash; stripping the pattern would change
-  // those semantics.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
+  if (pathnameHadTrailingSlash) pattern = stripTrailingSlashForConfigMatch(pattern);
 
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is
@@ -856,7 +864,7 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$");
+        const re = safeRegExp("^" + regexStr + "$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;
@@ -881,7 +889,7 @@ export function matchConfigPattern(
     const isPlus = catchAllMatch[2] === "+";
 
     const prefixNoSlash = prefix.replace(/\/$/, "");
-    if (!pathname.startsWith(prefixNoSlash)) return null;
+    if (!configPathStartsWith(pathname, prefixNoSlash)) return null;
     const charAfter = pathname[prefixNoSlash.length];
     if (charAfter !== undefined && charAfter !== "/") return null;
 
@@ -903,7 +911,7 @@ export function matchConfigPattern(
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) {
       params[parts[i].slice(1)] = pathParts[i];
-    } else if (parts[i] !== pathParts[i]) {
+    } else if (!configPathEquals(parts[i], pathParts[i])) {
       return null;
     }
   }
@@ -953,11 +961,11 @@ export function matchRedirect(
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
-  // Strip trailing slash so the locale-static fast path (Map.get on the
+  // Strip trailing slash for the locale-static fast path (Map.get on the
   // pathname) matches keys derived from slash-free source patterns. The
-  // linear fallback also passes through `matchConfigPattern` which strips
-  // again, but normalizing once here keeps both paths consistent.
-  pathname = stripTrailingSlashForConfigMatch(pathname);
+  // linear fallback receives the original pathname so matchConfigPattern can
+  // apply the same optional-slash behavior to slash-ending source patterns.
+  const normalizedPathname = stripTrailingSlashForConfigMatch(pathname);
 
   const index = _getRedirectIndex(redirects);
 
@@ -983,7 +991,7 @@ export function matchRedirect(
     // (the locale segment was optional). Mandatory-locale entries — emitted
     // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
     // not match here because they require the locale segment to be present.
-    const noLocaleBucket = index.localeStatic.get(pathname);
+    const noLocaleBucket = index.localeStatic.get(normalizedPathname.toLowerCase());
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
@@ -1009,11 +1017,11 @@ export function matchRedirect(
     // Case 2: locale prefix present — first path segment is the locale.
     // Find the second slash: pathname = "/locale/rest/of/path"
     //                                         ^--- slashTwo
-    const slashTwo = pathname.indexOf("/", 1);
+    const slashTwo = normalizedPathname.indexOf("/", 1);
     if (slashTwo !== -1) {
-      const suffix = pathname.slice(slashTwo); // e.g. "/security"
-      const localePart = pathname.slice(1, slashTwo); // e.g. "en"
-      const localeBucket = index.localeStatic.get(suffix);
+      const suffix = normalizedPathname.slice(slashTwo); // e.g. "/security"
+      const localePart = normalizedPathname.slice(1, slashTwo); // e.g. "en"
+      const localeBucket = index.localeStatic.get(suffix.toLowerCase());
       if (localeBucket) {
         for (const entry of localeBucket) {
           if (entry.originalIndex >= localeMatchIndex) continue;
@@ -1149,7 +1157,30 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  return destination.replace(paramRe, (_token, key: string) => params[key]);
+  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
+    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
+
+  const hashIndex = destination.indexOf("#");
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+
+  if (queryIndex !== -1) {
+    const beforeQuery = beforeHash.slice(0, queryIndex);
+    const query = beforeHash.slice(queryIndex + 1);
+    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
+      query,
+      encodeDestinationQueryParamValue,
+    )}${replaceParams(hash, (value) => value)}`;
+  }
+
+  return replaceParams(destination, (value) => value);
+}
+
+function encodeDestinationQueryParamValue(value: string): string {
+  const params = new URLSearchParams();
+  params.set("", value);
+  return params.toString().slice(1);
 }
 
 /**
@@ -1460,9 +1491,7 @@ export function matchHeaders(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): Array<{ key: string; value: string }> {
-  // Header source regexes are compiled without a trailing-slash tolerance,
-  // so the incoming pathname must be normalized the same way config rewrites
-  // and redirects are. See `stripTrailingSlashForConfigMatch`.
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
 
   const result: Array<{ key: string; value: string }> = [];
@@ -1470,8 +1499,11 @@ export function matchHeaders(
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
     // pure functions of rule.source and the result never changes between requests.
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
-      safeRegExp("^" + escapeHeaderSource(rule.source) + "$"),
+    const source = pathnameHadTrailingSlash
+      ? stripTrailingSlashForConfigMatch(rule.source)
+      : rule.source;
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
+      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
     );
     if (sourceRegex && sourceRegex.test(pathname)) {
       if (rule.has || rule.missing) {

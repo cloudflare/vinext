@@ -28,6 +28,14 @@ export async function readGzipProfile(response: Response): Promise<SamplyProfile
   return new Response(decompressed).json() as Promise<SamplyProfile>;
 }
 
+export async function readProfileFile(file: File): Promise<SamplyProfile> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const gzipped = bytes[0] === 0x1f && bytes[1] === 0x8b;
+  const response = new Response(bytes);
+  if (gzipped) return readGzipProfile(response);
+  return response.json() as Promise<SamplyProfile>;
+}
+
 type MutableTraceNode = Omit<TraceNode, "children"> & {
   children: Map<string, MutableTraceNode>;
 };
@@ -52,27 +60,42 @@ function normalizeSource(source: string | null) {
   return withoutProtocol;
 }
 
-function frameCategory(source?: string) {
-  if (!source) return "native";
-  if (source.startsWith("packages/vinext/") || source.includes("node_modules/vinext/")) {
+function isNodeModuleSource(source: string, packageName: string) {
+  return (
+    source.includes(`/node_modules/${packageName}/`) ||
+    source.includes(`/node_modules/.pnpm/${packageName.replace("/", "+")}@`) ||
+    source.includes(`/node_modules/.pnpm/${packageName.replace("/", "+")}_`)
+  );
+}
+
+function frameCategory(rawSource: string | null, source?: string) {
+  if (!rawSource && !source) return "native";
+  const path = rawSource?.replace(/^file:\/\//, "") ?? source ?? "";
+  if (
+    path.includes("/packages/vinext/") ||
+    isNodeModuleSource(path, "vinext") ||
+    isNodeModuleSource(path, "@vinext/cloudflare") ||
+    isNodeModuleSource(path, "@vinext/nitro")
+  ) {
     return "vinext";
   }
-  if (source.includes("/rolldown/") || source.includes("rolldown-")) return "rolldown";
-  if (source.includes("vite-plus-core/dist/vite/") || source.includes("node_modules/vite/")) {
+  if (path.includes("/rolldown/") || path.includes("rolldown-")) return "rolldown";
+  if (path.includes("vite-plus-core/dist/vite/") || isNodeModuleSource(path, "vite")) {
     return "vite";
   }
-  if (source.startsWith("node:")) return "node";
-  if (source.startsWith("node_modules/")) return "dependency";
-  if (source.startsWith("benchmarks/")) return "benchmark";
+  if (path.startsWith("node:")) return "node";
+  if (source?.startsWith("node_modules/")) return "dependency";
+  if (source?.startsWith("benchmarks/")) return "benchmark";
   return "application";
 }
 
 function parseFrame(rawName: string) {
   const cleanedName = rawName.replace(/^JS:[+*'^~]*/, "");
   const sourceMatch = cleanedName.match(/\s((?:file:\/\/|node:)[^\s]+)$/);
-  const source = normalizeSource(sourceMatch?.[1] ?? null);
+  const rawSource = sourceMatch?.[1] ?? null;
+  const source = normalizeSource(rawSource);
   const name = sourceMatch ? cleanedName.slice(0, sourceMatch.index).trim() : cleanedName;
-  return { name: name || "(anonymous)", source, category: frameCategory(source) };
+  return { name: name || "(anonymous)", source, category: frameCategory(rawSource, source) };
 }
 
 function stackFrames(tables: ProfileThread, initialStackIndex: number) {

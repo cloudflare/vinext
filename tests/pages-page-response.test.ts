@@ -164,7 +164,7 @@ describe("pages page response", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(response.headers.get("content-type")).toBe("text/html");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("x-test")).toBe("1");
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
@@ -460,6 +460,29 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toBeNull();
   });
 
+  it("sets browser revalidation Cache-Control for static Pages responses in Next deploy mode", async () => {
+    const oldValue = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+    process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
+    try {
+      const common = createCommonOptions();
+
+      const response = await renderPagesPageResponse({
+        ...common.options,
+        gsspRes: null,
+        isStaticPropsRoute: true,
+        isrRevalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    } finally {
+      if (oldValue === undefined) {
+        delete process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
+      } else {
+        process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = oldValue;
+      }
+    }
+  });
+
   it("disables pages ISR caching when a script nonce is present", async () => {
     const common = createCommonOptions();
 
@@ -560,6 +583,47 @@ describe("pages page response", () => {
     expect(html).toContain('data-app="true"');
     expect(html).toContain("<p>page</p>");
     expect(enhancePageElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes req/res into _document.getInitialProps and applies res headers/status", async () => {
+    const common = createCommonOptions();
+    const documentHeaders: Record<string, string | number | boolean | string[]> = {};
+    const documentRes = {
+      headersSent: false,
+      statusCode: 200,
+      getHeaders: () => documentHeaders,
+      setHeader(name: string, value: string | number | boolean | string[]) {
+        documentHeaders[name] = value;
+      },
+    };
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      req?: { cookies?: Record<string, string> };
+      res?: typeof documentRes;
+      renderPage: () => Promise<{ html: string }>;
+    }) => {
+      ctx.res?.setHeader("x-document-cookie", ctx.req?.cookies?.theme ?? "missing");
+      if (ctx.res) ctx.res.statusCode = 202;
+      const result = await ctx.renderPage();
+      return { html: result.html };
+    };
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      documentReqRes: {
+        req: { cookies: { theme: "dark" } },
+        res: documentRes,
+      },
+      enhancePageElement: () => React.createElement("p", null, "page"),
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-document-cookie")).toBe("dark");
+    expect(await response.text()).toContain("live-body");
   });
 
   // Edge case: `getInitialProps` returns `styles` (the styled-components /

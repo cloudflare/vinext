@@ -1,6 +1,6 @@
 {
   "name": "@vinext/cloudflare",
-  "version": "0.1.2",
+  "version": "1.0.0-beta.1",
   "description": "Cloudflare adapters for vinext (KV data cache and Images-backed image optimization).",
   "license": "MIT",
   "repository": {
@@ -8,11 +8,39 @@
     "url": "git+https://github.com/cloudflare/vinext.git",
     "directory": "packages/cloudflare"
   },
+  "bin": {
+    "@vinext/cloudflare": "dist/cli.js",
+    "vinext-cloudflare": "dist/cli.js"
+  },
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
+    "./internal/deploy": {
+      "types": "./dist/deploy.d.ts",
+      "import": "./dist/deploy.js"
+    },
+    "./internal/deploy-help": {
+      "types": "./dist/deploy-help.d.ts",
+      "import": "./dist/deploy-help.js"
+    },
+    "./internal/deploy-config": {
+      "types": "./dist/deploy-config.d.ts",
+      "import": "./dist/deploy-config.js"
+    },
+    "./internal/tpr": {
+      "types": "./dist/tpr.d.ts",
+      "import": "./dist/tpr.js"
+    },
+    "./internal/cdn-warm": {
+      "types": "./dist/cdn-warm.d.ts",
+      "import": "./dist/cdn-warm.js"
+    },
+    "./internal/version-deploy": {
+      "types": "./dist/version-deploy.d.ts",
+      "import": "./dist/version-deploy.js"
+    },
     "./cache/*": {
       "types": "./dist/cache/*.d.ts",
       "import": "./dist/cache/*.js"
@@ -30,6 +58,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "vinext": "workspace:*",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "peerDependencies": {

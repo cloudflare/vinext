@@ -5,6 +5,8 @@
  * RSC, SSR, and the public next/navigation shim can share one implementation.
  */
 
+import { parseRedirectDigest } from "../utils/redirect-digest.js";
+
 export const HTTP_ERROR_FALLBACK_ERROR_CODE = "NEXT_HTTP_ERROR_FALLBACK";
 
 export function isHTTPAccessFallbackError(error: unknown): boolean {
@@ -75,7 +77,8 @@ type RedirectErrorShape = Error & { digest: string };
 
 /**
  * vinext accepts its three-part redirect digest and Next.js's five-part form.
- * A prefix check is deliberate because vinext permits an empty redirect type.
+ * This is deliberately only a cheap prefix gate because vinext permits an
+ * empty redirect type; parseRedirectDigest is the authoritative validator.
  */
 export function isRedirectError(error: unknown): error is RedirectErrorShape {
   return (
@@ -90,20 +93,12 @@ export function isRedirectError(error: unknown): error is RedirectErrorShape {
 export function decodeRedirectError(
   digest: string,
 ): { url: string; type: "push" | "replace" } | null {
-  if (!digest.startsWith("NEXT_REDIRECT;")) return null;
-
-  const parts = digest.split(";");
-  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
-  if (!encodedTarget) return null;
-
-  try {
-    return {
-      url: decodeURIComponent(encodedTarget),
-      type: parts[1] === "push" ? "push" : "replace",
-    };
-  } catch {
-    return null;
-  }
+  const redirect = parseRedirectDigest(digest);
+  if (!redirect) return null;
+  return {
+    url: redirect.url,
+    type: redirect.type === "push" ? "push" : "replace",
+  };
 }
 
 export function isNextRouterError(error: unknown): boolean {

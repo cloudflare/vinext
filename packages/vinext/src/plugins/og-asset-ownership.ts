@@ -1,9 +1,12 @@
 import fs from "node:fs";
-import path from "node:path";
+import path, { toSlash } from "pathslash";
 import { promisify } from "node:util";
 import type { Alias } from "vite";
 
-const realpathNative = promisify(fs.realpath.native);
+const promisifiedRealpathNative = promisify(fs.realpath.native);
+// fs.realpath.native reports native separators on Windows; keep results in slash space.
+const realpathNative = async (target: string): Promise<string> =>
+  toSlash(await promisifiedRealpathNative(target));
 
 type IndexedAlias = Alias & { index: number };
 
@@ -16,7 +19,7 @@ function isPathInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return (
     relative === "" ||
-    (!path.isAbsolute(relative) && !relative.startsWith(`..${path.sep}`) && relative !== "..")
+    (!path.isAbsolute(relative) && !relative.startsWith("../") && relative !== "..")
   );
 }
 
@@ -87,7 +90,7 @@ function getNodeModulesPackageRoot(
   const relativePath = isProjectPath
     ? path.relative(logicalProjectRoot, logicalModulePath)
     : logicalModulePath.slice(parsedPath.root.length);
-  const segments = relativePath.split(path.sep);
+  const segments = relativePath.split("/");
   const nodeModulesIndex = segments.lastIndexOf("node_modules");
   if (nodeModulesIndex === -1) return null;
 
@@ -153,7 +156,7 @@ async function packageOwnsAliasDirectory(
 }
 
 export class OgAssetOwnership {
-  private projectRoot = process.cwd();
+  private projectRoot = toSlash(process.cwd());
   private readonly linkedPackageRoots = new Set<string>();
   private readonly dependencyPackageNames = new Map<string, string>();
   private readonly stringAliasesByFirstCharacter = new Map<string, IndexedAlias[]>();
@@ -274,7 +277,7 @@ export class OgAssetOwnership {
       if (
         path.isAbsolute(logicalModuleRelativePath) ||
         logicalModuleRelativePath === ".." ||
-        logicalModuleRelativePath.startsWith(`..${path.sep}`)
+        logicalModuleRelativePath.startsWith("../")
       ) {
         return null;
       }
