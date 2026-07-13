@@ -1428,10 +1428,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   async function writeRouteTypes(): Promise<void> {
-    if (!hasAppDir) return;
     await generateRouteTypes({
       root,
-      appDir,
+      appDir: hasAppDir ? appDir : null,
       pageExtensions: nextConfig.pageExtensions,
     });
   }

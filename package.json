@@ -17,7 +17,7 @@
     "knip": "knip",
     "changeset": "changeset",
     "prepare": "vp config",
-    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build"
+    "postinstall": "vp run @vinext/cloudflare#build && vp run vinext#build && vp run create-vinext-app#build && node scripts/typegen-workspaces.mjs"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",

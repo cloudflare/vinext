@@ -91,6 +91,18 @@ export default defineConfig({
     dts: {
       tsgo: { path: getTscPath() },
     },
+    copy: [
+      {
+        from: "src/shims/next-shims-public.d.ts",
+        to: "dist/shims",
+        flatten: true,
+      },
+      {
+        from: "src/shims/next-shims-augmentations.d.ts",
+        to: "dist/shims",
+        flatten: true,
+      },
+    ],
     fixedExtension: false,
     format: "esm",
     unbundle: true,

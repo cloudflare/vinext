@@ -37,6 +37,8 @@ jobs:
         working-directory: packages/vinext
         run: |
           vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../create-vinext-app
@@ -87,7 +89,7 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          vp add "${{ runner.temp }}"/vinext-types-*.tgz "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Configure generated Cloudflare deployment
         working-directory: ${{ runner.temp }}/cva-cloudflare

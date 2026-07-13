@@ -97,21 +97,25 @@ describe("createVinextApp", () => {
 
     const pkg = readPkg(appPath);
     expect(pkg.scripts).toMatchObject({
-      dev: "next dev",
-      build: "next build",
-      start: "next start",
+      dev: "vinext dev",
+      build: "vinext build",
+      start: "vinext start",
       "dev:vinext": "vinext dev --port 3001",
       "build:vinext": "vinext build",
       "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     });
     expect(pkg.dependencies).toMatchObject({
-      next: "latest",
       react: "latest",
       "react-dom": "latest",
       vinext: "latest",
       "react-server-dom-webpack": "latest",
       "@vinext/cloudflare": "latest",
     });
+    expect(pkg.dependencies).not.toHaveProperty("next");
+    expect(readFile(appPath, "next-env.d.ts")).toContain('import "vinext/types";');
+    expect(readFile(appPath, "next-env.d.ts")).toContain('import "./.next/types/routes.d.ts";');
+    expect(readFile(appPath, "tsconfig.json")).not.toContain('"name": "next"');
+    expect(pkg.scripts).not.toHaveProperty("postinstall");
     expect(pkg.devDependencies).toMatchObject({
       tailwindcss: "latest",
       typescript: "latest",
@@ -168,6 +172,32 @@ describe("createVinextApp", () => {
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
+    expect(calls).toContain("pnpm exec vinext -- typegen");
+  });
+
+  it.each([
+    ["npm", "npm exec vinext -- typegen"],
+    ["pnpm", "pnpm exec vinext -- typegen"],
+    ["yarn", "yarn exec vinext -- typegen"],
+    ["bun", "bun run vinext typegen"],
+  ] as const)("runs typegen through the %s binary runner", async (packageManager, expected) => {
+    const appPath = path.join(tmpDir, `${packageManager}-app`);
+    const calls: string[] = [];
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager,
+        install: true,
+        git: false,
+        initOptions: nodeInitOptions,
+        _exec: (cmd) => {
+          calls.push(cmd);
+        },
+      }),
+    );
+
+    expect(calls).toContain(expected);
   });
 
   it("does not include Cloudflare Workers copy for the Node target", async () => {

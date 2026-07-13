@@ -278,6 +278,7 @@ describe("addScripts", () => {
     expect(pkg.scripts["build:vinext"]).toBe("vinext build");
     expect(pkg.scripts["start:vinext"]).toBe("vinext start");
     expect(pkg.scripts["deploy:vinext"]).toBeUndefined();
+    expect(pkg.scripts.postinstall).toBeUndefined();
   });
 
   it("adds deploy:vinext for Cloudflare projects", () => {
