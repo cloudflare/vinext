@@ -365,18 +365,6 @@ describe("generateRouteTypes", () => {
         expect(vinextTarball).toBeDefined();
 
         const typesVersion = await readPackageVersion(path.resolve("packages/types/package.json"));
-        const devDependencies = Object.fromEntries(
-          await Promise.all(
-            ["typescript", "@types/node", "@types/react", "@types/react-dom"].map(
-              async (packageName) => [
-                packageName,
-                await readPackageVersion(
-                  fileURLToPath(import.meta.resolve(`${packageName}/package.json`)),
-                ),
-              ],
-            ),
-          ),
-        );
 
         await writeProjectFile(
           consumer,
@@ -384,7 +372,6 @@ describe("generateRouteTypes", () => {
           JSON.stringify({
             private: true,
             dependencies: { vinext: `file:${path.join(packDir, vinextTarball!)}` },
-            devDependencies,
           }),
         );
         await writeProjectFile(
@@ -400,6 +387,9 @@ describe("generateRouteTypes", () => {
             `} } };\n`,
         );
         runCommand(pnpm, ["install", "--offline", "--ignore-scripts"], consumer);
+        for (const packageName of ["@types/node", "@types/react", "@types/react-dom"]) {
+          await linkPackage(consumer, packageName);
+        }
 
         const virtualStore = path.join(consumer, "node_modules/.pnpm");
         const typesStoreEntry = (await readdir(virtualStore)).find((entry) =>
@@ -425,8 +415,9 @@ describe("generateRouteTypes", () => {
           'import "vinext/types";',
         );
         runCommand(
-          path.join(consumer, "node_modules/.bin/tsc"),
+          process.execPath,
           [
+            path.resolve("node_modules/typescript/bin/tsc"),
             "--ignoreConfig",
             "--strict",
             "--noEmit",
