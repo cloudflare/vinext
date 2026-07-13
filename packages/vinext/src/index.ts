@@ -1888,7 +1888,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolvedNodeEnv = "development";
         }
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
-          process.env.NODE_ENV = resolvedNodeEnv;
+          Reflect.set(process.env, "NODE_ENV", resolvedNodeEnv);
         }
         if (env?.command === "build") {
           previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
