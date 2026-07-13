@@ -1,0 +1,33 @@
+{
+  "name": "@vinext/types",
+  "version": "1.0.0-beta.1",
+  "description": "Type declarations for vinext's Next.js-compatible public API.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/types"
+  },
+  "files": [
+    "next"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./next": {
+      "types": "./next/index.d.ts"
+    },
+    "./next/augmentations": {
+      "types": "./next/augmentations.d.ts"
+    },
+    "./next/vinext/router": {
+      "types": "./next/vinext/router.d.ts"
+    },
+    "./next/upstream/*": {
+      "types": "./next/upstream/*.d.ts"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -9,6 +9,7 @@
     "test:integration": "vp test run --project integration",
     "test:watch": "vp test",
     "generate:google-fonts": "node scripts/generate-google-fonts.js",
+    "sync:next-types": "node scripts/sync-next-types.mjs",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "lint": "vp lint",

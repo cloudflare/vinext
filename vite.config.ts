@@ -29,7 +29,11 @@ export default defineConfig({
     semi: true,
     singleQuote: false,
     trailingComma: "all",
-    ignorePatterns: ["tests/fixtures/ecosystem/**", "examples/**"],
+    ignorePatterns: [
+      "tests/fixtures/ecosystem/**",
+      "examples/**",
+      "packages/types/next/upstream/**",
+    ],
   },
   lint: {
     ignorePatterns: [
@@ -37,6 +41,7 @@ export default defineConfig({
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
+      "packages/types/next/upstream/**",
     ],
     options: {
       typeAware: true,

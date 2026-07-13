@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!packages/types/next/upstream/dist/
+!packages/types/next/upstream/dist/**
 out/
 *.tsbuildinfo
 .vite/
