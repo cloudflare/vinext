@@ -294,6 +294,34 @@ describe("addScripts", () => {
     );
   });
 
+  it("supports standard script aliases for fresh scaffolds", () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const added = addScripts(tmpDir, 3001, "cloudflare", { standardScriptAliases: true });
+
+    expect(added).toEqual([
+      "dev:vinext",
+      "dev",
+      "build:vinext",
+      "build",
+      "start:vinext",
+      "start",
+      "deploy:vinext",
+      "deploy",
+    ]);
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts).toMatchObject({
+      dev: "vinext dev --port 3001",
+      build: "vinext build",
+      start: "wrangler dev --config dist/server/wrangler.json",
+      deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
+    });
+    expect(pkg.scripts["dev:vinext"]).toBe(pkg.scripts.dev);
+    expect(pkg.scripts["build:vinext"]).toBe(pkg.scripts.build);
+    expect(pkg.scripts["start:vinext"]).toBe(pkg.scripts.start);
+    expect(pkg.scripts["deploy:vinext"]).toBe(pkg.scripts.deploy);
+  });
+
   it("adds the warm CDN cache flag to deploy:vinext when requested", () => {
     setupProject(tmpDir, { router: "app" });
 

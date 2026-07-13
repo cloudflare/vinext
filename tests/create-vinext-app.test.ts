@@ -83,12 +83,10 @@ describe("createVinextApp", () => {
     expect(fs.existsSync(path.join(appPath, "app/page.tsx"))).toBe(true);
     expect(fs.existsSync(path.join(appPath, "src"))).toBe(false);
     expect(readFile(appPath, "app/page.tsx")).toContain("vinext + Cloudflare Workers");
-    expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run dev:vinext");
-    expect(readFile(appPath, "app/page.tsx")).toContain(
-      "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json",
-    );
+    expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run dev");
+    expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run deploy");
     expect(readFile(appPath, "app/page.tsx")).not.toMatch(/\bnpm\b|\bnpx\b/);
-    expect(readFile(appPath, "README.md")).toContain("pnpm run build:vinext");
+    expect(readFile(appPath, "README.md")).toContain("pnpm run build");
     expect(readFile(appPath, "README.md")).not.toMatch(/\bnpm\b|\bnpx\b/);
     expect(readFile(appPath, "app/globals.css")).toContain('@import "tailwindcss"');
     expect(readFile(appPath, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
@@ -97,12 +95,14 @@ describe("createVinextApp", () => {
 
     const pkg = readPkg(appPath);
     expect(pkg.scripts).toMatchObject({
-      dev: "vinext dev",
+      dev: "vinext dev --port 3001",
       build: "vinext build",
-      start: "vinext start",
+      start: "wrangler dev --config dist/server/wrangler.json",
+      deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
       "dev:vinext": "vinext dev --port 3001",
       "build:vinext": "vinext build",
       "start:vinext": "wrangler dev --config dist/server/wrangler.json",
+      "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json",
     });
     expect(pkg.dependencies).toMatchObject({
       react: "latest",
@@ -140,14 +140,10 @@ describe("createVinextApp", () => {
       }),
     );
 
-    expect(readFile(appPath, "app/page.tsx")).toContain(
-      "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json",
-    );
+    expect(readFile(appPath, "app/page.tsx")).toContain("pnpm run deploy");
     expect(readFile(appPath, "app/page.tsx")).not.toContain("--experimental-warm-cdn-cache");
     const pkg = readPkg(appPath);
-    expect(pkg.scripts?.["deploy:vinext"]).toBe(
-      "vinext-cloudflare deploy --config dist/server/wrangler.json",
-    );
+    expect(pkg.scripts?.deploy).toBe("vinext-cloudflare deploy --config dist/server/wrangler.json");
   });
 
   it("uses the selected package manager through the shared init install path", async () => {
@@ -219,7 +215,7 @@ describe("createVinextApp", () => {
 
     expect(generatedCopy).not.toMatch(/Cloudflare|Workers|Worker|Wrangler|vinext-cloudflare/);
     expect(generatedCopy).not.toMatch(/\bnpm\b|\bnpx\b/);
-    expect(generatedCopy).toContain("pnpm run dev:vinext");
+    expect(generatedCopy).toContain("pnpm run dev");
     expect(generatedCopy).toContain("Build Next.js-style apps with Vite.");
     expect(generatedCopy).toContain("https://vite.dev/");
     expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(false);
@@ -233,6 +229,14 @@ describe("createVinextApp", () => {
     expect(pkg.dependencies).not.toHaveProperty("@vinext/cloudflare");
     expect(pkg.devDependencies).not.toHaveProperty("@cloudflare/vite-plugin");
     expect(pkg.devDependencies).not.toHaveProperty("wrangler");
+    expect(pkg.scripts).toMatchObject({
+      dev: "vinext dev --port 3001",
+      build: "vinext build",
+      start: "vinext start",
+      "dev:vinext": "vinext dev --port 3001",
+      "build:vinext": "vinext build",
+      "start:vinext": "vinext start",
+    });
   });
 
   it("rejects non-empty target directories", async () => {

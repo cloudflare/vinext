@@ -103,6 +103,8 @@ export type InitOptions = {
   cloudflare?: CloudflareInitOptions;
   /** Install missing dependencies with the detected package manager (default: true). */
   install?: boolean;
+  /** Also generate standard script aliases (e.g. dev alongside dev:vinext). */
+  standardScriptAliases?: boolean;
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (
     cmd: string,
@@ -158,7 +160,7 @@ export function addScripts(
   root: string,
   port: number,
   platform: InitPlatform = "node",
-  options: { warmCdnCache?: boolean } = {},
+  options: { warmCdnCache?: boolean; standardScriptAliases?: boolean } = {},
 ): string[] {
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
@@ -172,30 +174,31 @@ export function addScripts(
     }
 
     const added: string[] = [];
+    const addScript = (name: string, command: string) => {
+      const names = options.standardScriptAliases ? [`${name}:vinext`, name] : [`${name}:vinext`];
+      for (const scriptName of names) {
+        if (pkg.scripts[scriptName]) continue;
+        pkg.scripts[scriptName] = command;
+        added.push(scriptName);
+      }
+    };
 
-    if (!pkg.scripts["dev:vinext"]) {
-      pkg.scripts["dev:vinext"] = `vinext dev --port ${port}`;
-      added.push("dev:vinext");
-    }
+    addScript("dev", `vinext dev --port ${port}`);
+    addScript("build", "vinext build");
+    addScript(
+      "start",
+      platform === "cloudflare"
+        ? "wrangler dev --config dist/server/wrangler.json"
+        : "vinext start",
+    );
 
-    if (!pkg.scripts["build:vinext"]) {
-      pkg.scripts["build:vinext"] = "vinext build";
-      added.push("build:vinext");
-    }
-
-    if (!pkg.scripts["start:vinext"]) {
-      pkg.scripts["start:vinext"] =
-        platform === "cloudflare"
-          ? "wrangler dev --config dist/server/wrangler.json"
-          : "vinext start";
-      added.push("start:vinext");
-    }
-
-    if (platform === "cloudflare" && !pkg.scripts["deploy:vinext"]) {
-      pkg.scripts["deploy:vinext"] = options.warmCdnCache
-        ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
-        : "vinext-cloudflare deploy --config dist/server/wrangler.json";
-      added.push("deploy:vinext");
+    if (platform === "cloudflare") {
+      addScript(
+        "deploy",
+        options.warmCdnCache
+          ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
+          : "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      );
     }
 
     if (added.length > 0) {
@@ -566,6 +569,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const addedScripts = addScripts(root, port, platform, {
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
+    standardScriptAliases: options.standardScriptAliases,
   });
 
   // ── Step 4: Generate vite.config.ts ────────────────────────────────────
@@ -738,9 +742,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
       "   pnpm install",
     );
   }
+  const scriptName = (name: string) => (options.standardScriptAliases ? name : `${name}:vinext`);
   const deployCommandStep =
     platform === "cloudflare"
-      ? `    ${pmName} run deploy:vinext Deploy to Cloudflare Workers\n`
+      ? `    ${pmName} run ${scriptName("deploy")} Deploy to Cloudflare Workers\n`
       : "";
   const startCommandDescription =
     platform === "cloudflare"
@@ -750,10 +755,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
   console.log(`
   ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
 ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n" : ""}
-    ${pmName} run dev:vinext    Start the vinext dev server
-    ${pmName} run build:vinext  Build production output
-    ${pmName} run start:vinext  ${startCommandDescription}
-${deployCommandStep}    ${pmName} run dev           Start Next.js (still works as before)
+    ${pmName} run ${scriptName("dev")}    Start the vinext dev server
+    ${pmName} run ${scriptName("build")}  Build production output
+    ${pmName} run ${scriptName("start")}  ${startCommandDescription}
+${deployCommandStep}${options.standardScriptAliases ? "" : `    ${pmName} run dev           Start Next.js (still works as before)\n`}
 `);
 
   const installedDeps = [...new Set([...dependencyEntriesAdded, ...devDependencyEntriesAdded])];

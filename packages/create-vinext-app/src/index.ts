@@ -70,7 +70,7 @@ const packageManagerFlags: Record<string, PackageManagerName> = {
   "--use-bun": "bun",
 };
 
-function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<string, string> {
+function getTemplateFiles(platform: InitPlatform): Record<string, string> {
   const isCloudflare = platform === "cloudflare";
   const apiMessage = isCloudflare ? "Hello from vinext on Cloudflare Workers" : "Hello from vinext";
   const title = isCloudflare ? "vinext on Cloudflare Workers" : "vinext app";
@@ -91,19 +91,16 @@ function getTemplateFiles(platform: InitPlatform, warmCdnCache = false): Record<
     ? "This App Router project is wired for vinext, Tailwind CSS, and Cloudflare Workers."
     : "This App Router project is wired for vinext and Tailwind CSS.";
   const buildOutput = isCloudflare ? "Worker-ready production output" : "production output";
-  const deployCommand = warmCdnCache
-    ? "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
-    : "pnpm exec vinext-cloudflare deploy --config dist/server/wrangler.json";
   const actionCard = isCloudflare
     ? `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Deploy</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Ship the generated Worker with Wrangler.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">${deployCommand}</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run deploy</code>
           </div>`
     : `<div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Start</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Start the vinext production server locally.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run start:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run start</code>
           </div>`;
 
   return {
@@ -177,12 +174,12 @@ export default function Home() {
           <div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Develop</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Run the vinext dev server locally.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run dev:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run dev</code>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-5">
             <h2 className="font-semibold">Build</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Create ${buildOutput}.</p>
-            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run build:vinext</code>
+            <code className="mt-4 block rounded bg-slate-100 px-3 py-2 text-sm">pnpm run build</code>
           </div>
           ${actionCard}
         </div>
@@ -236,10 +233,10 @@ This project was created with create-vinext-app.
 
 ## Scripts
 
-- \`pnpm run dev:vinext\` starts the vinext dev server.
-- \`pnpm run build:vinext\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
-- \`pnpm run start:vinext\` ${isCloudflare ? "starts the built Worker locally with Wrangler" : "starts the production server locally"}.
 - \`pnpm run dev\` starts the vinext dev server.
+- \`pnpm run build\` builds ${isCloudflare ? "the Cloudflare Worker output" : "production output"}.
+- \`pnpm run start\` ${isCloudflare ? "starts the built Worker locally with Wrangler" : "starts the production server locally"}.
+${isCloudflare ? "- `pnpm run deploy` deploys the Cloudflare Worker.\n" : ""}
 `,
     "tsconfig.json": `{
   "compilerOptions": {
@@ -412,11 +409,6 @@ function writePackageJson(root: string, appName: string, packageManager: Package
     version: "0.1.0",
     private: true,
     packageManager: version ? `${packageManager}@${version}` : packageManager,
-    scripts: {
-      dev: "vinext dev",
-      build: "vinext build",
-      start: "vinext start",
-    },
     dependencies: {
       react: "latest",
       "react-dom": "latest",
@@ -441,11 +433,7 @@ function writeTemplate(
 ): void {
   fs.mkdirSync(root, { recursive: true });
   writePackageJson(root, appName, packageManager);
-  const warmCdnCache =
-    initOptions.platform === "cloudflare" && (initOptions.cloudflare?.warmCdnCache ?? false);
-  for (const [relativePath, content] of Object.entries(
-    getTemplateFiles(initOptions.platform, warmCdnCache),
-  )) {
+  for (const [relativePath, content] of Object.entries(getTemplateFiles(initOptions.platform))) {
     writeFile(root, relativePath, content);
   }
 }
@@ -502,6 +490,7 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
     install: options.install ?? true,
     _exec: options._exec,
     ...options.initOptions,
+    standardScriptAliases: true,
   });
 
   if (options.install ?? true) {
