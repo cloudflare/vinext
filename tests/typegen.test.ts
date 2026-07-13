@@ -37,6 +37,14 @@ async function writeProjectFile(root: string, relPath: string, content: string):
   await writeFile(fullPath, content);
 }
 
+async function readPackageVersion(packageJsonPath: string): Promise<string> {
+  const { version } = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  if (typeof version !== "string") {
+    throw new Error(`Missing version in ${packageJsonPath}`);
+  }
+  return version;
+}
+
 async function linkPackage(root: string, packageName: string): Promise<void> {
   const workspacePackages: Record<string, string> = {
     vinext: "../packages/vinext/package.json",
@@ -356,18 +364,27 @@ describe("generateRouteTypes", () => {
         expect(typesTarball).toBeDefined();
         expect(vinextTarball).toBeDefined();
 
+        const typesVersion = await readPackageVersion(path.resolve("packages/types/package.json"));
+        const devDependencies = Object.fromEntries(
+          await Promise.all(
+            ["typescript", "@types/node", "@types/react", "@types/react-dom"].map(
+              async (packageName) => [
+                packageName,
+                await readPackageVersion(
+                  fileURLToPath(import.meta.resolve(`${packageName}/package.json`)),
+                ),
+              ],
+            ),
+          ),
+        );
+
         await writeProjectFile(
           consumer,
           "package.json",
           JSON.stringify({
             private: true,
             dependencies: { vinext: `file:${path.join(packDir, vinextTarball!)}` },
-            devDependencies: {
-              typescript: "7.0.2",
-              "@types/node": "25.9.2",
-              "@types/react": "19.2.16",
-              "@types/react-dom": "19.2.3",
-            },
+            devDependencies,
           }),
         );
         await writeProjectFile(
@@ -376,7 +393,7 @@ describe("generateRouteTypes", () => {
           `module.exports = { hooks: { readPackage(pkg) {\n` +
             `  if (pkg.name === "vinext") {\n` +
             `    const declared = pkg.dependencies?.["@vinext/types"];\n` +
-            `    if (typeof declared !== "string" || !declared.includes("1.0.0-beta.1")) throw new Error("packed vinext does not declare @vinext/types");\n` +
+            `    if (declared !== ${JSON.stringify(`^${typesVersion}`)}) throw new Error("packed vinext does not declare the matching @vinext/types version");\n` +
             `    pkg.dependencies["@vinext/types"] = ${JSON.stringify(`file:${path.join(packDir, typesTarball!)}`)};\n` +
             `  }\n` +
             `  return pkg;\n` +

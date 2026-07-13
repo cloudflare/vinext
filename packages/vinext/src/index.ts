@@ -1888,6 +1888,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolvedNodeEnv = "development";
         }
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
+          // Next.js's vendored global declarations mark NODE_ENV readonly even
+          // though Node permits updating process.env at runtime.
           Reflect.set(process.env, "NODE_ENV", resolvedNodeEnv);
         }
         if (env?.command === "build") {
