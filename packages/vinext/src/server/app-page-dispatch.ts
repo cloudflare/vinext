@@ -82,10 +82,13 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
-import { VINEXT_IMPLICIT_TAGS_HEADER, VINEXT_TPR_SECRET_HEADER } from "./headers.js";
+import {
+  VINEXT_IMPLICIT_TAGS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_TPR_SECRET_HEADER,
+} from "./headers.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
