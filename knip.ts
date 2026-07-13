@@ -109,6 +109,13 @@ export default {
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [
+    // Imported only by declarations vendored from Next.js. @next/env and
+    // sharp are covered by ambient stubs in @vinext/types; server-only is a
+    // marker import supplied by compatible runtimes.
+    "@next/env",
+    "server-only",
+    "sharp",
+
     // Declared at root package.json but imported from workspace/example code:
     //   @mdx-js/react — no direct imports; retained for MDX runtime resolution.
     //   @mdx-js/rollup — imported from examples/app-router-playground/vite.config.ts
