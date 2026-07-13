@@ -381,7 +381,8 @@ describe("generateRouteTypes", () => {
             `  if (pkg.name === "vinext") {\n` +
             `    const declared = pkg.dependencies?.["@vinext/types"];\n` +
             `    if (declared !== ${JSON.stringify(`^${typesVersion}`)}) throw new Error("packed vinext does not declare the matching @vinext/types version");\n` +
-            `    pkg.dependencies["@vinext/types"] = ${JSON.stringify(`file:${path.join(packDir, typesTarball!)}`)};\n` +
+            `    pkg.dependencies = { "@vinext/types": ${JSON.stringify(`file:${path.join(packDir, typesTarball!)}`)} };\n` +
+            `    pkg.peerDependencies = {};\n` +
             `  }\n` +
             `  return pkg;\n` +
             `} } };\n`,
@@ -410,7 +411,7 @@ describe("generateRouteTypes", () => {
           "app/page.ts",
           'import type { NextConfig } from "next";\nconst config: NextConfig = {};\nvoid config;\n',
         );
-        runCommand(path.join(consumer, "node_modules/.bin/vinext"), ["typegen"], consumer);
+        await generateRouteTypes({ root: consumer });
         expect(await readFile(path.join(consumer, "next-env.d.ts"), "utf-8")).toContain(
           'import "vinext/types";',
         );
