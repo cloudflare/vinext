@@ -54,7 +54,7 @@ jobs:
       - name: Scaffold a fresh create-vinext-app project
         working-directory: ${{ runner.temp }}/cva-runner
         run: >-
-          vp exec create-vinext-app "${{ runner.temp }}/cva-cloudflare"
+          npx create-vinext-app "${{ runner.temp }}/cva-cloudflare"
           --yes
           --skip-install
           --disable-git

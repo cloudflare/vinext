@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createVinextApp } from "../packages/create-vinext-app/src/index.js";
+import { createVinextApp, runCreateVinextAppCli } from "../packages/create-vinext-app/src/index.js";
 import type { ResolvedInitOptions } from "../packages/vinext/src/init-platform.js";
 
 let tmpDir: string;
@@ -268,5 +268,28 @@ describe("createVinextApp", () => {
         }),
       ),
     ).rejects.toThrow("contains files that could conflict");
+  });
+});
+
+describe("create-vinext-app CLI", () => {
+  it("uses a dedicated executable entry point", () => {
+    const packageJson = JSON.parse(
+      fs.readFileSync(
+        path.join(import.meta.dirname, "../packages/create-vinext-app/package.json"),
+        "utf-8",
+      ),
+    ) as { bin: Record<string, string> };
+
+    expect(packageJson.bin).toEqual({ "create-vinext-app": "dist/cli.js" });
+  });
+
+  it("prints help through the CLI runner", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runCreateVinextAppCli(["--help"]);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

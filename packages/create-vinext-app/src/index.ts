@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -538,7 +536,7 @@ async function promptForDirectory(options: PlatformPromptOptions, yes: boolean):
   }
 }
 
-async function main(args: string[]): Promise<void> {
+export async function runCreateVinextAppCli(args: string[]): Promise<void> {
   const parsed = parseArgs(args);
   if (parsed.help) {
     printHelp();
@@ -564,12 +562,5 @@ async function main(args: string[]): Promise<void> {
     git: parsed.git,
     yes: parsed.yes,
     initOptions,
-  });
-}
-
-if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) {
-  main(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
   });
 }
