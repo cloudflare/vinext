@@ -158,6 +158,10 @@
     "./internal/utils/prerender-output-paths": {
       "types": "./dist/utils/prerender-output-paths.d.ts",
       "import": "./dist/utils/prerender-output-paths.js"
+    },
+    "./internal/utils/hash": {
+      "types": "./dist/utils/hash.d.ts",
+      "import": "./dist/utils/hash.js"
     }
   },
   "scripts": {

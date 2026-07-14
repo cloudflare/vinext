@@ -1943,6 +1943,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
+        // Route scans are cached at module scope so the generated entries and
+        // request handlers can share them. A Vite restart can create a new
+        // server in the same Node process, however, so those caches may belong
+        // to the previous server and no watcher exists to invalidate files
+        // added while it was stopped. Start every config lifecycle from a
+        // fresh filesystem snapshot; watcher events keep it fresh afterward.
+        invalidateRouteCache(pagesDir);
+        invalidateAppRouteCache();
+
         // Load next.config.js if present (always from project root, not src/),
         // unless vinext({ nextConfig }) explicitly overrides it.
         // Guard: resolve nextConfig only once per plugin instance. In Vite's

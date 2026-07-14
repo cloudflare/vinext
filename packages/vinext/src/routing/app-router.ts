@@ -37,8 +37,10 @@ type AppRouteGraph = {
 let cachedGraph: AppRouteGraph | null = null;
 let cachedAppDir: string | null = null;
 let cachedPageExtensionsKey: string | null = null;
+let cacheGeneration = 0;
 
 export function invalidateAppRouteCache(): void {
+  cacheGeneration++;
   cachedGraph = null;
   cachedAppDir = null;
   cachedPageExtensionsKey = null;
@@ -58,15 +60,24 @@ export async function appRouteGraph(
 ): Promise<AppRouteGraph> {
   matcher ??= createValidFileMatcher(pageExtensions);
   const pageExtensionsKey = JSON.stringify(matcher.extensions);
-  if (cachedGraph && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {
-    return cachedGraph;
-  }
+  while (true) {
+    if (cachedGraph && cachedAppDir === appDir && cachedPageExtensionsKey === pageExtensionsKey) {
+      return cachedGraph;
+    }
 
-  const graph = await buildAppRouteGraph(appDir, matcher);
-  cachedGraph = graph;
-  cachedAppDir = appDir;
-  cachedPageExtensionsKey = pageExtensionsKey;
-  return graph;
+    const scanGeneration = cacheGeneration;
+    const graph = await buildAppRouteGraph(appDir, matcher);
+    // A watcher may invalidate while the async filesystem scan is still in
+    // flight. Retry instead of returning or caching that obsolete snapshot.
+    // Watcher invalidations arrive in finite bursts, so intentionally wait for
+    // a quiescent scan rather than bounding retries and publishing stale routes.
+    if (scanGeneration !== cacheGeneration) continue;
+
+    cachedGraph = graph;
+    cachedAppDir = appDir;
+    cachedPageExtensionsKey = pageExtensionsKey;
+    return graph;
+  }
 }
 
 /**

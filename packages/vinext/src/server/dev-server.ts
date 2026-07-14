@@ -802,7 +802,7 @@ export function createSSRHandler(
     const parsedResolvedUrl = new URL(localeStrippedUrl, "http://vinext.local");
     const originalRequestSearch = new URL(originalUrl, "http://vinext.local").search;
     const gsspResolvedUrl = parsedResolvedUrl.pathname + originalRequestSearch;
-    const requestAsPath = isDataReq
+    let requestAsPath = isDataReq
       ? gsspResolvedUrl
       : i18nConfig
         ? extractLocaleFromUrlShared(originalUrl, i18nConfig, locale).url
@@ -814,7 +814,7 @@ export function createSSRHandler(
     const userFacingParams: Record<string, string | string[]> | null = route.isDynamic
       ? params
       : null;
-    const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
+    let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
@@ -854,6 +854,15 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        const isStaticPropsRender =
+          typeof pageModule.getStaticProps === "function" &&
+          typeof pageModule.getServerSideProps !== "function";
+        if (isStaticPropsRender) {
+          // Match Next.js's Pages handler: getStaticProps renders receive only
+          // route params and a resolved asPath without request search state.
+          query = mergeRouteParamsIntoQuery({}, params);
+          requestAsPath = localeStrippedUrl.split("?")[0];
+        }
         const supportsPreview =
           typeof pageModule.getStaticProps === "function" ||
           typeof pageModule.getServerSideProps === "function";
@@ -887,8 +896,13 @@ export function createSSRHandler(
           }),
           ...(requestPreviewData === false ? {} : { isPreview: true as const }),
         };
-        const navigationIsReady =
-          typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
+        // Next.js's ServerRouter is never ready during an SSG render. Keep
+        // this independent of the triggering request query because ISR output
+        // is shared by pathname; the client still publishes its live URL state
+        // after hydration. See packages/next/src/server/render.tsx.
+        const navigationIsReady = isStaticPropsRender
+          ? false
+          : typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(
                 patternToNextFormat(route.pattern),
                 new URL(url, "http://_").search,
@@ -1032,8 +1046,8 @@ export function createSSRHandler(
             if (isFallbackRender && typeof routerShim.setSSRContext === "function") {
               routerShim.setSSRContext({
                 pathname: patternToNextFormat(route.pattern),
-                query,
-                asPath: requestAsPath,
+                query: {},
+                asPath: patternToNextFormat(route.pattern),
                 navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
                 locales: i18nConfig?.locales,
@@ -1495,6 +1509,7 @@ export function createSSRHandler(
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
                           hasMiddleware,
+                          routeUrl: requestAsPath,
                         },
                       };
 
@@ -1866,6 +1881,7 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
+            routeUrl: requestAsPath,
           },
         };
 
@@ -1881,7 +1897,7 @@ export function createSSRHandler(
           {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
-            query: params,
+            query: isFallbackRender ? {} : params,
             buildId: process.env.__VINEXT_BUILD_ID,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,

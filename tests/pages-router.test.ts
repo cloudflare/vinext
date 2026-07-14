@@ -7281,8 +7281,10 @@ export default class CustomDocument extends Document {
           Cookie: "theme=dark",
         },
       });
-      expect(response.status).toBe(202);
-      expect(response.headers.get("x-document-cookie")).toBe("dark");
+      // Next.js gives getStaticProps renders a params-only query, including
+      // the Document context. req/res still carry the original request.
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-document-cookie")).toBeNull();
       const html = await response.text();
       expect(html).toContain(
         'id="document-request-context">/static-gsp?documentHeader=true&amp;documentStatus=true|dark|has-res',

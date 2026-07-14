@@ -452,9 +452,20 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
+    const pageModule = route.module;
+    const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
+    const isStaticPropsRender =
+      isStaticPropsRoute && typeof pageModule.getServerSideProps !== "function";
+    // Pages getStaticProps renders are shared by pathname. Match Next.js by
+    // removing request search state before exposing the render URL or router
+    // context; otherwise a cold/stale request can persist its query in ISR.
+    const renderRouteUrl = isStaticPropsRender ? routeUrl.split("?")[0] : routeUrl;
+    const routerAsPathSource = isStaticPropsRender
+      ? renderRouteUrl
+      : (renderAsPath ?? renderRouteUrl);
     const routerAsPath = i18nConfig
-      ? extractLocaleFromUrl(renderAsPath ?? routeUrl, i18nConfig, locale).url
-      : (renderAsPath ?? routeUrl);
+      ? extractLocaleFromUrl(routerAsPathSource, i18nConfig, locale).url
+      : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
     });
@@ -465,14 +476,12 @@ export function createPagesPageHandler(
         const routePattern = patternToNextFormat(route.pattern);
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
-        const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
+        const query = mergeRouteParamsIntoQuery(parseQuery(renderRouteUrl), params);
 
         // Model Pages Router readiness for `next/navigation` compat hooks. The
         // serialized `__NEXT_DATA__` flags (gssp/gsp/gip/appGip/autoExport) plus
         // the configured-rewrites flag decide the initial `router.isReady` value,
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
-        const pageModule = route.module;
-        const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           request.headers.get(PRERENDER_REVALIDATE_HEADER),
         );
@@ -492,11 +501,17 @@ export function createPagesPageHandler(
           }),
           ...(previewData === false ? {} : { isPreview: true as const }),
         };
-        const navigationIsReady =
-          typeof getPagesNavigationIsReadyFromSerializedState === "function"
+        // Match Next.js's ServerRouter: SSG renders are not ready on the
+        // server, regardless of the triggering request URL. ISR HTML is shared
+        // by pathname, so deriving this bit from request search state would
+        // persist request-specific router and next/navigation output.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+        const navigationIsReady = isStaticPropsRender
+          ? false
+          : typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
                 routePattern,
-                new URL(routerAsPath, "http://_").search,
+                originalRequestUrl.search,
                 pagesNextData,
               )
             : true;
@@ -574,7 +589,7 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
-            routeUrl,
+            routeUrl: renderRouteUrl,
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
@@ -662,7 +677,7 @@ export function createPagesPageHandler(
           renderIsrPassToStringAsync,
           route: { isDynamic: route.isDynamic },
           routePattern,
-          routeUrl,
+          routeUrl: renderRouteUrl,
           runInFreshUnifiedContext(callback) {
             const revalCtx = createRequestContext({
               executionContext: null,
@@ -724,16 +739,14 @@ export function createPagesPageHandler(
 
         // Republish SSR context with isFallback flipped on so `useRouter().isFallback`
         // returns true during render, matching Next.js render.tsx fallback shell.
-        if (isFallbackRender && typeof setSSRContext === "function") {
-          setSSRContext({
-            pathname: routePattern,
-            query,
-            asPath: routerAsPath,
+        if (isFallbackRender) {
+          // Next.js clears the concrete params/search state and uses the route
+          // pattern as ServerRouter.asPath for a fallback shell. The browser
+          // publishes the concrete URL after the fallback data request lands.
+          applySSRContext({
+            query: {},
+            asPath: routePattern,
             navigationIsReady: false,
-            locale,
-            locales: i18nConfig ? i18nConfig.locales : undefined,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
             isFallback: true,
           });
         }
@@ -868,7 +881,7 @@ export function createPagesPageHandler(
             setDocumentInitialHead:
               typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
             routePattern,
-            routeUrl,
+            routeUrl: renderRouteUrl,
             safeJsonStringify,
             scriptNonce,
             statusCode: renderStatusCode,

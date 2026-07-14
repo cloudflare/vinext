@@ -556,6 +556,24 @@ function resolveNavigationTarget(
   return applyNavigationLocale(as ?? resolveUrl(url), locale, replaceExistingLocale);
 }
 
+/**
+ * Next.js's internal `_h` replacement receives browser-visible URLs, which may
+ * already contain basePath and a locale prefix. Convert those back to app
+ * paths before the normal history/data URL builders run; otherwise basePath is
+ * added twice and locale-domain routing can turn a same-document hydration
+ * update into an external navigation.
+ */
+function normalizeHydrationNavigationUrl(url: string): string {
+  try {
+    const parsed = new URL(url, window.location.href);
+    const origin = getWindowOrigin();
+    if (!origin || parsed.origin !== origin) return url;
+    return stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+  } catch {
+    return url;
+  }
+}
+
 class HrefInterpolationError extends Error {}
 
 function interpolateCurrentDynamicRoute(resolved: string): string {
@@ -1100,7 +1118,9 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   // carry __NEXT_DATA__, so treating that alone as a Pages signal would let
   // compat fallback state shadow App Router navigation snapshots.
   if (!isPagesRouterDocumentActive()) return null;
-  const resolvedPath = stripBasePath(window.location.pathname, __basePath);
+  const resolvedPath = removeNavigationLocalePrefix(
+    stripBasePath(window.location.pathname, __basePath),
+  );
   const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
   const pattern = resolvePagesRoutePatternForPath(nextData?.page, resolvedPath);
   if (!pattern) return null;
@@ -1192,6 +1212,17 @@ type RouteQueryNextData = {
   query?: Record<string, string | string[] | undefined>;
 };
 
+function getSerializedRouteQuery(
+  nextData: RouteQueryNextData | undefined,
+): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(nextData?.query ?? {})) {
+    if (typeof value === "string") query[key] = value;
+    else if (Array.isArray(value)) query[key] = [...value];
+  }
+  return query;
+}
+
 function extractRouteParamsFromPath(
   pattern: string,
   pathname: string,
@@ -1278,7 +1309,21 @@ function getPathnameAndQuery(): {
   // not the resolved path ("/posts/42"). __NEXT_DATA__.page holds the route
   // pattern and is updated by navigateClient() on every client-side navigation.
   const pathname = window.__NEXT_DATA__?.page ?? canonicalResolvedPath;
-  const nextData = window.__NEXT_DATA__;
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  // Before the hydration query update, Next.js keeps router.query at the
+  // params-only value serialized in __NEXT_DATA__ (and at {} for fallback:true
+  // shells). router.asPath is different: it is constructed from the live
+  // browser URL, including search/hash, even while router.query is still in
+  // that pre-ready state.
+  if (!isPagesRouterReady() && !routerRuntimeState.routerDidNavigate && nextData) {
+    return {
+      pathname,
+      query: getSerializedRouteQuery(nextData),
+      asPath:
+        getCurrentHistoryAsPath() ??
+        canonicalResolvedPath + window.location.search + window.location.hash,
+    };
+  }
   const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
   // URL search params always reflect the current URL
   const searchQuery: Record<string, string | string[]> = {};
@@ -1410,13 +1455,10 @@ function PagesRouterHydrationMarker(): null {
 }
 
 function getRouterSnapshot(): ReturnType<typeof getPathnameAndQuery> & { isReady: boolean } {
-  // On the server, derive `router.isReady` from the SSR navigation-readiness
-  // context (auto-export dynamic / query-string / rewrite-capable routes are
-  // not ready until the client router publishes the live URL). Mirrors Next.js
-  // render.tsx, which serializes the same readiness into `__NEXT_DATA__` so the
-  // client hydrates with the identical value. Returning `true` unconditionally
-  // would render `isReady: true` on the server while the client hydrates with
-  // `isReady: false`, a hydration mismatch for components reading it in JSX.
+  // On the server, derive `router.isReady` from the ServerRouter readiness
+  // context. The browser independently applies the Pages Router constructor's
+  // predicate to __NEXT_DATA__ and the live URL; notably, queryless GSP pages
+  // are ready immediately on the client even though ServerRouter is not.
   const isReady =
     typeof window === "undefined"
       ? (_getSSRContext()?.navigationIsReady ?? true)
@@ -2911,6 +2953,7 @@ async function performNavigation(
     assertSafeNavigationUrl(String(as));
   }
 
+  const isHydrationQueryUpdate = options?._h === 1;
   const navigationLocale = resolveTransitionLocale(options?.locale);
   const replaceInheritedLocale =
     as === undefined &&
@@ -2920,7 +2963,9 @@ async function performNavigation(
     ((url.query !== null && typeof url.query === "object" && Object.keys(url.query).length > 0) ||
       (typeof url.search === "string" && url.search.length > 0) ||
       (typeof url.hash === "string" && url.hash.length > 0));
-  let resolved = resolveNavigationTarget(url, as, navigationLocale, replaceInheritedLocale);
+  let resolved = isHydrationQueryUpdate
+    ? normalizeHydrationNavigationUrl(as ?? resolveUrl(url))
+    : resolveNavigationTarget(url, as, navigationLocale, replaceInheritedLocale);
   // `resolvedRoute` is the route-pattern URL (Next.js's internal `href`). It
   // drives which page module renders and which `_next/data` payload is
   // fetched. When `as` is absent it equals `resolved`. When `as` is a string
@@ -2928,11 +2973,9 @@ async function performNavigation(
   // module and data fetch target the actual route while the address bar shows
   // the mask. Mirrors Next.js `Router.change()` keeping `parsedUrl.pathname`
   // and `parsedAs.pathname` distinct.
-  let resolvedRoute = applyNavigationLocale(
-    resolveUrl(url),
-    navigationLocale,
-    replaceInheritedLocale,
-  );
+  let resolvedRoute = isHydrationQueryUpdate
+    ? normalizeHydrationNavigationUrl(resolveUrl(url))
+    : applyNavigationLocale(resolveUrl(url), navigationLocale, replaceInheritedLocale);
   const inheritsCurrentPath =
     as === undefined &&
     ((typeof url === "string" && options?._vinextInterpolateDynamicRoute === true) ||
@@ -3923,8 +3966,8 @@ const singletonRouter: typeof RouterMethods & Omit<NextRouter, keyof typeof Rout
         // singleton false until the generated Pages client entry's hydration
         // effect has run, so page-level `useEffect` subscriptions are installed
         // before tests/userland observe readiness. The provider-backed
-        // `useRouter().isReady` still uses the serialized readiness snapshot to
-        // avoid server/client markup drift during hydration.
+        // `useRouter().isReady` uses the Pages Router constructor predicate
+        // before hydration and the shared runtime bit thereafter.
         return (
           isPagesRouterReady() && (typeof window === "undefined" || window.__NEXT_HYDRATED === true)
         );

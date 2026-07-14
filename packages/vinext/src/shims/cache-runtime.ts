@@ -32,6 +32,7 @@ import {
   getDataCacheHandler,
   type CachedFetchValue,
   type CacheControlMetadata,
+  type CacheHandlerValue,
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
@@ -206,7 +207,21 @@ function getUseCacheKeySeed(): string | undefined {
   return getUseCacheDeploymentIdDefine() || getUseCacheBuildIdDefine();
 }
 
-function buildUseCacheKey(id: string, keySeed: string | undefined, argsKey?: string): string {
+/**
+ * Build the shared-cache key for a "use cache" function from its build-scoped
+ * identity and serialized arguments.
+ *
+ * This is a logical handler key, not a storage key. Backend-specific adapters
+ * are responsible for mapping it to their physical key constraints after
+ * applying any storage prefixes.
+ *
+ * Exported for testing.
+ */
+export function buildUseCacheKey(
+  id: string,
+  keySeed: string | undefined,
+  argsKey?: string,
+): string {
   const scopedId = keySeed ? `build:${encodeURIComponent(keySeed)}:${id}` : id;
   return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
 }
@@ -530,9 +545,19 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
-      const existing = _hasPendingRevalidatedTag(softTags)
-        ? null
-        : await handler.get(cacheKey, { kind: "FETCH", softTags });
+      // A handler failure (e.g. a transient KV error, or a key the store
+      // rejects) must not surface as a render error: fall through to fresh
+      // execution so control-flow signals like notFound()/redirect() thrown by
+      // `fn` still propagate with their digest intact instead of being masked
+      // by the handler's own exception.
+      let existing: CacheHandlerValue | null = null;
+      if (!_hasPendingRevalidatedTag(softTags)) {
+        try {
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+        } catch (error) {
+          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+        }
+      }
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
