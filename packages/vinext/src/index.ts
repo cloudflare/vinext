@@ -165,6 +165,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -6049,6 +6050,14 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Force-bundle transitive copies of `serverExternalPackages` whose
+    // installed version differs from the project-root copy. Without this,
+    // both copies collapse to the same runtime `node_modules/<dep>/` lookup
+    // and one version silently wins — see #1503.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root ?? null,
+      getExternalPackages: () => nextConfig?.serverExternalPackages ?? [],
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
