@@ -1781,7 +1781,15 @@ export function pushHistoryStateWithoutNotify(
 ): void {
   withSuppressedUrlNotifications(() => {
     const state = getClientNavigationState();
-    state?.originalPushState.call(window.history, data, unused, url);
+    try {
+      state?.originalPushState.call(window.history, data, unused, url);
+    } catch (error) {
+      // history.pushState can throw a SecurityError (userinfo in document.URL,
+      // sandboxed/opaque origins, per-origin call quota). These calls only write
+      // vinext metadata, so failing to persist it must not abort hydration or
+      // navigation (#2614).
+      console.warn("[vinext] history.pushState failed:", error);
+    }
   });
 }
 
@@ -1792,7 +1800,13 @@ export function replaceHistoryStateWithoutNotify(
 ): void {
   withSuppressedUrlNotifications(() => {
     const state = getClientNavigationState();
-    state?.originalReplaceState.call(window.history, data, unused, url);
+    try {
+      state?.originalReplaceState.call(window.history, data, unused, url);
+    } catch (error) {
+      // See pushHistoryStateWithoutNotify: a metadata-write failure must not
+      // abort hydration or navigation (#2614).
+      console.warn("[vinext] history.replaceState failed:", error);
+    }
   });
 }
 
