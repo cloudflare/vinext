@@ -102,6 +102,7 @@ import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
   filterInternalHeaders,
+  getRepeatedSlashRedirect,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
@@ -1672,6 +1673,38 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   };
 
   const plugins: PluginOption[] = [
+    {
+      name: "vinext:canonical-request-url",
+      enforce: "pre",
+      configureServer: {
+        order: "pre",
+        handler(server) {
+          server.middlewares.use((req, res, next) => {
+            const requestUrl = req.url ?? "/";
+            const base = server.config.base === "/" ? "" : server.config.base.replace(/\/$/, "");
+            const urlWithoutBase =
+              base && (requestUrl === base || requestUrl.startsWith(`${base}/`))
+                ? requestUrl.slice(base.length) || "/"
+                : requestUrl;
+            const pathWithoutBase = urlWithoutBase.split("?", 1)[0];
+            if (
+              pathWithoutBase.startsWith("/@fs/") ||
+              pathWithoutBase.startsWith("/@id/") ||
+              pathWithoutBase.startsWith("/@vite/") ||
+              pathWithoutBase === "/@react-refresh" ||
+              pathWithoutBase.startsWith("/@react-refresh/") ||
+              pathWithoutBase.startsWith("/node_modules/.vite/")
+            ) {
+              return next();
+            }
+            const location = getRepeatedSlashRedirect(requestUrl);
+            if (location === null) return next();
+            res.writeHead(308, { Location: location });
+            res.end(location);
+          });
+        },
+      },
+    },
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.

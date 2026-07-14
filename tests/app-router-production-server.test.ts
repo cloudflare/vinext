@@ -74,6 +74,40 @@ function getInlineStyleText(html: string): string {
   return styles.join("\n");
 }
 
+async function requestRawPath(
+  baseUrl: string,
+  requestPath: string,
+): Promise<{
+  body: string;
+  headers: http.IncomingHttpHeaders;
+  status: number;
+}> {
+  const url = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: url.hostname,
+        method: "GET",
+        path: requestPath,
+        port: url.port,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          resolve({
+            body: Buffer.concat(chunks).toString("utf8"),
+            headers: response.headers,
+            status: response.statusCode ?? 0,
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function withCountingFetchTarget<T>(
   fn: (targetUrl: string, getRequestCount: () => number) => Promise<T>,
 ): Promise<T> {
@@ -1005,6 +1039,36 @@ describe("App Router Production server (startProdServer)", () => {
     const res = await fetch(`${baseUrl}/about.rsc`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
+  });
+
+  it.each([
+    ["App route", "//about?from=app", "/about?from=app"],
+    ["Pages route", "//old-school?from=pages", "/old-school?from=pages"],
+    ["Pages API route", "/api//pages-og?from=api", "/api/pages-og?from=api"],
+    ["RSC route", "/about//.rsc?from=rsc", "/about/.rsc?from=rsc"],
+  ])(
+    "canonicalizes repeated slashes for hybrid %s requests",
+    async (_label, pathname, location) => {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status).toBe(308);
+      expect(res.headers.get("location")).toBe(location);
+      await expect(res.text()).resolves.toBe(location);
+    },
+  );
+
+  it("canonicalizes backslashes without weakening encoded-delimiter guards", async () => {
+    const literal = await requestRawPath(baseUrl, "/about\\nested?from=literal");
+    expect(literal.status).toBe(308);
+    expect(literal.headers.location).toBe("/about/nested?from=literal");
+    expect(literal.body).toBe("/about/nested?from=literal");
+
+    const encoded = await fetch(`${baseUrl}/%5Cevil.com`, { redirect: "manual" });
+    expect(encoded.status).toBe(404);
+  });
+
+  it("does not redirect absolute-form request targets off origin", async () => {
+    const response = await requestRawPath(baseUrl, "https://evil.example//about");
+    expect(response.headers.location).toBeUndefined();
   });
 
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {

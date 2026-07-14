@@ -15,6 +15,40 @@ import { isOpenRedirectShaped } from "./open-redirect.js";
 export { isOpenRedirectShaped } from "./open-redirect.js";
 
 /**
+ * Normalize literal repeated slashes and backslashes while preserving the
+ * complete query string. Pages Router requests use this to emit Next.js's
+ * canonical 308 redirect before route matching.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/utils.ts
+ * https://github.com/vercel/next.js/blob/v16.3.0-canary.80/packages/next/src/shared/lib/utils.ts
+ */
+export function normalizeRepeatedSlashes(url: string): string {
+  const urlParts = url.split("?");
+  const pathname = urlParts[0];
+  const normalizedPathname = pathname.replaceAll("\\", "/").replace(/\/\/+/g, "/");
+  return normalizedPathname + (urlParts[1] ? `?${urlParts.slice(1).join("?")}` : "");
+}
+
+export function getRepeatedSlashRedirect(url: string): string | null {
+  if (!url.startsWith("/")) return null;
+  const pathname = url.split("?", 1)[0];
+  if (!/(\\|\/\/)/.test(pathname)) return null;
+
+  const location = normalizeRepeatedSlashes(url);
+  return location.startsWith("/") && !location.startsWith("//") ? location : null;
+}
+
+export function redirectRepeatedSlashes(request: Request): Response | null {
+  // Cloudflare normalizes literal backslashes before constructing the Fetch
+  // Request. Wrangler routes repeated forward slashes to the Worker first so
+  // this check can still run before static asset lookup.
+  const url = new URL(request.url);
+  const location = getRepeatedSlashRedirect(url.pathname + url.search);
+  if (location === null) return null;
+  return new Response(location, { status: 308, headers: { Location: location } });
+}
+
+/**
  * Shared request pipeline utilities.
  *
  * Extracted from generated entries and server hot paths to keep codegen focused
@@ -33,18 +67,14 @@ export { isOpenRedirectShaped } from "./open-redirect.js";
 /**
  * Guard against protocol-relative URL open redirects.
  *
- * Paths like `//example.com/` would be redirected to `//example.com` by the
- * trailing-slash normalizer, which browsers interpret as `http://example.com`.
- * Backslashes are equivalent to forward slashes in the URL spec
- * (e.g. `/\evil.com` is treated as `//evil.com` by browsers).
- *
- * Next.js returns 404 for these paths. We check the RAW pathname before
- * normalization so the guard fires before normalizePath collapses `//`.
+ * This defense-in-depth guard is used after literal repeated slash/backslash
+ * requests have been canonicalized. It prevents any remaining unsafe shape
+ * from reaching a redirect emitter.
  *
  * Percent-encoded variants are also blocked because:
  *   - `%5C` decodes to `\` (browsers treat `/\evil.com` as `//evil.com`).
  *   - `%2F` decodes to `/` (so `/%2F/evil.com` effectively becomes `//evil.com`).
- * These forms survive segment-wise decoding that re-encodes path delimiters
+ * Encoded forms survive segment-wise decoding that re-encodes path delimiters
  * (e.g. `normalizePathnameForRouteMatchStrict`), so a later trailing-slash
  * redirect would still echo the encoded form in its `Location` header. See
  * `isOpenRedirectShaped` for the full list of rejected leading-segment forms.

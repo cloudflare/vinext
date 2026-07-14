@@ -44,6 +44,7 @@ import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
   isOpenRedirectShaped,
+  redirectRepeatedSlashes,
 } from "./request-pipeline.js";
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
 import {
@@ -91,6 +92,9 @@ async function handleRequest(
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
 
   const url = new URL(request.url);
+
+  const repeatedSlashRedirect = redirectRepeatedSlashes(request);
+  if (repeatedSlashRedirect) return repeatedSlashRedirect;
 
   if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
     const assetFetcher = env.ASSETS;

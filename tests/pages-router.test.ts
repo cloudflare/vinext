@@ -1129,6 +1129,70 @@ describe("Pages Router integration", () => {
     }
   });
 
+  it("does not canonicalize Vite-internal dev URLs with repeated slashes", async () => {
+    const internalPaths = [
+      "/@fs//tmp/vinext-missing.js",
+      "/@id/foo//bar",
+      "/@vite/foo//bar",
+      "/@react-refresh//runtime",
+      "/node_modules/.vite/deps//react.js",
+    ];
+
+    for (const internalPath of internalPaths) {
+      const res = await fetch(`${baseUrl}${internalPath}`, { redirect: "manual" });
+      expect(res.status).not.toBe(308);
+      expect(res.headers.get("location")).toBeNull();
+    }
+
+    // Ported behavior from Next.js: test/e2e/repeated-slashes/repeated-slashes.test.ts
+    // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/repeated-slashes/repeated-slashes.test.ts
+    const pageRes = await fetch(`${baseUrl}/foo//bar?x=1`, { redirect: "manual" });
+    expect(pageRes.status).toBe(308);
+    expect(pageRes.headers.get("location")).toBe("/foo/bar?x=1");
+
+    const lookalikeRes = await fetch(`${baseUrl}/@react-refresh-demo//page`, {
+      redirect: "manual",
+    });
+    expect(lookalikeRes.status).toBe(308);
+    expect(lookalikeRes.headers.get("location")).toBe("/@react-refresh-demo/page");
+  });
+
+  it("does not canonicalize base-prefixed Vite-internal dev URLs", async () => {
+    const testServer = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: FIXTURE_DIR })],
+      base: "/docs/",
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const testBaseUrl = `http://localhost:${addr.port}`;
+
+      const internalRes = await fetch(`${testBaseUrl}/docs/@fs//tmp/vinext-missing.js`, {
+        redirect: "manual",
+      });
+      expect(internalRes.status).not.toBe(308);
+      expect(internalRes.headers.get("location")).toBeNull();
+
+      const pageRes = await fetch(`${testBaseUrl}/docs/foo//bar?x=1`, { redirect: "manual" });
+      expect(pageRes.status).toBe(308);
+      expect(pageRes.headers.get("location")).toBe("/docs/foo/bar?x=1");
+
+      const lookalikeRes = await fetch(`${testBaseUrl}/docs/@react-refresh-demo//page`, {
+        redirect: "manual",
+      });
+      expect(lookalikeRes.status).toBe(308);
+      expect(lookalikeRes.headers.get("location")).toBe("/docs/@react-refresh-demo/page");
+    } finally {
+      await testServer.close();
+    }
+  });
+
   it("returns 404 with custom 404 page for non-existent routes", async () => {
     const res = await fetch(`${baseUrl}/nonexistent`);
     expect(res.status).toBe(404);

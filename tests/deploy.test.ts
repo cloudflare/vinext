@@ -46,6 +46,7 @@ import {
   generateWranglerConfig,
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
+  updateWranglerConfigForCloudflare,
 } from "../packages/vinext/src/init-cloudflare.js";
 import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
@@ -913,6 +914,7 @@ describe("generateWranglerConfig", () => {
       directory: "dist/client",
       not_found_handling: "none",
       binding: "ASSETS",
+      run_worker_first: ["//*", "/*//*"],
     });
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
@@ -925,6 +927,51 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.main).toBe("vinext/server/fetch-handler");
+  });
+
+  it("preserves custom worker-first routes while adding repeated-slash routing", () => {
+    const updated = updateWranglerConfigForCloudflare(
+      `{
+  // preserve me
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  }
+}`,
+      { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
+    );
+
+    expect(updated).toContain("// preserve me");
+    expect(JSON.parse(updated.replace("// preserve me", "")).assets.run_worker_first).toEqual([
+      "/api/*",
+      "//*",
+      "/*//*",
+    ]);
+  });
+
+  it("preserves an existing all-requests worker-first setting", () => {
+    const updated = updateWranglerConfigForCloudflare(
+      `{ "assets": { "binding": "ASSETS", "run_worker_first": true } }`,
+      { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
+    );
+
+    expect(JSON.parse(updated).assets.run_worker_first).toBe(true);
+  });
+
+  it("adds vinext asset routing to existing configs without assets", () => {
+    const updated = updateWranglerConfigForCloudflare(`{ "name": "existing" }`, {
+      dataCache: "none",
+      cdnCache: "data-cache",
+      imageOptimization: "none",
+    });
+
+    expect(JSON.parse(updated).assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+      run_worker_first: ["//*", "/*//*"],
+    });
   });
 
   it("sets compatibility_date to today", () => {

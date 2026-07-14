@@ -213,3 +213,24 @@ test.describe('"use client" page component with usePathname (issue #688)', () =>
     expect(errors.filter((e) => e.includes("Hydration"))).toHaveLength(0);
   });
 });
+
+test.describe("canonical repeated-slash redirects", () => {
+  for (const [label, pathname, location] of [
+    ["App route", "//about?from=app", "/about?from=app"],
+    ["Pages route", "//old-school?from=pages", "/old-school?from=pages"],
+    ["route handler", "/api//hello?from=api", "/api/hello?from=api"],
+    ["RSC request", "/about//.rsc?from=rsc", "/about/.rsc?from=rsc"],
+  ] as const) {
+    test(`redirects hybrid ${label} before router selection`, async ({ request }) => {
+      const response = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
+      expect(response.status()).toBe(308);
+      expect(response.headers().location).toBe(location);
+      expect(await response.text()).toBe(location);
+    });
+  }
+
+  test("keeps encoded delimiter requests blocked", async ({ request }) => {
+    const response = await request.get(`${BASE}/%5Cevil.com`, { maxRedirects: 0 });
+    expect(response.status()).toBe(404);
+  });
+});

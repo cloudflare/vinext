@@ -1,6 +1,6 @@
 import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
-import { guardProtocolRelativeUrl } from "./request-pipeline.js";
+import { guardProtocolRelativeUrl, redirectRepeatedSlashes } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   RSC_HEADER,
@@ -81,6 +81,9 @@ export function normalizeRscRequest(
   allowOutsideBasePath = false,
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
+
+  const repeatedSlashRedirect = redirectRepeatedSlashes(request);
+  if (repeatedSlashRedirect) return repeatedSlashRedirect;
 
   // Step 2: Guard against protocol-relative open redirects on the raw pathname.
   // normalizePath (step 4) would collapse //evil.com to /evil.com, causing the

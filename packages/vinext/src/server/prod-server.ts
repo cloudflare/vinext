@@ -35,7 +35,11 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.js";
+import {
+  filterInternalHeaders,
+  getRepeatedSlashRedirect,
+  isOpenRedirectShaped,
+} from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
@@ -1315,10 +1319,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     const rawUrl = req.url ?? "/";
     const rawPathname = rawUrl.split("?")[0];
 
-    // Guard against protocol-relative URL open redirect attacks.
-    // Run BEFORE decoding so both literal (`//`, `/\`) and encoded (`%5C`, `%2F`)
-    // variants are rejected — the encoded forms survive segment-wise decoding
-    // below and would otherwise reach the trailing-slash redirect emitter.
+    const repeatedSlashLocation = getRepeatedSlashRedirect(rawUrl);
+    if (repeatedSlashLocation !== null) {
+      res.writeHead(308, { Location: repeatedSlashLocation });
+      res.end(repeatedSlashLocation);
+      return;
+    }
+
+    // Literal repeated delimiters were canonicalized above. Reject encoded
+    // variants before decoding because they would otherwise survive
+    // segment-wise normalization and reach a redirect emitter.
     if (isOpenRedirectShaped(rawPathname)) {
       res.writeHead(404);
       res.end("This page could not be found");
@@ -1634,6 +1644,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
+
+    const repeatedSlashLocation = getRepeatedSlashRedirect(rawUrl);
+    if (repeatedSlashLocation !== null) {
+      res.writeHead(308, { Location: repeatedSlashLocation });
+      res.end(repeatedSlashLocation);
+      return;
+    }
 
     // Guard against protocol-relative URL open redirect attacks.
     // Run BEFORE decoding so both literal (`//`, `/\`) and encoded (`%5C`, `%2F`)
