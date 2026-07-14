@@ -1,4 +1,5 @@
 const REACT_FLIGHT_STYLESHEET_PRELOAD_HINT = /^([0-9a-f]*:HL\[.*?),"stylesheet"(\]|,)/;
+const STYLESHEET_TO_STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
 
 // React Flight uses byte-length framing for text, ArrayBuffers, typed arrays,
 // and DataViews. Their bodies are not newline-delimited and may contain any
@@ -8,6 +9,9 @@ const LENGTH_PREFIXED_ROW_TAGS = new Set([
   "A",
   "O",
   "o",
+  // Byte streams use this tag in React 19.3 canary. Recognizing it here is
+  // harmless with React 19.2, which never emits it.
+  "b",
   "U",
   "S",
   "s",
@@ -20,14 +24,43 @@ const LENGTH_PREFIXED_ROW_TAGS = new Set([
   "V",
 ]);
 
+// These are the newline-framed tags emitted by React 19.2. Keep this explicit:
+// treating a future length-prefixed tag as newline-framed can desynchronize the
+// stream if its body contains a newline.
+const NEWLINE_PREFIXED_ROW_TAGS = new Set([
+  "I",
+  "H",
+  "E",
+  "N",
+  "D",
+  "J",
+  "W",
+  "R",
+  "r",
+  "X",
+  "x",
+  "C",
+  "P",
+  "#",
+]);
+
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
 /** Rewrite only a complete React Flight stylesheet hint row. */
 function normalizeReactFlightHintLine(line: Uint8Array): Uint8Array {
   const text = decoder.decode(line);
-  const normalized = text.replace(REACT_FLIGHT_STYLESHEET_PRELOAD_HINT, '$1,"style"$2');
-  return normalized === text ? line : encoder.encode(normalized);
+  const normalized = text.replace(
+    REACT_FLIGHT_STYLESHEET_PRELOAD_HINT,
+    `$1,"style"${STYLESHEET_TO_STYLE_JSON_PADDING}$2`,
+  );
+  if (normalized === text) return line;
+
+  const normalizedBytes = encoder.encode(normalized);
+  // The padding is valid JSON whitespace and keeps this rewrite byte-length
+  // preserving. If that invariant ever changes, leave the row untouched rather
+  // than risking Flight framing desynchronization.
+  return normalizedBytes.byteLength === line.byteLength ? normalizedBytes : line;
 }
 
 function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
@@ -59,15 +92,34 @@ function parseHexBytes(bytes: Uint8Array, start: number, end: number): number | 
   return value;
 }
 
+function isUntaggedJsonRowStart(byte: number): boolean {
+  return (
+    byte === 34 || // "
+    byte === 45 || // -
+    (byte >= 48 && byte <= 57) || // 0-9
+    byte === 91 || // [
+    byte === 102 || // f
+    byte === 110 || // n
+    byte === 116 || // t
+    byte === 123 // {
+  );
+}
+
 export function normalizeReactFlightPreloadHints(
   stream: ReadableStream<Uint8Array>,
 ): ReadableStream<Uint8Array> {
   let carry = new Uint8Array();
   let rawBytesRemaining = 0;
+  let passThrough = false;
 
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
+        if (passThrough) {
+          controller.enqueue(chunk);
+          return;
+        }
+
         let bytes = concatBytes(carry, chunk);
         carry = new Uint8Array();
 
@@ -101,6 +153,23 @@ export function normalizeReactFlightPreloadHints(
               bytes = bytes.subarray(comma + 1);
               continue;
             }
+
+            // A known length-prefixed tag with an invalid length is malformed
+            // or belongs to a newer protocol. Preserve the remaining stream
+            // byte-for-byte instead of guessing at row boundaries.
+            passThrough = true;
+            controller.enqueue(bytes);
+            return;
+          }
+
+          const tagByte = bytes[colon + 1];
+          if (!NEWLINE_PREFIXED_ROW_TAGS.has(tag) && !isUntaggedJsonRowStart(tagByte)) {
+            // Unknown tags may be length-prefixed in a newer React release.
+            // Stop inspecting this stream so their bodies can never be
+            // mistaken for newline-framed Flight rows.
+            passThrough = true;
+            controller.enqueue(bytes);
+            return;
           }
 
           const newline = indexOfByte(bytes, 10);
