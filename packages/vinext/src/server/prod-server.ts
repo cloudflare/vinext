@@ -1801,12 +1801,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         res.end("This page could not be found");
         return;
       }
-      // Preserve parser-ignored bytes until route param decoding. The literal
-      // characters would otherwise disappear when constructing webRequest.
-      pathname = encodeUrlParserIgnoredCharacters(pathname);
+      // Preserve parser-ignored bytes until route param decoding. Keep using
+      // the raw request pathname here so unrelated escapes retain their route
+      // identity and dynamic captures are decoded exactly once.
+      requestPathname = encodeUrlParserIgnoredCharacters(requestPathname);
       {
         const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-        url = pathname + qs;
+        url = requestPathname + qs;
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
       // Pages Router client-side navigations fetch
