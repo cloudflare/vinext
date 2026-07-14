@@ -17,6 +17,25 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Next.js constructs the middleware request from the original request URL;
+  // normalized pathnames are used only for routing and matcher decisions.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  if (pathname === "/public") {
+    return new Response("public", {
+      headers: { "x-mw-permissive": "true" },
+    });
+  }
+  if (pathname.startsWith("/protected/")) {
+    return new Response("protected", {
+      status: 403,
+      headers: {
+        "x-mw-next-url-pathname": pathname,
+        "x-mw-permissive": "false",
+        "x-mw-url-pathname": new URL(request.url).pathname,
+      },
+    });
+  }
+
   // Ported from Next.js: test/e2e/app-dir/app/middleware.js
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
   // The source also exists in pages/, so the client must honor the middleware
@@ -405,5 +424,7 @@ export const config = {
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
+    "/protected/:path*",
+    "/public",
   ],
 };

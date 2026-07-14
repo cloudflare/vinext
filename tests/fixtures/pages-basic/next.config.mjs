@@ -27,6 +27,23 @@ const nextConfig = {
         destination: "/about",
         permanent: false,
       },
+      {
+        source: "/condition-capture-redirect",
+        has: [
+          {
+            type: "header",
+            key: "x-redirect-segment",
+            value: "(?<segment>.+)",
+          },
+        ],
+        destination: "/config-capture-redirect/:segment",
+        permanent: false,
+      },
+      {
+        source: "/source-capture-dot-redirect/:path*",
+        destination: "https://redirect.example.test/safe/:path*",
+        permanent: false,
+      },
     ];
   },
   async rewrites() {
@@ -67,6 +84,20 @@ const nextConfig = {
           source: "/mw-gated-before",
           has: [{ type: "cookie", key: "mw-before-user" }],
           destination: "/about",
+        },
+        // Request-controlled condition captures must remain data when inserted
+        // into path components. The named-capture shape mirrors:
+        // https://github.com/vercel/next.js/blob/canary/test/integration/custom-routes/next.config.js
+        {
+          source: "/condition-capture-rewrite",
+          has: [
+            {
+              type: "header",
+              key: "x-rewrite-segment",
+              value: "(?<segment>.+)",
+            },
+          ],
+          destination: "/api/config-capture/:segment",
         },
       ],
       afterFiles: [

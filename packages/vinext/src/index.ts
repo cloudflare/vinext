@@ -4400,7 +4400,15 @@ export const loadServerActionClient = ${
         // BEFORE Vite's built-in middleware. This ensures all requests
         // (including /@*, /__vite*, /node_modules* paths) are validated
         // before Vite serves any content.
+        type DevPagesMiddleware = (
+          req: import("node:http").IncomingMessage,
+          res: import("node:http").ServerResponse,
+          next: (err?: unknown) => void,
+        ) => Promise<void>;
+        let handlePagesMiddleware: DevPagesMiddleware | undefined;
+        const preVitePagesRequests = new WeakSet<import("node:http").IncomingMessage>();
         server.middlewares.use((req, res, next) => {
+          const rawRequestUrl = req.url ?? "/";
           const blockReason = validateDevRequest(
             {
               origin: req.headers.origin as string | undefined,
@@ -4415,6 +4423,21 @@ export const loadServerActionClient = ${
             console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
             res.writeHead(403, { "Content-Type": "text/plain" });
             res.end("Forbidden");
+            return;
+          }
+          const rawPathname = rawRequestUrl.split("?", 1)[0];
+          if (
+            hasPagesDir &&
+            middlewarePath &&
+            /%25(?:2e|2E)[.]|[.]%25(?:2e|2E)/.test(rawPathname) &&
+            handlePagesMiddleware
+          ) {
+            // Vite treats the literal half of these mixed encoded-dot segments
+            // as a file extension and can 404 before vinext middleware runs.
+            // Dispatch them through the Pages pipeline while the raw URL is
+            // still intact; the post-Vite registration skips the same request.
+            preVitePagesRequests.add(req);
+            void handlePagesMiddleware(req, res, next);
             return;
           }
           next();
@@ -4649,14 +4672,19 @@ export const loadServerActionClient = ${
             });
           }
 
-          const handlePagesMiddleware = async (
+          handlePagesMiddleware = async (
             req: import("node:http").IncomingMessage,
             res: import("node:http").ServerResponse,
             next: (err?: unknown) => void,
           ): Promise<void> => {
             try {
               let url: string = req.url ?? "/";
+              const rawRequestUrl = url;
               const originalRequestUrl = url;
+              const rawRequestPathname = rawRequestUrl.split("?", 1)[0];
+              const hasMixedEncodedDotSegment = /%25(?:2e|2E)[.]|[.]%25(?:2e|2E)/.test(
+                rawRequestPathname,
+              );
 
               // If no pages directory, skip this middleware entirely
               // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
@@ -4737,6 +4765,18 @@ export const loadServerActionClient = ${
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
+              // Preserve the encoded request path for middleware-visible
+              // request.url / request.nextUrl. Internal routing below uses a
+              // decoded and normalized pathname, but writing that value back
+              // into a WHATWG URL can collapse encoded dot segments.
+              let middlewareUrl = rawRequestUrl;
+              const rawMiddlewarePathname = middlewareUrl.split("?", 1)[0];
+              if (rawMiddlewarePathname.endsWith("/index.html")) {
+                middlewareUrl = middlewareUrl.replace("/index.html", "/");
+              } else if (rawMiddlewarePathname.endsWith(".html")) {
+                middlewareUrl = middlewareUrl.replace(/\.html(?=\?|$)/, "");
+              }
+
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -4786,6 +4826,13 @@ export const loadServerActionClient = ${
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = stripped + qs;
                 pathname = stripped;
+                const middlewarePathname = middlewareUrl.split("?", 1)[0];
+                if (middlewarePathname === bp || middlewarePathname.startsWith(bp + "/")) {
+                  const middlewareQs = middlewareUrl.includes("?")
+                    ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
+                    : "";
+                  middlewareUrl = (middlewarePathname.slice(bp.length) || "/") + middlewareQs;
+                }
               }
 
               if (nextConfig) {
@@ -4841,6 +4888,7 @@ export const loadServerActionClient = ${
                   );
                   url = pagePathname + qs;
                   pathname = pagePathname;
+                  middlewareUrl = pagePathname + qs;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
@@ -4876,7 +4924,8 @@ export const loadServerActionClient = ${
                   hadBasePath: true,
                 }),
               );
-              const isFilePathRequest = pathname.includes(".") && !pathname.endsWith(".html");
+              const isFilePathRequest =
+                !hasMixedEncodedDotSegment && pathname.includes(".") && !pathname.endsWith(".html");
               let filePathMatchesPagesRoute = false;
               const requestHostname = getUrlHostname(requestOrigin);
               if (isFilePathRequest && !filePathMatchesRewrite) {
@@ -4974,7 +5023,7 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(url, mwOrigin), {
+                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
                       });
@@ -5288,6 +5337,8 @@ export const loadServerActionClient = ${
           };
 
           server.middlewares.use((req, res, next) => {
+            if (preVitePagesRequests.has(req)) return next();
+            if (!handlePagesMiddleware) return next();
             void handlePagesMiddleware(req, res, next);
           });
         };

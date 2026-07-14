@@ -72,6 +72,8 @@ const _compiledConditionCache = new Map<string, RegExp | null>();
  * for repeated redirect/rewrite calls that use the same param shape.
  */
 const _compiledDestinationParamCache = new Map<string, RegExp>();
+const ENCODED_DOT_SEGMENT_RE = /^%2e$/i;
+const ENCODED_DOT_DOT_SEGMENT_RE = /^(?:%2e%2e|%2e\.|\.%2e)$/i;
 
 /**
  * Generic helper for the regex compilation caches above.
@@ -1004,10 +1006,15 @@ export function matchRedirect(
             : _emptyParams();
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
-        const dest = substituteAndSanitizeDestination(redirect.destination, {
-          [entry.paramName]: "",
-          ...conditionParams,
-        });
+        const dest = substituteAndSanitizeDestination(
+          redirect.destination,
+          {
+            [entry.paramName]: "",
+            ...conditionParams,
+          },
+          conditionParams,
+        );
+        if (!isValidSubstitutedExternalDestination(redirect.destination, dest)) continue;
         localeMatch = { destination: dest, permanent: redirect.permanent };
         localeMatchIndex = entry.originalIndex;
         break; // bucket entries are in insertion order = original order
@@ -1034,10 +1041,15 @@ export function matchRedirect(
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
               : _emptyParams();
           if (!conditionParams) continue;
-          const dest = substituteAndSanitizeDestination(redirect.destination, {
-            [entry.paramName]: localePart,
-            ...conditionParams,
-          });
+          const dest = substituteAndSanitizeDestination(
+            redirect.destination,
+            {
+              [entry.paramName]: localePart,
+              ...conditionParams,
+            },
+            conditionParams,
+          );
+          if (!isValidSubstitutedExternalDestination(redirect.destination, dest)) continue;
           localeMatch = { destination: dest, permanent: redirect.permanent };
           localeMatchIndex = entry.originalIndex;
           break; // bucket entries are in insertion order = original order
@@ -1065,10 +1077,15 @@ export function matchRedirect(
           : _emptyParams();
       if (!conditionParams) continue;
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      const dest = substituteAndSanitizeDestination(redirect.destination, {
-        ...params,
-        ...conditionParams,
-      });
+      const dest = substituteAndSanitizeDestination(
+        redirect.destination,
+        {
+          ...params,
+          ...conditionParams,
+        },
+        conditionParams,
+      );
+      if (!isValidSubstitutedExternalDestination(redirect.destination, dest)) continue;
       return { destination: dest, permanent: redirect.permanent };
     }
   }
@@ -1105,7 +1122,13 @@ export function matchRewrite(
         ...conditionParams,
       };
       // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
-      return substituteAndSanitizeRewriteDestination(rewrite.destination, rewriteParams);
+      const destination = substituteAndSanitizeRewriteDestination(
+        rewrite.destination,
+        rewriteParams,
+        conditionParams,
+      );
+      if (!isValidSubstitutedExternalDestination(rewrite.destination, destination)) continue;
+      return destination;
     }
   }
   return null;
@@ -1136,8 +1159,18 @@ export function matchesRewriteSource(
  *
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms
  * (`:path*`, `:path+`) in a single pass. Unknown params are left intact.
+ * Request-condition captures are encoded for the URL component receiving
+ * them so request data cannot introduce new path, query, fragment, or
+ * authority structure. This is an intentional defense-in-depth divergence
+ * from Next.js's raw `prepareDestination` substitution.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  */
-function substituteDestinationParams(destination: string, params: Record<string, string>): string {
+function substituteDestinationParams(
+  destination: string,
+  params: Record<string, string>,
+  conditionCaptureParams?: Readonly<Record<string, string>>,
+): string {
   const keys = Object.keys(params);
   if (keys.length === 0) return destination;
 
@@ -1157,8 +1190,50 @@ function substituteDestinationParams(destination: string, params: Record<string,
     _compiledDestinationParamCache.set(cacheKey, paramRe);
   }
 
-  const replaceParams = (value: string, encodeParam: (value: string) => string): string =>
-    value.replace(paramRe, (_token, key: string) => encodeParam(params[key]));
+  const replaceParams = (
+    value: string,
+    encodeParam: (value: string, key: string, modifier: string | undefined) => string,
+  ): string =>
+    value.replace(paramRe, (_token, key: string, modifier: string | undefined) =>
+      encodeParam(params[key], key, modifier),
+    );
+
+  const encodePathParam = (value: string, key: string, modifier: string | undefined): string => {
+    const isConditionCapture = conditionCaptureParams && Object.hasOwn(conditionCaptureParams, key);
+    const encodeSegment = (segment: string): string => {
+      if (segment === ".") return "%252e";
+      if (segment === "..") return "%252e%252e";
+      if (ENCODED_DOT_SEGMENT_RE.test(segment) || ENCODED_DOT_DOT_SEGMENT_RE.test(segment)) {
+        return segment.replaceAll("%", "%25");
+      }
+      if (!isConditionCapture) return segment;
+      return encodeURIComponent(segment);
+    };
+    if (!isConditionCapture) {
+      // Source captures have already been decoded segment-by-segment. Keep
+      // ordinary pchars and catch-all separators unchanged, but restore the
+      // encoding layer on double-encoded dot segments before URL parsing can
+      // normalize them into traversal (e.g. `%252e%252e` -> `%2e%2e`).
+      return value.split("/").map(encodeSegment).join("/");
+    }
+    return modifier === "*" || modifier === "+"
+      ? value.split("/").map(encodeSegment).join("/")
+      : encodeSegment(value);
+  };
+
+  const replaceAuthorityAndPathParams = (value: string): string => {
+    const authorityStart = value.match(/^[A-Za-z][A-Za-z\d+.-]*:\/\//)?.[0].length;
+    if (authorityStart === undefined) return replaceParams(value, encodePathParam);
+
+    const pathnameStart = value.indexOf("/", authorityStart);
+    if (pathnameStart === -1) {
+      return replaceParams(value, (param) => encodeURIComponent(param));
+    }
+    const authority = replaceParams(value.slice(0, pathnameStart), (param) =>
+      encodeURIComponent(param),
+    );
+    return authority + replaceParams(value.slice(pathnameStart), encodePathParam);
+  };
 
   const hashIndex = destination.indexOf("#");
   const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
@@ -1168,13 +1243,21 @@ function substituteDestinationParams(destination: string, params: Record<string,
   if (queryIndex !== -1) {
     const beforeQuery = beforeHash.slice(0, queryIndex);
     const query = beforeHash.slice(queryIndex + 1);
-    return `${replaceParams(beforeQuery, (value) => value)}?${replaceParams(
+    return `${replaceAuthorityAndPathParams(beforeQuery)}?${replaceParams(
       query,
       encodeDestinationQueryParamValue,
-    )}${replaceParams(hash, (value) => value)}`;
+    )}${replaceParams(hash, (value, key) =>
+      conditionCaptureParams && Object.hasOwn(conditionCaptureParams, key)
+        ? encodeURIComponent(value)
+        : value,
+    )}`;
   }
 
-  return replaceParams(destination, (value) => value);
+  return `${replaceAuthorityAndPathParams(beforeHash)}${replaceParams(hash, (value, key) =>
+    conditionCaptureParams && Object.hasOwn(conditionCaptureParams, key)
+      ? encodeURIComponent(value)
+      : value,
+  )}`;
 }
 
 function encodeDestinationQueryParamValue(value: string): string {
@@ -1192,8 +1275,35 @@ function encodeDestinationQueryParamValue(value: string): string {
 function substituteAndSanitizeDestination(
   destination: string,
   params: Record<string, string>,
+  conditionCaptureParams?: Readonly<Record<string, string>>,
 ): string {
-  return sanitizeDestination(substituteDestinationParams(destination, params));
+  return sanitizeDestination(
+    substituteDestinationParams(destination, params, conditionCaptureParams),
+  );
+}
+
+const URL_SCHEME_RE = /^([a-z][a-z0-9+.-]*):/i;
+
+// A substitution must not introduce or change a URL scheme. Besides keeping
+// relative destinations relative, this makes the pre-substitution component
+// split authoritative: a template such as `:scheme://:host` cannot evade the
+// authority encoder by acquiring its scheme only after source params are
+// inserted. Next.js rejects that template at config-load time; vinext does not
+// yet perform the same full validation, so the runtime must still fail closed.
+// For hierarchical absolute URLs, parsing also rejects encoded host delimiters
+// such as `%2F`, `%3A`, and `%40`.
+function isValidSubstitutedExternalDestination(template: string, destination: string): boolean {
+  const templateScheme = URL_SCHEME_RE.exec(template)?.[1]?.toLowerCase();
+  const destinationScheme = URL_SCHEME_RE.exec(destination)?.[1]?.toLowerCase();
+  if (templateScheme !== destinationScheme) return false;
+  if (!templateScheme || !template.slice(template.indexOf(":") + 1).startsWith("//")) return true;
+
+  try {
+    const parsed = new URL(destination);
+    return parsed.protocol.toLowerCase() === `${templateScheme}:`;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1206,8 +1316,9 @@ function substituteAndSanitizeDestination(
 function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
+  conditionCaptureParams?: Readonly<Record<string, string>>,
 ): string {
-  const rewritten = substituteAndSanitizeDestination(destination, params);
+  const rewritten = substituteAndSanitizeDestination(destination, params, conditionCaptureParams);
   if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);

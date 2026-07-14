@@ -8080,7 +8080,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(routeMatchingSource).not.toMatch(/\bdecodeURIComponent\s*\(/);
   });
 
-  it("App Router middleware receives a Request with the decoded pathname (not raw URL)", async () => {
+  it("App Router middleware receives the original encoded request URL", async () => {
     const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
     let capturedUrl: string | undefined;
     const module = {
@@ -8103,8 +8103,10 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.kind).toBe("continue");
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    expect(mwPathname).toBe("/%64ashboard");
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    // Next.js constructs NextRequest from the original adapter request URL.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+    expect(mwPathname).toBe("/%2564ashboard");
+    expect(mwPathname).not.toBe("/%64ashboard");
   });
 
   it("App Router middleware preserves status from NextResponse.next()", async () => {
@@ -8307,7 +8309,7 @@ describe("double-encoded path handling in middleware", () => {
     }
   });
 
-  it("Pages Router runMiddleware passes decoded pathname to middleware function", async () => {
+  it("Pages Router runMiddleware passes the original encoded URL to middleware", async () => {
     const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     // Create a mock Vite server that returns a middleware module
     let capturedUrl: string | undefined;
@@ -8323,18 +8325,17 @@ describe("double-encoded path handling in middleware", () => {
       }),
     };
 
-    // Send a double-encoded path — after single decode, it should be /%64ashboard
+    // Send a double-encoded path. Routing uses its once-decoded form, while
+    // middleware observes the original request URL like Next.js.
     const testUrl = "http://localhost:3000/%2564ashboard";
     const request = new Request(testUrl);
     await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
-    // Middleware should have received the decoded+normalized URL
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    // After single decode: %25 → %, so /%2564 → /%64
-    expect(mwPathname).toBe("/%64ashboard");
-    // It must NOT be the raw /%2564ashboard
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+    expect(mwPathname).toBe("/%2564ashboard");
+    expect(mwPathname).not.toBe("/%64ashboard");
     // It must NOT be double-decoded to /dashboard
     expect(mwPathname).not.toBe("/dashboard");
   });
@@ -12107,6 +12108,99 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/home?authorized=yes&path=docs%2Fintro");
   });
 
+  it("encodes condition captures substituted into rewrite path syntax", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/source",
+        has: [{ type: "header" as const, key: "x-segment", value: "(?<segment>.+)" }],
+        destination: "/target/:segment",
+      },
+    ];
+    const result = matchRewrite("/source", rewrites, {
+      ...emptyCtx,
+      headers: new Headers({ "x-segment": "safe?admin=1#fragment" }),
+    });
+
+    expect(result).toBe("/target/safe%3Fadmin%3D1%23fragment");
+  });
+
+  it("keeps catch-all condition captures inert while preserving path separators", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/source",
+        has: [{ type: "header" as const, key: "x-path", value: "(?<path>.+)" }],
+        destination: "/target/:path*",
+      },
+    ];
+    const result = matchRewrite("/source", rewrites, {
+      ...emptyCtx,
+      headers: new Headers({ "x-path": "safe/../../admin?role=root" }),
+    });
+
+    expect(result).toBe("/target/safe/%252e%252e/%252e%252e/admin%3Frole%3Droot");
+  });
+
+  it("fails closed when a condition capture would change an external rewrite authority", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [
+      {
+        source: "/source",
+        has: [{ type: "header" as const, key: "x-target", value: "(?<target>.+)" }],
+        destination: "http://:target.internal.invalid/capture",
+      },
+      { source: "/source", destination: "/safe-fallback" },
+    ];
+    const result = matchRewrite("/source", rules, {
+      ...emptyCtx,
+      headers: new Headers({ "x-target": "127.0.0.1:8080/reached?ignored=" }),
+    });
+
+    expect(result).toBe("/safe-fallback");
+  });
+
+  it("fails closed when a source capture would change an external rewrite authority", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [
+      {
+        source: "/source/:target*",
+        destination: "http://:target.internal.invalid/capture",
+      },
+    ];
+
+    expect(matchRewrite("/source/127.0.0.1:8080/reached", rules, emptyCtx)).toBeNull();
+  });
+
+  it("fails closed when source captures construct an external rewrite scheme and authority", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [
+      {
+        source: "/source/:scheme/:target*",
+        destination: ":scheme://:target.internal.invalid/capture",
+      },
+    ];
+
+    expect(matchRewrite("/source/http/127.0.0.1:8080/reached", rules, emptyCtx)).toBeNull();
+  });
+
+  it("preserves valid condition captures in external rewrite hostnames", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules = [
+      {
+        source: "/source",
+        has: [{ type: "header" as const, key: "x-tenant", value: "(?<tenant>.+)" }],
+        destination: "https://:tenant.example.com/capture",
+      },
+    ];
+    const result = matchRewrite("/source", rules, {
+      ...emptyCtx,
+      headers: new Headers({ "x-tenant": "customer-1" }),
+    });
+
+    expect(result).toBe("https://customer-1.example.com/capture");
+  });
+
   it("escapes source params substituted into rewrite destination query values", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePathnameForRouteMatchStrict } =
@@ -12134,6 +12228,56 @@ describe("matchRewrite with external URLs", () => {
     const result = matchRewrite(pathname, rewrites, emptyCtx);
 
     expect(result).toBe("/api/foo&admin=true?q=foo%26admin%3Dtrue");
+  });
+
+  it("restores the encoding layer on dot segments captured from config sources", async () => {
+    const { matchRedirect, matchRewrite } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    const rewrites = [
+      {
+        source: "/proxy/:path*",
+        destination: "https://api.example.test/safe/:path*",
+      },
+    ];
+    const pathname = normalizePathnameForRouteMatchStrict("/proxy/%252e%252e/admin");
+
+    expect(matchRewrite(pathname, rewrites, emptyCtx)).toBe(
+      "https://api.example.test/safe/%252e%252e/admin",
+    );
+    expect(
+      matchRewrite(normalizePathnameForRouteMatchStrict("/proxy/%252E./admin"), rewrites, emptyCtx),
+    ).toBe("https://api.example.test/safe/%252E./admin");
+    expect(
+      matchRewrite(normalizePathnameForRouteMatchStrict("/proxy/.%252e/admin"), rewrites, emptyCtx),
+    ).toBe("https://api.example.test/safe/.%252e/admin");
+    expect(
+      matchRedirect(
+        normalizePathnameForRouteMatchStrict("/proxy/%252e./admin"),
+        [
+          {
+            source: "/proxy/:path*",
+            destination: "https://redirect.example.test/safe/:path*",
+            permanent: false,
+          },
+        ],
+        emptyCtx,
+      ),
+    ).toEqual({
+      destination: "https://redirect.example.test/safe/%252e./admin",
+      permanent: false,
+    });
+  });
+
+  it("keeps ordinary pchars, encoded delimiters, and catch-all separators in source paths", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizePathnameForRouteMatchStrict } =
+      await import("../packages/vinext/src/routing/utils.js");
+    const rewrites = [{ source: "/proxy/:path*", destination: "/safe/:path*" }];
+    const pathname = normalizePathnameForRouteMatchStrict("/proxy/a%26b/nested%2Fvalue");
+
+    expect(matchRewrite(pathname, rewrites, emptyCtx)).toBe("/safe/a&b/nested%2Fvalue");
   });
 
   it("uses the same query value encoding for inline and appended rewrite params", async () => {
@@ -12250,6 +12394,27 @@ describe("matchRedirect destination param substitution", () => {
     expect(result).toEqual({ destination: "/home?authorized=yes", permanent: false });
   });
 
+  it("encodes condition captures substituted into redirect fragments", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/",
+        has: [{ type: "header" as const, key: "x-section", value: "(?<section>.+)" }],
+        destination: "/docs#:section",
+        permanent: false,
+      },
+    ];
+    const result = matchRedirect("/", redirects, {
+      ...emptyCtx,
+      headers: new Headers({ "x-section": "intro#admin?enabled=1" }),
+    });
+
+    expect(result).toEqual({
+      destination: "/docs#intro%23admin%3Fenabled%3D1",
+      permanent: false,
+    });
+  });
+
   it("escapes source params substituted into redirect destination query values", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePathnameForRouteMatchStrict } =
@@ -12265,6 +12430,23 @@ describe("matchRedirect destination param substitution", () => {
 
     expect(result).toEqual({
       destination: "/login?next=/foo%26next%3Devil.example&safe=1",
+      permanent: false,
+    });
+  });
+
+  it("fails closed when source captures construct a redirect scheme", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/go/:scheme/:target*",
+        destination: ":scheme://:target",
+        permanent: false,
+      },
+      { source: "/go/:path*", destination: "/safe-fallback", permanent: false },
+    ];
+
+    expect(matchRedirect("/go/https/evil.example/path", redirects, emptyCtx)).toEqual({
+      destination: "/safe-fallback",
       permanent: false,
     });
   });

@@ -113,6 +113,10 @@ export type PagesPipelineDeps = {
   // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
   // would otherwise be truncated as a fragment). Falls back to url.search when omitted.
   rawSearch?: string;
+  // Node production keeps Request.url encoded until userland sees it, but its
+  // adapter has already performed the canonical pathname normalization used
+  // for routing/config matching. Other adapters derive from Request.url.
+  normalizedPathname?: string;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
@@ -254,7 +258,7 @@ export async function runPagesRequest(
       : proxyExternalRequest(currentReq, externalUrl);
 
   const url = new URL(request.url);
-  let pathname = url.pathname;
+  let pathname = deps.normalizedPathname ?? url.pathname;
   const search = url.search;
 
   // Step 1: Reconstruct basePathState

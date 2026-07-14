@@ -7613,6 +7613,30 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(res.headers.get("location")).toBe("/docs/hello/hello");
   });
 
+  it("keeps request condition captures inert in production config redirect paths", async () => {
+    const res = await fetch(`${prodUrl}/condition-capture-redirect`, {
+      redirect: "manual",
+      headers: { "x-redirect-segment": "safe?admin=1#fragment" },
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe(
+      "/config-capture-redirect/safe%3Fadmin%3D1%23fragment",
+    );
+  });
+
+  it("does not turn request condition captures into production config rewrite query syntax", async () => {
+    const res = await fetch(`${prodUrl}/condition-capture-rewrite`, {
+      headers: { "x-rewrite-segment": "safe?admin=1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      slug: ["safe?admin=1"],
+      query: {},
+    });
+  });
+
   it("applies beforeFiles rewrites from next.config.js (/before-rewrite -> /about)", async () => {
     const res = await fetch(`${prodUrl}/before-rewrite`);
     expect(res.status).toBe(200);

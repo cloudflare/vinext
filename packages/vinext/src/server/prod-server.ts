@@ -1435,14 +1435,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     try {
-      // Build the normalized URL (pathname + original query string) so the
-      // RSC handler receives an already-canonical path and doesn't need to
-      // re-normalize. This deduplicates the normalizePath work done above.
+      // Keep the request pathname encoded for the RSC handler, which owns the
+      // single decode + normalize pass. Passing `pathname` here would decode
+      // twice and let Request's WHATWG URL parser collapse encoded dot
+      // segments before config redirects/rewrites can preserve them.
       const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
-      const normalizedUrl = pathname + qs;
+      const requestUrl = normalizedRawPathname + qs;
 
       // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
+      const request = nodeToWebRequest(req, requestUrl, prerenderSecret);
       const response = await rscHandler(request);
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
@@ -1645,12 +1646,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    // Rebuild `url` from the decoded pathname + original query string so all
-    // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
-    // always work with the decoded, canonical path.
+    // Normalize backslashes (browsers treat /\ as //), then decode and normalize
+    // once for routing/static lookup. The Web Request below retains the encoded
+    // pathname; runPagesRequest receives this canonical value separately so a
+    // WHATWG URL parse cannot collapse encoded dot segments first.
     const rawPagesPathname = rawPagesPathnameBeforeNormalize.replaceAll("\\", "/");
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
+    let requestPathname = rawPagesPathname;
     let pathname: string;
     try {
       pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
@@ -1784,6 +1786,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
           url = stripped + qs;
           pathname = stripped;
+          requestPathname = stripBasePath(requestPathname, basePath);
         }
       }
       // ── 3b. `_next/data` normalization ────────────────────────────
@@ -1813,6 +1816,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         );
         url = pagePathname + qs;
         pathname = pagePathname;
+        requestPathname = pagePathname;
       }
 
       // Convert Node.js req to Web Request for the server entry
@@ -1828,7 +1832,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      const webRequest = new Request(`${protocol}://${hostHeader}${requestPathname}${rawQs}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
@@ -1851,6 +1855,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         ctx: undefined, // Node has no ExecutionContext
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
+        // Preserve the once-normalized pathname separately from Request.url.
+        // Request retains the encoded inbound path for middleware/userland,
+        // while config matching sees the same decoded path as dev.
+        normalizedPathname: pathname,
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the

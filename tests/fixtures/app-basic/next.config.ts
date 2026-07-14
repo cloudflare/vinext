@@ -84,6 +84,27 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Named captures from has conditions are request-controlled. Keep them
+      // inert when they are substituted into destination path syntax.
+      // Next.js reference for named has captures:
+      // https://github.com/vercel/next.js/blob/canary/test/integration/custom-routes/next.config.js
+      {
+        source: "/condition-capture-redirect",
+        has: [
+          {
+            type: "header",
+            key: "x-redirect-segment",
+            value: "(?<segment>.+)",
+          },
+        ],
+        destination: "/config-capture-redirect/:segment",
+        permanent: false,
+      },
+      {
+        source: "/source-capture-dot-redirect/:path*",
+        destination: "https://redirect.example.test/safe/:path*",
+        permanent: false,
+      },
     ];
   },
 
@@ -107,6 +128,14 @@ const nextConfig: NextConfig = {
               },
             ]
           : []),
+        ...(process.env.TEST_CONFIG_CAPTURE_PATH_TARGET
+          ? [
+              {
+                source: "/source-capture-dot-rewrite/:path*",
+                destination: `${new URL(process.env.TEST_CONFIG_CAPTURE_PATH_TARGET).origin}/safe/:path*`,
+              },
+            ]
+          : []),
         // Used by Vitest: app-router.test.ts — beforeFiles rewrite gated on a
         // cookie injected by middleware. In App Router order, beforeFiles runs
         // after middleware, so it should see middleware-injected cookies.
@@ -122,6 +151,40 @@ const nextConfig: NextConfig = {
           source: "/rewrite-search-param/:term",
           destination: "/search?q=from-rewrite",
         },
+        {
+          source: "/condition-capture-rewrite",
+          has: [
+            {
+              type: "header",
+              key: "x-rewrite-segment",
+              value: "(?<segment>.+)",
+            },
+          ],
+          destination: "/api/config-capture/:segment",
+        },
+        ...(process.env.TEST_CONFIG_CAPTURE_EXTERNAL === "1"
+          ? [
+              {
+                source: "/condition-capture-external",
+                has: [
+                  {
+                    type: "header" as const,
+                    key: "x-rewrite-host",
+                    value: "(?<target>.+)",
+                  },
+                ],
+                destination: "http://:target.internal.invalid/capture",
+              },
+              {
+                source: "/source-capture-external/:target*",
+                destination: "http://:target.internal.invalid/capture",
+              },
+              {
+                source: "/source-capture-scheme/:scheme/:target*",
+                destination: ":scheme://:target.internal.invalid/capture",
+              },
+            ]
+          : []),
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts

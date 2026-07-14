@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { request as httpRequest } from "node:http";
 
 /**
  * Production build E2E tests for Pages Router.
@@ -9,7 +10,37 @@ import { test, expect } from "@playwright/test";
  */
 const BASE = "http://localhost:4175";
 
+function requestRawPath(path: string) {
+  return new Promise<{ headers: Record<string, string | string[] | undefined>; status: number }>(
+    (resolve, reject) => {
+      const req = httpRequest({ hostname: "localhost", path, port: 4175 }, (response) => {
+        response.resume();
+        response.once("end", () =>
+          resolve({ headers: response.headers, status: response.statusCode ?? 0 }),
+        );
+      });
+      req.once("error", reject);
+      req.end();
+    },
+  );
+}
+
 test.describe("Pages Router Production Build", () => {
+  // Ported from Next.js middleware request construction and encoded traversal coverage:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/file-serving/test/index.test.ts
+  test("preserves encoded dot segments in middleware-visible URLs", async () => {
+    for (const segment of ["%252e%252e", "%252e.", ".%252e"]) {
+      const pathname = `/protected/${segment}/public`;
+      const response = await requestRawPath(pathname);
+
+      expect(response.status).toBe(403);
+      expect(response.headers["x-mw-permissive"]).toBe("false");
+      expect(response.headers["x-mw-url-pathname"]).toBe(pathname);
+      expect(response.headers["x-mw-next-url-pathname"]).toBe(pathname);
+    }
+  });
+
   test("index page renders with correct content", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);
@@ -51,6 +82,25 @@ test.describe("Pages Router Production Build", () => {
   test("404 page for non-existent route", async ({ page }) => {
     const response = await page.goto(`${BASE}/nonexistent`);
     expect(response?.status()).toBe(404);
+  });
+
+  test("config redirects preserve mixed encoded dot segments", async ({ request }) => {
+    // Pages production uses the same single normalization pass as dev.
+    for (const [requestSegment, destinationSegment] of [
+      ["%252e%252e", "%252e%252e"],
+      ["%252e.", "%252e."],
+      [".%252e", ".%252e"],
+    ]) {
+      const response = await request.get(
+        `${BASE}/source-capture-dot-redirect/${requestSegment}/admin`,
+        { maxRedirects: 0 },
+      );
+
+      expect(response.status()).toBe(307);
+      expect(response.headers().location).toBe(
+        `https://redirect.example.test/safe/${destinationSegment}/admin`,
+      );
+    }
   });
 
   test("dynamic route renders with params", async ({ page }) => {

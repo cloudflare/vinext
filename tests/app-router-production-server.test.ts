@@ -217,6 +217,8 @@ describe("App Router Production server (startProdServer)", () => {
   let appStaticDynamicTarget: StartedTextSequenceTarget | undefined;
   let appStaticRevalidateTarget: StartedTextSequenceTarget | undefined;
   let revalidatePathFetchTarget: StartedTextSequenceTarget | undefined;
+  let configCapturePathTarget: StartedTextSequenceTarget | undefined;
+  const configCapturePathRequests: string[] = [];
 
   function extractRequestId(html: string): string | undefined {
     return (
@@ -266,20 +268,32 @@ describe("App Router Production server (startProdServer)", () => {
     appStaticDynamicTarget = await startTextSequenceTarget({ prefix: "dynamic" });
     appStaticRevalidateTarget = await startTextSequenceTarget({ prefix: "revalidate" });
     revalidatePathFetchTarget = await startTextSequenceTarget();
+    configCapturePathTarget = await startTextSequenceTarget({
+      recordRequest(req) {
+        configCapturePathRequests.push(req.url ?? "");
+      },
+    });
     process.env.TEST_APP_STATIC_DELAY_TARGET = appStaticDelayTarget.url;
     process.env.TEST_APP_STATIC_DYNAMIC_TARGET = appStaticDynamicTarget.url;
     process.env.TEST_APP_STATIC_REVALIDATE_TARGET = appStaticRevalidateTarget.url;
     process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET = revalidatePathFetchTarget.url;
+    process.env.TEST_CONFIG_CAPTURE_PATH_TARGET = configCapturePathTarget.url;
 
     try {
       // Build the app-basic fixture to the default dist/ directory
-      const builder = await createBuilder({
-        root: APP_FIXTURE_DIR,
-        configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
-        logLevel: "silent",
-      });
-      await builder.buildApp();
+      process.env.TEST_CONFIG_CAPTURE_EXTERNAL = "1";
+      try {
+        const builder = await createBuilder({
+          root: APP_FIXTURE_DIR,
+          configFile: false,
+          plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+      } finally {
+        delete process.env.TEST_CONFIG_CAPTURE_EXTERNAL;
+        delete process.env.TEST_CONFIG_CAPTURE_PATH_TARGET;
+      }
 
       // Start the production server on a random available port
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
@@ -294,15 +308,19 @@ describe("App Router Production server (startProdServer)", () => {
         await appStaticDynamicTarget?.close();
         await appStaticRevalidateTarget?.close();
         await revalidatePathFetchTarget?.close();
+        await configCapturePathTarget?.close();
       } finally {
         appStaticDelayTarget = undefined;
         appStaticDynamicTarget = undefined;
         appStaticRevalidateTarget = undefined;
         revalidatePathFetchTarget = undefined;
+        configCapturePathTarget = undefined;
         delete process.env.TEST_APP_STATIC_DELAY_TARGET;
         delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
         delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
         delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+        delete process.env.TEST_CONFIG_CAPTURE_EXTERNAL;
+        delete process.env.TEST_CONFIG_CAPTURE_PATH_TARGET;
       }
       throw error;
     }
@@ -314,10 +332,13 @@ describe("App Router Production server (startProdServer)", () => {
     await appStaticDynamicTarget?.close();
     await appStaticRevalidateTarget?.close();
     await revalidatePathFetchTarget?.close();
+    await configCapturePathTarget?.close();
     delete process.env.TEST_APP_STATIC_DELAY_TARGET;
     delete process.env.TEST_APP_STATIC_DYNAMIC_TARGET;
     delete process.env.TEST_APP_STATIC_REVALIDATE_TARGET;
     delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+    delete process.env.TEST_CONFIG_CAPTURE_EXTERNAL;
+    delete process.env.TEST_CONFIG_CAPTURE_PATH_TARGET;
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
@@ -903,6 +924,21 @@ describe("App Router Production server (startProdServer)", () => {
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
+  // Ported from Next.js middleware request construction and encoded traversal coverage:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/file-serving/test/index.test.ts
+  it("preserves encoded dot segments in middleware-visible URLs in production", async () => {
+    for (const segment of ["%252e%252e", "%252e.", ".%252e"]) {
+      const pathname = `/protected/${segment}/public`;
+      const res = await fetch(`${baseUrl}${pathname}`);
+
+      expect(res.status).toBe(403);
+      expect(res.headers.get("x-mw-permissive")).toBe("false");
+      expect(res.headers.get("x-mw-url-pathname")).toBe(pathname);
+      expect(res.headers.get("x-mw-next-url-pathname")).toBe(pathname);
+    }
+  });
+
   // Regression test for issue 1487 — App Router page-segment `revalidate`
   // should produce a stable cached response. Two requests inside the
   // revalidate window must return identical HTML bytes (same Date.now()
@@ -1223,6 +1259,105 @@ describe("App Router Production server (startProdServer)", () => {
     // recomputing the cache-busting `_rsc` param from the request headers
     // (rather than echoing the literal client value), so assert presence.
     expect(location).toContain("_rsc");
+  });
+
+  it("keeps request condition captures inert in config redirect paths", async () => {
+    const res = await fetch(`${baseUrl}/condition-capture-redirect`, {
+      redirect: "manual",
+      headers: { "x-redirect-segment": "safe?admin=1#fragment" },
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe(
+      "/config-capture-redirect/safe%3Fadmin%3D1%23fragment",
+    );
+  });
+
+  it("does not turn request condition captures into config rewrite query syntax", async () => {
+    const res = await fetch(`${baseUrl}/condition-capture-rewrite`, {
+      headers: { "x-rewrite-segment": "safe?admin=1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      slug: ["safe?admin=1"],
+      query: {},
+    });
+  });
+
+  it("does not let request condition captures change a config rewrite authority", async () => {
+    await withCountingFetchTarget(async (targetUrl, getRequestCount) => {
+      const target = new URL(targetUrl);
+      const res = await fetch(`${baseUrl}/condition-capture-external`, {
+        headers: {
+          "x-rewrite-host": `${target.hostname}:${target.port}/reached?ignored=`,
+        },
+      });
+
+      expect(res.status).toBe(404);
+      await res.arrayBuffer();
+      expect(getRequestCount()).toBe(0);
+    });
+  });
+
+  it("does not let source captures change a config rewrite authority", async () => {
+    await withCountingFetchTarget(async (targetUrl, getRequestCount) => {
+      const target = new URL(targetUrl);
+      const res = await fetch(
+        `${baseUrl}/source-capture-external/${target.hostname}:${target.port}/reached`,
+      );
+
+      expect(res.status).toBe(404);
+      await res.arrayBuffer();
+      expect(getRequestCount()).toBe(0);
+    });
+  });
+
+  it("does not let source captures construct a config rewrite scheme and authority", async () => {
+    await withCountingFetchTarget(async (targetUrl, getRequestCount) => {
+      const target = new URL(targetUrl);
+      const res = await fetch(
+        `${baseUrl}/source-capture-scheme/http/${target.hostname}:${target.port}/reached`,
+      );
+
+      expect(res.status).toBe(404);
+      await res.arrayBuffer();
+      expect(getRequestCount()).toBe(0);
+    });
+  });
+
+  it("preserves mixed encoded dot segments after production request normalization", async () => {
+    // Node production leaves the single decode/normalize pass to the App
+    // request handler, matching dev and Workers.
+    for (const [requestSegment, destinationSegment] of [
+      ["%252e%252e", "%252e%252e"],
+      ["%252e.", "%252e."],
+      [".%252e", ".%252e"],
+    ]) {
+      const res = await fetch(`${baseUrl}/source-capture-dot-redirect/${requestSegment}/admin`, {
+        redirect: "manual",
+      });
+
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toBe(
+        `https://redirect.example.test/safe/${destinationSegment}/admin`,
+      );
+    }
+  });
+
+  it("keeps encoded dot segments under the external rewrite prefix in production", async () => {
+    for (const [requestSegment, destinationSegment] of [
+      ["%252e%252e", "%252e%252e"],
+      ["%252e.", "%252e."],
+      [".%252e", ".%252e"],
+    ]) {
+      configCapturePathRequests.length = 0;
+      const res = await fetch(`${baseUrl}/source-capture-dot-rewrite/${requestSegment}/admin`);
+
+      expect(res.status).toBe(200);
+      await res.arrayBuffer();
+      expect(configCapturePathRequests).toEqual([`/safe/${destinationSegment}/admin`]);
+    }
   });
 
   it("serves static assets with cache headers", async () => {

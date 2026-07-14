@@ -224,7 +224,6 @@ function resolveMiddlewarePathname(request: Request): string | Response {
 
 function createNextRequest(
   request: Request,
-  normalizedPathname: string,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
@@ -235,19 +234,13 @@ function createNextRequest(
   // the original request body.
   let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
   // NextURL._stripBasePath only recognises basePath when the URL's pathname
-  // actually starts with the basePath prefix. normalizedPathname may already
-  // be basePath-stripped (App Router passes cleanPathname, the dev server
-  // receives Vite-stripped URLs), so for in-basePath requests we re-add the
-  // basePath prefix here to mirror the un-stripped URL that Next.js's
-  // middleware adapter always receives. NextURL will strip it back during
-  // construction, and request.nextUrl.basePath will correctly reflect the
-  // configured value. Out-of-basePath ("absolute path") requests must stay
-  // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
-  // getNextPathnameInfo semantics).
+  // actually starts with the basePath prefix. Some callers pass a URL with
+  // that prefix already stripped, so restore it from the original encoded
+  // pathname. The normalized matcher pathname must not be written back into
+  // the URL: WHATWG URL parsing would collapse encoded dot segments and make
+  // middleware observe a different request path than the client sent.
   const mwPathname =
-    basePath && hadBasePath
-      ? addBasePathToPathname(normalizedPathname, basePath)
-      : normalizedPathname;
+    basePath && hadBasePath ? addBasePathToPathname(url.pathname, basePath) : url.pathname;
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
@@ -315,7 +308,6 @@ export async function executeMiddleware(
 
   const nextRequest = createNextRequest(
     options.request,
-    normalizedPathname,
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,

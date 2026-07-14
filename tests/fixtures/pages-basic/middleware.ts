@@ -4,6 +4,25 @@ import type { NextRequest } from "next/server";
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  // Next.js constructs the middleware request from the original request URL;
+  // normalized pathnames are used only for routing and matcher decisions.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  if (request.nextUrl.pathname === "/public") {
+    return new Response("public", {
+      headers: { "x-mw-permissive": "true" },
+    });
+  }
+  if (request.nextUrl.pathname.startsWith("/protected/")) {
+    return new Response("protected", {
+      status: 403,
+      headers: {
+        "x-mw-next-url-pathname": request.nextUrl.pathname,
+        "x-mw-permissive": "false",
+        "x-mw-url-pathname": url.pathname,
+      },
+    });
+  }
+
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");

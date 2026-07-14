@@ -72,17 +72,82 @@ async function withCountingFetchTarget<T>(
   }
 }
 
+const ENCODED_DOT_SEGMENT_CASES = [
+  ["%252e%252e", "%252e%252e"],
+  ["%252e.", "%252e."],
+  [".%252e", ".%252e"],
+] as const;
+
 describe("App Router integration", () => {
   let server: ViteDevServer;
   let baseUrl: string;
+  let configCapturePathTarget: http.Server;
+  const configCapturePathRequests: string[] = [];
 
   beforeAll(async () => {
-    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+    configCapturePathTarget = http.createServer((req, res) => {
+      configCapturePathRequests.push(req.url ?? "");
+      res.end("proxied");
+    });
+    await new Promise<void>((resolve, reject) => {
+      configCapturePathTarget.once("error", reject);
+      configCapturePathTarget.listen(0, "127.0.0.1", () => {
+        configCapturePathTarget.off("error", reject);
+        resolve();
+      });
+    });
+    const address = configCapturePathTarget.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Config capture target did not bind to a TCP port");
+    }
+    process.env.TEST_CONFIG_CAPTURE_PATH_TARGET = `http://127.0.0.1:${address.port}`;
+    try {
+      ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+    } finally {
+      delete process.env.TEST_CONFIG_CAPTURE_PATH_TARGET;
+    }
   }, 30000);
 
   afterAll(async () => {
-    await server?.close();
+    try {
+      await server?.close();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        configCapturePathTarget?.close((error) => (error ? reject(error) : resolve()));
+      });
+      delete process.env.TEST_CONFIG_CAPTURE_PATH_TARGET;
+    }
   });
+
+  // Next.js custom-route encoding oracle:
+  // https://github.com/vercel/next.js/blob/canary/test/integration/custom-routes/test/index.test.ts
+  // Double-encoded traversal oracle:
+  // https://github.com/vercel/next.js/blob/canary/test/integration/file-serving/test/index.test.ts
+  it.each(ENCODED_DOT_SEGMENT_CASES)(
+    "preserves encoded dot segment %s in config redirect source captures",
+    async (requestSegment, destinationSegment) => {
+      const res = await fetch(`${baseUrl}/source-capture-dot-redirect/${requestSegment}/admin`, {
+        redirect: "manual",
+      });
+
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toBe(
+        `https://redirect.example.test/safe/${destinationSegment}/admin`,
+      );
+    },
+  );
+
+  it.each(ENCODED_DOT_SEGMENT_CASES)(
+    "preserves encoded dot segment %s in external rewrite source captures",
+    async (requestSegment, destinationSegment) => {
+      configCapturePathRequests.length = 0;
+      const res = await fetch(`${baseUrl}/source-capture-dot-rewrite/${requestSegment}/admin`);
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("proxied");
+      expect(configCapturePathRequests).toEqual([`/safe/${destinationSegment}/admin`]);
+    },
+  );
 
   it("renders the home page with root layout", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/");
@@ -186,6 +251,21 @@ describe("App Router integration", () => {
     const nestedRes = await fetch(`${baseUrl}/headers/override-from-middleware`);
     expect(nestedRes.status).toBe(200);
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
+  });
+
+  // Ported from Next.js middleware request construction and encoded traversal coverage:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/file-serving/test/index.test.ts
+  it("preserves encoded dot segments in middleware-visible URLs in dev", async () => {
+    for (const segment of ["%252e%252e", "%252e.", ".%252e"]) {
+      const pathname = `/protected/${segment}/public`;
+      const res = await fetch(`${baseUrl}${pathname}`);
+
+      expect(res.status).toBe(403);
+      expect(res.headers.get("x-mw-permissive")).toBe("false");
+      expect(res.headers.get("x-mw-url-pathname")).toBe(pathname);
+      expect(res.headers.get("x-mw-next-url-pathname")).toBe(pathname);
+    }
   });
 
   it("handles GET API route handlers", async () => {
