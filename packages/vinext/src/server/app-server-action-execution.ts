@@ -1,4 +1,5 @@
 import {
+  _drainPendingRevalidations,
   getAndClearActionRevalidationKind,
   type ActionRevalidationKind,
 } from "vinext/shims/cache-request-state";
@@ -914,6 +915,11 @@ export async function handleProgressiveServerActionRequest(
       if (actionThrew) rootParamsUsage.transitionToRender();
     }
 
+    // Next.js applies cache invalidations before the action's follow-up render
+    // so updateTag() provides read-your-own-writes semantics even though its
+    // public return type is void.
+    await _drainPendingRevalidations();
+
     if (!actionRedirect) {
       if (!actionThrew) rootParamsUsage.transitionToRender();
       // Capture cookies/headers set during action execution so the caller can
@@ -1225,6 +1231,10 @@ export async function handleServerActionRscRequest<
       options.setHeadersAccessPhase(previousHeadersPhase);
       if (actionThrew && !actionWasForwarded) rootParamsUsage.transitionToRender();
     }
+
+    // Keep the synchronous next/cache API surface while ensuring the Flight
+    // rerender cannot observe data that its action just invalidated.
+    await _drainPendingRevalidations();
 
     if (actionRedirect) {
       const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());

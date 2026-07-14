@@ -35,6 +35,7 @@ import {
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
+  _hasPendingRevalidatedTag,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   type CacheLifeConfig,
@@ -529,8 +530,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
-      const existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
-      if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
+      const existing = _hasPendingRevalidatedTag(softTags)
+        ? null
+        : await handler.get(cacheKey, { kind: "FETCH", softTags });
+      if (
+        existing?.value &&
+        existing.value.kind === "FETCH" &&
+        existing.cacheState !== "stale" &&
+        !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
+      ) {
         try {
           // Surface the cached entry's tags to the surrounding request so the
           // enclosing page / route-handler ISR entry carries them even on a data

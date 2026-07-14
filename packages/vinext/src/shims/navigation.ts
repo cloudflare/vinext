@@ -1622,7 +1622,10 @@ export function usePathname(): string {
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
     const pagesCtx = _getPagesNavigationContext();
-    return pagesCtx?.pathname ?? "/";
+    // The standalone next/navigation declaration returns string, while the
+    // Pages Router compatibility runtime intentionally yields null before
+    // router readiness (matching Next.js' Pages Router adapter behavior).
+    return pagesCtx ? (pagesCtx.pathname as string) : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
@@ -1637,9 +1640,9 @@ export function usePathname(): string {
   // fall through to useSyncExternalStore so user pushState/replaceState
   // calls are immediately reflected.
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
-    return renderSnapshot.pathname ?? "/";
+    return renderSnapshot.pathname as string;
   }
-  return pathname ?? "/";
+  return pathname as string;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 

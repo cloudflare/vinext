@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
+import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
@@ -486,5 +491,85 @@ describe("app route handler dispatch", () => {
 
     modeSpy.mockRestore();
     forceDynamicSpy.mockRestore();
+  });
+
+  it("drains tag invalidation during stale route background regeneration", async () => {
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let routeCacheWritten = false;
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    setDataCacheHandler({
+      get: previousHandler.get.bind(previousHandler),
+      set: previousHandler.set.bind(previousHandler),
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-revalidate",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {
+          expect(invalidationFinished).toBe(true);
+          routeCacheWritten = true;
+        },
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-revalidate"),
+        route: {
+          pattern: "/api/stale-revalidate",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              expect(revalidateTag("dashboard", { expire: 0 })).toBeUndefined();
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-revalidate"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+
+      const regenerationPromise = scheduledRender();
+      await invalidationStarted;
+      expect(routeCacheWritten).toBe(false);
+      releaseInvalidation();
+      await regenerationPromise;
+      expect(routeCacheWritten).toBe(true);
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 });

@@ -13,6 +13,14 @@ import {
   runAppRouteHandler,
 } from "../packages/vinext/src/server/app-route-handler-execution.js";
 import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shims/root-params.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -25,6 +33,7 @@ const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestIn
 );
 vi.stubGlobal("fetch", fetchMock);
 const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
+const { revalidateTag } = await import("../packages/vinext/src/shims/cache.js");
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -332,6 +341,92 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(wroteCache).toBe(false);
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
+  });
+
+  // Route Handler revalidation is finalized by Next.js' App Route module:
+  // packages/next/src/server/route-modules/app-route/module.ts
+  it("finishes tag invalidation before finalizing a route handler response", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let didClearRequestContext = false;
+
+    setDataCacheHandler({
+      get: previousHandler.get.bind(previousHandler),
+      set: previousHandler.set.bind(previousHandler),
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const responsePromise = runWithRequestContext(createRequestContext(), () =>
+        executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: "/api/revalidate",
+          clearRequestContext() {
+            expect(invalidationFinished).toBe(true);
+            didClearRequestContext = true;
+          },
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto" },
+          handlerFn() {
+            expect(revalidateTag("dashboard", { expire: 0 })).toBeUndefined();
+            return new Response("revalidated");
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "POST",
+          middlewareContext: { headers: null, status: null },
+          params: {},
+          reportRequestError() {},
+          request: new Request("https://example.com/api/revalidate", { method: "POST" }),
+          revalidateSeconds: null,
+          routePattern: "/api/revalidate",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+
+      await invalidationStarted;
+      expect(didClearRequestContext).toBe(false);
+      releaseInvalidation();
+
+      const response = await responsePromise;
+      expect(didClearRequestContext).toBe(true);
+      await expect(response.text()).resolves.toBe("revalidated");
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {

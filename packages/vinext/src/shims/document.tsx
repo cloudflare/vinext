@@ -36,9 +36,13 @@ export function Html(
   return <html {...props} />;
 }
 
+// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+export interface Head {
+  context: HtmlProps;
+}
+
 export class Head extends React.Component<HeadProps> {
   static contextType = HtmlContext;
-  declare context: HtmlProps;
 
   getCssLinks(_files: DocumentFiles): React.ReactElement[] | null {
     return null;
@@ -82,9 +86,13 @@ export function Main(): React.ReactElement {
   return <div id="__next" dangerouslySetInnerHTML={{ __html: "__NEXT_MAIN__" }} />;
 }
 
+// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+export interface NextScript {
+  context: HtmlProps;
+}
+
 export class NextScript extends React.Component<OriginProps> {
   static contextType = HtmlContext;
-  declare context: HtmlProps;
 
   getDynamicChunks(_files: DocumentFiles): Array<React.ReactElement | null> {
     return [];

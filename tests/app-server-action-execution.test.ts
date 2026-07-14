@@ -22,11 +22,23 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  cacheTag,
   getAndClearActionRevalidationKind,
   refresh,
   revalidatePath,
   revalidateTag,
+  unstable_cache,
+  updateTag,
 } from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   cookies,
   getHeadersContext,
@@ -1925,6 +1937,96 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  // Covers the read-your-own-writes ordering asserted by Next.js:
+  // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  it("finishes updateTag invalidation before rendering the action response", async () => {
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let markSameActionReadFinished!: () => void;
+    const sameActionReadFinished = new Promise<void>((resolve) => {
+      markSameActionReadFinished = resolve;
+    });
+    let sameActionValue: unknown;
+    let sameActionUseCacheValue: unknown;
+    const renderToReadableStream = vi.fn((model: TestActionModel) => {
+      expect(invalidationFinished).toBe(true);
+      return new Response(JSON.stringify(model)).body;
+    });
+    const cachedRead = unstable_cache(async () => "fresh", ["update-tag-read-your-own-writes"], {
+      tags: ["dashboard"],
+    });
+    const useCacheRead = registerCachedFunction(async () => {
+      cacheTag("dashboard");
+      return "fresh-use-cache";
+    }, "test:update-tag-read-your-own-writes");
+
+    setDataCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale" }),
+              url: "unstable_cache:test",
+            },
+            tags: ["dashboard"],
+            revalidate: false,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const responsePromise = runWithRequestContext(createRequestContext(), () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            loadServerAction() {
+              return Promise.resolve(async () => {
+                expect(updateTag("dashboard")).toBeUndefined();
+                sameActionValue = await cachedRead();
+                sameActionUseCacheValue = await useCacheRead();
+                markSameActionReadFinished();
+                return "revalidated";
+              });
+            },
+            renderToReadableStream,
+          }),
+        ),
+      );
+
+      await invalidationStarted;
+      await sameActionReadFinished;
+      expect(sameActionValue).toBe("fresh");
+      expect(sameActionUseCacheValue).toBe("fresh-use-cache");
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+      releaseInvalidation();
+
+      const response = await responsePromise;
+      expect(response?.status).toBe(200);
+      expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {

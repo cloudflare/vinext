@@ -7,6 +7,7 @@ import {
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
+import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import {
   createStaticGenerationHeadersContext,
@@ -174,10 +175,19 @@ export async function executeAppRouteHandler(
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
 
   try {
-    const { dynamicUsedInHandler, response } = await runAppRouteHandler({
-      ...options,
-      dynamicConfig: options.handler.dynamic,
-    });
+    let handlerResult: RunAppRouteHandlerResult;
+    try {
+      handlerResult = await runAppRouteHandler({
+        ...options,
+        dynamicConfig: options.handler.dynamic,
+      });
+    } finally {
+      // Route Handlers expose synchronous revalidation APIs; their async cache
+      // work belongs to the request lifecycle and must settle before response
+      // finalization clears the request context.
+      await _drainPendingRevalidations();
+    }
+    const { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
 

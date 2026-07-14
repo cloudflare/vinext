@@ -33,10 +33,13 @@ import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { addCollectedRequestTags } from "./fetch-cache.js";
+import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
+  _hasPendingRevalidatedTag,
+  _markPendingRevalidatedTag,
+  _queuePendingRevalidation,
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
@@ -64,9 +67,10 @@ export { runWithExecutionContext, getRequestExecutionContext } from "./request-c
 
 function scheduleRevalidation(promise: Promise<void>): undefined {
   const executionContext = getRequestExecutionContext();
+  const queued = _queuePendingRevalidation(promise);
   if (executionContext) {
     executionContext.waitUntil(promise);
-  } else {
+  } else if (!queued) {
     void promise.catch((error) => {
       console.error("[vinext] cache revalidation failed:", error);
     });
@@ -109,7 +113,9 @@ export function revalidateTag(tag: string, profile?: string | { expire?: number 
   if (!profile || !durations || durations.expire === 0) {
     markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   }
-  return scheduleRevalidation(_invalidateEncodedTag(encodeCacheTag(tag), durations));
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag, durations));
 }
 
 /**
@@ -149,7 +155,9 @@ export function revalidatePath(path: string, type?: "page" | "layout"): undefine
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
-  return scheduleRevalidation(_invalidateEncodedTag(encodeCacheTag(tag)));
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
 }
 
 /**
@@ -187,7 +195,9 @@ export function updateTag(tag: string): undefined {
   }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  return scheduleRevalidation(_invalidateEncodedTag(encodeCacheTag(tag)));
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
 }
 
 /**
@@ -619,10 +629,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.
-      const existing = await getDataCacheHandler().get(cacheKey, {
-        kind: "FETCH",
-        tags,
-      });
+      const softTags = getCurrentFetchSoftTags();
+      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
+        ? null
+        : await getDataCacheHandler().get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+          });
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
         if (cached.ok) {

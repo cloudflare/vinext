@@ -7,6 +7,7 @@ import {
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
+import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
   getAndClearPendingCookies,
@@ -135,7 +136,14 @@ async function runInRouteHandlerRevalidationContext(
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
     setCurrentFetchCacheMode(options.fetchCacheMode);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
-    await renderFn();
+    try {
+      await renderFn();
+    } finally {
+      // Stale ISR regeneration invokes the route handler directly instead of
+      // going through executeAppRouteHandler(), so its fresh request context
+      // owns and drains any synchronous next/cache invalidations here.
+      await _drainPendingRevalidations();
+    }
   });
 }
 

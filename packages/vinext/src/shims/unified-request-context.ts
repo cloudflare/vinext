@@ -86,6 +86,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
+    pendingRevalidatedTags: new Set<string>(),
+    pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
@@ -166,7 +168,8 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
-  // fields (renderRequestApiUsage, cacheableFetchUrls, dynamicFetchUrls),
+  // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
+  // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,

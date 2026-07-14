@@ -1996,14 +1996,14 @@ async function loadComponentOnlyProps(
       createElement(AppComponent as ComponentType<Record<string, unknown>>, {
         ...appProps,
         Component: PageComponent,
-        router: Router,
+        router: singletonRouter,
       });
     return propsObject(
       await AppComponent.getInitialProps({
         Component: PageComponent,
         AppTree,
         ctx,
-        router: Router,
+        router: singletonRouter,
       }),
     );
   }
@@ -2053,7 +2053,7 @@ async function renderPagesNavigationTarget(
       ...props,
       Component: PageComponent,
       pageProps: rawPageProps,
-      router: Router,
+      router: singletonRouter,
     });
   } else {
     element = React.createElement(PageComponent, pageProps);
@@ -2420,7 +2420,7 @@ async function navigateClientHtml(
       ...props,
       Component: PageComponent,
       pageProps: rawPageProps,
-      router: Router,
+      router: singletonRouter,
     });
   } else {
     element = React.createElement(PageComponent, pageProps);
