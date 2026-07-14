@@ -12,6 +12,7 @@ out/
 test-results/
 playwright-report/
 out-e2e
+*.tgz
 
 # Environment + secrets
 .env

@@ -8,7 +8,6 @@
     "test:unit": "vp test run --project unit",
     "test:integration": "vp test run --project integration",
     "test:watch": "vp test",
-    "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "sync:next-types": "node scripts/sync-next-types.mjs",
     "check:next-types": "node scripts/sync-next-types.mjs --check && node scripts/check-shim-types.mjs",
     "check:shim-types": "node scripts/check-shim-types.mjs",
