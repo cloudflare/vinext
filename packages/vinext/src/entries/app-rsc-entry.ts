@@ -241,9 +241,17 @@ export function generateRscEntry(
     ...(config?.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
   ];
   const imageConfig = {
+    basePath,
+    deviceSizes: config?.imageConfig?.deviceSizes,
+    imageSizes: config?.imageConfig?.imageSizes,
     qualities: config?.imageConfig?.qualities,
+    formats: config?.imageConfig?.formats,
+    unoptimized: config?.imageConfig?.unoptimized,
+    loader: config?.imageConfig?.loader,
     dangerouslyAllowSVG: config?.imageConfig?.dangerouslyAllowSVG,
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
+    maximumResponseBody: config?.imageConfig?.maximumResponseBody,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   };
@@ -651,7 +659,7 @@ const __i18nConfig = ${JSON.stringify(i18nConfig)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
-const __runtimeImageConfig = ${JSON.stringify(config?.imageConfig)};
+const __runtimeImageConfig = ${JSON.stringify(imageConfig)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};

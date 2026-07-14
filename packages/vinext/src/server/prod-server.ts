@@ -26,12 +26,11 @@ import path from "pathslash";
 import zlib from "node:zlib";
 import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-file-cache.js";
 import {
-  isImageOptimizationPath,
-  IMAGE_CONTENT_SECURITY_POLICY,
-  parseImageParams,
-  isSafeImageContentType,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  createInternalImageRequest,
+  handleConfiguredImageOptimization,
+  isImageOptimizationPath,
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
@@ -807,6 +806,51 @@ async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | nul
   return null;
 }
 
+async function createStaticFileResponse(
+  clientDir: string,
+  pathname: string,
+  extraHeaders?: Headers | Record<string, string | string[]>,
+  status = 200,
+): Promise<Response | null> {
+  if (pathname === "/") return null;
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") return null;
+
+  const resolvedClient = path.resolve(clientDir);
+  const staticFile = path.resolve(clientDir, "." + decodedPathname);
+  if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient)
+    return null;
+
+  const resolved = await resolveStaticFile(staticFile);
+  if (!resolved) return null;
+
+  const headers = new Headers();
+  if (extraHeaders instanceof Headers) {
+    extraHeaders.forEach((value, key) => headers.append(key, value));
+  } else if (extraHeaders) {
+    for (const [key, value] of Object.entries(extraHeaders)) {
+      for (const item of Array.isArray(value) ? value : [value]) headers.append(key, item);
+    }
+  }
+  const ext = path.extname(resolved.path);
+  headers.set("Content-Type", CONTENT_TYPES[ext] ?? "application/octet-stream");
+  headers.set("Content-Length", String(resolved.size));
+  headers.set("Cache-Control", "public, max-age=3600");
+  const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
+  headers.set(
+    "ETag",
+    (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
+      `W/"${resolved.size}-${Math.floor(resolved.mtimeMs / 1000)}"`,
+  );
+  const body = Readable.toWeb(fs.createReadStream(resolved.path)) as ReadableStream<Uint8Array>;
+  return new Response(body, { status, headers });
+}
+
 async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {
   try {
     const stat = await fsp.stat(filePath);
@@ -1276,6 +1320,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
     }
   }
+  imageConfig = { ...imageConfig, basePath: appRouterBasePath };
   globalThis.__VINEXT_INLINE_CSS__ = appRouterInlineCss
     ? collectInlineCssManifest(clientDir, appRouterAssetPrefix)
     : undefined;
@@ -1310,6 +1355,33 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // stat() calls — all lookups are pure in-memory Map.get(). Precompressed
   // .br/.gz/.zst variants (generated at build time) are detected automatically.
   const staticCache = await StaticFileCache.create(clientDir);
+  const imageCacheOwner = {};
+
+  const dispatchAppRequest = async (request: Request): Promise<Response> => {
+    const response = await rscHandler(request);
+    const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
+    if (!staticFileSignal) return response;
+
+    let staticFilePath = "/";
+    try {
+      staticFilePath = decodeURIComponent(staticFileSignal);
+    } catch {
+      staticFilePath = staticFileSignal;
+    }
+    const staticResponseHeaders = omitHeadersCaseInsensitive(
+      mergeResponseHeaders({}, response),
+      OMIT_STATIC_RESPONSE_HEADERS,
+    );
+    cancelResponseBody(response);
+    return (
+      (await createStaticFileResponse(
+        clientDir,
+        staticFilePath,
+        staticResponseHeaders,
+        response.status,
+      )) ?? notFoundResponse({ headers: toWebHeaders(staticResponseHeaders) })
+    );
+  };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
@@ -1389,48 +1461,36 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       }
     }
 
-    // Image optimization passthrough (Node.js prod server has no Images binding;
-    // serves the original file with cache headers and security headers)
-    if (isImageOptimizationPath(pathname)) {
-      const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types by checking the file extension.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      // Serve the original image with CSP and security headers
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
-      };
-      if (
-        await tryServeStatic(
-          req,
-          res,
-          clientDir,
-          params.imageUrl,
-          false,
-          staticCache,
-          imageSecurityHeaders,
-        )
-      ) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
+    // Resolve local image sources through the normal request pipeline so
+    // middleware observes the source request, matching Next.js.
+    if (isImageOptimizationPath(stripBasePath(pathname, appRouterBasePath))) {
+      const imageRequest = nodeToWebRequest(req, rawUrl, prerenderSecret);
+      const response = await handleConfiguredImageOptimization(
+        imageRequest,
+        async (assetPath, optimizerRequest) => {
+          const sourceRequest = createInternalImageRequest(
+            assetPath,
+            optimizerRequest,
+            appRouterBasePath,
+          );
+          if (!sourceRequest) return new Response("Bad Request", { status: 400 });
+          const sourceAssetPath = resolveAppRouterAssetPath(
+            new URL(sourceRequest.url).pathname,
+            appAssetPathPrefix,
+            appRouterAssetPrefix,
+          );
+          if (sourceAssetPath) {
+            return (
+              (await createStaticFileResponse(clientDir, sourceAssetPath)) ?? notFoundResponse()
+            );
+          }
+          return dispatchAppRequest(sourceRequest);
+        },
+        appImageAllowedWidths,
+        imageConfig,
+        { owner: imageCacheOwner },
+      );
+      await sendWebResponse(response, req, res, false);
       return;
     }
 
@@ -1608,15 +1668,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
   ];
   // Extract image security config for SVG handling and security headers
-  const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images
-    ? {
-        dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
-        dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
-        qualities: vinextConfig.images.qualities,
-        contentDispositionType: vinextConfig.images.contentDispositionType,
-        contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
-      }
-    : undefined;
+  const pagesImageConfig: ImageConfig = {
+    basePath,
+    dangerouslyAllowSVG: vinextConfig?.images?.dangerouslyAllowSVG,
+    dangerouslyAllowLocalIP: vinextConfig?.images?.dangerouslyAllowLocalIP,
+    maximumResponseBody: vinextConfig?.images?.maximumResponseBody,
+    minimumCacheTTL: vinextConfig?.images?.minimumCacheTTL,
+    qualities: vinextConfig?.images?.qualities,
+    formats: vinextConfig?.images?.formats,
+    unoptimized: vinextConfig?.images?.unoptimized,
+    loader: vinextConfig?.images?.loader,
+    contentDispositionType: vinextConfig?.images?.contentDispositionType,
+    contentSecurityPolicy: vinextConfig?.images?.contentSecurityPolicy,
+  };
 
   // Load client asset metadata used by the Pages renderer. Prerendered HTML is
   // rendered through this Node server too, so it needs the same globals that
@@ -1630,6 +1694,60 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);
+  const imageCacheOwner = {};
+
+  const dispatchPagesRequest = async (request: Request): Promise<Response> => {
+    const originalUrl = new URL(request.url);
+    const hadBasePath = !basePath || hasBasePath(originalUrl.pathname, basePath);
+    const routingUrl = new URL(request.url);
+    routingUrl.pathname = stripBasePath(routingUrl.pathname, basePath);
+    const routedRequest = new Request(routingUrl, request);
+    const result = await runPagesRequest(routedRequest, {
+      basePath,
+      trailingSlash,
+      i18nConfig,
+      configRedirects,
+      configRewrites,
+      configHeaders,
+      hadBasePath,
+      isDataReq: false,
+      isDataRequest: false,
+      hasMiddleware,
+      ctx: undefined,
+      rawSearch: originalUrl.search,
+      matchPageRoute: matchPageRoute ?? null,
+      runMiddleware:
+        typeof runMiddleware === "function"
+          ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+          : null,
+      renderPage:
+        typeof renderPage === "function"
+          ? (renderRequest, resolvedUrl, options, stagedHeaders) =>
+              renderPage(renderRequest, resolvedUrl, ssrManifest, undefined, stagedHeaders, {
+                ...options,
+                originalUrl: request.url,
+              })
+          : null,
+      handleApi:
+        typeof handleApi === "function"
+          ? (apiRequest, apiUrl) => handleApi(apiRequest, apiUrl, createNodeExecutionContext())
+          : null,
+      serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+        if (
+          requestPathname === "/" ||
+          requestPathname === "/api" ||
+          requestPathname.startsWith("/api/") ||
+          (phase === "direct" && requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
+        ) {
+          return false;
+        }
+        return (await createStaticFileResponse(clientDir, requestPathname, stagedHeaders)) ?? false;
+      },
+    });
+    return result.type === "response"
+      ? result.response
+      : new Response("This page could not be found", { status: 404 });
+  };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
@@ -1728,46 +1846,37 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
     }
 
-    // ── Image optimization passthrough ──────────────────────────────
+    // ── Image optimization ──────────────────────────────────────────
     if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
-      const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition":
-          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
-      };
-      if (
-        await tryServeStatic(
-          req,
-          res,
-          clientDir,
-          params.imageUrl,
-          false,
-          staticCache,
-          imageSecurityHeaders,
-        )
-      ) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
+      const protocol = resolveRequestProtocol(req);
+      const hostHeader = resolveHost(req, `${host}:${port}`);
+      const imageRequest = nodeToWebRequest(
+        req,
+        `${protocol}://${hostHeader}${rawUrl}`,
+        prerenderSecret,
+      );
+      const response = await handleConfiguredImageOptimization(
+        imageRequest,
+        async (assetPath, optimizerRequest) => {
+          const sourceRequest = createInternalImageRequest(assetPath, optimizerRequest, basePath);
+          if (!sourceRequest) return new Response("Bad Request", { status: 400 });
+          const sourceAssetPath = resolveAppRouterAssetPath(
+            new URL(sourceRequest.url).pathname,
+            pagesAssetPathPrefix,
+            assetPrefix,
+          );
+          if (sourceAssetPath) {
+            return (
+              (await createStaticFileResponse(clientDir, sourceAssetPath)) ?? notFoundResponse()
+            );
+          }
+          return dispatchPagesRequest(sourceRequest);
+        },
+        allowedImageWidths,
+        pagesImageConfig,
+        { owner: imageCacheOwner },
+      );
+      await sendWebResponse(response, req, res, false);
       return;
     }
 

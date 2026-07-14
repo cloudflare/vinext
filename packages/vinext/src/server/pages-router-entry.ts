@@ -22,7 +22,9 @@ import type { PagesPipelineDeps } from "./pages-request-pipeline.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  createInternalImageRequest,
   handleConfiguredImageOptimization,
+  isImageOptimizationDisabled,
   isImageOptimizationPath,
 } from "./image-optimization.js";
 import type { ImageConfig } from "./image-optimization.js";
@@ -78,15 +80,20 @@ const configRewrites = vinextConfig?.rewrites ?? {
   fallback: [],
 };
 const configHeaders = vinextConfig?.headers ?? [];
-const imageConfig: ImageConfig | undefined = vinextConfig?.images
-  ? {
-      qualities: vinextConfig.images.qualities,
-      dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
-      dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
-      contentDispositionType: vinextConfig.images.contentDispositionType,
-      contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
-    }
-  : undefined;
+const imageConfig: ImageConfig = {
+  basePath,
+  qualities: vinextConfig?.images?.qualities,
+  formats: vinextConfig?.images?.formats,
+  unoptimized: vinextConfig?.images?.unoptimized,
+  loader: vinextConfig?.images?.loader,
+  dangerouslyAllowSVG: vinextConfig?.images?.dangerouslyAllowSVG,
+  dangerouslyAllowLocalIP: vinextConfig?.images?.dangerouslyAllowLocalIP,
+  maximumResponseBody: vinextConfig?.images?.maximumResponseBody,
+  minimumCacheTTL: vinextConfig?.images?.minimumCacheTTL,
+  contentDispositionType: vinextConfig?.images?.contentDispositionType,
+  contentSecurityPolicy: vinextConfig?.images?.contentSecurityPolicy,
+};
+const IMAGE_CACHE_OWNER = {};
 
 export default {
   async fetch(
@@ -102,6 +109,7 @@ async function handleRequest(
   request: Request,
   env: PagesWorkerEnv | undefined,
   ctx: PagesWorkerExecutionContext | undefined,
+  resolveDirectAssets = false,
 ): Promise<Response> {
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
@@ -153,17 +161,28 @@ async function handleRequest(
     }
 
     // Checked after basePath stripping so /<basePath>/_next/image works.
-    if (isImageOptimizationPath(pathname) && env?.ASSETS) {
+    const isImageRequest = isImageOptimizationPath(pathname);
+    if (isImageRequest && isImageOptimizationDisabled(imageConfig)) {
+      return new Response("This page could not be found", { status: 404 });
+    }
+    if (isImageRequest && env?.ASSETS) {
       const allowedWidths = [
         ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ];
       return handleConfiguredImageOptimization(
         request,
-        (assetPath) =>
-          Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
+        async (assetPath, optimizerRequest) => {
+          const sourceRequest = createInternalImageRequest(assetPath, optimizerRequest, basePath);
+          if (!sourceRequest) return new Response("Bad Request", { status: 400 });
+          return handleRequest(sourceRequest, env, ctx, true);
+        },
         allowedWidths,
         imageConfig,
+        {
+          owner: IMAGE_CACHE_OWNER,
+          waitUntil: ctx?.waitUntil ? (promise) => ctx.waitUntil!(promise) : undefined,
+        },
       );
     }
 
@@ -195,8 +214,12 @@ async function handleRequest(
           : null,
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase) => {
         if (!env?.ASSETS) return false;
-        return fetchWorkerFilesystemRoute(request, requestPathname, phase, (assetRequest) =>
-          Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+        return fetchWorkerFilesystemRoute(
+          request,
+          requestPathname,
+          phase,
+          (assetRequest) => Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+          resolveDirectAssets,
         );
       },
     };

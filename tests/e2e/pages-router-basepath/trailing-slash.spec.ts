@@ -28,4 +28,20 @@ test.describe("basePath + trailingSlash", () => {
     await page.goForward();
     await expect(page.locator("#something-else-page")).toBeVisible({ timeout: 5_000 });
   });
+
+  test("routes the image endpoint and source through basePath in production", async ({
+    request,
+  }) => {
+    const imageUrl = new URL("/docs/_next/image/", BASE);
+    imageUrl.searchParams.set("url", "/docs/api/image-source");
+    imageUrl.searchParams.set("w", "32");
+    imageUrl.searchParams.set("q", "75");
+    const response = await request.get(imageUrl.toString());
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("image/png");
+    expect(response.headers()["cache-control"]).toBe("public, max-age=20000, must-revalidate");
+
+    imageUrl.searchParams.set("url", "/docs/nested/_next/image/again");
+    expect((await request.get(imageUrl.toString())).status()).toBe(400);
+  });
 });

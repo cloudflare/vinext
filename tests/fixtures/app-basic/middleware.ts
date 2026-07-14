@@ -1,6 +1,18 @@
 import { headers as nextHeaders } from "next/headers";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
+import { animatedImageSources } from "./image-test-animated-sources";
+
+let imageSourceDispatchCount = 0;
+let imageSourceMethod = "";
+
+const imageBytes = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+  0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+  0x00, 0x00, 0x02, 0x00, 0x01, 0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+  0x44, 0xae, 0x42, 0x60, 0x82,
+]);
 
 /**
  * App Router middleware that uses NextRequest-specific APIs.
@@ -16,6 +28,48 @@ import { recordMiddlewareInvocation } from "./instrumentation-state";
 export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
+
+  if (pathname === "/image-test/reset") {
+    imageSourceDispatchCount = 0;
+    imageSourceMethod = "";
+    return Response.json({ ok: true });
+  }
+  if (pathname === "/image-test/state") {
+    return Response.json({ count: imageSourceDispatchCount, method: imageSourceMethod });
+  }
+  if (pathname === "/image-test/source.png") {
+    imageSourceDispatchCount += 1;
+    imageSourceMethod = request.method;
+    if (request.nextUrl.searchParams.has("auth")) {
+      return new Response("Authentication required", { status: 401 });
+    }
+    if (request.nextUrl.searchParams.has("spoof")) {
+      return new Response("Authentication required", {
+        status: 401,
+        headers: { "content-type": "image/png" },
+      });
+    }
+    const animated = request.nextUrl.searchParams.get("animated") as
+      | keyof typeof animatedImageSources
+      | null;
+    const animatedSource = animated ? animatedImageSources[animated] : undefined;
+    const body = animatedSource
+      ? animatedSource.bytes
+      : request.nextUrl.searchParams.has("oversize")
+        ? new Uint8Array([...imageBytes, ...new Uint8Array(64)])
+        : imageBytes;
+    return new Response(body, {
+      headers: {
+        "cache-control": "public, max-age=200",
+        etag: '"middleware-source"',
+        "content-type": animatedSource
+          ? animatedSource.contentType
+          : request.nextUrl.searchParams.has("wrong-type")
+            ? "text/html"
+            : "application/octet-stream",
+      },
+    });
+  }
 
   // Ported from Next.js: test/e2e/app-dir/app/middleware.js
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
@@ -403,6 +457,7 @@ export const config = {
     "/photos/:path*",
     "/interception-mw/:path*",
     "/actions",
+    "/image-test/:path*",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
   ],

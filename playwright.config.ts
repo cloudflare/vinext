@@ -49,13 +49,18 @@ const projectServers = {
       appRouterBrowserSpecificTests,
       "**/app-router/nextjs-compat/client-cache.spec.ts",
       "**/app-router/nextjs-compat/segment-cache-client-params.spec.ts",
+      "**/app-router/nextjs-compat/image-production.spec.ts",
     ],
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
   },
   "app-router-client-cache": {
     testDir: "./tests/e2e/app-router/nextjs-compat",
-    testMatch: ["client-cache.spec.ts", "segment-cache-client-params.spec.ts"],
+    testMatch: [
+      "client-cache.spec.ts",
+      "segment-cache-client-params.spec.ts",
+      "image-production.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4191" },
     server: {
       command:

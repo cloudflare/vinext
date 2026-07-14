@@ -210,17 +210,24 @@ export type NextConfig = {
     >;
     domains?: string[];
     unoptimized?: boolean;
+    loader?: "default" | "custom" | "akamai" | "cloudinary" | "imgix";
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js 16 defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
-    /** Allowed image qualities. When unset, any quality from 1-100 is permitted (matches Next.js). */
+    /** Allowed image qualities. Defaults to Next.js 16's [75]. */
     qualities?: number[];
+    /** Negotiated output formats. Defaults to Next.js 16's ["image/webp"]. */
+    formats?: Array<"image/avif" | "image/webp">;
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
     /** Allow image optimization for hostnames that resolve to private IP addresses. This is a security risk (SSRF) — only enable for private networks when you understand the risk. */
     dangerouslyAllowLocalIP?: boolean;
-    /** Content-Disposition header for image responses. Defaults to "inline". */
+    /** Maximum image source response body size in bytes. Defaults to 50 MB. */
+    maximumResponseBody?: number;
+    /** Minimum optimized image cache lifetime in seconds. Defaults to 4 hours. */
+    minimumCacheTTL?: number;
+    /** Content-Disposition header for image responses. Defaults to "attachment". */
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;

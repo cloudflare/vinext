@@ -4,4 +4,8 @@
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
   "main": "worker/index.mjs",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+  },
 }

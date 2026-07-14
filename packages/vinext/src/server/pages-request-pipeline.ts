@@ -60,9 +60,10 @@ export async function fetchWorkerFilesystemRoute(
   requestPathname: string,
   phase: FilesystemRoutePhase,
   fetchAsset: (request: Request) => Promise<Response>,
+  allowDirect = false,
 ): Promise<Response | false> {
   if (
-    phase === "direct" ||
+    (phase === "direct" && !allowDirect) ||
     (request.method !== "GET" && request.method !== "HEAD") ||
     requestPathname === "/api" ||
     requestPathname.startsWith("/api/")

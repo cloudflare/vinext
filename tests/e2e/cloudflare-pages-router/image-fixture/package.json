@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-cloudflare-pages-image-optimizer",
+  "private": true,
+  "type": "module"
+}

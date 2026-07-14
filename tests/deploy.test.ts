@@ -1692,7 +1692,7 @@ describe("readPagesRouterEntrySource", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
     expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
-    expect(content).toContain("qualities: vinextConfig.images.qualities");
+    expect(content).toContain("qualities: vinextConfig?.images?.qualities");
     expect(content).toContain("allowedWidths,");
     expect(content).toContain("imageConfig,");
   });
@@ -1794,6 +1794,29 @@ describe("fetchWorkerFilesystemRoute", () => {
       ),
     ).toBe(false);
     expect(fetchAsset).not.toHaveBeenCalled();
+  });
+
+  it("allows optimizer-internal requests to probe direct public assets", async () => {
+    const fetchAsset = vi.fn(
+      async (request: Request) =>
+        new Response(`asset:${new URL(request.url).pathname}`, {
+          headers: { "content-type": "image/png" },
+        }),
+    );
+
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/protected/private.png"),
+      "/protected/private.png",
+      "direct",
+      fetchAsset,
+      true,
+    );
+
+    expect(result).toBeInstanceOf(Response);
+    if (!(result instanceof Response)) return;
+    expect(result.headers.get("content-type")).toBe("image/png");
+    await expect(result.text()).resolves.toBe("asset:/protected/private.png");
+    expect(fetchAsset).toHaveBeenCalledOnce();
   });
 });
 

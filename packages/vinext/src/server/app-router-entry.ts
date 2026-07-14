@@ -35,8 +35,9 @@ import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import {
-  getImageOptimizer,
+  createInternalImageRequest,
   handleConfiguredImageOptimization,
+  isImageOptimizationDisabled,
   isImageOptimizationPath,
 } from "./image-optimization.js";
 import { finalizeMissingStaticAssetResponse, resolveStaticAssetSignal } from "./worker-utils.js";
@@ -56,6 +57,7 @@ import {
   notFoundStaticAssetResponse,
 } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { stripBasePath } from "../utils/base-path.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -64,6 +66,7 @@ const __workerBasePath: string = typeof __rscBasePath === "string" ? __rscBasePa
 const __workerAssetPathPrefix: string = assetPrefixPathname(
   typeof __rscAssetPrefix === "string" ? __rscAssetPrefix : "",
 );
+const IMAGE_CACHE_OWNER = {};
 
 type WorkerAssetEnv = {
   ASSETS?: {
@@ -92,14 +95,37 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
-    const assetFetcher = env.ASSETS;
+  const isImageRequest = isImageOptimizationPath(stripBasePath(url.pathname, __workerBasePath));
+  if (isImageRequest && isImageOptimizationDisabled(__rscImageConfig)) {
+    return new Response("This page could not be found", { status: 404 });
+  }
+  if (isImageRequest && env?.ASSETS) {
     return handleConfiguredImageOptimization(
       request,
-      (assetPath) =>
-        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+      async (assetPath, optimizerRequest) => {
+        const sourceRequest = createInternalImageRequest(
+          assetPath,
+          optimizerRequest,
+          __workerBasePath,
+        );
+        if (!sourceRequest) return new Response("Bad Request", { status: 400 });
+        if (
+          isNextStaticPath(
+            new URL(sourceRequest.url).pathname,
+            __workerBasePath,
+            __workerAssetPathPrefix,
+          )
+        ) {
+          return env.ASSETS!.fetch(sourceRequest);
+        }
+        return handleRequest(sourceRequest, env, ctx);
+      },
       __rscImageAllowedWidths,
       __rscImageConfig,
+      {
+        owner: IMAGE_CACHE_OWNER,
+        waitUntil: ctx?.waitUntil ? (promise) => ctx.waitUntil!(promise) : undefined,
+      },
     );
   }
 

@@ -342,7 +342,7 @@ describe("Image srcSet generation", () => {
     expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 2x`);
   });
 
-  it("uses Next.js default image sizes for small fixed images", () => {
+  it("rounds small fixed images up to Next.js 16's minimum default size", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "tiny",
@@ -351,8 +351,8 @@ describe("Image srcSet generation", () => {
         height: 16,
       }),
     );
-    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 1x`);
-    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 2x`);
+    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 1x`);
+    expect(html).not.toContain(" 2x");
   });
 
   it("does not generate srcSet for fill mode", () => {

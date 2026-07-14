@@ -22,6 +22,8 @@ declare module "virtual:vinext-rsc-entry" {
     qualities?: number[];
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
+    maximumResponseBody?: number;
+    minimumCacheTTL?: number;
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
   };

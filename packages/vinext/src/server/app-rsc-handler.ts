@@ -64,6 +64,7 @@ import { parseNextHttpErrorDigest } from "./next-error-digest.js";
 import {
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
+  isImageOptimizationDisabled,
   isImageOptimizationPath,
   resolveDevImageRedirect,
   type ImageConfig,
@@ -747,6 +748,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (lateActionRscCacheBustingRedirect) return lateActionRscCacheBustingRedirect;
 
   if (filesystemRouteEligible && isImageOptimizationPath(cleanPathname)) {
+    if (isImageOptimizationDisabled(options.imageConfig)) return notFoundResponse();
     const imageRedirect = resolveDevImageRedirect(
       url,
       [

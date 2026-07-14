@@ -29,7 +29,15 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      entry: [
+        "scripts/*.{js,ts,mjs,mts}",
+        "tests/**/*.test.ts",
+        "tests/helpers.ts",
+        // Discovered by vinext's middleware file convention when Playwright
+        // builds these fixtures; there is intentionally no static importer.
+        "tests/e2e/cloudflare-pages-router/image-fixture/middleware.ts",
+        "tests/e2e/cloudflare-workers/fixture/middleware.ts",
+      ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
