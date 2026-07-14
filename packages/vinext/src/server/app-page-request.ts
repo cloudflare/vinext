@@ -383,9 +383,9 @@ function areStaticParamsAllowed(
   allowMissingValues = false,
 ): boolean {
   const paramKeys = Object.keys(params);
-  // Next.js compares the request pathname against generated encoded pathnames
-  // exactly. Dynamic route-pattern matching is case-insensitive, but the
-  // concrete values returned by generateStaticParams are not.
+  // Next.js compares the concrete request pathname against generated encoded
+  // pathnames exactly. This generated-path gate is case-sensitive even though
+  // custom redirect, rewrite, and header sources are case-insensitive by default.
   const stringParamMatches = (value: string, staticValue: string): boolean =>
     value === encodeURIComponent(staticValue);
 
