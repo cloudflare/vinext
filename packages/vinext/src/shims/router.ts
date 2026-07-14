@@ -56,6 +56,7 @@ import {
 import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -794,10 +795,7 @@ function getPagesHtmlFetchUrl(browserUrl: string, locale: string | undefined): s
   );
 }
 
-/** Check if a URL is external (any URL scheme per RFC 3986, or protocol-relative) */
-export function isExternalUrl(url: string): boolean {
-  return isAbsoluteOrProtocolRelativeUrl(url);
-}
+export { isExternalUrl };
 
 /** Resolve a hash URL to a basePath-stripped app URL for event payloads */
 function resolveHashUrl(url: string): string {
@@ -1666,7 +1664,7 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { isExternalUrl, matchRedirect, preserveRedirectDestinationQuery } =
+  const { matchRedirect, preserveRedirectDestinationQuery } =
     await import("../config/config-matchers.js");
   const redirect = matchRedirect(
     routeContext.pathname,
@@ -1693,7 +1691,7 @@ async function applyClientConfigRewrite(
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { isExternalUrl, matchRewrite } = await import("../config/config-matchers.js");
+  const { matchRewrite } = await import("../config/config-matchers.js");
   const rewritten = matchRewrite(
     routeContext.pathname,
     [rewrite],

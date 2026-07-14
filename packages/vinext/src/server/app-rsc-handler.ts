@@ -4,16 +4,9 @@ import type {
   NextRedirect,
   NextRewrite,
 } from "../config/next-config.js";
-import {
-  isExternalUrl,
-  matchRedirect,
-  matchRewrite,
-  preserveRedirectDestinationQuery,
-  proxyExternalRequest,
-  requestContextFromRequest,
-  sanitizeDestination,
-  type BasePathMatchState,
-} from "../config/config-matchers.js";
+import type { BasePathMatchState } from "../config/config-matchers.js";
+import { requestContextFromRequest } from "../config/request-context.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { headersContextFromRequest } from "vinext/shims/headers";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -77,7 +70,6 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
-  applyConfigHeadersToResponse,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
 } from "./request-pipeline.js";
@@ -100,6 +92,9 @@ import {
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
 const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
+const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
+const HAS_CONFIG_REDIRECTS = process.env.__VINEXT_HAS_CONFIG_REDIRECTS !== "false";
+const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false";
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -393,10 +388,11 @@ async function applyRewrite(
   },
   cleanPathname: string,
 ): Promise<Response | string | null> {
-  if (!options.rewrites.length) return null;
+  if (!HAS_CONFIG_REWRITES || !options.rewrites.length) return null;
 
   const sourcePathname = options.paramsPathname ?? cleanPathname;
-  const rewritten = matchRewrite(
+  const configMatchers = await import("../config/config-matchers.js");
+  const rewritten = configMatchers.matchRewrite(
     sourcePathname,
     options.rewrites,
     options.requestContext,
@@ -407,7 +403,7 @@ async function applyRewrite(
 
   if (isExternalUrl(rewritten)) {
     options.clearRequestContext();
-    return proxyExternalRequest(options.request, rewritten);
+    return configMatchers.proxyExternalRequest(options.request, rewritten);
   }
 
   return rewritten;
@@ -430,7 +426,7 @@ function pathnameForResolvedUrl(resolvedUrl: string): string {
   return resolvedUrl.split("#", 1)[0].split("?", 1)[0];
 }
 
-function applyConfigHeadersToMiddlewareRedirect(
+async function applyConfigHeadersToMiddlewareRedirect(
   response: Response,
   options: {
     basePathState: BasePathMatchState;
@@ -438,13 +434,14 @@ function applyConfigHeadersToMiddlewareRedirect(
     pathname: string;
     requestContext: RequestContext;
   },
-): Response {
+): Promise<Response> {
   // Non-redirect middleware responses still pass through finalization, where
   // config headers are applied once. Redirects skip finalization to avoid
   // mutating immutable redirect headers, so they need the earlier header layer here.
   if (response.status < 300 || response.status >= 400) return response;
-  if (!options.configHeaders.length) return response;
+  if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) return response;
 
+  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
   const headers = new Headers();
   applyConfigHeadersToResponse(headers, {
     configHeaders: options.configHeaders,
@@ -594,14 +591,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
-  const redirect = matchRedirect(
-    redirectPathname,
-    options.configRedirects,
-    preMiddlewareRequestContext,
-    basePathState,
-  );
-  if (redirect) {
-    const destination = sanitizeDestination(
+  const configMatchers =
+    HAS_CONFIG_REDIRECTS && options.configRedirects.length
+      ? await import("../config/config-matchers.js")
+      : null;
+  const redirect = configMatchers
+    ? configMatchers.matchRedirect(
+        redirectPathname,
+        options.configRedirects,
+        preMiddlewareRequestContext,
+        basePathState,
+      )
+    : null;
+  if (configMatchers && redirect) {
+    const destination = configMatchers.sanitizeDestination(
       redirectDestinationWithBasePath(redirect.destination, options.basePath, hadBasePath),
     );
     // For RSC navigations `createRscRedirectLocation` recomputes the
@@ -611,7 +614,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const location =
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
-        : preserveRedirectDestinationQuery(destination, url.search);
+        : configMatchers.preserveRedirectDestinationQuery(destination, url.search);
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
@@ -800,7 +803,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (filesystemRouteEligible && options.handleMetadataRouteRequest) {
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
-    if (metadataRouteResponse) {
+    if (metadataRouteResponse && HAS_CONFIG_HEADERS && options.configHeaders.length) {
+      const { applyConfigHeadersToResponse } = await import("./config-headers.js");
       applyConfigHeadersToResponse(metadataRouteResponse.headers, {
         basePathState,
         configHeaders: options.configHeaders,
@@ -810,6 +814,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ),
         requestContext: preMiddlewareRequestContext,
       });
+    }
+    if (metadataRouteResponse) {
       return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
     }
   }

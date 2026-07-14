@@ -20,8 +20,17 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../utils/protocol-headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
-import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { analyzeRegexSafety } from "../utils/regex-safety.js";
+import { requestContextFromRequest, type RequestContext } from "./request-context.js";
+import { isExternalUrl } from "../utils/external-url.js";
+
+export {
+  normalizeHost,
+  parseCookies,
+  requestContextFromRequest,
+  type RequestContext,
+} from "./request-context.js";
+export { isExternalUrl } from "../utils/external-url.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -374,17 +383,6 @@ export function escapeHeaderSource(source: string): string {
 }
 
 /**
- * Request context needed for evaluating has/missing conditions.
- * Callers extract the relevant parts from the incoming Request.
- */
-export type RequestContext = {
-  readonly headers: Headers;
-  readonly cookies: Record<string, string>;
-  readonly query: URLSearchParams;
-  readonly host: string;
-};
-
-/**
  * basePath gating state passed alongside the pathname to every matcher.
  *
  * Rewrites/redirects/headers run with default `basePath: true` semantics in
@@ -425,44 +423,6 @@ const _BASEPATH_DEFAULT: BasePathMatchState = { basePath: "", hadBasePath: true 
 function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatchState): boolean {
   if (!state.basePath) return true;
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
-}
-
-/**
- * Parse a Cookie header string into a key-value record.
- */
-export function parseCookies(cookieHeader: string | null): Record<string, string> {
-  return parseCookieHeader(cookieHeader);
-}
-
-/**
- * Build a RequestContext from a Web Request object.
- *
- * `cookies` and `query` are lazy memoized getters: they are consumed only by
- * `has`/`missing` condition evaluation (`checkHasConditions` /
- * `matchesRuleConditions`), and most apps configure no such conditions. The
- * cookie split and `searchParams` access are therefore deferred until first
- * read and computed at most once. Mirrors `headersContextFromRequest` in
- * `shims/headers.ts`.
- */
-export function requestContextFromRequest(request: Request): RequestContext {
-  const url = new URL(request.url);
-  let cookies: Record<string, string> | undefined;
-  let query: URLSearchParams | undefined;
-  return {
-    headers: request.headers,
-    get cookies() {
-      return (cookies ??= parseCookies(request.headers.get("cookie")));
-    },
-    get query() {
-      return (query ??= url.searchParams);
-    },
-    host: normalizeHost(request.headers.get("host"), url.hostname),
-  };
-}
-
-export function normalizeHost(hostHeader: string | null, fallbackHostname: string): string {
-  const host = hostHeader ?? fallbackHostname;
-  return host.split(":", 1)[0].toLowerCase();
 }
 
 /**
@@ -1231,10 +1191,6 @@ export function sanitizeDestination(dest: string): string {
  * Detects any URL scheme (http:, https:, data:, javascript:, blob:, etc.)
  * per RFC 3986, plus protocol-relative URLs (//).
  */
-export function isExternalUrl(url: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
-}
-
 /**
  * Merge the original request's query params into a config-redirect
  * destination, preserving them on the resulting `Location`.

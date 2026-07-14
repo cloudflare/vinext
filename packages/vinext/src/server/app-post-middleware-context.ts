@@ -1,6 +1,9 @@
 import { getHeadersContext } from "vinext/shims/headers";
-import { normalizeHost, requestContextFromRequest } from "../config/config-matchers.js";
-import type { RequestContext } from "../config/config-matchers.js";
+import {
+  normalizeHost,
+  requestContextFromRequest,
+  type RequestContext,
+} from "../config/request-context.js";
 
 /**
  * Build a request context from the live ALS HeadersContext, which reflects

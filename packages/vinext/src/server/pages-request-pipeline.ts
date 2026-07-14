@@ -30,11 +30,8 @@ import {
   sanitizeDestination,
 } from "../config/config-matchers.js";
 import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
-import {
-  applyConfigHeadersToHeaderRecord,
-  cloneRequestWithUrl,
-  normalizeTrailingSlash,
-} from "./request-pipeline.js";
+import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
+import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";

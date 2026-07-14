@@ -76,6 +76,7 @@ type NavigateEvent = {
 };
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 export type LinkProps<_RouteInferType = unknown> = {
   href: string | UrlObject;
@@ -469,14 +470,16 @@ function prefetchUrl(
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           },
           headersModule,
-          { resolveHybridClientRewriteHref, resolveHybridClientRouteOwner },
+          hybridRouteOwner,
         ] = await Promise.all([
           import("./navigation.js"),
           import("../server/app-elements.js"),
           import("../server/app-rsc-cache-busting.js"),
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
-          import("./internal/hybrid-client-route-owner.js"),
+          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES
+            ? import("./internal/hybrid-client-route-owner.js")
+            : null,
         ]);
         const {
           getPrefetchInterceptionContext,
@@ -503,11 +506,15 @@ function prefetchUrl(
         // stream is never consumed (the click path now hard-navigates to
         // Pages) and would also race the request the browser will issue on
         // the actual navigation.
-        const hybridOwner = resolveHybridClientRouteOwner(prefetchHref, __basePath);
+        const hybridOwner = HAS_PAGES_ROUTER
+          ? hybridRouteOwner!.resolveHybridClientRouteOwner(prefetchHref, __basePath)
+          : null;
         if (hybridOwner === "pages" || hybridOwner === "document") {
           return;
         }
-        const rewrittenPrefetchHref = resolveHybridClientRewriteHref(fullHref, __basePath);
+        const rewrittenPrefetchHref = HAS_CLIENT_REWRITES
+          ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
+          : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const autoPrefetch =
           mode === "auto"

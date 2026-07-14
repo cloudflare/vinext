@@ -2080,6 +2080,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
         defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
+        defines["process.env.__VINEXT_HAS_CLIENT_REWRITES"] = JSON.stringify(
+          String(
+            nextConfig.rewrites.beforeFiles.length > 0 ||
+              nextConfig.rewrites.afterFiles.length > 0 ||
+              nextConfig.rewrites.fallback.length > 0,
+          ),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_HEADERS"] = JSON.stringify(
+          String(nextConfig.headers.length > 0),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_REDIRECTS"] = JSON.stringify(
+          String(nextConfig.redirects.length > 0),
+        );
+        defines["process.env.__VINEXT_HAS_CONFIG_REWRITES"] = JSON.stringify(
+          String(
+            nextConfig.rewrites.beforeFiles.length > 0 ||
+              nextConfig.rewrites.afterFiles.length > 0 ||
+              nextConfig.rewrites.fallback.length > 0,
+          ),
+        );
         // Expose experimental.staleTimes to client-side code so full prefetches
         // and committed dynamic navigations use Next.js' distinct freshness
         // windows. Values are in seconds; matches Next.js' define-env plumbing.

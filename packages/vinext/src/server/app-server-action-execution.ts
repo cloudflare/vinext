@@ -22,7 +22,7 @@ import {
   runWithRootParamsScope,
   runWithRootParamsUsage,
 } from "vinext/shims/root-params";
-import { isExternalUrl } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {

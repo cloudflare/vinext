@@ -526,13 +526,12 @@ function fixedWords(node: RegexNode, budget: WordBudget): RegexSymbol[][] | null
 type TrieEdge = { symbol: RegexSymbol; node: TrieNode };
 type TrieNode = {
   terminal: boolean;
-  literals: Map<string, TrieEdge>;
-  classes: TrieEdge[];
-  opaque: TrieEdge[];
+  edges: Map<string, TrieEdge>;
+  complexEdges: TrieEdge[];
 };
 
 function createTrieNode(): TrieNode {
-  return { terminal: false, literals: new Map(), classes: [], opaque: [] };
+  return { terminal: false, edges: new Map(), complexEdges: [] };
 }
 
 function opaqueMatchesLiteral(opaque: RegexSymbol, literal: RegexSymbol): boolean {
@@ -591,60 +590,20 @@ function insertPrefixFreeWord(
   let node = root;
   for (const symbol of word) {
     if (node.terminal) return false;
-    let edge: TrieEdge | undefined;
-    if (symbol.kind === "literal") {
-      edge = node.literals.get(symbol.key);
-      for (const classEdge of node.classes) {
+    let edge = node.edges.get(symbol.key);
+    if (!edge) {
+      const candidates = symbol.kind === "literal" ? node.complexEdges : node.edges.values();
+      for (const candidate of candidates) {
         if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (symbolsMayOverlap(classEdge.symbol, symbol)) return false;
+        if (symbolsMayOverlap(candidate.symbol, symbol)) return false;
       }
-      for (const opaque of node.opaque) {
-        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (opaqueMatchesLiteral(opaque.symbol, symbol)) return false;
-      }
-      if (!edge) {
-        edge = { symbol, node: createTrieNode() };
-        node.literals.set(symbol.key, edge);
-      }
-    } else if (symbol.kind === "class") {
-      for (const literal of node.literals.values()) {
-        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (symbolsMayOverlap(symbol, literal.symbol)) return false;
-      }
-      edge = node.classes.find((candidate) => candidate.symbol.key === symbol.key);
-      for (const classEdge of node.classes) {
-        if (classEdge === edge) continue;
-        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (symbolsMayOverlap(symbol, classEdge.symbol)) return false;
-      }
-      if (node.opaque.length > 0) return false;
-      if (!edge) {
-        edge = { symbol, node: createTrieNode() };
-        node.classes.push(edge);
-      }
-    } else {
-      for (const literal of node.literals.values()) {
-        if (++comparisons.count > MAX_OPAQUE_COMPARISONS) return false;
-        if (opaqueMatchesLiteral(symbol, literal.symbol)) return false;
-      }
-      if (node.classes.length > 0) return false;
-      edge = node.opaque.find((candidate) => candidate.symbol.key === symbol.key);
-      if (!edge && node.opaque.length > 0) return false;
-      if (!edge) {
-        edge = { symbol, node: createTrieNode() };
-        node.opaque.push(edge);
-      }
+      edge = { symbol, node: createTrieNode() };
+      node.edges.set(symbol.key, edge);
+      if (symbol.kind !== "literal") node.complexEdges.push(edge);
     }
     node = edge.node;
   }
-  if (
-    node.terminal ||
-    node.literals.size > 0 ||
-    node.classes.length > 0 ||
-    node.opaque.length > 0
-  ) {
-    return false;
-  }
+  if (node.terminal || node.edges.size > 0) return false;
   node.terminal = true;
   return true;
 }

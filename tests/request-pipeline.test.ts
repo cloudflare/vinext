@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
-  applyConfigHeadersToHeaderRecord,
-  applyConfigHeadersToResponse,
   canonicalizeRequestPathname,
   canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
@@ -20,6 +18,10 @@ import {
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
+import {
+  applyConfigHeadersToHeaderRecord,
+  applyConfigHeadersToResponse,
+} from "../packages/vinext/src/server/config-headers.js";
 import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
