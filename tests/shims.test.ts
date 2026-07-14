@@ -17925,14 +17925,8 @@ describe("Pages Router concurrent navigation", () => {
   });
 });
 
-describe("history metadata writes with a rejecting History API", () => {
-  // history.pushState/replaceState can throw a SecurityError when document.URL
-  // still contains userinfo credentials (e.g. https://user:pass@host/ behind
-  // HTTP Basic auth — Chromium strips them from location.href but not from
-  // document.URL). The notify-suppressed primitives only persist vinext
-  // metadata, so the failure must be swallowed instead of aborting hydration
-  // with a blank page (#2614).
-  it("swallows SecurityError from replaceState/pushState instead of throwing (#2614)", async () => {
+describe("notify-suppressed history writes", () => {
+  it("preserves native errors from URL-changing history writes", async () => {
     const previousWindow = (globalThis as any).window;
     const securityError = new DOMException(
       "A history state object with URL 'https://example.com/' cannot be created in a " +
@@ -17957,27 +17951,21 @@ describe("history metadata writes with a rejecting History API", () => {
       addEventListener: vi.fn(),
     };
     (globalThis as any).window = win;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
     try {
       vi.resetModules();
       const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
         await import("../packages/vinext/src/shims/navigation.js");
 
-      expect(() =>
-        replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/"),
-      ).not.toThrow();
+      expect(() => replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/")).toThrow(
+        securityError,
+      );
       expect(() =>
         pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/next"),
-      ).not.toThrow();
+      ).toThrow(securityError);
 
-      // The underlying History API was attempted, rejected, and reported.
       expect(replaceState).toHaveBeenCalledTimes(1);
       expect(pushState).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith("[vinext] history.replaceState failed:", securityError);
-      expect(warn).toHaveBeenCalledWith("[vinext] history.pushState failed:", securityError);
     } finally {
-      warn.mockRestore();
       vi.resetModules();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
