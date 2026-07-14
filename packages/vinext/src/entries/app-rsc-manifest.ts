@@ -6,6 +6,10 @@ import {
 } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import {
+  selectGlobalNotFoundModuleId,
+  type GlobalNotFoundModuleId,
+} from "./global-not-found-module.js";
 
 type AppRscManifestCode = {
   imports: string[];
@@ -19,10 +23,8 @@ type AppRscManifestCode = {
   rootLayoutVars: string[];
   globalErrorVar: string | null;
   /**
-   * Path expression for the `app/global-not-found.{tsx,ts,js,jsx}` module
-   * suitable for embedding in a generated `import()` call (already JSON-encoded
-   * with platform path separators normalized). `null` when the user did not
-   * define `global-not-found.tsx`.
+   * Stable virtual module id for `app/global-not-found.{tsx,ts,js,jsx}`.
+   * `null` when the user did not define `global-not-found.tsx`.
    *
    * We intentionally do NOT register this module as a static `import * as`
    * in the manifest. Statically importing it puts global-not-found.tsx in
@@ -38,7 +40,7 @@ type AppRscManifestCode = {
    *
    * @see Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
    */
-  globalNotFoundImportSpecifier: string | null;
+  globalNotFoundModuleId: GlobalNotFoundModuleId | null;
 };
 
 type BuildAppRscManifestCodeOptions = {
@@ -508,11 +510,11 @@ export function buildAppRscManifestCode(
     ? imports.getImportVar(options.globalErrorPath)
     : null;
   // Intentionally NOT registered as a static `import * as` — see the docstring
-  // on `AppRscManifestCode.globalNotFoundImportSpecifier` for the chunk/CSS
-  // isolation rationale. We emit a dynamic `import()` from the entry instead.
-  const globalNotFoundImportSpecifier = options.globalNotFoundPath
-    ? JSON.stringify(toSlash(options.globalNotFoundPath))
-    : null;
+  // on `AppRscManifestCode.globalNotFoundModuleId` for the chunk/CSS
+  // isolation rationale. The entry dynamically imports a static virtual id;
+  // vinext resolves that id to the discovered path without embedding the path
+  // in generated JavaScript.
+  const globalNotFoundModuleId = selectGlobalNotFoundModuleId(options.globalNotFoundPath);
 
   const dynamicMetadataRoutes = metadataRoutes.filter((r) => r.isDynamic);
   for (const route of dynamicMetadataRoutes) {
@@ -536,6 +538,6 @@ export function buildAppRscManifestCode(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
-    globalNotFoundImportSpecifier,
+    globalNotFoundModuleId,
   };
 }

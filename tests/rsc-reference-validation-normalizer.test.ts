@@ -6,6 +6,14 @@ function validationId(type: "client" | "server", id: string) {
   return `\0virtual:vite-rsc/reference-validation?type=${type}&id=${encodeURIComponent(id)}&lang.js`;
 }
 
+function serverActionValidationId(actionId: string) {
+  return `\0virtual:vinext-server-action-validation?actionId=${encodeURIComponent(actionId)}&lang.js`;
+}
+
+function anyServerActionValidationId() {
+  return "\0virtual:vinext-server-action-validation?hasAny=1&lang.js";
+}
+
 async function configurePlugin(manager: unknown): Promise<Plugin> {
   const plugin = createRscReferenceValidationNormalizerPlugin();
   if (typeof plugin.configResolved !== "function") {
@@ -119,5 +127,42 @@ describe("rsc reference validation normalizer", () => {
     const plugin = createRscReferenceValidationNormalizerPlugin();
 
     await expect(load(plugin, validationId("client", "/app/client.tsx"))).resolves.toBeNull();
+  });
+
+  it("checks complete server action ids without importing their modules", async () => {
+    const plugin = await configurePlugin({
+      serverReferenceMetaMap: {
+        "/app/actions.ts": {
+          referenceKey: "/app/actions.ts",
+          exportNames: ["save"],
+        },
+      },
+    });
+
+    await expect(load(plugin, serverActionValidationId("/app/actions.ts#save"))).resolves.toBe(
+      "export default true;",
+    );
+    await expect(load(plugin, serverActionValidationId("/app/actions.ts#missing"))).resolves.toBe(
+      "export default false;",
+    );
+  });
+
+  it("reports whether the live dev manifest contains any server action", async () => {
+    const withActions = await configurePlugin({
+      serverReferenceMetaMap: {
+        "/app/actions.ts": {
+          referenceKey: "/app/actions.ts",
+          exportNames: ["save"],
+        },
+      },
+    });
+    const withoutActions = await configurePlugin({ serverReferenceMetaMap: {} });
+
+    await expect(load(withActions, anyServerActionValidationId())).resolves.toBe(
+      "export default true;",
+    );
+    await expect(load(withoutActions, anyServerActionValidationId())).resolves.toBe(
+      "export default false;",
+    );
   });
 });

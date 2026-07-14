@@ -5,6 +5,19 @@ import { waitForAppRouterHydration } from "../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Server Actions", () => {
+  // Ported from Next.js: test/e2e/app-dir/actions-unrecognized/actions-unrecognized.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions-unrecognized/actions-unrecognized.test.ts
+  test("invalid progressive actions use the dev HTML 500 renderer", async ({ request }) => {
+    const response = await request.post(`${BASE}/actions`, {
+      headers: { origin: BASE },
+      multipart: { "$ACTION_ID_not-a-server-reference": "" },
+    });
+
+    expect(response.status()).toBe(500);
+    expect(response.headers()["content-type"]).toContain("text/html");
+    expect(response.headers()["cache-control"]).toBe("no-cache, must-revalidate");
+  });
+
   test("like button calls server action and updates count", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");

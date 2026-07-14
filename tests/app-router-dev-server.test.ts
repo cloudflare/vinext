@@ -2134,15 +2134,11 @@ describe("App Router integration", () => {
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
-  it("returns action-not-found for an MPA form POST to a page with no decodable action", async () => {
-    // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
-    // ("should error when triggering an MPA action on an app with no server actions")
-    //
-    // A multipart form POST to a *page* route is always a server-action
-    // attempt. When the body carries no action reference, it must surface as
-    // Next.js' 404 + x-nextjs-action-not-found rather than rendering the page.
-    // This exercises the entry-side route classification (matchRoute +
-    // __loadPage / __loadRouteHandler markers) end-to-end. See issue #1340.
+  it("preserves the development error response for a markerless MPA form POST", async () => {
+    // This fixture contains server actions, so a multipart POST without an
+    // action marker reaches the actions-enabled decode path and renders the
+    // development error response. The no-actions fixture separately covers
+    // Next.js' 404 + x-nextjs-action-not-found behavior.
     const body = new FormData();
     body.append("test", "value");
     const res = await fetch(`${baseUrl}/about`, {
@@ -2150,9 +2146,16 @@ describe("App Router integration", () => {
       headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
       body,
     });
-    expect(res.status).toBe(404);
-    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
-    expect(await res.text()).toBe("Server action not found.");
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+    expect(res.headers.get("cdn-cache-control")).toBeNull();
+    expect(res.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(res.headers.get("cache-tag")).toBeNull();
+    expect(res.headers.get("x-nextjs-action-not-found")).toBeNull();
+    const responseBody = await res.text();
+    expect(responseBody).toContain("<!DOCTYPE html>");
+    expect(responseBody).not.toContain("Server action not found.");
   });
 
   it("returns action-not-found before reading cyclic multipart payloads for stale ids", async () => {

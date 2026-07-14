@@ -9,6 +9,10 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import {
+  finalizeServerActionCacheControl,
+  isServerActionResponse,
+} from "./server-action-response.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -46,10 +50,12 @@ export function finalizeAppRscResponse(
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Response {
+  const isActionResponse = isServerActionResponse(response);
+
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
-    return response;
+    return isActionResponse ? finalizeServerActionCacheControl(response) : response;
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
@@ -74,7 +80,7 @@ export function finalizeAppRscResponse(
   }
 
   if (!options.configHeaders.length) {
-    return response;
+    return isActionResponse ? finalizeServerActionCacheControl(response) : response;
   }
 
   const url = new URL(request.url);
@@ -111,5 +117,5 @@ export function finalizeAppRscResponse(
     basePathState: { basePath: options.basePath, hadBasePath },
   });
 
-  return response;
+  return isActionResponse ? finalizeServerActionCacheControl(response) : response;
 }

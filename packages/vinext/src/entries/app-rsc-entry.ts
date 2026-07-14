@@ -19,7 +19,7 @@ import type {
   PrefetchInliningConfig,
 } from "../config/next-config.js";
 import type { ImageConfig } from "../server/image-optimization.js";
-import type { AppRoute } from "../routing/app-router.js";
+import { matchAppRoute, type AppRoute } from "../routing/app-router.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
@@ -169,6 +169,13 @@ type AppRouterConfig = {
   prefetchInlining?: PrefetchInliningConfig;
   /** Whether the RSC build discovered any server references. Defaults to true. */
   hasServerActions?: boolean;
+  /** Whether generated reference membership checks run against the live dev manifest. */
+  devServer?: boolean;
+  /**
+   * Exact build-time server reference ids (`referenceKey#exportName`). `null`
+   * selects the dev-server membership module, which stays current across HMR.
+   */
+  serverActionReferences?: string[] | null;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
@@ -195,6 +202,34 @@ type AppRouterConfig = {
   /** Server-only token used to validate the draft-mode bypass cookie. */
   draftModeSecret?: string;
 };
+
+/**
+ * Generate a transform-only entry containing every user route-module import.
+ * Dev server-action capability discovery walks this graph without evaluating
+ * it, mirroring plugin-RSC's production scan-build input.
+ */
+export function generateRscActionSourceScanEntry(
+  routes: AppRoute[],
+  metadataRoutes?: MetadataFileRoute[],
+  globalErrorPath?: string | null,
+  globalNotFoundPath?: string | null,
+  pathname?: string,
+): string {
+  const matchedRoute = pathname ? matchAppRoute(pathname, routes) : null;
+  const selectedRoutes = pathname ? (matchedRoute ? [matchedRoute.route] : []) : routes;
+  const manifest = buildAppRscManifestCode({
+    routes: selectedRoutes,
+    metadataRoutes: pathname ? [] : metadataRoutes,
+    globalErrorPath: pathname ? null : globalErrorPath,
+    globalNotFoundPath: pathname ? null : globalNotFoundPath,
+  });
+  return [
+    ...manifest.imports,
+    ...(manifest.globalNotFoundModuleId
+      ? ['const load_global_not_found = () => import("virtual:vinext-global-not-found");']
+      : []),
+  ].join("\n");
+}
 
 /**
  * Generate the virtual RSC entry module.
@@ -232,6 +267,8 @@ export function generateRscEntry(
   const cacheComponents = config?.cacheComponents === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
+  const devServer = config?.devServer !== false;
+  const serverActionReferences = config?.serverActionReferences ?? null;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -265,7 +302,7 @@ export function generateRscEntry(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
-    globalNotFoundImportSpecifier,
+    globalNotFoundModuleId,
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
@@ -305,6 +342,45 @@ import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
+${
+  hasServerActions
+    ? serverActionReferences
+      ? `const __serverActionReferences = new Set(${JSON.stringify(serverActionReferences)});
+async function __hasServerAction(actionId, _pathname) {
+  return __serverActionReferences.has(actionId);
+}
+async function __hasAnyServerAction(_pathname) {
+  return __serverActionReferences.size > 0;
+}`
+      : devServer
+        ? `async function __hasServerAction(actionId, pathname) {
+  const validation = await import(
+    /* @vite-ignore */
+    "/@id/__x00__virtual:vinext-server-action-validation?actionId=" +
+      encodeURIComponent(actionId) +
+      "&pathname=" +
+      encodeURIComponent(pathname) +
+      "&lang.js"
+  );
+  return validation.default === true;
+}
+async function __hasAnyServerAction(pathname) {
+  const validation = await import(
+    /* @vite-ignore */
+    "/@id/__x00__virtual:vinext-server-action-validation?hasAny=1&pathname=" +
+      encodeURIComponent(pathname) +
+      "&lang.js"
+  );
+  return validation.default === true;
+}`
+        : `async function __hasServerAction(_actionId, _pathname) {
+  return true;
+}
+async function __hasAnyServerAction(_pathname) {
+  return true;
+}`
+    : ""
+}
 ${
   middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
@@ -569,7 +645,7 @@ const rootLayouts = [${rootLayoutVars.join(", ")}];
 // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
 // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
 const __loadGlobalNotFoundModule = ${
-    globalNotFoundImportSpecifier ? `() => import(${globalNotFoundImportSpecifier})` : "null"
+    globalNotFoundModuleId ? '() => import("virtual:vinext-global-not-found")' : "null"
   };
 
 const createRscOnErrorHandler = (request, pathname, routePath) =>
@@ -1004,11 +1080,12 @@ export default createAppRscHandler({
       isProgressiveServerActionRequest: __isProgressiveServerActionRequest,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
-    // A multipart form POST to a page is always a server-action attempt, so a
-    // body that decodes to no action must surface as 404 action-not-found
-    // (#1340). Route handlers run after this dispatch and accept raw multipart
-    // POSTs, so only flag actual page routes. The __loadPage / __loadRouteHandler
-    // markers are static and available before lazy module hydration.
+    // Route handlers accept raw multipart POSTs, so only send actual page
+    // routes through progressive action handling. A build with no actions
+    // omits this callback and keeps the separate 404 action-not-found path;
+    // malformed posts in this actions-enabled build use Next.js' 500 path.
+    // The __loadPage / __loadRouteHandler markers are available before lazy
+    // module hydration.
     //
     // Only the progressive (multipart, no actionId) POST path consults
     // hasPageRoute, so skip the route match entirely for every other request
@@ -1024,6 +1101,7 @@ export default createAppRscHandler({
         __progressiveActionMatch.route.__loadPage &&
         !__progressiveActionMatch.route.__loadRouteHandler,
     );
+    if (__hasPageRoute) await __ensureRouteLoaded(__progressiveActionMatch.route);
     return __handleProgressiveServerActionRequest({
       actionId,
       allowedOrigins: __allowedOrigins,
@@ -1037,6 +1115,12 @@ export default createAppRscHandler({
       decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
+      hasServerAction(actionId) {
+        return __hasServerAction(actionId, cleanPathname);
+      },
+      hasAnyServerAction() {
+        return __hasAnyServerAction(cleanPathname);
+      },
       hasPageRoute: __hasPageRoute,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
@@ -1062,6 +1146,11 @@ export default createAppRscHandler({
       readActionBodyWithLimit: __readBodyWithLimit,
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
+    // Dev action ownership is route-scoped. Validate first so a cold request
+    // posted after navigation can discover the exact owning source before
+    // loadServerAction consults plugin-RSC's live manifest. Production uses
+    // the immutable build-time membership set, so this remains a cheap lookup.
+    await __hasServerAction(actionId, cleanPathname);
     const __actionMatch = matchRoute(cleanPathname);
     if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch

@@ -19,6 +19,7 @@
  */
 
 import path from "node:path";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { startFixtureServer, fetchHtml } from "../helpers.js";
@@ -183,5 +184,37 @@ describe("Next.js compat: global-not-found (not present)", () => {
     expect(res.status).toBe(404);
     expect(html).toContain('lang="en"');
     expect(html).toContain("not-found.js");
+  });
+});
+
+describe("Next.js compat: global-not-found hostile filesystem path", () => {
+  const injectedGlobal = "__vinextGlobalNotFoundPathInjected";
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let tempParent: string;
+
+  beforeAll(async () => {
+    tempParent = await mkdtemp(path.join(import.meta.dirname, ".tmp-global-not-found-hostile-"));
+    const fixtureDir = path.join(
+      tempParent,
+      'root-");globalThis.__vinextGlobalNotFoundPathInjected=true;next-line',
+    );
+    await mkdir(fixtureDir, { recursive: true });
+    await cp(FIXTURE_DIR, fixtureDir, { recursive: true });
+    Reflect.deleteProperty(globalThis, injectedGlobal);
+    ({ server, baseUrl } = await startFixtureServer(fixtureDir, { appRouter: true }));
+  }, 60_000);
+
+  afterAll(async () => {
+    await server?.close();
+    Reflect.deleteProperty(globalThis, injectedGlobal);
+    if (tempParent) await rm(tempParent, { recursive: true, force: true });
+  });
+
+  it("resolves and renders the module without evaluating path text as code", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/does-not-exist");
+    expect(res.status).toBe(404);
+    expect(html).toContain('data-global-not-found="true"');
+    expect(Reflect.has(globalThis, injectedGlobal)).toBe(false);
   });
 });

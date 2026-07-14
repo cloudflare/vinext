@@ -11,6 +11,7 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
+import type { PluginApi as RscPluginApi } from "@vitejs/plugin-rsc";
 import { createLogger, loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
@@ -45,7 +46,8 @@ import {
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
-import { generateRscEntry } from "./entries/app-rsc-entry.js";
+import { generateRscActionSourceScanEntry, generateRscEntry } from "./entries/app-rsc-entry.js";
+import { GLOBAL_NOT_FOUND_MODULE_ID } from "./entries/global-not-found-module.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
@@ -978,6 +980,8 @@ const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSET
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
 const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
+const VIRTUAL_RSC_ACTION_SOURCE_SCAN = "virtual:vinext-rsc-action-source-scan";
+const RESOLVED_RSC_ACTION_SOURCE_SCAN = VIRTUAL_PREFIX + VIRTUAL_RSC_ACTION_SOURCE_SCAN;
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
@@ -1504,15 +1508,41 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       });
   }
 
+  async function resolveServerActionMetadata(
+    config: Pick<ResolvedConfig, "command" | "plugins">,
+  ): Promise<{ hasServerActions: boolean; references: string[] | null }> {
+    if (config.command !== "build") {
+      return { hasServerActions: true, references: null };
+    }
+
+    let pluginApi = (
+      config.plugins.find((plugin) => plugin.name === "rsc:minimal") as
+        | (Plugin & { api?: RscPluginApi })
+        | undefined
+    )?.api;
+    if (!pluginApi && rscPluginModulePromise) {
+      const { getPluginApi } = await rscPluginModulePromise;
+      pluginApi = getPluginApi(config);
+    }
+    if (!pluginApi || pluginApi.manager.isScanBuild) {
+      return { hasServerActions: true, references: null };
+    }
+
+    const referenceMetadata = pluginApi.manager.serverReferenceMetaMap as Record<
+      string,
+      { exportNames: string[]; referenceKey: string }
+    >;
+    const references = Object.values(referenceMetadata).flatMap((meta) =>
+      meta.exportNames.map((name) => `${meta.referenceKey}#${name}`),
+    );
+    references.sort((a, b) => a.localeCompare(b));
+    return { hasServerActions: references.length > 0, references };
+  }
+
   async function resolveHasServerActions(
     config: Pick<ResolvedConfig, "command" | "plugins">,
   ): Promise<boolean> {
-    if (config.command !== "build" || !rscPluginModulePromise) return true;
-
-    const { getPluginApi } = await rscPluginModulePromise;
-    const pluginApi = getPluginApi(config);
-    if (!pluginApi || pluginApi.manager.isScanBuild) return true;
-    return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+    return (await resolveServerActionMetadata(config)).hasServerActions;
   }
 
   const configuredReactOptions =
@@ -3477,6 +3507,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+          if (
+            cleanId === GLOBAL_NOT_FOUND_MODULE_ID ||
+            cleanId.endsWith("/" + GLOBAL_NOT_FOUND_MODULE_ID)
+          ) {
+            if (!nextConfig?.globalNotFound) return null;
+            return findFileWithExts(appDir, "global-not-found", fileMatcher);
+          }
+          if (
+            cleanId === VIRTUAL_RSC_ACTION_SOURCE_SCAN ||
+            cleanId.startsWith(`${VIRTUAL_RSC_ACTION_SOURCE_SCAN}?`)
+          ) {
+            return (
+              RESOLVED_RSC_ACTION_SOURCE_SCAN + cleanId.slice(VIRTUAL_RSC_ACTION_SOURCE_SCAN.length)
+            );
+          }
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
           if (cleanId === VIRTUAL_APP_CAPABILITIES) return RESOLVED_APP_CAPABILITIES;
@@ -3500,6 +3545,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY)) {
             return RESOLVED_RSC_ENTRY;
+          }
+          const actionSourceScanIndex = cleanId.indexOf("/" + VIRTUAL_RSC_ACTION_SOURCE_SCAN);
+          if (actionSourceScanIndex !== -1) {
+            return (
+              RESOLVED_RSC_ACTION_SOURCE_SCAN +
+              cleanId.slice(actionSourceScanIndex + VIRTUAL_RSC_ACTION_SOURCE_SCAN.length + 1)
+            );
           }
           if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY)) {
             return RESOLVED_APP_SSR_ENTRY;
@@ -3579,10 +3631,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return `export default ${JSON.stringify(metadata)};`;
           }
           // App Router virtual modules
+          if (id.startsWith(RESOLVED_RSC_ACTION_SOURCE_SCAN) && hasAppDir) {
+            const queryIndex = id.indexOf("?");
+            const pathname =
+              queryIndex === -1
+                ? undefined
+                : (new URLSearchParams(id.slice(queryIndex + 1)).get("pathname") ?? undefined);
+            const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+            const metaRoutes = scanMetadataFiles(appDir);
+            const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
+            const globalNotFoundPath = nextConfig?.globalNotFound
+              ? findFileWithExts(appDir, "global-not-found", fileMatcher)
+              : null;
+            return generateRscActionSourceScanEntry(
+              routes,
+              metaRoutes,
+              globalErrorPath,
+              globalNotFoundPath,
+              pathname,
+            );
+          }
           if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
-            const hasServerActions = await resolveHasServerActions(this.environment.config);
+            const serverActionMetadata = await resolveServerActionMetadata(this.environment.config);
             // Check for global-error.tsx at app root
             const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
             // Check for global-not-found.tsx at app root (Next.js 16+ feature)
@@ -3627,7 +3699,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 globalNotFound: nextConfig?.globalNotFound,
                 cacheComponents: nextConfig?.cacheComponents,
                 prefetchInlining: nextConfig?.prefetchInlining,
-                hasServerActions,
+                hasServerActions: serverActionMetadata.hasServerActions,
+                devServer: this.environment.config.command !== "build",
+                serverActionReferences: serverActionMetadata.references,
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -6622,8 +6696,16 @@ export const loadServerActionClient = ${
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
-    plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
+  }
+  if (earlyAppDirExists) {
+    plugins.push(
+      createRscReferenceValidationNormalizerPlugin({
+        getAppDir: () => appDir,
+        getPageExtensions: () => fileMatcher?.extensions,
+        getRoot: () => root,
+      }),
+    );
   }
 
   return plugins;
