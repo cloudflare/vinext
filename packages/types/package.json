@@ -27,6 +27,10 @@
       "types": "./next/upstream/*.d.ts"
     }
   },
+  "scripts": {
+    "build": "node ../../scripts/sync-next-types.mjs --check",
+    "prepack": "vp run build"
+  },
   "engines": {
     "node": ">=22"
   }
