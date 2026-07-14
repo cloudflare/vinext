@@ -461,8 +461,7 @@ async function runTypegen(
       case "yarn":
         return [packageManager, ["exec", "vinext", "typegen"]] as const;
       default:
-        packageManager satisfies never;
-        throw new Error("Unsupported package manager");
+        return packageManager satisfies never;
     }
   })();
 
