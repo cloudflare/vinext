@@ -21,6 +21,11 @@ import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
+/** @deprecated Import ImageResponse from `next/og` instead. */
+export function ImageResponse(): never {
+  throw new Error("ImageResponse has moved from next/server to next/og");
+}
+
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
 //
@@ -83,29 +88,31 @@ function _throwIfInsideCacheScope(apiName: string): void {
 // NextRequest
 // ---------------------------------------------------------------------------
 
+export type RequestInit = globalThis.RequestInit & {
+  nextConfig?: {
+    basePath?: string;
+    i18n?: {
+      locales: readonly string[];
+      defaultLocale: string;
+      domains?: ReadonlyArray<{
+        domain: string;
+        defaultLocale: string;
+        locales?: readonly string[];
+        http?: true;
+      }>;
+    } | null;
+    trailingSlash?: boolean;
+  };
+  signal?: AbortSignal;
+  duplex?: "half";
+};
+
 export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _url: string;
   private _cookies: RequestCookies;
 
-  constructor(
-    input: URL | RequestInfo,
-    init?: RequestInit & {
-      nextConfig?: {
-        basePath?: string;
-        i18n?: {
-          locales: string[];
-          defaultLocale: string;
-          domains?: Array<{
-            domain: string;
-            defaultLocale: string;
-            locales?: string[];
-          }>;
-        };
-        trailingSlash?: boolean;
-      };
-    },
-  ) {
+  constructor(input: URL | RequestInfo, init?: RequestInit) {
     // Match Next.js: reject relative URLs with the canonical error before any
     // fallback URL parsing kicks in. Next.js calls `validateURL(url)` at the
     // top of its NextRequest constructor; we mirror that here so middleware
@@ -140,10 +147,20 @@ export class NextRequest extends Request {
         : input instanceof URL
           ? input
           : new URL(input.url, "http://localhost");
+    const i18n = _nextConfig?.i18n
+      ? {
+          locales: [..._nextConfig.i18n.locales],
+          defaultLocale: _nextConfig.i18n.defaultLocale,
+          domains: _nextConfig.i18n.domains?.map((domain) => ({
+            ...domain,
+            locales: domain.locales ? [...domain.locales] : undefined,
+          })),
+        }
+      : undefined;
     const urlConfig: NextURLConfig | undefined = _nextConfig
       ? {
           basePath: _nextConfig.basePath,
-          nextConfig: { i18n: _nextConfig.i18n, trailingSlash: _nextConfig.trailingSlash },
+          nextConfig: { i18n, trailingSlash: _nextConfig.trailingSlash },
         }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
@@ -163,6 +180,14 @@ export class NextRequest extends Request {
 
   get cookies(): RequestCookies {
     return this._cookies;
+  }
+
+  get page(): void {
+    throw new Error("NextRequest.page has been removed; use URLPattern instead");
+  }
+
+  get ua(): void {
+    throw new Error("NextRequest.ua has been removed; use userAgent() instead");
   }
 
   /**
@@ -222,7 +247,7 @@ export class NextRequest extends Request {
 /** Valid HTTP redirect status codes, matching Next.js's REDIRECTS set. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-function validateURL(url: string | URL | NextURL): string {
+function validateURL(url: string | URL | { toString(): string }): string {
   assertSafeNavigationUrl(String(url));
   try {
     return String(new URL(String(url)));
@@ -265,7 +290,10 @@ export class NextResponse<_Body = unknown> extends Response {
   /**
    * Create a redirect response.
    */
-  static redirect(url: string | URL | NextURL, init?: number | ResponseInit): NextResponse {
+  static redirect(
+    url: string | URL | { toString(): string },
+    init?: number | ResponseInit,
+  ): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
     if (!REDIRECT_STATUSES.has(status)) {
       throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
@@ -279,7 +307,10 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a rewrite response (middleware pattern).
    * Sets the x-middleware-rewrite header.
    */
-  static rewrite(destination: string | URL | NextURL, init?: MiddlewareResponseInit): NextResponse {
+  static rewrite(
+    destination: string | URL | { toString(): string },
+    init?: MiddlewareResponseInit,
+  ): NextResponse {
     const headers = new Headers(init?.headers);
     headers.set(MIDDLEWARE_REWRITE_HEADER, validateURL(destination));
     if (init?.request?.headers) {
@@ -602,6 +633,10 @@ export class NextURL {
     return this.href;
   }
 
+  toJSON(): string {
+    return this.href;
+  }
+
   /**
    * The build ID of the Next.js application.
    * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
@@ -704,9 +739,8 @@ export class RequestCookies {
     }
   }
 
-  [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
-    const entries = this.getAll().map((c) => [c.name, c] as [string, CookieEntry]);
-    return entries[Symbol.iterator]();
+  [Symbol.iterator](): MapIterator<[string, CookieEntry]> {
+    return new Map(this.getAll().map((cookie) => [cookie.name, cookie] as const)).entries();
   }
 }
 
@@ -800,7 +834,17 @@ export class ResponseCookies {
     const [name, value, opts] = parseCookieSetArgs(args);
     validateCookieName(name);
 
-    const serialized = serializeSetCookie(name, value, opts);
+    const sameSite =
+      opts?.sameSite === true
+        ? "Strict"
+        : typeof opts?.sameSite === "string"
+          ? ((opts.sameSite[0].toUpperCase() + opts.sameSite.slice(1)) as "Strict" | "Lax" | "None")
+          : undefined;
+    const serialized = serializeSetCookie(name, value, {
+      ...opts,
+      expires: typeof opts?.expires === "number" ? new Date(opts.expires) : opts?.expires,
+      sameSite,
+    });
     this._parsed.set(name, { serialized, entry: { name, value } });
     this._syncHeaders();
     return this;
@@ -841,12 +885,10 @@ export class ResponseCookies {
     });
   }
 
-  [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {
-    const entries: [string, CookieEntry][] = [...this._parsed.values()].map((v) => [
-      v.entry.name,
-      v.entry,
-    ]);
-    return entries[Symbol.iterator]();
+  [Symbol.iterator](): MapIterator<[string, CookieEntry]> {
+    return new Map(
+      [...this._parsed.values()].map(({ entry }) => [entry.name, entry] as const),
+    ).entries();
   }
 
   /** Delete all Set-Cookie headers and re-append from the internal map. */
@@ -901,10 +943,12 @@ type CookieOptions = {
   path?: string;
   domain?: string;
   maxAge?: number;
-  expires?: Date;
+  expires?: Date | number;
   httpOnly?: boolean;
   secure?: boolean;
-  sameSite?: "Strict" | "Lax" | "None";
+  sameSite?: true | false | "strict" | "lax" | "none" | "Strict" | "Lax" | "None";
+  partitioned?: boolean;
+  priority?: "low" | "medium" | "high";
 };
 
 /**
@@ -949,11 +993,36 @@ export class NextFetchEvent {
   sourcePage: string;
   private _waitUntilPromises: Promise<unknown>[] = [];
 
-  constructor(params: { page: string }) {
+  constructor(params: {
+    request?: Request;
+    page: string;
+    context?: { waitUntil(promise: Promise<unknown>): void };
+  }) {
     this.sourcePage = params.page;
+    if (params.context) {
+      this._externalWaitUntil = params.context.waitUntil.bind(params.context);
+    }
   }
 
+  private _externalWaitUntil?: (promise: Promise<unknown>) => void;
+
+  get request(): void {
+    throw new Error(
+      `The middleware signature for ${this.sourcePage} no longer exposes event.request`,
+    );
+  }
+
+  respondWith(): void {
+    throw new Error(`The middleware signature for ${this.sourcePage} no longer uses respondWith()`);
+  }
+
+  passThroughOnException(): void {}
+
   waitUntil(promise: Promise<unknown>): void {
+    if (this._externalWaitUntil) {
+      this._externalWaitUntil(promise);
+      return;
+    }
     this._waitUntilPromises.push(promise);
   }
 

@@ -783,7 +783,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Invalidate via tag
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Should re-fetch after tag invalidation
@@ -806,7 +806,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Invalidate only "posts"
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     startNewFetchCacheScope();
 
     // Posts should re-fetch
@@ -1506,7 +1506,7 @@ describe("fetch cache shim", () => {
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    await revalidatePath("/posts/hello");
+    await Promise.resolve(revalidatePath("/posts/hello"));
     startNewFetchCacheScope();
     setCurrentFetchSoftTags(["_N_T_/posts/hello"]);
 

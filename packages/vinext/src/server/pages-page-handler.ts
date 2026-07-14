@@ -99,7 +99,7 @@ type I18nConfig = {
     domain: string;
     defaultLocale: string;
     locales?: string[];
-    http?: boolean;
+    http?: true;
   }>;
 } | null;
 

@@ -165,6 +165,10 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+// Keep this source-relative: resolving through vinext's package export can read
+// a stale built copy while developing or testing the source tree.
+// oxlint-disable-next-line vinext-local/prefer-import-alias
+import publicNextShimMapJson from "./shims/public-shim-map.json" with { type: "json" };
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -1126,15 +1130,22 @@ function generateRootParamsModule(rootParamNames: Iterable<string>): string {
  *
  * To add a new react-server shim:
  *   1. Create `<name>.react-server.ts` in src/shims/
- *   2. Add entries here for each import specifier.
+ *   2. Add it to public-shim-map.json with `reactServer: true`.
  */
-const _reactServerShims = new Map<string, string>([
-  ["next/navigation", "navigation"],
-  ["next/navigation.js", "navigation"],
-  ["next/dist/client/components/navigation", "navigation"],
-  ["next/error", "error"],
-  ["next/error.js", "error"],
-]);
+type PublicNextShimDefinition = {
+  shim: string;
+  types: "upstream" | "vinext";
+  reactServer?: boolean;
+};
+
+const _publicNextShimMap = publicNextShimMapJson as Record<string, PublicNextShimDefinition>;
+const _reactServerShims = new Map<string, string>();
+for (const [specifier, definition] of Object.entries(_publicNextShimMap)) {
+  if (!definition.reactServer) continue;
+  _reactServerShims.set(specifier, definition.shim);
+  _reactServerShims.set(`${specifier}.js`, definition.shim);
+}
+_reactServerShims.set("next/dist/client/components/navigation", "navigation");
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
@@ -2231,32 +2242,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.join(shimsDir, "link"),
-            "next/head": path.join(shimsDir, "head"),
-            "next/router": path.join(shimsDir, "router"),
-            "next/compat/router": path.join(shimsDir, "compat-router"),
-            "next/image": path.join(shimsDir, "image"),
-            "next/legacy/image": path.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.join(shimsDir, "dynamic"),
-            "next/app": path.join(shimsDir, "app"),
-            "next/document": path.join(shimsDir, "document"),
-            "next/config": path.join(shimsDir, "config"),
-            "next/script": path.join(shimsDir, "script"),
-            "next/server": path.join(shimsDir, "server"),
-            // "next/navigation" is NOT here — it's in _reactServerShims and
-            // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.join(shimsDir, "headers"),
-            "next/font/google": path.join(shimsDir, "font-google"),
-            "next/font/local": path.join(shimsDir, "font-local"),
-            "next/cache": path.join(shimsDir, "cache"),
-            "next/form": path.join(shimsDir, "form"),
-            "next/og": path.join(shimsDir, "og"),
-            "next/web-vitals": path.join(shimsDir, "web-vitals"),
-            "next/amp": path.join(shimsDir, "amp"),
-            "next/offline": path.join(shimsDir, "offline"),
-            // "next/error" is NOT here — it's in _reactServerShims so Server
-            // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.join(shimsDir, "constants"),
+            ...Object.fromEntries(
+              Object.entries(_publicNextShimMap)
+                .filter(([, definition]) => !definition.reactServer)
+                .map(([specifier, definition]) => [
+                  specifier,
+                  path.join(shimsDir, definition.shim),
+                ]),
+            ),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
             "next/dist/shared/lib/app-router-context.shared-runtime": path.join(

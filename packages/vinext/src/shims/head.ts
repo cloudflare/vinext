@@ -80,7 +80,7 @@ export function setDocumentInitialHead(head: React.ReactNode[]): void {
  * then user tags, all with `data-next-head=""`. See assertion in
  * `test/e2e/next-head/index.test.ts`.
  */
-function defaultHead(): React.ReactElement[] {
+export function defaultHead(): React.ReactElement[] {
   return [
     React.createElement("meta", { charSet: "utf-8", key: "charset" }),
     React.createElement("meta", {
@@ -506,7 +506,7 @@ export function _syncClientHead(): void {
 
 // --- Component ---
 
-function Head({ children }: HeadProps): null {
+function Head({ children }: HeadProps): React.ReactElement {
   const headInstanceIdRef = useRef<symbol | null>(null);
   if (headInstanceIdRef.current === null) {
     headInstanceIdRef.current = Symbol("vinext-head");
@@ -515,7 +515,7 @@ function Head({ children }: HeadProps): null {
   // SSR path: collect elements for later injection
   if (typeof window === "undefined") {
     _getSSRHeadChildren().push(children);
-    return null;
+    return React.createElement(React.Fragment);
   }
 
   // Client path: update the shared head projection after hydration.
@@ -531,7 +531,7 @@ function Head({ children }: HeadProps): null {
     };
   }, [children]);
 
-  return null;
+  return React.createElement(React.Fragment);
 }
 
 export default Head;

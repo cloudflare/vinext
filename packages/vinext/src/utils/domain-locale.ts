@@ -1,8 +1,8 @@
 export type DomainLocale = {
   domain: string;
   defaultLocale: string;
-  locales?: string[];
-  http?: boolean;
+  locales?: readonly string[];
+  http?: true;
 };
 
 export function normalizeDomainHostname(hostname: string | null | undefined): string | undefined {

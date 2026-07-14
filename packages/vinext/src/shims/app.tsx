@@ -95,7 +95,7 @@ export default class App<P = any, CP = any, S = any> extends React.Component<P &
   static origGetInitialProps = appGetInitialProps;
   static getInitialProps = appGetInitialProps;
 
-  render(): React.ReactNode {
+  render(): React.ReactElement {
     const { Component, pageProps } = this.props as AppProps<CP>;
     // Cast to ComponentType<any> so the JSX spread type-checks regardless
     // of the user-supplied `CP` generic. Mirrors how Next.js's _app.tsx

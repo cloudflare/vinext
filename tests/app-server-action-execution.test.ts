@@ -632,7 +632,7 @@ describe("app server action execution helpers", () => {
     formData.set("0", '"$Q1:x"');
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = requireProgressiveActionResponse(
@@ -1349,7 +1349,7 @@ describe("app server action execution helpers", () => {
           buildPageElement,
           loadServerAction() {
             return Promise.resolve(async () => {
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "updated";
             });
           },
@@ -1381,7 +1381,7 @@ describe("app server action execution helpers", () => {
           loadServerAction() {
             return Promise.resolve(async () => {
               deferredRead = deferred.then(() => getRootParam("lang"));
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "updated";
             });
           },
@@ -1445,7 +1445,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },
@@ -1511,7 +1511,7 @@ describe("app server action execution helpers", () => {
               kind === "redirect"
                 ? () => redirect("/redirect-target?user=alice")
                 : async () => {
-                    await revalidatePath("/dashboard");
+                    await Promise.resolve(revalidatePath("/dashboard"));
                     return "revalidated";
                   },
             );
@@ -1574,7 +1574,7 @@ describe("app server action execution helpers", () => {
               kind === "redirect"
                 ? () => redirect("/redirect-target?user=alice")
                 : async () => {
-                    await revalidatePath("/dashboard");
+                    await Promise.resolve(revalidatePath("/dashboard"));
                     return "revalidated";
                   },
             );
@@ -1628,7 +1628,7 @@ describe("app server action execution helpers", () => {
           },
           loadServerAction() {
             return Promise.resolve(async () => {
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "revalidated";
             });
           },
@@ -1900,7 +1900,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", "hours");
+            await Promise.resolve(revalidateTag("dashboard", "hours"));
             return "revalidated";
           });
         },
@@ -1916,7 +1916,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", { expire: 0 });
+            await Promise.resolve(revalidateTag("dashboard", { expire: 0 }));
             return "revalidated";
           });
         },
@@ -2046,7 +2046,7 @@ describe("app server action execution helpers", () => {
   it("clears pending cookies and revalidation state for rejected fetch payloads", async () => {
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = await handleServerActionRscRequest(
@@ -2250,7 +2250,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard");
+            await Promise.resolve(revalidateTag("dashboard"));
             throw { digest: "NEXT_REDIRECT;;%2Ftarget;307" };
           });
         },
@@ -2346,7 +2346,7 @@ describe("app server action execution helpers", () => {
         },
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "forwarded-result";
           });
         },
@@ -2757,7 +2757,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },

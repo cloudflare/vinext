@@ -11,15 +11,15 @@ class ReadonlyURLSearchParamsError extends Error {
  * Mutation methods remain present for instanceof/API compatibility but throw.
  */
 export class ReadonlyURLSearchParams extends URLSearchParams {
-  append(_name: string, _value: string): never {
+  append(): never {
     throw new ReadonlyURLSearchParamsError();
   }
 
-  delete(_name: string, _value?: string): never {
+  delete(): never {
     throw new ReadonlyURLSearchParamsError();
   }
 
-  set(_name: string, _value: string): never {
+  set(): never {
     throw new ReadonlyURLSearchParamsError();
   }
 
