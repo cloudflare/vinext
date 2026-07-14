@@ -63,6 +63,27 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  // Next.js passes its ServerRouter to App.getInitialProps. Its `route` is the
+  // route pattern, not the concrete URL: packages/next/src/server/render.tsx.
+  it("provides the route pattern to App.getInitialProps router consumers", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps({ router }: { router: { route: string } }) {
+            return {
+              pageProps: { routeTag: router.route.replaceAll("/", "_") },
+            };
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { routeTag: "_posts_[slug]" },
+    });
+  });
+
   it("preserves non-object pageProps returned by custom app getInitialProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({

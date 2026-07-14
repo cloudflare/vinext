@@ -59,7 +59,10 @@ import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js"
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
-import { hasPagesGetInitialProps } from "./pages-get-initial-props.js";
+import {
+  hasPagesGetInitialProps,
+  type PagesGetInitialPropsRouter,
+} from "./pages-get-initial-props.js";
 
 function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewState): Response {
   if (preview.data === false && !preview.shouldClear) return response;
@@ -168,6 +171,8 @@ export type CreatePagesPageHandlerOptions = {
   setI18nContext: ((ctx: Record<string, unknown>) => void) | null;
   /** `wrapWithRouterContext` from `next/router`. */
   wrapWithRouterContext: ((element: ReactNode) => ReactNode) | null;
+  /** Request-scoped `next/router` server instance. */
+  router?: PagesGetInitialPropsRouter;
   /** `resetSSRHead` from `next/head`. */
   resetSSRHead: (() => void) | undefined;
   /** `getSSRHeadHTML` from `next/head`. */
@@ -272,6 +277,7 @@ export function createPagesPageHandler(
     getPagesNavigationIsReadyFromSerializedState,
     setI18nContext,
     wrapWithRouterContext,
+    router,
     resetSSRHead,
     getSSRHeadHTML,
     setDocumentInitialHead,
@@ -648,6 +654,7 @@ export function createPagesPageHandler(
           previewData,
           pageModule,
           AppComponent,
+          router,
           params,
           query,
           asPath: routerAsPath,

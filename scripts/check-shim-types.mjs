@@ -45,6 +45,10 @@ function resolveShim(shim) {
 }
 
 function renderContracts(tempDir) {
+  // These contracts verify the public values exported by each `next/*` shim.
+  // Request handlers can also construct values described by those public
+  // types (for example AppContext.router); those runtime construction sites
+  // need their own typed boundaries and behavioral tests.
   const lines = [
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(typesRoot, "index.d.ts")))} />`,
     `/// <reference path=${JSON.stringify(toImportSpecifier(tempDir, path.join(repoRoot, "packages/vinext/src/global.d.ts")))} />`,
