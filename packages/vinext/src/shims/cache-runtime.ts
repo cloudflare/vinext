@@ -253,7 +253,10 @@ export function buildUseCacheKey(
       ? scopedId
       : `__hash:${fnv1a64(scopedId)}`;
   const argsPart = argsKey === undefined ? "" : `:__hash:${fnv1a64(argsKey)}`;
-  return `use-cache:${scopedPart}${argsPart}`;
+  const hashedArgsKey = `use-cache:${scopedPart}${argsPart}`;
+  if (cacheKeyByteLength(hashedArgsKey) <= USE_CACHE_KEY_MAX_BYTES) return hashedArgsKey;
+
+  return `use-cache:__hash:${fnv1a64(scopedId)}${argsPart}`;
 }
 
 const NOT_LOADED = Symbol("not-loaded");

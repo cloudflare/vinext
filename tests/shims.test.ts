@@ -7044,6 +7044,17 @@ describe("buildUseCacheKey — Cloudflare KV 512-byte key guard", () => {
     expect(new TextEncoder().encode(key).length).toBeLessThanOrEqual(512);
     expect(key.startsWith("use-cache:__hash:")).toBe(true);
   });
+
+  it("rehashes the scoped id when appending the args hash exceeds the budget", async () => {
+    const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    // `use-cache:` plus this id is exactly 480 bytes. The args hash must not
+    // then be appended without rechecking the final candidate.
+    const boundaryId = "m".repeat(470);
+    const key = buildUseCacheKey(boundaryId, undefined, "x".repeat(600));
+
+    expect(new TextEncoder().encode(key).length).toBeLessThanOrEqual(480);
+    expect(key).toMatch(/^use-cache:__hash:[0-9a-f]{16}:__hash:[0-9a-f]{16}$/);
+  });
 });
 
 describe('"use cache" runtime — handler resilience', () => {

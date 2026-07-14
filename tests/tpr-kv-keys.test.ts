@@ -33,6 +33,16 @@ describe("TPR KV key format", () => {
     expect(pairs[0].key).toBe("cache:app:abc123:/blog/hello:html");
   });
 
+  it("bounds multibyte keys using the runtime KV key space", () => {
+    // 180 CJK code points stay below isrCacheKey's 200-character readability
+    // threshold but exceed Cloudflare KV's 512-byte limit once UTF-8 encoded.
+    const routePath = "/" + "界".repeat(180);
+    const pairs = buildTprKVPairs(entry(routePath), buildId, 60);
+
+    expect(new TextEncoder().encode(pairs[0].key).length).toBeLessThanOrEqual(512);
+    expect(pairs[0].key).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+  });
+
   it("uses revalidate from x-vinext-revalidate header when present", () => {
     const pairs = buildTprKVPairs(entry("/products", { "x-vinext-revalidate": "30" }), buildId, 60);
     const parsed = JSON.parse(pairs[0].value);

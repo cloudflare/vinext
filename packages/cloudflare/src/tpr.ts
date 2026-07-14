@@ -28,7 +28,7 @@ import { pathToFileURL } from "node:url";
 import { VINEXT_REVALIDATE_HEADER } from "vinext/internal/server/headers";
 import { isrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
-import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
+import { createKvKeySpace } from "./cache/kv-key.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -906,7 +906,7 @@ const MAX_KV_TTL_SECONDS = 30 * 24 * 3600;
  * Build KV bulk API pairs from pre-rendered entries.
  *
  * Key format matches the runtime KVCacheHandler exactly:
- *   ENTRY_PREFIX + isrCacheKey("app", pathname, buildId) + ":html"
+ *   createKvKeySpace().entryKey(isrCacheKey("app", pathname, buildId) + ":html")
  *   → "cache:app:<buildId>:<pathname>:html"
  */
 export function buildTprKVPairs(
@@ -916,6 +916,7 @@ export function buildTprKVPairs(
 ): Array<{ key: string; value: string; expiration_ttl: number }> {
   const now = Date.now();
   const pairs: Array<{ key: string; value: string; expiration_ttl: number }> = [];
+  const keySpace = createKvKeySpace(undefined);
 
   for (const [routePath, result] of entries) {
     if (!isTprCacheable(result.headers)) continue;
@@ -945,7 +946,7 @@ export function buildTprKVPairs(
       revalidateAt,
     };
 
-    const cacheKey = ENTRY_PREFIX + isrCacheKey("app", routePath, buildId) + ":html";
+    const cacheKey = keySpace.entryKey(isrCacheKey("app", routePath, buildId) + ":html");
 
     pairs.push({
       key: cacheKey,
