@@ -94,15 +94,11 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
 
     const pkg = readPkg(appPath);
-    expect(pkg.scripts).toMatchObject({
-      dev: "vinext dev --port 3001",
+    expect(pkg.scripts).toEqual({
+      dev: "vinext dev",
       build: "vinext build",
       start: "wrangler dev --config dist/server/wrangler.json",
       deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
-      "dev:vinext": "vinext dev --port 3001",
-      "build:vinext": "vinext build",
-      "start:vinext": "wrangler dev --config dist/server/wrangler.json",
-      "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json",
     });
     expect(pkg.dependencies).toMatchObject({
       react: "latest",
@@ -229,13 +225,10 @@ describe("createVinextApp", () => {
     expect(pkg.dependencies).not.toHaveProperty("@vinext/cloudflare");
     expect(pkg.devDependencies).not.toHaveProperty("@cloudflare/vite-plugin");
     expect(pkg.devDependencies).not.toHaveProperty("wrangler");
-    expect(pkg.scripts).toMatchObject({
-      dev: "vinext dev --port 3001",
+    expect(pkg.scripts).toEqual({
+      dev: "vinext dev",
       build: "vinext build",
       start: "vinext start",
-      "dev:vinext": "vinext dev --port 3001",
-      "build:vinext": "vinext build",
-      "start:vinext": "vinext start",
     });
   });
 

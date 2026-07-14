@@ -44,7 +44,6 @@ type CreateVinextAppOptions = {
   git?: boolean;
   yes?: boolean;
   initOptions: ResolvedInitOptions;
-  port?: number;
   _exec?: (
     cmd: string,
     opts: { cwd: string; stdio: string },
@@ -494,13 +493,13 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
 
   await init({
     root,
-    port: options.port ?? 3001,
+    port: false,
     skipCheck: true,
     force: false,
     install: options.install ?? true,
     _exec: options._exec,
     ...options.initOptions,
-    standardScriptAliases: true,
+    scriptNames: "standard",
   });
 
   if (options.install ?? true) {
