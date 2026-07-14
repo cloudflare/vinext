@@ -452,10 +452,20 @@ async function runTypegen(
   packageManager: PackageManagerName,
   exec?: CreateVinextAppOptions["_exec"],
 ): Promise<void> {
-  const [command, args] =
-    packageManager === "bun"
-      ? (["bun", ["run", "vinext", "typegen"]] as const)
-      : ([packageManager, ["exec", "vinext", "--", "typegen"]] as const);
+  const [command, args] = (() => {
+    switch (packageManager) {
+      case "npm":
+        return ["npm", ["exec", "--", "vinext", "typegen"]] as const;
+      case "bun":
+        return ["bun", ["run", "vinext", "typegen"]] as const;
+      case "pnpm":
+      case "yarn":
+        return [packageManager, ["exec", "vinext", "typegen"]] as const;
+      default:
+        packageManager satisfies never;
+        throw new Error("Unsupported package manager");
+    }
+  })();
 
   if (exec) {
     await exec([command, ...args].join(" "), { cwd: root, stdio: "inherit" });

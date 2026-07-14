@@ -168,13 +168,13 @@ describe("createVinextApp", () => {
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
-    expect(calls).toContain("pnpm exec vinext -- typegen");
+    expect(calls).toContain("pnpm exec vinext typegen");
   });
 
   it.each([
-    ["npm", "npm exec vinext -- typegen"],
-    ["pnpm", "pnpm exec vinext -- typegen"],
-    ["yarn", "yarn exec vinext -- typegen"],
+    ["npm", "npm exec -- vinext typegen"],
+    ["pnpm", "pnpm exec vinext typegen"],
+    ["yarn", "yarn exec vinext typegen"],
     ["bun", "bun run vinext typegen"],
   ] as const)("runs typegen through the %s binary runner", async (packageManager, expected) => {
     const appPath = path.join(tmpDir, `${packageManager}-app`);
