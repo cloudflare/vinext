@@ -71,6 +71,7 @@ import {
 import { extractMiddlewareMatcherConfig, hasExportedName } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
+import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -86,9 +87,11 @@ import { mergeServerExternalPackages } from "./config/server-external-packages.j
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import {
+  encodeUrlParserIgnoredCharacters,
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import {
@@ -101,6 +104,7 @@ import {
 import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
+  canonicalizeRequestUrlPathname,
   filterInternalHeaders,
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
@@ -165,6 +169,10 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+// Keep this source-relative: resolving through vinext's package export can read
+// a stale built copy while developing or testing the source tree.
+// oxlint-disable-next-line vinext-local/prefer-import-alias
+import publicNextShimMapJson from "./shims/public-shim-map.json" with { type: "json" };
 import {
   VIRTUAL_GOOGLE_FONTS,
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
@@ -1126,15 +1134,22 @@ function generateRootParamsModule(rootParamNames: Iterable<string>): string {
  *
  * To add a new react-server shim:
  *   1. Create `<name>.react-server.ts` in src/shims/
- *   2. Add entries here for each import specifier.
+ *   2. Add it to public-shim-map.json with `reactServer: true`.
  */
-const _reactServerShims = new Map<string, string>([
-  ["next/navigation", "navigation"],
-  ["next/navigation.js", "navigation"],
-  ["next/dist/client/components/navigation", "navigation"],
-  ["next/error", "error"],
-  ["next/error.js", "error"],
-]);
+type PublicNextShimDefinition = {
+  shim: string;
+  types: "upstream" | "vinext";
+  reactServer?: boolean;
+};
+
+const _publicNextShimMap = publicNextShimMapJson as Record<string, PublicNextShimDefinition>;
+const _reactServerShims = new Map<string, string>();
+for (const [specifier, definition] of Object.entries(_publicNextShimMap)) {
+  if (!definition.reactServer) continue;
+  _reactServerShims.set(specifier, definition.shim);
+  _reactServerShims.set(`${specifier}.js`, definition.shim);
+}
+_reactServerShims.set("next/dist/client/components/navigation", "navigation");
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
@@ -1428,10 +1443,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   async function writeRouteTypes(): Promise<void> {
-    if (!hasAppDir) return;
     await generateRouteTypes({
       root,
-      appDir,
+      appDir: hasAppDir ? appDir : null,
       pageExtensions: nextConfig.pageExtensions,
     });
   }
@@ -1889,7 +1903,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolvedNodeEnv = "development";
         }
         if (process.env.NODE_ENV !== resolvedNodeEnv) {
-          process.env.NODE_ENV = resolvedNodeEnv;
+          // Next.js's vendored global declarations mark NODE_ENV readonly even
+          // though Node permits updating process.env at runtime.
+          Reflect.set(process.env, "NODE_ENV", resolvedNodeEnv);
         }
         if (env?.command === "build") {
           previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
@@ -2230,32 +2246,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.join(shimsDir, "link"),
-            "next/head": path.join(shimsDir, "head"),
-            "next/router": path.join(shimsDir, "router"),
-            "next/compat/router": path.join(shimsDir, "compat-router"),
-            "next/image": path.join(shimsDir, "image"),
-            "next/legacy/image": path.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.join(shimsDir, "dynamic"),
-            "next/app": path.join(shimsDir, "app"),
-            "next/document": path.join(shimsDir, "document"),
-            "next/config": path.join(shimsDir, "config"),
-            "next/script": path.join(shimsDir, "script"),
-            "next/server": path.join(shimsDir, "server"),
-            // "next/navigation" is NOT here — it's in _reactServerShims and
-            // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.join(shimsDir, "headers"),
-            "next/font/google": path.join(shimsDir, "font-google"),
-            "next/font/local": path.join(shimsDir, "font-local"),
-            "next/cache": path.join(shimsDir, "cache"),
-            "next/form": path.join(shimsDir, "form"),
-            "next/og": path.join(shimsDir, "og"),
-            "next/web-vitals": path.join(shimsDir, "web-vitals"),
-            "next/amp": path.join(shimsDir, "amp"),
-            "next/offline": path.join(shimsDir, "offline"),
-            // "next/error" is NOT here — it's in _reactServerShims so Server
-            // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.join(shimsDir, "constants"),
+            ...Object.fromEntries(
+              Object.entries(_publicNextShimMap)
+                .filter(([, definition]) => !definition.reactServer)
+                .map(([specifier, definition]) => [
+                  specifier,
+                  path.join(shimsDir, definition.shim),
+                ]),
+            ),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
             "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
@@ -4100,6 +4098,11 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        server.middlewares.use((req, _res, next) => {
+          req.__vinextOriginalEncodedUrl ??= req.url;
+          next();
+        });
+
         // Watch route files for additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
@@ -4726,6 +4729,19 @@ export const loadServerActionClient = ${
                 return;
               }
 
+              // Preserve the pre-Vite URL for middleware/config identity, but
+              // first apply the same WHATWG dot-segment canonicalization as the
+              // Request constructor. Other percent escapes remain untouched.
+              const originalEncodedUrl = req.__vinextOriginalEncodedUrl ?? url;
+              const originalEncodedPathname = originalEncodedUrl.split("?")[0];
+              if (isOpenRedirectShaped(originalEncodedPathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+              const canonicalOriginalUrl = canonicalizeRequestUrlPathname(originalEncodedUrl);
+              url = canonicalizeRequestUrlPathname(url);
+
               // Vite's built-in middleware may rewrite "/" to "/index.html".
               // Normalize it back so our router can match correctly.
               const rawPathname = url.split("?")[0];
@@ -4736,6 +4752,19 @@ export const loadServerActionClient = ${
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
+              // Preserve the original request URL for NextRequest. Vite may
+              // rewrite extensionless paths to `.html`, while an actual
+              // `.html` request must remain distinguishable to middleware.
+              let middlewareUrl = canonicalOriginalUrl;
+              let routeUrl = middlewareUrl;
+              {
+                const routePathname = routeUrl.split("?")[0];
+                if (routePathname.endsWith("/index.html")) {
+                  routeUrl = routeUrl.replace("/index.html", "/");
+                } else if (routePathname.endsWith(".html")) {
+                  routeUrl = routeUrl.replace(/\.html(?=\?|$)/, "");
+                }
+              }
               let pathname = url.split("?")[0];
 
               // Guard against protocol-relative URL open redirects.
@@ -4761,6 +4790,15 @@ export const loadServerActionClient = ${
                 res.end("Bad Request");
                 return;
               }
+              if (urlParserCreatesPagesDataPath(pathname)) {
+                res.writeHead(404);
+                res.end("This page could not be found");
+                return;
+              }
+
+              // Preserve parser-ignored bytes until route param decoding. The
+              // literal characters would otherwise disappear in new URL().
+              pathname = encodeUrlParserIgnoredCharacters(pathname);
               // Keep url in sync with the normalized pathname so the pipeline
               // receives the decoded path for config rule matching.
               {
@@ -4780,17 +4818,38 @@ export const loadServerActionClient = ${
               // strip it (for robustness) but don't reject paths that don't start
               // with basePath — Vite has already done the filtering.
               const bp = nextConfig?.basePath ?? "";
-              if (bp && pathname.startsWith(bp)) {
-                const stripped = pathname.slice(bp.length) || "/";
-                const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-                url = stripped + qs;
-                pathname = stripped;
+              const viteBase = server.config.base;
+              const viteBasePath =
+                viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
+              const routingBasePath = bp || viteBasePath;
+              if (routingBasePath) {
+                if (hasBasePath(pathname, routingBasePath)) {
+                  const stripped = stripBasePath(pathname, routingBasePath);
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = stripped + qs;
+                  pathname = stripped;
+                }
+                const middlewarePathname = middlewareUrl.split("?")[0];
+                if (hasBasePath(middlewarePathname, routingBasePath)) {
+                  const middlewareQs = middlewareUrl.includes("?")
+                    ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
+                    : "";
+                  middlewareUrl = stripBasePath(middlewarePathname, routingBasePath) + middlewareQs;
+                }
+                const routePathname = routeUrl.split("?")[0];
+                if (hasBasePath(routePathname, routingBasePath)) {
+                  const routeQs = routeUrl.includes("?")
+                    ? routeUrl.slice(routeUrl.indexOf("?"))
+                    : "";
+                  routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
+                }
               }
+              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
 
               if (nextConfig) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 const trailingSlashRedirect = normalizeTrailingSlash(
-                  pathname,
+                  routeUrl.split("?")[0],
                   bp,
                   nextConfig.trailingSlash,
                   qs,
@@ -4839,7 +4898,10 @@ export const loadServerActionClient = ${
                     capturedMiddlewarePath !== null && nextConfig?.trailingSlash === true,
                   );
                   url = pagePathname + qs;
+                  middlewareUrl = url;
+                  routeUrl = url;
                   pathname = pagePathname;
+                  configMatchPathname = pagePathname;
                   // Rewrite req.url so downstream middleware sees the page
                   // path, not the raw _next/data URL.
                   req.url = url;
@@ -4940,7 +5002,7 @@ export const loadServerActionClient = ${
               // proxying external rewrites; that case is handled via
               // proxyNodeReqExternal in pipelineDeps below.
               const method = req.method ?? "GET";
-              const webRequest = new Request(new URL(url, requestOrigin), {
+              const webRequest = new Request(new URL(routeUrl, requestOrigin), {
                 method,
                 headers: nodeRequestHeaders,
               });
@@ -4973,7 +5035,7 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(url, mwOrigin), {
+                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
                         method: req.method,
                         headers: nodeRequestHeaders,
                       });
@@ -4985,6 +5047,7 @@ export const loadServerActionClient = ${
                         nextConfig?.basePath,
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
+                        pathname,
                       );
 
                       // Forward middleware context to the RSC entry so it can
@@ -5059,6 +5122,7 @@ export const loadServerActionClient = ${
                 hasMiddleware: capturedMiddlewarePath !== null,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
+                configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n

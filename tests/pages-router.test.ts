@@ -390,6 +390,7 @@ function writeGsspAppInitialPropsContextFixture(rootDir: string): void {
 class MyApp extends App {
   static async getInitialProps(ctx) {
     const { req, query, pathname, asPath } = ctx.ctx;
+    const routeTag = ctx.router.route.replaceAll("/", "_");
     let pageProps = {};
 
     if (ctx.Component.getInitialProps) {
@@ -402,6 +403,8 @@ class MyApp extends App {
         query,
         pathname,
         asPath,
+        route: ctx.router.route,
+        routeTag,
       },
       pageProps,
     };
@@ -441,6 +444,8 @@ export default function BlogPost({ post, params, appProps, appRouter, resolvedUr
       <div id="app-query">{JSON.stringify(appProps.query)}</div>
       <div id="app-url">{appProps.url}</div>
       <div id="app-router-pathname">{appRouter.pathname}</div>
+      <div id="app-router-route">{appProps.route}</div>
+      <div id="app-router-route-tag">{appProps.routeTag}</div>
       <div id="resolved-url">{resolvedUrl}</div>
       <div id="as-path">{router.asPath}</div>
     </>
@@ -1614,27 +1619,26 @@ describe("Pages Router integration", () => {
     expect(html).toContain("About");
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching (dev)", async () => {
-    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+  it("does not match a percent-encoded redirect source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toBe("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching (dev)", async () => {
-    // /%61pi/hello decodes to /api/hello → X-Custom-Header: vinext
+  it("does not match a percent-encoded header source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%61pi/hello`);
-    expect(res.headers.get("x-custom-header")).toBe("vinext");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching (dev)", async () => {
-    // /%62efore-rewrite decodes to /before-rewrite → /about
+  it("does not match a percent-encoded rewrite source alias (dev)", async () => {
     const res = await fetch(`${baseUrl}/%62efore-rewrite`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 
   // --- getStaticPaths ---
@@ -1913,6 +1917,8 @@ describe("Pages Router integration", () => {
       expectElementJson(dynamicHtml, "app-query", { post: "post-1" });
       expectElementText(dynamicHtml, "app-url", "/blog/post-1");
       expectElementText(dynamicHtml, "app-router-pathname", "/blog/[post]");
+      expectElementText(dynamicHtml, "app-router-route", "/blog/[post]");
+      expectElementText(dynamicHtml, "app-router-route-tag", "_blog_[post]");
       expectElementText(dynamicHtml, "resolved-url", "/blog/post-1");
       expectElementText(dynamicHtml, "as-path", "/blog/post-1");
       const dynamicNextDataMatch = dynamicHtml.match(
@@ -1926,6 +1932,8 @@ describe("Pages Router integration", () => {
         query: { post: "post-1" },
         asPath: "/blog/post-1",
         pathname: "/blog/[post]",
+        route: "/blog/[post]",
+        routeTag: "_blog_[post]",
       });
 
       const dataRes = await fetch(
@@ -1940,6 +1948,8 @@ describe("Pages Router integration", () => {
         query: { post: "post-1", hello: "world" },
         asPath: "/blog/post-1?hello=world",
         pathname: "/blog/[post]",
+        route: "/blog/[post]",
+        routeTag: "_blog_[post]",
       });
 
       const queryRes = await fetch(`${fixtureUrl}/something?hello=world`);
@@ -2465,6 +2475,35 @@ describe("Pages Router integration", () => {
       // The middleware also sets `x-custom-middleware: active` on every match,
       // proving the middleware actually executed for this request.
       expect(res.headers.get("x-custom-middleware")).toBe("active");
+    });
+
+    it("does not reinterpret encoded URL controls as data paths in development", async () => {
+      const canonical = await fetch(
+        `${baseUrl}/_next/data/${BUILD_ID}/middleware-protected-data.json`,
+      );
+      expect(canonical.status).toBe(403);
+
+      const paths = [
+        `/%09_next/data/${BUILD_ID}/middleware-protected-data.json`,
+        `/_ne%0Axt/data/${BUILD_ID}/middleware-protected-data.json`,
+        `/_next/%0Ddata/${BUILD_ID}/middleware-protected-data.json`,
+      ];
+      for (const pathname of paths) {
+        const response = await fetch(`${baseUrl}${pathname}`);
+        expect(response.status).toBe(404);
+        expect(await response.text()).not.toContain("only visible after middleware");
+      }
+    });
+
+    it("preserves encoded URL controls in dynamic page parameters in development", async () => {
+      const page = await fetch(`${baseUrl}/posts/foo%09`);
+      expect(page.status).toBe(200);
+
+      const data = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/foo%09.json`);
+      expect(data.status).toBe(200);
+      await expect(data.json()).resolves.toMatchObject({
+        pageProps: { id: "foo\t" },
+      });
     });
 
     it("returns the middleware data-miss protocol for an unknown page", async () => {
@@ -6894,6 +6933,35 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("x-custom-middleware")).toBe("active");
     });
 
+    it("does not expose middleware-protected props through encoded data paths", async () => {
+      const canonical = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/middleware-protected-data.json`,
+      );
+      expect(canonical.status).toBe(403);
+
+      const paths = [
+        `/%09_next/data/${BUILD_ID}/middleware-protected-data.json`,
+        `/_ne%0Axt/data/${BUILD_ID}/middleware-protected-data.json`,
+        `/_next/%0Ddata/${BUILD_ID}/middleware-protected-data.json`,
+      ];
+      for (const pathname of paths) {
+        const response = await fetch(`${prodUrl}${pathname}`);
+        expect(response.status).toBe(404);
+        expect(await response.text()).not.toContain("only visible after middleware");
+      }
+    });
+
+    it("preserves encoded URL controls in dynamic page parameters in production", async () => {
+      const page = await fetch(`${prodUrl}/posts/foo%09`);
+      expect(page.status).toBe(200);
+
+      const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/foo%09.json`);
+      expect(data.status).toBe(200);
+      await expect(data.json()).resolves.toMatchObject({
+        pageProps: { id: "foo\t" },
+      });
+    });
+
     it("returns the middleware data-miss protocol for an unknown page", async () => {
       const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
       expect(res.status).toBe(200);
@@ -7727,31 +7795,26 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(html).toContain("Hello, vinext!");
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
-  // Config matchers must receive decoded paths so that encoded variants
-  // like /%6Fld-%61bout still match the /old-about redirect rule.
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching (prod)", async () => {
-    // /old-about → /about (permanent redirect). /%6Fld-%61bout decodes to /old-about.
+  it("does not match a percent-encoded redirect source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toContain("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching (prod)", async () => {
-    // /api/(.*) should receive X-Custom-Header: vinext.
-    // /%61pi/hello decodes to /api/hello.
+  it("does not match a percent-encoded header source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%61pi/hello`);
-    expect(res.headers.get("x-custom-header")).toBe("vinext");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching (prod)", async () => {
-    // /before-rewrite → /about (beforeFiles rewrite).
-    // /%62efore-rewrite decodes to /before-rewrite.
+  it("does not match a percent-encoded rewrite source alias (prod)", async () => {
     const res = await fetch(`${prodUrl}/%62efore-rewrite`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 });
 

@@ -89,15 +89,6 @@ function createNavigationRuntimeRscDoneScript(metadata?: InitialNavigationCacheM
 }
 
 /**
- * Fix invalid preload "as" values in RSC Flight hint lines before they reach
- * the client. React Flight emits HL hints with as="stylesheet" for CSS, but
- * the HTML spec requires as="style" for <link rel="preload">.
- */
-export function fixFlightHints(text: string): string {
-  return text.replace(/(\d*:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
-}
-
-/**
  * Create a helper that progressively embeds RSC chunks as inline <script> tags.
  * The browser entry turns the embedded chunks back into Uint8Array data.
  */
@@ -118,16 +109,11 @@ export function createRscEmbedTransform(
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        // Accumulate raw bytes BEFORE fixFlightHints so the cache stores
-        // unmodified RSC data. The embed script path below applies fixes.
         rawChunks.push(result.value);
         try {
           const decoder = new TextDecoder("utf-8", { fatal: true });
           const text = decoder.decode(result.value);
-          // The RSC entry already fixes HL hints at the source. Keep this second
-          // pass as defense in depth for any embed stream that bypasses that
-          // wrapper; the rewrite is idempotent, so double-application is safe.
-          pendingChunks.push(fixFlightHints(text));
+          pendingChunks.push(text);
         } catch {
           pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
         }

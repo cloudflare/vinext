@@ -2,6 +2,10 @@ export default {
   async headers() {
     return [
       {
+        source: "/about",
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
+      },
+      {
         source: "/headers-before-middleware-rewrite",
         headers: [{ key: "x-rewrite-source-header", value: "1" }],
       },
@@ -26,7 +30,10 @@ export default {
   async rewrites() {
     return {
       beforeFiles: [],
-      afterFiles: [{ source: "/nav-test", destination: "/about" }],
+      afterFiles: [
+        { source: "/nav-test", destination: "/about" },
+        { source: "/rewrite-about", destination: "/about" },
+      ],
       fallback: [],
     };
   },

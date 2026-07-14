@@ -20,6 +20,34 @@ import {
 import { DEFAULT_PAIRED_ROUNDS, pairedRevisionOrder } from "../benchmarks/perf/pairing.mts";
 
 describe("paired performance benchmarks", () => {
+  it("pins the TypeScript dependencies required by the standalone Next.js benchmark", () => {
+    const packageJson = JSON.parse(
+      readFileSync(join(import.meta.dirname, "../benchmarks/nextjs/package.json"), "utf8"),
+    );
+    const scenarios = JSON.parse(
+      readFileSync(join(import.meta.dirname, "../benchmarks/perf/scenarios.json"), "utf8"),
+    );
+
+    expect(packageJson.devDependencies).toMatchObject({
+      "@types/node": "25.9.2",
+      "@types/react": "19.2.16",
+      // Next.js 16 resolves typescript/lib/typescript.js, which native TypeScript 7 removed.
+      typescript: "5.9.3",
+    });
+    expect(
+      scenarios.setup.find(
+        (setup: { implementationId?: string }) => setup.implementationId === "nextjs",
+      ).command,
+    ).toEqual([
+      "npm",
+      "install",
+      "--no-save",
+      "typescript@5.9.3",
+      "@types/node@25.9.2",
+      "@types/react@19.2.16",
+    ]);
+  });
+
   it("alternates base/head order across rounds", () => {
     expect(DEFAULT_PAIRED_ROUNDS % 2).toBe(0);
     expect(pairedRevisionOrder(0)).toEqual(["base", "head"]);

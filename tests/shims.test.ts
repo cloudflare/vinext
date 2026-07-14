@@ -3235,9 +3235,11 @@ describe("next/router withRouter HOC", () => {
       isReady: true,
       isPreview: false,
       isFallback: false,
+      isLocaleDomain: false,
       push: vi.fn(async () => true),
       replace: vi.fn(async () => true),
       back: vi.fn(),
+      forward: vi.fn(),
       reload: vi.fn(),
       prefetch: vi.fn(async () => {}),
       beforePopState: vi.fn(),
@@ -4430,6 +4432,25 @@ describe("next/headers phase-aware cookies", () => {
     }
   });
 
+  it("cookies().set() serializes partitioned and priority options", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const cookieStore = await cookies();
+      cookieStore.set("session", "abc", { partitioned: true, priority: "high" });
+
+      expect(getAndClearPendingCookies()).toEqual([
+        "session=abc; Path=/; Partitioned; Priority=High",
+      ]);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
   it("cookies().delete() works in the route-handler phase", async () => {
     const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -4515,7 +4536,7 @@ describe("next/headers phase-aware cookies", () => {
     const previousPhase = setHeadersAccessPhase("action");
     try {
       const c = await cookies();
-      c.set({ name: "pref", value: "dark", sameSite: "Lax" });
+      c.set({ name: "pref", value: "dark", sameSite: "lax" });
       expect(c.get("pref")?.value).toBe("dark");
 
       const pending = getAndClearPendingCookies();
@@ -4670,6 +4691,20 @@ describe("next/server shim", () => {
     expect(internalCookieHeader).not.toBeNull();
     expect(internalCookieHeader).toContain("rsc-cookie-value-1=123; Path=/");
     expect(internalCookieHeader).toContain("rsc-cookie-value-2=456; Path=/; HttpOnly");
+  });
+
+  it("NextResponse.cookies.set() serializes partitioned and priority options", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const res = NextResponse.next();
+
+    res.cookies.set("session", "abc", { partitioned: true, priority: "medium" });
+
+    expect(res.headers.getSetCookie()).toEqual([
+      "session=abc; Path=/; Partitioned; Priority=Medium",
+    ]);
+    expect(res.headers.get("x-middleware-set-cookie")).toBe(
+      "session=abc; Path=/; Partitioned; Priority=Medium",
+    );
   });
 
   it("NextResponse.next() sets x-middleware-next header", async () => {
@@ -4980,7 +5015,7 @@ describe("next/cache shim", () => {
     expect(callCount).toBe(1);
 
     // Revalidate the tag
-    await revalidateTag("my-tag");
+    await Promise.resolve(revalidateTag("my-tag"));
 
     // Next call should re-execute the function
     const r2 = await cached();
@@ -4998,12 +5033,12 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
 
     // Should not throw with profile argument
-    await revalidateTag("my-tag", "max");
-    await revalidateTag("my-tag", "hours");
-    await revalidateTag("my-tag", { expire: 3600 });
+    await Promise.resolve(revalidateTag("my-tag", "max"));
+    await Promise.resolve(revalidateTag("my-tag", "hours"));
+    await Promise.resolve(revalidateTag("my-tag", { expire: 3600 }));
 
     // Should still work without profile (deprecated single-arg form)
-    await revalidateTag("my-tag");
+    await Promise.resolve(revalidateTag("my-tag"));
 
     setCacheHandler(new MemoryCacheHandler());
   });
@@ -5036,7 +5071,7 @@ describe("next/cache shim", () => {
     // updateTag expires the cache (must be called from inside a Server Action)
     const previousPhase = setHeadersAccessPhase("action");
     try {
-      await updateTag("user-1");
+      await Promise.resolve(updateTag("user-1"));
     } finally {
       setHeadersAccessPhase(previousPhase);
     }
@@ -5999,7 +6034,7 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
 
     // Invalidate the tag
-    await revalidateTag("invalidate-me");
+    await Promise.resolve(revalidateTag("invalidate-me"));
 
     // Should re-execute
     const r3 = await cached();
@@ -8137,7 +8172,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(matchPattern(normalized, "/dashboard")).toBe(false);
   });
 
-  it("RSC route matching does not double-decode pathnames", async () => {
+  it("RSC route matching preserves encoded static identity and canonicalizes page params", async () => {
     // Verify the generated entry delegates route matching to the typed helper.
     const { generateRscEntry } = await import("../packages/vinext/src/entries/app-rsc-entry.js");
     const code = generateRscEntry("/tmp/app", [
@@ -8167,17 +8202,17 @@ describe("double-encoded path handling in middleware", () => {
     ]);
     expect(code).toContain("createAppRscRouteMatcher as __createAppRscRouteMatcher");
     expect(code).toContain("return __routeMatcher.matchRoute(url);");
+    expect(code).toContain("return __routeMatcher.matchRequestRoute(url);");
 
     const routeMatchingSource = await readFile(
       new URL("../packages/vinext/src/server/app-rsc-route-matching.ts", import.meta.url),
       "utf8",
     );
-    // Verify it does NOT call decodeURIComponent (the comment mentions it but
-    // should not have an actual call like `decodeURIComponent(...)`)
-    expect(routeMatchingSource).not.toMatch(/\bdecodeURIComponent\s*\(/);
+    expect(routeMatchingSource).toContain("trieMatchRaw(routeTrie");
+    expect(routeMatchingSource).toContain("encodeURIComponent(decodeURIComponent(value))");
   });
 
-  it("App Router middleware receives a Request with the decoded pathname (not raw URL)", async () => {
+  it("App Router middleware receives a Request with the original encoded pathname", async () => {
     const { applyAppMiddleware } = await import("../packages/vinext/src/server/app-middleware.js");
     let capturedUrl: string | undefined;
     const module = {
@@ -8200,8 +8235,8 @@ describe("double-encoded path handling in middleware", () => {
     expect(result.kind).toBe("continue");
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    expect(mwPathname).toBe("/%64ashboard");
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    expect(mwPathname).toBe("/%2564ashboard");
+    expect(mwPathname).not.toBe("/dashboard");
   });
 
   it("App Router middleware preserves status from NextResponse.next()", async () => {
@@ -8404,7 +8439,7 @@ describe("double-encoded path handling in middleware", () => {
     }
   });
 
-  it("Pages Router runMiddleware passes decoded pathname to middleware function", async () => {
+  it("Pages Router runMiddleware preserves the encoded pathname for middleware", async () => {
     const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     // Create a mock Vite server that returns a middleware module
     let capturedUrl: string | undefined;
@@ -8420,20 +8455,45 @@ describe("double-encoded path handling in middleware", () => {
       }),
     };
 
-    // Send a double-encoded path — after single decode, it should be /%64ashboard
+    // Next.js may use a decoded pathname for matcher eligibility, but the
+    // middleware-facing NextRequest keeps the original encoded URL pathname.
     const testUrl = "http://localhost:3000/%2564ashboard";
     const request = new Request(testUrl);
     await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
-    // Middleware should have received the decoded+normalized URL
     expect(capturedUrl).toBeDefined();
     const mwPathname = new URL(capturedUrl!).pathname;
-    // After single decode: %25 → %, so /%2564 → /%64
-    expect(mwPathname).toBe("/%64ashboard");
-    // It must NOT be the raw /%2564ashboard
-    expect(mwPathname).not.toBe("/%2564ashboard");
+    expect(mwPathname).toBe("/%2564ashboard");
     // It must NOT be double-decoded to /dashboard
     expect(mwPathname).not.toBe("/dashboard");
+  });
+
+  it("uses the normalized pathname for matching without exposing it to middleware", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    let capturedPathname: string | undefined;
+    const mockRunner = {
+      import: async () => ({
+        default: (req: Request) => {
+          capturedPathname = new URL(req.url).pathname;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+        config: { matcher: "/admin" },
+      }),
+    };
+
+    const request = new Request("http://localhost:3000/%61dmin");
+    await runMiddleware(
+      mockRunner as any,
+      "/tmp/middleware.ts",
+      request,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/admin",
+    );
+
+    expect(capturedPathname).toBe("/%61dmin");
   });
 
   it("runMiddleware accepts named proxy export", async () => {
@@ -12233,6 +12293,20 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/api/foo&admin=true?q=foo%26admin%3Dtrue");
   });
 
+  it("preserves encoded source params when rewriting a normalized pathname", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/source/:path*", destination: "/destination/:path*" }];
+    const result = matchRewrite(
+      "/source/a%61/b%2Fc",
+      rewrites,
+      emptyCtx,
+      undefined,
+      "/source/a%2561/b%2Fc",
+    );
+
+    expect(result).toBe("/destination/a%2561/b%2Fc");
+  });
+
   it("uses the same query value encoding for inline and appended rewrite params", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePathnameForRouteMatchStrict } =
@@ -13064,6 +13138,40 @@ describe("next/dynamic shim", () => {
     // On server with ssr: false and no loading component, should render nothing
     const html = renderToStaticMarkup(React.createElement(DynamicComponent));
     expect(html).toBe("");
+  });
+
+  // Ported from Next.js: packages/next/src/shared/lib/dynamic.tsx
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/dynamic.tsx
+  it("noSSR avoids server initialization and renders loading with pastDelay false", async () => {
+    const { noSSR } = await import("../packages/vinext/src/shims/dynamic.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let receivedProps: Record<string, unknown> | undefined;
+    const initializer = vi.fn(() => () => React.createElement("div", null, "real component"));
+    const options = {
+      webpack: () => ({ widget: () => Promise.resolve(() => null) }),
+      modules: () => ({ widget: () => Promise.resolve(() => null) }),
+      loading(props: Record<string, unknown>) {
+        receivedProps = props;
+        return React.createElement("span", null, "loading");
+      },
+    };
+
+    const NoSSR = noSSR(initializer, options);
+    const html = renderToStaticMarkup(React.createElement(NoSSR));
+
+    expect(initializer).not.toHaveBeenCalled();
+    expect(options).not.toHaveProperty("webpack");
+    expect(options).not.toHaveProperty("modules");
+    expect(receivedProps).toEqual({
+      error: null,
+      isLoading: true,
+      pastDelay: false,
+      timedOut: false,
+    });
+    expect(html).toContain("loading");
+    expect(html).not.toContain("real component");
   });
 
   it("accepts module without default export (bare component)", async () => {
@@ -21757,13 +21865,13 @@ describe("next/navigation enhancements", () => {
     expect(searchParams.get("foo")).toBe("bar");
     expect(searchParams.getAll("foo")).toEqual(["bar", "baz"]);
     expect(searchParams.toString()).toBe("foo=bar&foo=baz&zap=zazzle");
-    expect(() => searchParams.append("x", "1")).toThrow(
+    expect(() => (searchParams as URLSearchParams).append("x", "1")).toThrow(
       "Method unavailable on `ReadonlyURLSearchParams`.",
     );
-    expect(() => searchParams.delete("foo")).toThrow(
+    expect(() => (searchParams as URLSearchParams).delete("foo")).toThrow(
       "Method unavailable on `ReadonlyURLSearchParams`.",
     );
-    expect(() => searchParams.set("foo", "qux")).toThrow(
+    expect(() => (searchParams as URLSearchParams).set("foo", "qux")).toThrow(
       "Method unavailable on `ReadonlyURLSearchParams`.",
     );
     expect(() => searchParams.sort()).toThrow("Method unavailable on `ReadonlyURLSearchParams`.");
@@ -21785,7 +21893,7 @@ describe("next/navigation enhancements", () => {
 
       expect(searchParams).toBeInstanceOf(ReadonlyURLSearchParams);
       expect(searchParams.getAll("foo")).toEqual(["bar", "baz"]);
-      expect(() => searchParams.set("foo", "qux")).toThrow(
+      expect(() => (searchParams as URLSearchParams).set("foo", "qux")).toThrow(
         "Method unavailable on `ReadonlyURLSearchParams`.",
       );
     } finally {
@@ -22080,20 +22188,16 @@ describe("next/error shim", () => {
 
   it("exports the public ErrorProps and static component contract", async () => {
     const declaration = await readFile(
-      new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url),
+      new URL("../packages/types/next/upstream/dist/pages/_error.d.ts", import.meta.url),
       "utf8",
     );
-    const errorDeclaration = declaration.slice(
-      declaration.indexOf('declare module "next/error"'),
-      declaration.indexOf('declare module "next/font/google"'),
-    );
 
-    expect(errorDeclaration).toContain("export type ErrorProps = {");
-    expect(errorDeclaration).toContain("hostname?: string;");
-    expect(errorDeclaration).toContain("export default class ErrorComponent<P = {}>");
-    expect(errorDeclaration).toContain("static displayName: string;");
-    expect(errorDeclaration).toContain("static getInitialProps:");
-    expect(errorDeclaration).toContain("static origGetInitialProps:");
+    expect(declaration).toContain("export type ErrorProps = {");
+    expect(declaration).toContain("hostname?: string;");
+    expect(declaration).toContain("export default class Error<P = {}>");
+    expect(declaration).toContain("static displayName: string;");
+    expect(declaration).toContain("static getInitialProps:");
+    expect(declaration).toContain("static origGetInitialProps:");
   });
 
   it("allows the upstream CustomError static getInitialProps override", async () => {
@@ -22101,8 +22205,7 @@ describe("next/error shim", () => {
     // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/typescript/pages/_error.tsx
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "vinext-next-error-types-"));
     const fixturePath = path.join(tempDir, "_error.tsx");
-    const declarationPath = new URL("../packages/vinext/src/shims/next-shims.d.ts", import.meta.url)
-      .pathname;
+    const declarationPath = new URL("../packages/types/next/index.d.ts", import.meta.url).pathname;
 
     try {
       await writeFile(

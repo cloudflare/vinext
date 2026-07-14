@@ -1135,6 +1135,9 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain("export const hasMiddleware = false");
+      expect(code).toMatch(
+        /wrapWithRouterContext: typeof wrapWithRouterContext[\s\S]*?router: Router,/,
+      );
       const globalsImportIndex = code.indexOf("/server-globals.js");
       const firstUserImportIndex = code.indexOf(
         `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,

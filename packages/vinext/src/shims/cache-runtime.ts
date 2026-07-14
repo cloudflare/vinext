@@ -36,6 +36,7 @@ import {
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
+  _hasPendingRevalidatedTag,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   type CacheLifeConfig,
@@ -580,12 +581,19 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
       let existing: CacheHandlerValue | null = null;
-      try {
-        existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
-      } catch (error) {
-        console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+      if (!_hasPendingRevalidatedTag(softTags)) {
+        try {
+          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+        } catch (error) {
+          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+        }
       }
-      if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
+      if (
+        existing?.value &&
+        existing.value.kind === "FETCH" &&
+        existing.cacheState !== "stale" &&
+        !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
+      ) {
         try {
           // Surface the cached entry's tags to the surrounding request so the
           // enclosing page / route-handler ISR entry carries them even on a data

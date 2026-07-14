@@ -1,0 +1,8 @@
+{
+  "name": "app-type-only-imports-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "vinext": "workspace:*"
+  }
+}

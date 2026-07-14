@@ -29,6 +29,8 @@ import {
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
+import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
+import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -888,7 +890,7 @@ export function headers(): Promise<Headers> & Headers {
  * Cookie jar from the incoming request.
  * Returns a ReadonlyRequestCookies-like object.
  */
-export function cookies(): Promise<RequestCookies> & RequestCookies {
+function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   markRenderRequestApiUsage("cookies");
   try {
     throwIfInsideCacheScope("cookies()");
@@ -920,6 +922,13 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
     : _getReadonlyCookies(state.headersContext);
 
   return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
+}
+
+type VinextReadonlyRequestCookies = Omit<ReadonlyRequestCookies, keyof RequestCookies> &
+  RequestCookies;
+
+export function cookies(): Promise<VinextReadonlyRequestCookies> & VinextReadonlyRequestCookies {
+  return cookiesImpl();
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,34 +1143,16 @@ class RequestCookies {
    * Set a cookie. In Route Handlers and Server Actions, this produces
    * a Set-Cookie header on the response.
    */
+  set(options: ResponseCookie): this;
+  set(key: string, value: string, cookie?: Partial<ResponseCookie>): this;
   set(
-    nameOrOptions:
-      | string
-      | {
-          name: string;
-          value: string;
-          path?: string;
-          domain?: string;
-          maxAge?: number;
-          expires?: Date;
-          httpOnly?: boolean;
-          secure?: boolean;
-          sameSite?: "Strict" | "Lax" | "None";
-        },
+    nameOrOptions: string | ResponseCookie,
     value?: string,
-    options?: {
-      path?: string;
-      domain?: string;
-      maxAge?: number;
-      expires?: Date;
-      httpOnly?: boolean;
-      secure?: boolean;
-      sameSite?: "Strict" | "Lax" | "None";
-    },
+    options?: Partial<ResponseCookie>,
   ): this {
     let cookieName: string;
     let cookieValue: string;
-    let opts: typeof options;
+    let opts: Partial<ResponseCookie> | undefined;
 
     if (typeof nameOrOptions === "string") {
       cookieName = nameOrOptions;
@@ -1178,14 +1169,28 @@ class RequestCookies {
     // Update the local cookie map
     this._cookies.set(cookieName, cookieValue);
 
-    _getState().pendingSetCookies.push(serializeSetCookie(cookieName, cookieValue, opts));
+    const sameSite =
+      opts?.sameSite === true
+        ? "Strict"
+        : typeof opts?.sameSite === "string"
+          ? ((opts.sameSite[0].toUpperCase() + opts.sameSite.slice(1)) as "Strict" | "Lax" | "None")
+          : undefined;
+    _getState().pendingSetCookies.push(
+      serializeSetCookie(cookieName, cookieValue, {
+        ...opts,
+        expires: typeof opts?.expires === "number" ? new Date(opts.expires) : opts?.expires,
+        sameSite,
+      }),
+    );
     return this;
   }
 
   /**
    * Delete a cookie by emitting an expired Set-Cookie header.
    */
-  delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
+  delete(name: string): this;
+  delete(options: Omit<ResponseCookie, "value" | "expires">): this;
+  delete(nameOrOptions: string | Omit<ResponseCookie, "value" | "expires">): this {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     const path = typeof nameOrOptions === "string" ? "/" : (nameOrOptions.path ?? "/");
     const domain = typeof nameOrOptions === "string" ? undefined : nameOrOptions.domain;
@@ -1208,20 +1213,10 @@ class RequestCookies {
     return this._cookies.size;
   }
 
-  [Symbol.iterator](): IterableIterator<[string, { name: string; value: string }]> {
-    const entries = this._cookies.entries();
-    const iter: IterableIterator<[string, { name: string; value: string }]> = {
-      [Symbol.iterator]() {
-        return iter;
-      },
-      next() {
-        const { value, done } = entries.next();
-        if (done) return { value: undefined, done: true };
-        const [name, val] = value;
-        return { value: [name, { name, value: val }], done: false };
-      },
-    };
-    return iter;
+  [Symbol.iterator](): MapIterator<[string, { name: string; value: string }]> {
+    return new Map(
+      Array.from(this._cookies, ([name, value]) => [name, { name, value }] as const),
+    ).entries();
   }
 
   toString(): string {

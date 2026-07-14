@@ -1090,11 +1090,19 @@ export function matchRewrite(
   rewrites: NextRewrite[],
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  paramsPathname: string = pathname,
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
-    const params = matchConfigPattern(pathname, rewrite.source);
-    if (params) {
+    const matchedParams = matchConfigPattern(pathname, rewrite.source);
+    if (matchedParams) {
+      // App request routing matches against a segment-normalized pathname but
+      // Next.js prepareDestination substitutes the encoded source captures.
+      // Prefer those captures when the caller retained the encoded pathname.
+      const params =
+        paramsPathname === pathname
+          ? matchedParams
+          : (matchConfigPattern(paramsPathname, rewrite.source) ?? matchedParams);
       const conditionParams =
         rewrite.has || rewrite.missing
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
@@ -1526,8 +1534,8 @@ function _escapeRegexString(value: string): string {
 }
 
 /**
- * Apply Next.js i18n locale-prefix transformation to a set of redirect or
- * rewrite rules. Mirrors the relevant slice of Next.js's `processRoutes`
+ * Apply Next.js i18n locale-prefix transformation to a set of redirect,
+ * rewrite, or header rules. Mirrors the relevant slice of Next.js's `processRoutes`
  * (load-custom-routes.ts) with one deliberate divergence noted below.
  *
  * For each rule:
@@ -1558,10 +1566,10 @@ function _escapeRegexString(value: string): string {
  * Mirrors the Next.js reference in
  * packages/next/src/lib/load-custom-routes.ts — see `processRoutes`.
  */
-export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
+export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextHeader>(
   routes: T[],
   i18n: NextI18nConfig | null | undefined,
-  type: "redirect" | "rewrite",
+  type: "redirect" | "rewrite" | "header",
   options: { trailingSlash?: boolean } = {},
 ): T[] {
   if (!i18n || routes.length === 0) return routes;
@@ -1596,7 +1604,8 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
 
     // Destinations may be absolute URLs (external) — Next.js skips the
     // locale-prefix injection on external destinations.
-    const isExternal = !!r.destination && !r.destination.startsWith("/");
+    const destination = "destination" in r ? r.destination : undefined;
+    const isExternal = !!destination && !destination.startsWith("/");
 
     // For each default locale, emit a literal `/${locale}/...` variant
     // whose destination does NOT carry a locale prefix (Next.js parity).
@@ -1612,17 +1621,20 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
 
     // Emit the `:nextInternalLocale` variant that matches all locales.
     const internalSource = `${internalLocale}${suffixFor(r.source)}`;
-    let internalDestination = r.destination;
+    let internalDestination = destination;
     if (internalDestination && internalDestination.startsWith("/") && !isExternal) {
       internalDestination = `/:nextInternalLocale${
         internalDestination === "/" && !trailingSlash ? "" : internalDestination
       }`;
     }
-    out.push({
+    const internalRoute = {
       ...r,
       source: internalSource,
-      destination: internalDestination,
-    });
+    };
+    if ("destination" in internalRoute && internalDestination !== undefined) {
+      internalRoute.destination = internalDestination;
+    }
+    out.push(internalRoute);
 
     // Retain the original unprefixed source as a fallback so default-locale
     // requests that arrive without a prefix (e.g. `/old`) still match.

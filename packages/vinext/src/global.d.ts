@@ -298,7 +298,7 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_DOMAIN_LOCALES__:
-    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: true }>
     | undefined;
 
   /**
@@ -489,6 +489,8 @@ declare module "node:http" {
      * the final response status.
      */
     __vinextMiddlewareStatus?: number;
+    /** Encoded request URL captured before Vite normalizes the pathname. */
+    __vinextOriginalEncodedUrl?: string;
   }
 }
 

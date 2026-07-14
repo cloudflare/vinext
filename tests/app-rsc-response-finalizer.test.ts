@@ -67,6 +67,20 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(response.headers.get("x-added")).toBeNull();
   });
+
+  it("does not apply config headers through percent-encoded static aliases", () => {
+    const response = new Response("body", { status: 404 });
+    const request = new Request("http://example.com/%61bout");
+
+    finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [{ source: "/about", headers: [{ key: "x-added", value: "config" }] }],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-added")).toBeNull();
+  });
 });
 
 // ── App Router RSC vary header ──────────────────────────────────────────

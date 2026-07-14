@@ -14,6 +14,32 @@ import { isOpenRedirectShaped } from "./open-redirect.js";
 
 export { isOpenRedirectShaped } from "./open-redirect.js";
 
+const PATHNAME_CANONICALIZATION_BASE = new URL("http://vinext.invalid/");
+
+/**
+ * Apply the URL Standard's pathname canonicalization without decoding and
+ * re-encoding ordinary percent escapes.
+ *
+ * In particular, WHATWG URLs remove literal and percent-encoded dot segments
+ * (`/%2e/about` becomes `/about`) while preserving unrelated spellings such
+ * as `/%61bout`, `%2F`, `%5C`, and `%252F` byte-for-byte. Node request adapters
+ * must do this before comparing raw route/config/basePath identity so those
+ * comparisons agree with the `Request` that userland eventually receives.
+ */
+export function canonicalizeRequestPathname(pathname: string): string {
+  const url = new URL(PATHNAME_CANONICALIZATION_BASE);
+  url.pathname = pathname;
+  return url.pathname;
+}
+
+/** Canonicalize only the pathname portion while preserving the raw query. */
+export function canonicalizeRequestUrlPathname(url: string): string {
+  const queryIndex = url.indexOf("?");
+  const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
+  const search = queryIndex === -1 ? "" : url.slice(queryIndex);
+  return canonicalizeRequestPathname(pathname) + search;
+}
+
 /**
  * Shared request pipeline utilities.
  *

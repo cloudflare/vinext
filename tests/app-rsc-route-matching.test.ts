@@ -50,10 +50,14 @@ describe("App RSC route matching", () => {
     });
   });
 
-  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour
+  // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour.
+  // Route Handlers expose decoded params, unlike App Pages, whose params use
+  // the canonical encoded representation.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/route-matcher.ts#L25-L27
-  it("decodes matched params via decodeURIComponent (mirrors Next.js)", () => {
-    const matcher = createAppRscRouteMatcher([route("/files/:name", ["files", ":name"])]);
+  it("decodes rewritten Route Handler params via decodeURIComponent", () => {
+    const matcher = createAppRscRouteMatcher([
+      { ...route("/files/:name", ["files", ":name"]), routeHandler: {} },
+    ]);
 
     expect(matcher.matchRoute("/files/a%2Fb")).toMatchObject({
       params: { name: "a/b" },
@@ -76,7 +80,99 @@ describe("App RSC route matching", () => {
       params: { subdomain: "demo" },
     });
     expect(matcher.matchRoute("/files/a%252Fb")).toMatchObject({
+      params: { name: "a%252Fb" },
+    });
+  });
+
+  it("classifies lazy Route Handlers consistently before and after their first load", () => {
+    const lazyRoute: TestRoute = {
+      ...route("/api/:path*", ["api", ":path*"]),
+      __loadRouteHandler: async () => ({}),
+      routeHandler: null,
+    };
+    const matcher = createAppRscRouteMatcher([lazyRoute]);
+
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    lazyRoute.routeHandler = {};
+    expect(matcher.matchRequestRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+    expect(matcher.matchRequestRoute("/api")).toMatchObject({ params: {} });
+  });
+
+  it("keeps rewritten App Page params canonical while Route Handlers decode once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/page/:path+", ["page", ":path+"]),
+      {
+        ...route("/api/:path+", ["api", ":path+"]),
+        __loadRouteHandler: async () => ({}),
+      },
+    ]);
+
+    expect(matcher.matchRoute("/page/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%2561", "b%2Fc"] },
+    });
+    expect(matcher.matchRoute("/api/a%2561/b%2Fc")).toMatchObject({
+      params: { path: ["a%61", "b/c"] },
+    });
+  });
+
+  it("matches encoded request pathnames with Next.js App Router semantics", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/admin", ["admin"]),
+      route("/files/:name", ["files", ":name"]),
+      { ...route("/api/:name", ["api", ":name"]), routeHandler: {} },
+    ]);
+
+    expect(matcher.matchRoute("/%61dmin")).toMatchObject({
+      route: { pattern: "/admin" },
+    });
+    expect(matcher.matchRequestRoute("/%61dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/%2561dmin")).toBeNull();
+    expect(matcher.matchRequestRoute("/files/%61")).toMatchObject({
+      params: { name: "a" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2561")).toMatchObject({
+      params: { name: "a%2561" },
+    });
+    expect(matcher.matchRequestRoute("/files/a%2Fb")).toMatchObject({
       params: { name: "a%2Fb" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2561")).toMatchObject({
+      params: { name: "a%61" },
+    });
+    expect(matcher.matchRequestRoute("/api/a%2Fb")).toMatchObject({
+      params: { name: "a/b" },
+    });
+  });
+
+  it("preserves encoded interception target identity and canonicalizes target params", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/feed/:slug", ["feed", ":slug"], {
+        modal: {
+          intercepts: [
+            {
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/a%2562", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%2562" },
+    });
+    expect(matcher.findIntercept("/photos/a%2Fb", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "a%2Fb" },
+    });
+    expect(matcher.findIntercept("/ph%6Ftos/a", "/feed/a%2561")).toBeNull();
+    expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
+      matchedParams: { slug: "a%61", id: "%E2%9C%93" },
     });
   });
 
@@ -349,7 +445,7 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/42", "/gallery")).toBeNull();
   });
 
-  it("canonicalizes encoded source path parts for interception params", () => {
+  it("normalizes source path parts separately from encoded interception targets", () => {
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:tenant", ["_sites", ":tenant"], {
         modal: {
@@ -367,7 +463,7 @@ describe("App RSC route matching", () => {
 
     expect(matcher.findIntercept("/photos/a%2Fb", "/%5Fsites/acme")).toMatchObject({
       targetPattern: "/photos/:id",
-      matchedParams: { tenant: "acme", id: "a/b" },
+      matchedParams: { tenant: "acme", id: "a%2Fb" },
     });
   });
 
@@ -672,8 +768,10 @@ type TestSiblingIntercept = {
 };
 
 type TestRoute = {
+  __loadRouteHandler?: unknown;
   pattern: string;
   patternParts: string[];
+  routeHandler?: unknown;
   slots?: Record<string, { intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };

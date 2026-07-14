@@ -350,6 +350,29 @@ const projectServers = {
       timeout: 120_000,
     },
   },
+  "app-router-encoded-basepath-i18n": {
+    testDir: "./tests/e2e/app-router-encoded-basepath-i18n",
+    use: { baseURL: "http://localhost:4196" },
+    server: {
+      command:
+        "VINEXT_ENCODED_PATH_BASEPATH_I18N=1 npx vp run vinext#build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js start --port 4196",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4196,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "cloudflare-encoded-paths": {
+    testDir: "./tests/e2e/cloudflare-encoded-paths",
+    use: { baseURL: "http://localhost:4197" },
+    server: {
+      command: "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4197",
+      cwd: "./tests/fixtures/cf-app-basic",
+      port: 4197,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;
