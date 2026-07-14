@@ -206,7 +206,10 @@ vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vin
 vinext is a Vite plugin that reimplements the public Next.js API — routing, server rendering, `next/*` module imports, the CLI — so you can run Next.js applications on Vite instead of the Next.js compiler toolchain. It can be deployed anywhere: Cloudflare Workers is the first natively supported target, with other platforms available via Nitro. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Is this a fork of Next.js?**
-No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers; it is to provide the same well-defined API surface on Vite's toolchain.
+No. vinext is an alternative implementation of the Next.js API surface built on Vite. The core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers; it is to provide the same well-defined API surface on Vite's toolchain.
+
+**Does vinext require Next.js to be installed?**
+No. vinext ships fallback declarations for the supported `next` and `next/*` APIs, so applications can run and type-check without the `next` package. If both packages are installed, vinext keeps using Next.js's authoritative types and adds only its own extensions. Compatibility features that consume Next.js internals, such as `styled-jsx`, may still require a matching Next.js installation when used.
 
 **How is this different from OpenNext?**
 [OpenNext](https://opennext.js.org/) adapts the _output_ of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you want a lighter Vite-based toolchain and do not need every Next.js API, vinext may be a good fit.

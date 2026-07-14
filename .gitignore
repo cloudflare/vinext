@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!packages/types/next/upstream/dist/
+!packages/types/next/upstream/dist/**
 out/
 *.tsbuildinfo
 .vite/
@@ -10,6 +12,7 @@ out/
 test-results/
 playwright-report/
 out-e2e
+*.tgz
 
 # Environment + secrets
 .env

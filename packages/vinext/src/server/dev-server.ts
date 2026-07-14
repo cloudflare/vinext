@@ -1065,6 +1065,7 @@ export function createSSRHandler(
             pathname: patternToNextFormat(route.pattern),
             query,
             asPath: requestAsPath,
+            router: routerShim.default,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
@@ -1379,11 +1380,7 @@ export function createSSRHandler(
                           : appTree;
                       },
                       Component: pageModule.default,
-                      router: {
-                        pathname: patternToNextFormat(route.pattern),
-                        query,
-                        asPath: requestAsPath,
-                      },
+                      router: routerShim.default,
                       ctx: {
                         req: regenReq,
                         res: regenRes,

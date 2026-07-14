@@ -841,11 +841,17 @@ async function typegen() {
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
   );
-  const outputPath = await generateRouteTypes({
+  const result = await generateRouteTypes({
     root,
     pageExtensions: resolvedNextConfig.pageExtensions,
   });
-  console.log(`\n  Generated route types at ${path.relative(root, outputPath)}\n`);
+  const nextEnvMessage =
+    result.nextEnvStatus === "unchanged"
+      ? `${path.relative(root, result.nextEnvPath)} is up to date`
+      : `${result.nextEnvStatus === "created" ? "Created" : "Updated"} ${path.relative(root, result.nextEnvPath)}`;
+  console.log(
+    `\n  Generated route types at ${path.relative(root, result.routeTypesPath)}\n  ${nextEnvMessage}\n`,
+  );
 }
 
 async function initCommand() {

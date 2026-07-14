@@ -25,6 +25,12 @@
       "types": "./dist/cache.d.ts",
       "import": "./dist/cache.js"
     },
+    "./types": {
+      "types": "./dist/shims/next-shims-public.d.ts"
+    },
+    "./types/augmentations": {
+      "types": "./dist/shims/next-shims-augmentations.d.ts"
+    },
     "./shims/*": {
       "types": "./dist/shims/*.d.ts",
       "import": "./dist/shims/*.js"
@@ -162,6 +168,7 @@
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
+    "@vinext/types": "workspace:^",
     "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",

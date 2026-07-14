@@ -390,6 +390,7 @@ function writeGsspAppInitialPropsContextFixture(rootDir: string): void {
 class MyApp extends App {
   static async getInitialProps(ctx) {
     const { req, query, pathname, asPath } = ctx.ctx;
+    const routeTag = ctx.router.route.replaceAll("/", "_");
     let pageProps = {};
 
     if (ctx.Component.getInitialProps) {
@@ -402,6 +403,8 @@ class MyApp extends App {
         query,
         pathname,
         asPath,
+        route: ctx.router.route,
+        routeTag,
       },
       pageProps,
     };
@@ -441,6 +444,8 @@ export default function BlogPost({ post, params, appProps, appRouter, resolvedUr
       <div id="app-query">{JSON.stringify(appProps.query)}</div>
       <div id="app-url">{appProps.url}</div>
       <div id="app-router-pathname">{appRouter.pathname}</div>
+      <div id="app-router-route">{appProps.route}</div>
+      <div id="app-router-route-tag">{appProps.routeTag}</div>
       <div id="resolved-url">{resolvedUrl}</div>
       <div id="as-path">{router.asPath}</div>
     </>
@@ -1913,6 +1918,8 @@ describe("Pages Router integration", () => {
       expectElementJson(dynamicHtml, "app-query", { post: "post-1" });
       expectElementText(dynamicHtml, "app-url", "/blog/post-1");
       expectElementText(dynamicHtml, "app-router-pathname", "/blog/[post]");
+      expectElementText(dynamicHtml, "app-router-route", "/blog/[post]");
+      expectElementText(dynamicHtml, "app-router-route-tag", "_blog_[post]");
       expectElementText(dynamicHtml, "resolved-url", "/blog/post-1");
       expectElementText(dynamicHtml, "as-path", "/blog/post-1");
       const dynamicNextDataMatch = dynamicHtml.match(
@@ -1926,6 +1933,8 @@ describe("Pages Router integration", () => {
         query: { post: "post-1" },
         asPath: "/blog/post-1",
         pathname: "/blog/[post]",
+        route: "/blog/[post]",
+        routeTag: "_blog_[post]",
       });
 
       const dataRes = await fetch(
@@ -1940,6 +1949,8 @@ describe("Pages Router integration", () => {
         query: { post: "post-1", hello: "world" },
         asPath: "/blog/post-1?hello=world",
         pathname: "/blog/[post]",
+        route: "/blog/[post]",
+        routeTag: "_blog_[post]",
       });
 
       const queryRes = await fetch(`${fixtureUrl}/something?hello=world`);

@@ -299,6 +299,9 @@ const vinextPkg = JSON.parse(
 const cloudflarePkg = JSON.parse(
   fs.readFileSync(path.join(vinextDir, 'packages', 'cloudflare', 'package.json'), 'utf8'),
 )
+const typesPkg = JSON.parse(
+  fs.readFileSync(path.join(vinextDir, 'packages', 'types', 'package.json'), 'utf8'),
+)
 const workspaceConfig = fs.readFileSync(
   path.join(vinextDir, 'pnpm-workspace.yaml'),
   'utf8',
@@ -356,14 +359,29 @@ function parseCatalog(yaml) {
 }
 
 const catalog = parseCatalog(workspaceConfig)
+const localVinextPkgDir = path.join(process.cwd(), '.vinext-local-package')
 const localCloudflarePkgDir = path.join(process.cwd(), '.vinext-local-cloudflare-package')
+const localTypesPkgDir = path.join(process.cwd(), '.vinext-local-types-package')
+const localWorkspacePackages = new Map([
+  [vinextPkg.name, localVinextPkgDir],
+  [cloudflarePkg.name, localCloudflarePkgDir],
+  [typesPkg.name, localTypesPkgDir],
+])
 
-function workspaceDependencySpecFor(name) {
-  if (name === cloudflarePkg.name) {
-    return 'file:../.vinext-local-cloudflare-package'
-  }
+function workspaceDependencySpecFor(name, fromPackageDir) {
+  const targetPackageDir = localWorkspacePackages.get(name)
+  if (!targetPackageDir) throw new Error(`Unable to resolve workspace dependency spec for ${name}`)
 
-  throw new Error(`Unable to resolve workspace dependency spec for ${name}`)
+  const relativeDir = path.relative(fromPackageDir, targetPackageDir).split(path.sep).join('/') || '.'
+  return `file:${relativeDir}`
+}
+
+function manifestDependencySpecFor(name, spec, fromPackageDir) {
+  if (spec.startsWith('workspace:')) return workspaceDependencySpecFor(name, fromPackageDir)
+  if (spec !== 'catalog:') return spec
+  if (catalog[name]) return catalog[name]
+
+  throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
 function dependencySpecFor(name) {
@@ -376,34 +394,31 @@ function dependencySpecFor(name) {
   ]) {
     const spec = deps?.[name]
     if (!spec) continue
-    if (spec.startsWith('workspace:')) return workspaceDependencySpecFor(name)
-    if (spec !== 'catalog:') return spec
-    if (catalog[name]) return catalog[name]
+    return manifestDependencySpecFor(name, spec, localVinextPkgDir)
   }
 
-  if (catalog[name]) {
-    return catalog[name]
-  }
+  if (catalog[name]) return catalog[name]
 
   throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
-function resolveManifestDeps(deps) {
+function resolveManifestDeps(deps, packageDir) {
   if (!deps) return undefined
 
   return Object.fromEntries(
     Object.entries(deps).map(([name, spec]) => [
       name,
-      spec === 'catalog:' || spec.startsWith('workspace:') ? dependencySpecFor(name) : spec,
+      manifestDependencySpecFor(name, spec, packageDir),
     ]),
   )
 }
 
-const localVinextPkgDir = path.join(process.cwd(), '.vinext-local-package')
 fs.rmSync(localVinextPkgDir, { recursive: true, force: true })
 fs.rmSync(localCloudflarePkgDir, { recursive: true, force: true })
+fs.rmSync(localTypesPkgDir, { recursive: true, force: true })
 fs.mkdirSync(localVinextPkgDir, { recursive: true })
 fs.mkdirSync(localCloudflarePkgDir, { recursive: true })
+fs.mkdirSync(localTypesPkgDir, { recursive: true })
 fs.cpSync(
   path.join(vinextDir, 'packages', 'cloudflare', 'dist'),
   path.join(localCloudflarePkgDir, 'dist'),
@@ -423,8 +438,37 @@ fs.writeFileSync(
       type: cloudflarePkg.type,
       files: ['dist'],
       exports: cloudflarePkg.exports,
-      peerDependencies: resolveManifestDeps(cloudflarePkg.peerDependencies),
+      peerDependencies: resolveManifestDeps(cloudflarePkg.peerDependencies, localCloudflarePkgDir),
       engines: cloudflarePkg.engines,
+    },
+    null,
+    2,
+  ) + '\n',
+)
+for (const entry of typesPkg.files ?? []) {
+  const source = path.join(vinextDir, 'packages', 'types', entry)
+  if (!fs.existsSync(source)) {
+    throw new Error(`Missing @vinext/types package file: ${source}`)
+  }
+  fs.cpSync(source, path.join(localTypesPkgDir, entry), { recursive: true })
+}
+fs.writeFileSync(
+  path.join(localTypesPkgDir, 'package.json'),
+  JSON.stringify(
+    {
+      name: typesPkg.name,
+      version: typesPkg.version,
+      description: typesPkg.description,
+      license: typesPkg.license,
+      repository: typesPkg.repository,
+      files: typesPkg.files,
+      type: typesPkg.type,
+      sideEffects: typesPkg.sideEffects,
+      exports: typesPkg.exports,
+      dependencies: resolveManifestDeps(typesPkg.dependencies, localTypesPkgDir),
+      peerDependencies: resolveManifestDeps(typesPkg.peerDependencies, localTypesPkgDir),
+      peerDependenciesMeta: typesPkg.peerDependenciesMeta,
+      engines: typesPkg.engines,
     },
     null,
     2,
@@ -448,8 +492,8 @@ fs.writeFileSync(
       bin: vinextPkg.bin,
       files: ['dist'],
       exports: vinextPkg.exports,
-      dependencies: resolveManifestDeps(vinextPkg.dependencies),
-      peerDependencies: resolveManifestDeps(vinextPkg.peerDependencies),
+      dependencies: resolveManifestDeps(vinextPkg.dependencies, localVinextPkgDir),
+      peerDependencies: resolveManifestDeps(vinextPkg.peerDependencies, localVinextPkgDir),
       peerDependenciesMeta: vinextPkg.peerDependenciesMeta,
       engines: vinextPkg.engines,
     },

@@ -1344,7 +1344,7 @@ describe("KVCacheHandler", () => {
       expect((beforeHit!.value as any).html).toBe("<html>foo</html>");
 
       // Public revalidatePath API call (no type → bare _N_T_/foo tag).
-      await revalidatePath("/foo");
+      await Promise.resolve(revalidatePath("/foo"));
 
       // The cached entry must now be a hard miss.
       handler.resetRequestCache();
@@ -1355,7 +1355,7 @@ describe("KVCacheHandler", () => {
       await seedAppPage("/blog/hello", "<html>hello</html>");
       await seedAppPage("/blog/world", "<html>world</html>");
 
-      await revalidatePath("/blog/hello");
+      await Promise.resolve(revalidatePath("/blog/hello"));
 
       handler.resetRequestCache();
       expect(await handler.get("/blog/hello")).toBeNull();
@@ -1366,7 +1366,7 @@ describe("KVCacheHandler", () => {
     it("invalidates the root page after revalidatePath('/')", async () => {
       await seedAppPage("/", "<html>home</html>");
 
-      await revalidatePath("/");
+      await Promise.resolve(revalidatePath("/"));
 
       handler.resetRequestCache();
       expect(await handler.get("/")).toBeNull();
@@ -1378,7 +1378,7 @@ describe("KVCacheHandler", () => {
       // /dashboard/layout tag is included in the page's cache tags by
       // buildAppPageCacheTags. revalidatePath('/dashboard', 'layout') should
       // therefore invalidate this nested entry.
-      await revalidatePath("/dashboard", "layout");
+      await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
       handler.resetRequestCache();
       expect(await handler.get("/dashboard/settings")).toBeNull();
@@ -1388,7 +1388,7 @@ describe("KVCacheHandler", () => {
       await seedAppPage("/about", "<html>about</html>");
       await seedAppPage("/about/team", "<html>team</html>");
 
-      await revalidatePath("/about", "page");
+      await Promise.resolve(revalidatePath("/about", "page"));
 
       handler.resetRequestCache();
       expect(await handler.get("/about")).toBeNull();
@@ -1429,7 +1429,7 @@ describe("KVCacheHandler", () => {
       const beforeHit = await handler.get("/seeded");
       expect(beforeHit).not.toBeNull();
 
-      await revalidatePath("/seeded");
+      await Promise.resolve(revalidatePath("/seeded"));
 
       handler.resetRequestCache();
       expect(await handler.get("/seeded")).toBeNull();
@@ -1455,7 +1455,7 @@ describe("KVCacheHandler", () => {
         { revalidateSeconds: 60 },
       );
 
-      await revalidatePath("/legacy-seeded");
+      await Promise.resolve(revalidatePath("/legacy-seeded"));
 
       handler.resetRequestCache();
       // Entry remains because it has no tags to match against the

@@ -53,14 +53,16 @@ type LocalFontSrc = {
   style?: string;
 };
 
-type LocalFontOptions = {
+type CssVariable = `--${string}`;
+
+type LocalFontOptions<T extends CssVariable | undefined = CssVariable | undefined> = {
   src: string | LocalFontSrc | LocalFontSrc[];
   display?: string;
   weight?: string;
   style?: string;
   fallback?: string[];
   preload?: boolean;
-  variable?: string;
+  variable?: T;
   adjustFontFallback?: boolean | string;
   declarations?: Array<{ prop: string; value: string }>;
   _vinext?: {
@@ -75,6 +77,9 @@ type FontResult = {
   style: FontStyle;
   variable?: string;
 };
+
+type NextFont = Omit<FontResult, "variable"> & { variable?: undefined };
+type NextFontWithVariable = Omit<NextFont, "variable"> & { variable: string };
 
 function generateFontFaceCSS(
   family: string,
@@ -272,7 +277,10 @@ function collectFontPreloads(sources: LocalFontSrc[]): void {
   }
 }
 
-export default function localFont(options: LocalFontOptions): FontResult {
+function localFont<T extends CssVariable | undefined = undefined>(
+  options: LocalFontOptions<T>,
+): T extends undefined ? NextFont : NextFontWithVariable;
+function localFont(options: LocalFontOptions): FontResult {
   const id = classCounter++;
   const sources = normalizeSources(options);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
@@ -318,3 +326,5 @@ export default function localFont(options: LocalFontOptions): FontResult {
     ...(cssVarName ? { variable: variableClassName } : {}),
   };
 }
+
+export default localFont;

@@ -19,9 +19,11 @@ import {
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
 import {
+  createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
   isResponseSent,
   loadPagesGetInitialProps,
+  type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 import { buildNextDataPropsJsonResponse } from "./pages-data-route.js";
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
@@ -208,6 +210,8 @@ export type ResolvePagesPageDataOptions = {
   htmlLimitedBots?: string;
   pageModule: PagesPageModule;
   AppComponent?: unknown;
+  /** The request-scoped `next/router` server instance when available. */
+  router?: PagesGetInitialPropsRouter;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
   asPath?: string;
@@ -345,6 +349,7 @@ async function loadPagesAppInitialRenderProps(
     | "i18n"
     | "pageModule"
     | "query"
+    | "router"
     | "routePattern"
     | "routeUrl"
     | "asPath"
@@ -362,11 +367,13 @@ async function loadPagesAppInitialRenderProps(
   const initialProps = await loadPagesGetInitialProps(options.AppComponent, {
     AppTree: options.createAppTree ?? options.createPageElement,
     Component: options.pageModule.default,
-    router: {
-      pathname: options.routePattern,
-      query: options.query,
-      asPath: options.asPath ?? options.routeUrl,
-    },
+    router:
+      options.router ??
+      createPagesGetInitialPropsRouter(
+        options.routePattern,
+        options.query,
+        options.asPath ?? options.routeUrl,
+      ),
     ctx: {
       req,
       res,

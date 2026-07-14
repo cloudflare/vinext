@@ -16,6 +16,7 @@ import {
   decideGeneration,
   findOverride,
   latestTagVersionFromTags,
+  latestPackageTagVersionFromTags,
   loadOverrides,
   maxBump,
   parseBumpFromSubject,
@@ -222,6 +223,24 @@ describe("latestTagVersionFromTags (release range source)", () => {
     // No matching tag → null, so releaseRangeStart falls back to firstCommit().
     expect(latestTagVersionFromTags([], "@vinext/cloudflare")).toBeNull();
     expect(latestTagVersionFromTags(["some-other-tag"], "@vinext/cloudflare")).toBeNull();
+  });
+});
+
+describe("latestPackageTagVersionFromTags (publish guard source)", () => {
+  const tags = ["v0.0.55", "vinext@1.0.0-beta.1", "@vinext/cloudflare@1.0.0-beta.1"];
+
+  it("uses a package's own scoped tag", () => {
+    expect(latestPackageTagVersionFromTags(tags, "@vinext/cloudflare")).toBe("1.0.0-beta.1");
+  });
+
+  it("keeps legacy global tags for the root package", () => {
+    expect(latestPackageTagVersionFromTags(["v0.0.55"], "vinext")).toBe("0.0.55");
+  });
+
+  it("does not mistake a global tag for a new scoped package release", () => {
+    const tagVersion = latestPackageTagVersionFromTags(tags, "@vinext/types");
+    expect(tagVersion).toBeNull();
+    expect(decideGeneration("1.0.0-beta.1", tagVersion).action).toBe("generate");
   });
 });
 

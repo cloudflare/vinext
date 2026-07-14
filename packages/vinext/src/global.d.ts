@@ -298,7 +298,7 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_DOMAIN_LOCALES__:
-    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: true }>
     | undefined;
 
   /**

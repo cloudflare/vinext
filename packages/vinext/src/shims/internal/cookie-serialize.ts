@@ -21,6 +21,8 @@ type SerializeSetCookieOptions = {
   httpOnly?: boolean;
   secure?: boolean;
   sameSite?: "Strict" | "Lax" | "None";
+  partitioned?: boolean;
+  priority?: "low" | "medium" | "high";
 };
 
 /**
@@ -56,7 +58,7 @@ export function validateCookieAttributeValue(value: string, attributeName: strin
  * - Defaults `Path` to `/` (matching @edge-runtime/cookies and Next.js).
  * - Validates path/domain to reject control characters and semicolons.
  * - Emits attributes in the order: Path, Domain, Max-Age, Expires, HttpOnly,
- *   Secure, SameSite.
+ *   Secure, SameSite, Partitioned, Priority.
  *
  * The caller is responsible for validating the cookie name (typically before
  * mutating any internal state) via `validateCookieName`.
@@ -79,5 +81,9 @@ export function serializeSetCookie(
   if (options?.httpOnly) parts.push("HttpOnly");
   if (options?.secure) parts.push("Secure");
   if (options?.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options?.partitioned) parts.push("Partitioned");
+  if (options?.priority) {
+    parts.push(`Priority=${options.priority[0].toUpperCase()}${options.priority.slice(1)}`);
+  }
   return parts.join("; ");
 }

@@ -31,7 +31,9 @@ import {
 // Track which font stylesheets have been injected (SSR + client)
 const injectedFonts = new Set<string>();
 
-export type FontOptions = {
+type CssVariable = `--${string}`;
+
+export type FontOptions<T extends CssVariable | undefined = CssVariable | undefined> = {
   weight?: string | string[];
   style?: string | string[];
   subsets?: string[];
@@ -39,7 +41,7 @@ export type FontOptions = {
   preload?: boolean;
   fallback?: string[];
   adjustFontFallback?: boolean | string;
-  variable?: string;
+  variable?: T;
   axes?: string[];
 };
 
@@ -57,17 +59,18 @@ type InternalGoogleFontRuntimeOptions = {
   fontStyle?: "normal" | "italic";
 };
 
-type FontLoaderOptions = FontOptions & {
-  /**
-   * Internal payload injected by the vinext:google-fonts transform after
-   * metadata validation. Runtime must prefer these values over user options
-   * because they represent the resolved Next-compatible face, including
-   * metadata defaults such as italic-only families.
-   */
-  _vinext?: {
-    font?: InternalGoogleFontRuntimeOptions;
+type FontLoaderOptions<T extends CssVariable | undefined = CssVariable | undefined> =
+  FontOptions<T> & {
+    /**
+     * Internal payload injected by the vinext:google-fonts transform after
+     * metadata validation. Runtime must prefer these values over user options
+     * because they represent the resolved Next-compatible face, including
+     * metadata defaults such as italic-only families.
+     */
+    _vinext?: {
+      font?: InternalGoogleFontRuntimeOptions;
+    };
   };
-};
 
 /**
  * Convert a font family name to a CSS variable name.
@@ -373,10 +376,17 @@ function injectSelfHostedCSS(css: string, preloadUrls: string[] = []): void {
   document.head.appendChild(style);
 }
 
-export type FontLoader = (options?: FontLoaderOptions) => FontResult;
+type NextFont = Omit<FontResult, "variable"> & { variable?: undefined };
+type NextFontWithVariable = Omit<NextFont, "variable"> & { variable: string };
+
+export type FontLoader = <T extends CssVariable | undefined = undefined>(
+  options?: FontLoaderOptions<T>,
+) => T extends undefined ? NextFont : NextFontWithVariable;
 
 export function createFontLoader(family: string): FontLoader {
-  return function fontLoader(options: FontLoaderOptions = {}): FontResult {
+  return function fontLoader<T extends CssVariable | undefined = undefined>(
+    options: FontLoaderOptions<T> = {},
+  ): T extends undefined ? NextFont : NextFontWithVariable {
     const internal = options._vinext?.font;
     const fallback = options.fallback ?? [];
     // The adjusted fallback family name must match the font-family emitted by
@@ -447,7 +457,7 @@ export function createFontLoader(family: string): FontLoader {
       className,
       style,
       ...(options.variable ? { variable: variableClassName } : {}),
-    };
+    } as T extends undefined ? NextFont : NextFontWithVariable;
   };
 }
 

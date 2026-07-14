@@ -389,6 +389,7 @@ const _renderPage = __createPagesPageHandler({
       : null,
   setI18nContext: typeof setI18nContext === "function" ? setI18nContext : null,
   wrapWithRouterContext: typeof wrapWithRouterContext === "function" ? wrapWithRouterContext : null,
+  router: Router,
   resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
   getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
   setDocumentInitialHead: typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,

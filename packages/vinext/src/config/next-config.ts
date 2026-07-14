@@ -137,7 +137,7 @@ export type NextI18nConfig = {
     domain: string;
     defaultLocale: string;
     locales?: string[];
-    http?: boolean;
+    http?: true;
   }>;
 };
 

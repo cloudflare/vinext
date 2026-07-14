@@ -3836,7 +3836,7 @@ describe("fetch cache (extended fetch with next options)", () => {
       expect(fetchCallCount).toBe(1);
 
       // Invalidate the tag
-      await revalidateTag("posts");
+      await Promise.resolve(revalidateTag("posts"));
 
       cleanup();
       cleanup = withFetchCache();
