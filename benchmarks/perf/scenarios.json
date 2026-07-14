@@ -3,7 +3,14 @@
     { "command": ["vp", "run", "build"] },
     { "command": ["node", "benchmarks/generate-app.mjs"], "trusted": true },
     {
-      "command": ["npm", "install"],
+      "command": [
+        "npm",
+        "install",
+        "--no-save",
+        "typescript@5.9.3",
+        "@types/node@25.9.2",
+        "@types/react@19.2.16"
+      ],
       "cwd": "benchmarks/nextjs",
       "implementationId": "nextjs"
     }
