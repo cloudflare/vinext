@@ -191,10 +191,12 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/%5Bslug%5D/layout.tsx", EMPTY_LAYOUT);
       await writeProjectFile(root, "app/%5Bslug%5D/page.tsx", EMPTY_PAGE);
 
-      const outputPath = await generateRouteTypes({ root });
-      const generated = await readFile(outputPath, "utf-8");
+      const result = await generateRouteTypes({ root });
+      const generated = await readFile(result.routeTypesPath, "utf-8");
 
-      expect(outputPath).toBe(toSlash(path.join(root, ".next/types/routes.d.ts")));
+      expect(result.routeTypesPath).toBe(toSlash(path.join(root, ".next/types/routes.d.ts")));
+      expect(result.nextEnvPath).toBe(toSlash(path.join(root, "next-env.d.ts")));
+      expect(result.nextEnvStatus).toBe("created");
       expect(generated).toContain("declare namespace VinextRouteTypes");
       expect(generated).toContain(
         'type PageRoute = "/" | "/[slug]" | "/_sites" | "/blog/[slug]" | "/dashboard" | "/docs/[...slug]" | "/shop/[[...slug]]";',
@@ -225,8 +227,8 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/(shop)/shop/page.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "app/(shop)/@cart/default.tsx", EMPTY_PAGE);
 
-      const outputPath = await generateRouteTypes({ root });
-      const generated = await readFile(outputPath, "utf-8");
+      const { routeTypesPath } = await generateRouteTypes({ root });
+      const generated = await readFile(routeTypesPath, "utf-8");
 
       expect(generated).toContain('type LayoutRoute = "/(marketing)" | "/(shop)";');
       expect(generated).toContain('"/(marketing)": "modal";');
@@ -241,8 +243,8 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/dashboard/page.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "app/dashboard/@analytics/default.tsx", EMPTY_PAGE);
 
-      const outputPath = await generateRouteTypes({ root });
-      const generated = await readFile(outputPath, "utf-8");
+      const { routeTypesPath } = await generateRouteTypes({ root });
+      const generated = await readFile(routeTypesPath, "utf-8");
 
       expect(generated).toContain('type LayoutRoute = "/";');
       expect(generated).toContain('"/": "analytics";');
@@ -257,8 +259,8 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/@modal/layout.tsx", EMPTY_LAYOUT);
       await writeProjectFile(root, "app/@modal/page.tsx", EMPTY_PAGE);
 
-      const outputPath = await generateRouteTypes({ root });
-      const generated = await readFile(outputPath, "utf-8");
+      const { routeTypesPath } = await generateRouteTypes({ root });
+      const generated = await readFile(routeTypesPath, "utf-8");
 
       expect(generated).toContain('type LayoutRoute = "/" | "/@modal";');
       expect(generated).toContain('"/": "modal";');
@@ -281,13 +283,25 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("reports whether next-env.d.ts was created, updated, or unchanged", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+
+      expect((await generateRouteTypes({ root })).nextEnvStatus).toBe("created");
+      expect((await generateRouteTypes({ root })).nextEnvStatus).toBe("unchanged");
+
+      await writeProjectFile(root, "next-env.d.ts", "outdated\n");
+      expect((await generateRouteTypes({ root })).nextEnvStatus).toBe("updated");
+    });
+  });
+
   it("generates Next-compatible nullable navigation hooks for hybrid apps", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
 
-      const outputPath = await generateRouteTypes({ root });
-      const generated = await readFile(outputPath, "utf-8");
+      const { routeTypesPath } = await generateRouteTypes({ root });
+      const generated = await readFile(routeTypesPath, "utf-8");
 
       expect(generated).toContain('declare module "next/navigation"');
       expect(generated).toContain("function useParams<");

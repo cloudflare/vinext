@@ -15,6 +15,12 @@ type GenerateRouteTypesOptions = {
   pageExtensions?: readonly string[];
 };
 
+export type GenerateRouteTypesResult = {
+  routeTypesPath: string;
+  nextEnvPath: string;
+  nextEnvStatus: "created" | "updated" | "unchanged";
+};
+
 type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
 export function nextEnvFileContent(hasNext: boolean, hasAppDir: boolean, eol = "\n"): string {
@@ -33,7 +39,9 @@ import "vinext/types/augmentations";
 `.replaceAll("\n", eol);
 }
 
-export async function generateRouteTypes(options: GenerateRouteTypesOptions): Promise<string> {
+export async function generateRouteTypes(
+  options: GenerateRouteTypesOptions,
+): Promise<GenerateRouteTypesResult> {
   const root = path.resolve(options.root);
   const appDir =
     options.appDir === null
@@ -53,11 +61,18 @@ export async function generateRouteTypes(options: GenerateRouteTypesOptions): Pr
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
-  await ensureNextEnvFile(root, appDir !== null);
-  return outPath;
+  const nextEnv = await ensureNextEnvFile(root, appDir !== null);
+  return {
+    routeTypesPath: outPath,
+    nextEnvPath: nextEnv.path,
+    nextEnvStatus: nextEnv.status,
+  };
 }
 
-async function ensureNextEnvFile(root: string, hasAppDir: boolean): Promise<void> {
+async function ensureNextEnvFile(
+  root: string,
+  hasAppDir: boolean,
+): Promise<{ path: string; status: GenerateRouteTypesResult["nextEnvStatus"] }> {
   const envPath = path.join(root, "next-env.d.ts");
   let eol = os.EOL;
   let existing: string | undefined;
@@ -70,8 +85,9 @@ async function ensureNextEnvFile(root: string, hasAppDir: boolean): Promise<void
   }
   const hasNext = await hasNextPackage(root);
   const content = nextEnvFileContent(hasNext, hasAppDir, eol);
-  if (existing === content) return;
+  if (existing === content) return { path: envPath, status: "unchanged" };
   await fs.writeFile(envPath, content, "utf-8");
+  return { path: envPath, status: existing === undefined ? "created" : "updated" };
 }
 
 async function hasNextPackage(root: string): Promise<boolean> {
