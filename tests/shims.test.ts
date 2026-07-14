@@ -6997,10 +6997,10 @@ describe("replyToCacheKey deterministic hashing", () => {
   });
 });
 
-describe("buildUseCacheKey — Cloudflare KV 512-byte key guard", () => {
+describe("buildUseCacheKey logical handler keys", () => {
   // Dynamic imports match this file's convention: shims are loaded inside each
   // test to exercise per-test module state/loading boundaries.
-  it("keeps short keys verbatim (no hashing)", async () => {
+  it("builds keys from the function scope and serialized arguments", async () => {
     const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
     expect(buildUseCacheKey("mod#Comp", undefined)).toBe("use-cache:mod#Comp");
     expect(buildUseCacheKey("mod#Comp", "dep-v1", '["a"]')).toBe(
@@ -7008,52 +7008,13 @@ describe("buildUseCacheKey — Cloudflare KV 512-byte key guard", () => {
     );
   });
 
-  it("hashes the args tail when the key would exceed Cloudflare's 512-byte KV limit", async () => {
+  it("preserves long arguments verbatim for the selected cache handler", async () => {
     const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    // A long dynamic catch-all slug flows into the key via the serialized args.
-    // Before the guard, the assembled key exceeded 512 bytes and made the KV
-    // GET throw a 414 — masking notFound() as a 200 error boundary.
     const longArgs = JSON.stringify([{ slug: "a".repeat(600) }]);
     const key = buildUseCacheKey("mod#CachedRoute", "deploy-usecache-v1", longArgs);
 
-    expect(new TextEncoder().encode(key).length).toBeLessThanOrEqual(512);
-    expect(key).toContain(":__hash:");
-    // The readable function-scoped prefix is preserved when it fits.
-    expect(key.startsWith("use-cache:build:deploy-usecache-v1:mod#CachedRoute:")).toBe(true);
-  });
-
-  it("produces distinct keys for distinct long args (no collision)", async () => {
-    const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    const a = buildUseCacheKey("mod#C", "dep", JSON.stringify([{ slug: "a".repeat(600) }]));
-    const b = buildUseCacheKey("mod#C", "dep", JSON.stringify([{ slug: "b".repeat(600) }]));
-    expect(a).not.toBe(b);
-  });
-
-  it("keeps distinct cached functions distinct even when args are hashed", async () => {
-    const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    const longArgs = JSON.stringify([{ slug: "x".repeat(600) }]);
-    const a = buildUseCacheKey("modA#C", "dep", longArgs);
-    const b = buildUseCacheKey("modB#C", "dep", longArgs);
-    expect(a).not.toBe(b);
-  });
-
-  it("hashes the scoped id too when it alone overflows the budget", async () => {
-    const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    const hugeId = "m".repeat(700);
-    const key = buildUseCacheKey(hugeId, "dep", '["a"]');
-    expect(new TextEncoder().encode(key).length).toBeLessThanOrEqual(512);
-    expect(key.startsWith("use-cache:__hash:")).toBe(true);
-  });
-
-  it("rehashes the scoped id when appending the args hash exceeds the budget", async () => {
-    const { buildUseCacheKey } = await import("../packages/vinext/src/shims/cache-runtime.js");
-    // `use-cache:` plus this id is exactly 480 bytes. The args hash must not
-    // then be appended without rechecking the final candidate.
-    const boundaryId = "m".repeat(470);
-    const key = buildUseCacheKey(boundaryId, undefined, "x".repeat(600));
-
-    expect(new TextEncoder().encode(key).length).toBeLessThanOrEqual(480);
-    expect(key).toMatch(/^use-cache:__hash:[0-9a-f]{16}:__hash:[0-9a-f]{16}$/);
+    expect(key).toBe(`use-cache:build:deploy-usecache-v1:mod#CachedRoute:${longArgs}`);
+    expect(key).not.toContain(":__hash:");
   });
 });
 
@@ -7064,15 +7025,12 @@ describe('"use cache" runtime — handler resilience', () => {
     const { setCacheHandler, getCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
-    // Mirrors Cloudflare KV rejecting an over-length key with a 414. Such a
-    // throw from handler.get must NOT surface as the render result — it must
+    // A cache backend failure must NOT surface as the render result — it must
     // fall through so the function runs and its own thrown control-flow signal
     // (e.g. notFound()'s digest) reaches the boundary classifier as a 404.
     class GetThrowingHandler extends MemoryCacheHandler {
       async get(_key?: string, _ctx?: Record<string, unknown>): Promise<never> {
-        throw new Error(
-          "KV GET failed: 414 UTF-8 encoded length of 540 exceeds key length limit of 512.",
-        );
+        throw new Error("cache backend unavailable");
       }
     }
 
