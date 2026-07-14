@@ -192,6 +192,26 @@ describe("createVinextApp", () => {
     expect(calls).toContain(expected);
   });
 
+  it("falls back to separator-free exec for an unknown package manager", async () => {
+    const appPath = path.join(tmpDir, "future-pm-app");
+    const calls: string[] = [];
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "future-pm" as never,
+        install: true,
+        git: false,
+        initOptions: nodeInitOptions,
+        _exec: (cmd) => {
+          calls.push(cmd);
+        },
+      }),
+    );
+
+    expect(calls).toContain("future-pm exec vinext typegen");
+  });
+
   it("does not include Cloudflare Workers copy for the Node target", async () => {
     const appPath = path.join(tmpDir, "node-app");
 

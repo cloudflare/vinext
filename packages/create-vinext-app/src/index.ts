@@ -461,7 +461,7 @@ async function runTypegen(
       case "yarn":
         return [packageManager, ["exec", "vinext", "typegen"]] as const;
       default:
-        return packageManager satisfies never;
+        return [packageManager, ["exec", "vinext", "typegen"]] as const;
     }
   })();
 
