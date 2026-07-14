@@ -38,6 +38,7 @@ const { markDynamicUsageMock, markRenderRequestApiUsageMock } = vi.hoisted(() =>
 }));
 
 vi.mock("../packages/vinext/src/shims/headers.js", () => ({
+  getHeadersAccessPhase: () => "render",
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
