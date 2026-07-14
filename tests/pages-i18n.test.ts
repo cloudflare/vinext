@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
+import type { NextI18nConfig } from "../packages/vinext/src/config/next-config.js";
 
 describe("Pages i18n domain helpers", () => {
   let addLocalePrefix: typeof import("../packages/vinext/src/utils/domain-locale.js").addLocalePrefix;
@@ -23,7 +24,7 @@ describe("Pages i18n domain helpers", () => {
       { domain: "example.fr", defaultLocale: "fr", http: true },
       { domain: "example.nl", defaultLocale: "nl-NL", locales: ["nl-BE"] },
     ],
-  };
+  } satisfies NextI18nConfig;
 
   it("matches configured domains ignoring port and case", () => {
     expect(detectDomainLocale(i18n.domains, "EXAMPLE.FR:3000")).toEqual(i18n.domains[1]);

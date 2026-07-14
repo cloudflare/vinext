@@ -92,6 +92,15 @@ export function matchRoutePattern(
   urlParts: readonly string[],
   patternParts: readonly string[],
 ): RoutePatternParams | null {
+  const params = matchRoutePatternRaw(urlParts, patternParts);
+  if (params) decodeMatchedParams(params);
+  return params;
+}
+
+export function matchRoutePatternRaw(
+  urlParts: readonly string[],
+  patternParts: readonly string[],
+): RoutePatternParams | null {
   const params: RoutePatternParams = Object.create(null);
 
   function matchFrom(urlIndex: number, patternIndex: number): boolean {
@@ -137,9 +146,7 @@ export function matchRoutePattern(
     return matchFrom(urlIndex + 1, patternIndex + 1);
   }
 
-  if (!matchFrom(0, 0)) return null;
-  decodeMatchedParams(params);
-  return params;
+  return matchFrom(0, 0) ? params : null;
 }
 
 export function matchRoutePatternPrefix(

@@ -128,12 +128,12 @@ function decodedPrerenderRouteParamEquals(
 
     return prerenderValue.every((item, index) => {
       const decoded = decodePrerenderRouteParam(item);
-      return decoded !== null && decoded === matchedValue[index];
+      return item === matchedValue[index] || (decoded !== null && decoded === matchedValue[index]);
     });
   }
 
   const decoded = decodePrerenderRouteParam(prerenderValue);
-  return decoded !== null && decoded === matchedValue;
+  return prerenderValue === matchedValue || (decoded !== null && decoded === matchedValue);
 }
 
 export function prerenderRouteParamsPayloadMatchesRoute(

@@ -1,10 +1,15 @@
-import { buildRouteTrie, trieMatch } from "../routing/route-trie.js";
+import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
   matchRoutePattern,
+  matchRoutePatternRaw,
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import {
+  decodeMatchedParams,
+  splitPathnameForRouteMatch,
+  splitPathSegments,
+} from "../routing/utils.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -70,8 +75,10 @@ type AppRscSiblingInterceptForMatching = {
 };
 
 type AppRscRouteForMatching = {
+  __loadRouteHandler?: unknown;
   pattern: string;
   patternParts: string[];
+  routeHandler?: unknown;
   slots?: Record<string, AppRscSlotForMatching>;
   siblingIntercepts?: AppRscSiblingInterceptForMatching[];
 };
@@ -110,16 +117,99 @@ function createRouteParams(): AppRscRouteParams {
   return Object.create(null);
 }
 
-function appRscPathnameParts(pathname: string): string[] {
+function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
   const pathOnly = pathname.split("?")[0];
-  const normalized = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-  return splitPathnameForRouteMatch(normalized);
+  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+  return isNormalized
+    ? splitPathSegments(normalizedPathname)
+    : splitPathnameForRouteMatch(normalizedPathname);
+}
+
+function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
+  const pathOnly = pathname.split("?")[0];
+  const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
+  return splitPathSegments(normalizedPathname).map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  });
+}
+
+function canonicalizeAppPageParam(value: string): string {
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return value;
+  }
+}
+
+function canonicalizeAppPageParams(params: AppRscRouteParams): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    params[key] = Array.isArray(value)
+      ? value.map(canonicalizeAppPageParam)
+      : canonicalizeAppPageParam(value);
+  }
+}
+
+function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
+  // Generated manifests retain the lazy loader before the first request and
+  // hydrate routeHandler afterwards. Classification must not change when that
+  // module load completes.
+  return route.routeHandler != null || typeof route.__loadRouteHandler === "function";
+}
+
+function normalizeMatchedParamsForRoute(result: {
+  route: AppRscRouteForMatching;
+  params: AppRscRouteParams;
+}): void {
+  if (isAppRouteHandlerRoute(result.route)) {
+    decodeMatchedParams(result.params);
+  } else {
+    canonicalizeAppPageParams(result.params);
+  }
+}
+
+function extractRawParamsForMatchedRoute(
+  patternParts: readonly string[],
+  pathnameParts: readonly string[],
+): AppRscRouteParams {
+  // Route selection uses the normalized pathname so encoded static segments
+  // cannot alias filesystem routes. Param values come from the encoded URL
+  // parts, matching Next.js client/route-params.ts before the route-kind-
+  // specific canonicalize/decode step below.
+  const params = createRouteParams();
+  let pathnameIndex = 0;
+
+  for (const part of patternParts) {
+    if (!part.startsWith(":")) {
+      pathnameIndex += 1;
+      continue;
+    }
+
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const paramName = part.slice(1, isCatchAll ? -1 : undefined);
+    if (isCatchAll) {
+      const remaining = pathnameParts.slice(pathnameIndex);
+      if (remaining.length > 0) params[paramName] = [...remaining];
+      break;
+    }
+
+    const value = pathnameParts[pathnameIndex];
+    if (value !== undefined) params[paramName] = value;
+    pathnameIndex += 1;
+  }
+
+  return params;
 }
 
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
+  matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(pathname: string, sourcePathname?: string | null): AppRscInterceptMatch | null;
 } {
   const routeTrie = buildRouteTrie(routes);
@@ -128,7 +218,18 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
   return {
     matchRoute(url) {
-      return trieMatch(routeTrie, appRscPathnameParts(url));
+      const rawParts = appRscPathnameParts(url, true);
+      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
+      if (!result) return null;
+      result.params = extractRawParamsForMatchedRoute(result.route.patternParts, rawParts);
+      normalizeMatchedParamsForRoute(result);
+      return result;
+    },
+    matchRequestRoute(url) {
+      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, true));
+      if (!result) return null;
+      normalizeMatchedParamsForRoute(result);
+      return result;
     },
     findIntercept(pathname, sourcePathname = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
@@ -138,9 +239,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
       if (sourcePathname === null) return null;
 
-      const urlParts = appRscPathnameParts(pathname);
-      const sourceParts = appRscPathnameParts(sourcePathname);
-      const matchedSourceRoute = trieMatch(routeTrie, sourceParts);
+      const urlParts = appRscPathnameParts(pathname, true);
+      const sourceParts = appRscInterceptionSourcePathnameParts(sourcePathname);
+      const matchedSourceRoute = trieMatchRaw(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {
         // Primary gate: when the intercept declares a `sourceMatchPattern`
@@ -150,8 +251,9 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         // authoritative gate when the manifest carries the pattern.
         if (!matchInterceptSource(sourceParts, entry)) continue;
 
-        const params = matchAppRscRoutePattern(urlParts, entry.targetPatternParts);
+        const params = matchRoutePatternRaw(urlParts, entry.targetPatternParts);
         if (params === null) continue;
+        canonicalizeAppPageParams(params);
 
         const concreteSourceRouteIndex =
           matchedSourceRoute && entry.sourceMatchPatternParts !== null
@@ -162,7 +264,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           matchedSourceRoute && entry.sourceMatchPatternParts !== null
             ? matchedSourceRoute.params
             : sourceRoute
-              ? matchAppRscRoutePattern(sourceParts, sourceRoute.patternParts)
+              ? matchRoutePatternRaw(sourceParts, sourceRoute.patternParts)
               : null;
 
         // Secondary gate (from #1249): when the entry has no

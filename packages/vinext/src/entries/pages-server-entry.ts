@@ -318,8 +318,8 @@ const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
-  // the entry point. Decoding again would create a double-decode vector.
+  // Static route selection uses raw encoded identity (/%61bout must not
+  // select /about). _trieMatch decodes dynamic captures exactly once.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
   return _trieMatch(trie, urlParts);
@@ -389,6 +389,7 @@ const _renderPage = __createPagesPageHandler({
       : null,
   setI18nContext: typeof setI18nContext === "function" ? setI18nContext : null,
   wrapWithRouterContext: typeof wrapWithRouterContext === "function" ? wrapWithRouterContext : null,
+  router: Router,
   resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
   getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
   setDocumentInitialHead: typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,

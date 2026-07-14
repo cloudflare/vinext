@@ -45,7 +45,7 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
 test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test.beforeAll(async () => {
     server = spawn(
-      "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp build && npx wrangler dev --config dist/server/wrangler.json --port 4195",
+      "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp build --config vite.cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4195",
       { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
     );
     await waitForServer();

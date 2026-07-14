@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const withSlash = url.searchParams.get("withSlash") !== "false";
 
   const path = withSlash ? `/${lang}/legacy/` : `/${lang}/legacy`;
-  await revalidatePath(path);
+  revalidatePath(path);
 
   return NextResponse.json({ timestamp: new Date().toISOString() });
 }

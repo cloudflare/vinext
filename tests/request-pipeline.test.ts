@@ -2,6 +2,8 @@ import { describe, it, expect } from "vite-plus/test";
 import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
+  canonicalizeRequestPathname,
+  canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   createStaticFileSignal,
@@ -24,6 +26,28 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+
+// Ported from the URL boundary used by Next.js request handling: WHATWG URL
+// pathname parsing canonicalizes recognized dot segments before routing.
+describe("canonicalizeRequestPathname", () => {
+  it("canonicalizes literal and percent-encoded dot segments", () => {
+    expect(canonicalizeRequestPathname("/%2e/about")).toBe("/about");
+    expect(canonicalizeRequestPathname("/x/%2E%2e/old-about")).toBe("/old-about");
+    expect(canonicalizeRequestPathname("/docs/.%2e/about")).toBe("/about");
+  });
+
+  it("preserves every unrelated percent escape byte-for-byte", () => {
+    for (const pathname of ["/%61bout/", "/dynamic/a%2561/b%2Fc", "/%2f", "/%5c", "/%252f"]) {
+      expect(canonicalizeRequestPathname(pathname)).toBe(pathname);
+    }
+  });
+
+  it("preserves the raw query while canonicalizing only the pathname", () => {
+    expect(canonicalizeRequestUrlPathname("/x/%2e%2e/about?next=%2e%2e&x=%61")).toBe(
+      "/about?next=%2e%2e&x=%61",
+    );
+  });
+});
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 

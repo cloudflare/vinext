@@ -32,10 +32,14 @@ import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
-import { addCollectedRequestTags } from "./fetch-cache.js";
+import { getRequestExecutionContext } from "./request-context.js";
+import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
+  _hasPendingRevalidatedTag,
+  _markPendingRevalidatedTag,
+  _queuePendingRevalidation,
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
@@ -61,6 +65,19 @@ const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 export type { ExecutionContextLike } from "./request-context.js";
 export { runWithExecutionContext, getRequestExecutionContext } from "./request-context.js";
 
+function scheduleRevalidation(promise: Promise<void>): undefined {
+  const executionContext = getRequestExecutionContext();
+  const queued = _queuePendingRevalidation(promise);
+  if (executionContext) {
+    executionContext.waitUntil(promise);
+  } else if (!queued) {
+    void promise.catch((error) => {
+      console.error("[vinext] cache revalidation failed:", error);
+    });
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Public API — what app code imports from 'next/cache'
 // ---------------------------------------------------------------------------
@@ -78,10 +95,7 @@ export { runWithExecutionContext, getRequestExecutionContext } from "./request-c
  * @param tag - Cache tag to revalidate
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
-export async function revalidateTag(
-  tag: string,
-  profile?: string | { expire?: number },
-): Promise<void> {
+export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
   // Resolve the profile to durations for the handler
   let durations: { expire?: number } | undefined;
   if (typeof profile === "string") {
@@ -99,7 +113,9 @@ export async function revalidateTag(
   if (!profile || !durations || durations.expire === 0) {
     markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   }
-  await _invalidateEncodedTag(encodeCacheTag(tag), durations);
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag, durations));
 }
 
 /**
@@ -134,12 +150,14 @@ async function _invalidateEncodedTag(
  * The `type` parameter is App Router only — Pages Router does not generate
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
-export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
+export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
-  await _invalidateEncodedTag(encodeCacheTag(tag));
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
 }
 
 /**
@@ -167,7 +185,7 @@ export function refresh(): void {
  *
  * @see https://nextjs.org/docs/app/api-reference/functions/updateTag
  */
-export function updateTag(tag: string): Promise<void> {
+export function updateTag(tag: string): undefined {
   if (getHeadersAccessPhase() !== "action") {
     throw new Error(
       "updateTag can only be called from within a Server Action. " +
@@ -177,7 +195,9 @@ export function updateTag(tag: string): Promise<void> {
   }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  return _invalidateEncodedTag(encodeCacheTag(tag));
+  const encodedTag = encodeCacheTag(tag);
+  _markPendingRevalidatedTag(encodedTag);
+  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
 }
 
 /**
@@ -609,10 +629,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.
-      const existing = await getDataCacheHandler().get(cacheKey, {
-        kind: "FETCH",
-        tags,
-      });
+      const softTags = getCurrentFetchSoftTags();
+      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
+        ? null
+        : await getDataCacheHandler().get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+          });
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
         if (cached.ok) {

@@ -14,9 +14,6 @@ async function setDraftMode(request: APIRequestContext, enabled: boolean): Promi
   );
   expect(response.status()).toBe(200);
   expect(response.headers()["cache-control"]).toContain("no-store");
-  expect(response.headers()["cdn-cache-control"]).toBeUndefined();
-  expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
-  expect(response.headers()["cache-tag"]).toBeUndefined();
 }
 
 async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
@@ -24,9 +21,7 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
   expect(response.status()).toBe(200);
   return {
     cacheControl: response.headers()["cache-control"],
-    cacheTag: response.headers()["cache-tag"],
     cacheState: response.headers()["x-vinext-cache"],
-    cdnCacheControl: response.headers()["cdn-cache-control"],
     payload: (await response.json()) as DraftIsrPayload,
   };
 }
@@ -49,15 +44,11 @@ test.describe("production route-handler draft-mode cache isolation", () => {
 
     try {
       const response = await request.post(`${BASE}/nextjs-compat/api/post-form-redirect`, {
-        headers: { "x-test-draft-cache-policy": "1" },
         maxRedirects: 0,
       });
 
       expect(response.status()).toBe(307);
       expect(response.headers()["cache-control"]).toContain("no-store");
-      expect(response.headers()["cdn-cache-control"]).toBeUndefined();
-      expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
-      expect(response.headers()["cache-tag"]).toBeUndefined();
     } finally {
       await setDraftMode(request, false);
     }
@@ -77,8 +68,6 @@ test.describe("production route-handler draft-mode cache isolation", () => {
     expect(draft.cacheState).not.toBe("HIT");
     expect(draft.cacheControl).not.toContain("s-maxage");
     expect(draft.cacheControl).toContain("no-store");
-    expect(draft.cdnCacheControl).toBeUndefined();
-    expect(draft.cacheTag).toBeUndefined();
   });
 
   test("does not serve an anonymous cache entry to draft requests", async ({ request }) => {
@@ -95,8 +84,6 @@ test.describe("production route-handler draft-mode cache isolation", () => {
       expect(draft.cacheState).not.toBe("HIT");
       expect(draft.cacheControl).not.toContain("s-maxage");
       expect(draft.cacheControl).toContain("no-store");
-      expect(draft.cdnCacheControl).toBeUndefined();
-      expect(draft.cacheTag).toBeUndefined();
     } finally {
       await setDraftMode(request, false);
     }

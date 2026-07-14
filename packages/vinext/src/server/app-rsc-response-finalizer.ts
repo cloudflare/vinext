@@ -6,8 +6,6 @@ import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { normalizePath } from "./normalize-path.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 
 type FinalizeAppRscResponseOptions = {
@@ -78,16 +76,7 @@ export function finalizeAppRscResponse(
   }
 
   const url = new URL(request.url);
-  let pathname: string;
-  try {
-    pathname = normalizePath(normalizePathnameForRouteMatch(url.pathname));
-  } catch {
-    // Malformed percent-encoding. The request reached this point only because
-    // normalizePathnameForRouteMatchStrict ran earlier and returned 400 for
-    // truly-malformed paths. This catch exists as a safety net for edge cases;
-    // keep the historical raw-path fallback rather than crashing the response.
-    pathname = url.pathname;
-  }
+  let pathname = url.pathname;
 
   // Config header sources are defined without basePath prefix. Strip basePath
   // at a segment boundary (not a string prefix) so /app2/page with basePath

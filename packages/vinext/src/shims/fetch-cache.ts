@@ -23,7 +23,7 @@ import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from ".
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { markDynamicUsage } from "./headers.js";
-import { _setRequestScopedCacheLife } from "./cache-request-state.js";
+import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -1161,15 +1161,25 @@ function createPatchedFetch(): typeof globalThis.fetch {
       throw err;
     }
     const handler = getDataCacheHandler();
+    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
     // Try cache first
     try {
-      const cached = await handler.get(cacheKey, {
-        kind: "FETCH",
-        tags,
-        softTags,
-        revalidate: revalidateSeconds,
-      });
+      let cached = mustBypassPendingRevalidation
+        ? null
+        : await handler.get(cacheKey, {
+            kind: "FETCH",
+            tags,
+            softTags,
+            revalidate: revalidateSeconds,
+          });
+      if (
+        cached?.value?.kind === "FETCH" &&
+        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+      ) {
+        mustBypassPendingRevalidation = true;
+        cached = null;
+      }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         await lowerFetchCacheRevalidateIfNeeded(
           handler,
@@ -1247,7 +1257,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const response = await dedupeFetch(input, fetchInit);
+    const response = await (mustBypassPendingRevalidation
+      ? originalFetch(input, fetchInit)
+      : dedupeFetch(input, fetchInit));
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
     if (cacheValue) {

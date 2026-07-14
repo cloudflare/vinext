@@ -11,6 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
+import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -1612,7 +1613,7 @@ function subscribeToNavigation(cb: () => void): () => void {
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
  */
-export function usePathname(): string | null {
+export function usePathname(): string {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR of "use client" components, the navigation context may not be set.
@@ -1621,7 +1622,10 @@ export function usePathname(): string | null {
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
     const pagesCtx = _getPagesNavigationContext();
-    return pagesCtx ? pagesCtx.pathname : "/";
+    // The standalone next/navigation declaration returns string, while the
+    // Pages Router compatibility runtime intentionally yields null before
+    // router readiness (matching Next.js' Pages Router adapter behavior).
+    return pagesCtx ? (pagesCtx.pathname as string) : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
@@ -1636,9 +1640,9 @@ export function usePathname(): string | null {
   // fall through to useSyncExternalStore so user pushState/replaceState
   // calls are immediately reflected.
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
-    return renderSnapshot.pathname;
+    return renderSnapshot.pathname as string;
   }
-  return pathname;
+  return pathname as string;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
@@ -1670,9 +1674,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
 /**
  * Returns the dynamic params for the current route.
  */
-export function useParams<
-  T extends Record<string, string | string[]> = Record<string, string | string[]>,
->(): T | null {
+export function useParams<T extends Params = Params>(): T | null {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.

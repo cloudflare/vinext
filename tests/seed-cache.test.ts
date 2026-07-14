@@ -463,7 +463,7 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(rscKey)).not.toBeNull();
 
     // revalidatePath should invalidate both seeded artifacts.
-    await revalidatePath("/posts");
+    await Promise.resolve(revalidatePath("/posts"));
 
     expect(await getCacheHandler().get(htmlKey)).toBeNull();
     expect(await getCacheHandler().get(rscKey)).toBeNull();

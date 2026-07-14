@@ -9,7 +9,7 @@
     "directory": "packages/create-vinext-app"
   },
   "bin": {
-    "create-vinext-app": "dist/index.js"
+    "create-vinext-app": "dist/cli.js"
   },
   "files": [
     "dist"

@@ -118,6 +118,8 @@ export type NextHeader = {
   headers: Array<{ key: string; value: string }>;
   /** See {@link NextRedirect.basePath}. */
   basePath?: false;
+  /** See {@link NextRedirect.locale}. */
+  locale?: false;
 };
 
 export type NextI18nConfig = {
@@ -137,7 +139,7 @@ export type NextI18nConfig = {
     domain: string;
     defaultLocale: string;
     locales?: string[];
-    http?: boolean;
+    http?: true;
   }>;
 };
 
@@ -1823,7 +1825,8 @@ export async function resolveNextConfig(
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
 
-  // Apply Next.js i18n locale-prefix transformation to redirects/rewrites.
+  // Apply Next.js i18n locale-prefix transformation to redirects, rewrites,
+  // and headers.
   // When i18n is configured and a rule does NOT carry `locale: false`, the
   // source is rewritten to match locale-prefixed URLs. Rules with
   // `locale: false` are left untouched so user-supplied `:locale` segments
@@ -1837,6 +1840,7 @@ export async function resolveNextConfig(
       afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite", opts),
       fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
+    headers = applyLocaleToRoutes(headers, i18n, "header", opts);
   }
 
   const images = config.images

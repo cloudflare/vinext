@@ -651,7 +651,7 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/dashboard/profile")).not.toBeNull();
     expect(await handler.get("entry:/about")).not.toBeNull();
 
-    await revalidatePath("/dashboard", "layout");
+    await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
     // All three dashboard entries should be invalidated
     expect(await handler.get("entry:/dashboard")).toBeNull();
@@ -666,7 +666,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
     await seedEntry("/about/team", "about-team");
 
-    await revalidatePath("/about", "page");
+    await Promise.resolve(revalidatePath("/about", "page"));
 
     // Only /about should be invalidated
     expect(await handler.get("entry:/about")).toBeNull();
@@ -678,7 +678,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
     await seedEntry("/about/team", "about-team");
 
-    await revalidatePath("/about");
+    await Promise.resolve(revalidatePath("/about"));
 
     // Only /about should be invalidated
     expect(await handler.get("entry:/about")).toBeNull();
@@ -689,15 +689,15 @@ describe("revalidatePath type parameter", () => {
   it("uses route pattern tags for typed dynamic route invalidation", async () => {
     await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
 
-    await revalidatePath("/blog/hello", "layout");
+    await Promise.resolve(revalidatePath("/blog/hello", "layout"));
     expect(await handler.get("entry:/blog/hello")).not.toBeNull();
 
-    await revalidatePath("/blog/[slug]", "layout");
+    await Promise.resolve(revalidatePath("/blog/[slug]", "layout"));
     expect(await handler.get("entry:/blog/hello")).toBeNull();
 
     await seedEntry("/blog/hello", "hello", ["blog", "[slug]"]);
 
-    await revalidatePath("/blog/hello");
+    await Promise.resolve(revalidatePath("/blog/hello"));
     expect(await handler.get("entry:/blog/hello")).toBeNull();
   });
 
@@ -707,7 +707,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/app/blog/2024", "blog-2024");
     await seedEntry("/app/blog/2024/01/post", "blog-post");
 
-    await revalidatePath("/app", "layout");
+    await Promise.resolve(revalidatePath("/app", "layout"));
 
     // All entries under /app should be invalidated
     expect(await handler.get("entry:/app")).toBeNull();
@@ -724,7 +724,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/dashboard-admin", "dashboard-admin");
     await seedEntry("/dashboard/settings", "settings");
 
-    await revalidatePath("/dashboard", "layout");
+    await Promise.resolve(revalidatePath("/dashboard", "layout"));
 
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
@@ -738,7 +738,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/dashboard", "dashboard");
     await seedEntry("/dashboard/settings", "settings");
 
-    await revalidatePath("/", "layout");
+    await Promise.resolve(revalidatePath("/", "layout"));
 
     // Root layout covers all routes
     expect(await handler.get("entry:/")).toBeNull();
@@ -751,7 +751,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/", "home");
     await seedEntry("/about", "about");
 
-    await revalidatePath("/", "page");
+    await Promise.resolve(revalidatePath("/", "page"));
 
     // Root page should be invalidated
     expect(await handler.get("entry:/")).toBeNull();
@@ -765,7 +765,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about", "about-page");
 
     // revalidatePath("/dashboard/", "layout") must behave like ("/dashboard", "layout")
-    await revalidatePath("/dashboard/", "layout");
+    await Promise.resolve(revalidatePath("/dashboard/", "layout"));
 
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
@@ -792,7 +792,7 @@ describe("revalidatePath type parameter", () => {
     await handler.set("entry:page-only", pageOnlyValue, { tags: ["_N_T_/about/page"] });
     await handler.set("entry:bare-path", barePathValue, { tags: ["/about", "_N_T_/about"] });
 
-    await revalidatePath("/about", "page");
+    await Promise.resolve(revalidatePath("/about", "page"));
 
     // "page" type targets the /page leaf tag only
     expect(await handler.get("entry:page-only")).toBeNull();
@@ -805,7 +805,7 @@ describe("revalidatePath type parameter", () => {
     await seedEntry("/about/team", "about-team");
 
     // revalidatePath("/about/", "page") must be equivalent to ("/about", "page")
-    await revalidatePath("/about/", "page");
+    await Promise.resolve(revalidatePath("/about/", "page"));
 
     expect(await handler.get("entry:/about")).toBeNull();
     // /about/team should remain — only the exact path was invalidated

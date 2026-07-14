@@ -257,6 +257,30 @@ export function latestTagVersionFromTags(tags: string[], pkgName: string): strin
 }
 
 /**
+ * Pick the latest tag that proves this package itself was published. Scoped
+ * packages must have their own `<name>@<version>` tag; a legacy global
+ * `v<version>` tag only proves that the root `vinext` package was published.
+ *
+ * This is deliberately stricter than latestTagVersionFromTags(), whose global
+ * fallback is useful as a changelog range for newly introduced packages. Using
+ * that fallback for the publish guard can otherwise leave a new package stuck
+ * "awaiting publish" forever when its package.json starts above the old global
+ * version.
+ */
+export function latestPackageTagVersionFromTags(tags: string[], pkgName: string): string | null {
+  const scopedPrefix = `${pkgName}@`;
+  const versions = tags
+    .map((tag) => {
+      if (tag.startsWith(scopedPrefix)) return tag.slice(scopedPrefix.length);
+      if (pkgName === "vinext" && /^v\d+\.\d+\.\d+/.test(tag)) return tag.slice(1);
+      return null;
+    })
+    .filter((v): v is string => v != null)
+    .sort(compareVersions);
+  return versions.at(-1) ?? null;
+}
+
+/**
  * Latest release tag version for a package, read from `git tag -l`. Returns null
  * when git fails or the package has no matching tag.
  */
@@ -268,6 +292,17 @@ function latestTagVersion(pkgName: string): string | null {
     return null;
   }
   return latestTagVersionFromTags(tags, pkgName);
+}
+
+/** Latest tag proving that this specific package was published. */
+function latestPackageTagVersion(pkgName: string): string | null {
+  let tags: string[] = [];
+  try {
+    tags = git(["tag", "-l"]).split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+  return latestPackageTagVersionFromTags(tags, pkgName);
 }
 
 /** Git ref to diff from: prefer the scoped tag, else the global `v<version>`. */
@@ -537,7 +572,7 @@ export function run(): { written: string | null; bumps: Record<string, Bump> } {
     const pkg = JSON.parse(
       readFileSync(join(REPO_ROOT, dir, "package.json"), "utf8"),
     ) as PackageJson;
-    const decision = decideGeneration(pkg.version ?? "0.0.0", latestTagVersion(name));
+    const decision = decideGeneration(pkg.version ?? "0.0.0", latestPackageTagVersion(name));
     console.log(`[create-changeset] ${name}: ${decision.action} — ${decision.reason}`);
     if (decision.action === "generate") ranges.set(name, releaseRangeStart(name));
   }

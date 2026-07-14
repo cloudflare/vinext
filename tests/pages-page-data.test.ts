@@ -63,6 +63,27 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  // Next.js passes its ServerRouter to App.getInitialProps. Its `route` is the
+  // route pattern, not the concrete URL: packages/next/src/server/render.tsx.
+  it("provides the route pattern to App.getInitialProps router consumers", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps({ router }: { router: { route: string } }) {
+            return {
+              pageProps: { routeTag: router.route.replaceAll("/", "_") },
+            };
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { routeTag: "_posts_[slug]" },
+    });
+  });
+
   it("preserves non-object pageProps returned by custom app getInitialProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -1693,6 +1714,30 @@ describe("pages page data", () => {
     expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
     const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+  });
+
+  it("rejects dangerous redirect schemes before emitting a data envelope", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getServerSideProps() {
+            return {
+              redirect: { destination: "javascript:globalThis.compromised=true", permanent: false },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(500);
+    expect(result.response.headers.get("location")).toBeNull();
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+    expect(await result.response.text()).not.toContain("javascript:");
   });
 
   it("omits x-nextjs-deployment-id on redirect/notFound data responses when deploymentId is not set", async () => {

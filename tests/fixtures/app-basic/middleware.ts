@@ -33,6 +33,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  if (pathname === "/%61dmin") {
+    return NextResponse.rewrite(new URL("/admin", request.url));
+  }
+
+  if (pathname.startsWith("/encoded-parity/middleware/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
+    return NextResponse.rewrite(target);
+  }
+
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
@@ -72,15 +82,6 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 
   if (sessionToken) {
     response.headers.set("x-mw-has-session", "true");
-  }
-
-  if (
-    pathname === "/nextjs-compat/api/post-form-redirect" &&
-    request.headers.get("x-test-draft-cache-policy") === "1"
-  ) {
-    response.headers.set("cdn-cache-control", "public, s-maxage=60");
-    response.headers.set("cloudflare-cdn-cache-control", "public, s-maxage=60");
-    response.headers.set("cache-tag", "draft-redirect");
   }
 
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
@@ -162,6 +163,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 
   // Block /middleware-blocked with custom response
   if (pathname === "/middleware-blocked") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
+  if (pathname === "/admin") {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
@@ -379,6 +384,9 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/admin",
+    "/%61dmin",
+    "/encoded-parity/middleware/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
