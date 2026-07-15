@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
@@ -522,7 +523,16 @@ export function matchesPagesStaticPath(
   routeUrl: string,
 ): boolean {
   if (typeof pathEntry === "string") {
-    return normalizeStaticPathname(pathEntry) === normalizeStaticPathname(routeUrl);
+    // Request routing intentionally preserves the raw encoded pathname until
+    // dynamic captures are decoded. Compare string-form getStaticPaths entries
+    // in the same segment-normalized space so a seeded literal value such as
+    // `[second]` matches a data URL containing `%5Bsecond%5D`. Segment-wise
+    // normalization keeps encoded delimiters such as `%2F` encoded, so they
+    // cannot become path separators during this comparison.
+    return (
+      normalizePathnameForRouteMatch(normalizeStaticPathname(pathEntry)) ===
+      normalizePathnameForRouteMatch(normalizeStaticPathname(routeUrl))
+    );
   }
   const entryParams = pathEntry.params;
   if (entryParams === undefined || entryParams === null) {
