@@ -14,7 +14,7 @@ import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
-import type { MatcherConfig } from "./middleware-matcher.js";
+import { matchesMiddleware, type MatcherConfig } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
@@ -299,7 +299,6 @@ export async function executeMiddleware(
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
 
-  const { matchesMiddleware } = await import("./middleware-matcher.js");
   if (
     !matchesMiddleware(
       matchPathname,
