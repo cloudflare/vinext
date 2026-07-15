@@ -148,6 +148,13 @@ export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
 }
 
+let linkPrefetchNavigationEpoch = 0;
+
+function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
+  linkPrefetchNavigationEpoch += 1;
+  notifyLinkNavigationStart();
+}
+
 // Register the link-status reset hook on the navigation runtime as soon as this
 // module evaluates on the client. `navigateClientSide` calls it at the start of
 // every App Router navigation (including router.push and shallow routing), so a
@@ -156,7 +163,7 @@ export function useLinkStatus(): LinkStatusContextValue {
 // it can be unit-tested without rendering a <Link>.
 if (typeof window !== "undefined") {
   registerNavigationRuntimeFunctions({
-    notifyLinkNavigationStart,
+    notifyLinkNavigationStart: notifyLinkNavigationStartAndCancelPrefetchSetup,
   });
 }
 
@@ -425,6 +432,7 @@ function prefetchUrl(
   locale?: string | false,
 ): void {
   if (typeof window === "undefined") return;
+  const navigationEpoch = linkPrefetchNavigationEpoch;
 
   const prefetchHref = getLinkPrefetchHref({
     href,
@@ -481,6 +489,10 @@ function prefetchUrl(
             ? import("./internal/hybrid-client-route-owner.js")
             : null,
         ]);
+        // A pointer-intent prefetch and its click navigation can start in the
+        // same event turn. If navigation won the module-loading race, do not
+        // begin a second request after it consumes an equivalent cached route.
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,

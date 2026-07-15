@@ -87,7 +87,7 @@ let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> |
 
 /** Load rewrite-aware hybrid route ownership before navigation becomes interactive. */
 export async function preloadHybridClientRouteOwner(): Promise<void> {
-  if (!HAS_PAGES_ROUTER || hybridClientRouteOwnerModule) return;
+  if (hybridClientRouteOwnerModule) return;
   hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
   hybridClientRouteOwnerModule = await hybridClientRouteOwnerModulePromise;
 }
