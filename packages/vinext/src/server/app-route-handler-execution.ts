@@ -343,11 +343,7 @@ export async function executeAppRouteHandler(
 
       return applyDraftModeCachePolicy(
         applyRouteHandlerMiddlewareContext(
-          finalizeRouteHandlerResponse(new Response(null, { status: specialError.statusCode }), {
-            pendingCookies,
-            draftCookie,
-            isHead: options.isAutoHead,
-          }),
+          new Response(null, { status: specialError.statusCode }),
           options.middlewareContext,
         ),
         shouldApplyDraftPolicy,
@@ -371,11 +367,7 @@ export async function executeAppRouteHandler(
 
     return applyDraftModeCachePolicy(
       applyRouteHandlerMiddlewareContext(
-        finalizeRouteHandlerResponse(new Response(null, { status: 500 }), {
-          pendingCookies,
-          draftCookie,
-          isHead: options.isAutoHead,
-        }),
+        new Response(null, { status: 500 }),
         options.middlewareContext,
       ),
       shouldApplyDraftPolicy,

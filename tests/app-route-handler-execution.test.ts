@@ -8,6 +8,7 @@ import {
   getDraftModeCookieHeader,
   headers,
   markDynamicUsage,
+  setHeadersAccessPhase,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
@@ -369,18 +370,32 @@ describe("app route handler execution helpers", () => {
     },
   );
 
+  // Next.js commits mutable cookies for redirect control flow, but access-fallback
+  // responses omit them and ordinary errors are rethrown without finalization.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L712-L747
   it.each([
     {
       kind: "redirect",
+      commitsCookies: true,
       expectedStatus: 307,
       throwValue: { digest: "NEXT_REDIRECT;replace;%2Ftarget;307" },
     },
-    { kind: "not-found", expectedStatus: 404, throwValue: { digest: "NEXT_NOT_FOUND" } },
-    { kind: "error", expectedStatus: 500, throwValue: new Error("draft failure") },
+    {
+      kind: "not-found",
+      commitsCookies: false,
+      expectedStatus: 404,
+      throwValue: { digest: "NEXT_NOT_FOUND" },
+    },
+    {
+      kind: "error",
+      commitsCookies: false,
+      expectedStatus: 500,
+      throwValue: new Error("draft failure"),
+    },
   ])(
-    "preserves a force-static draft transition on $kind responses",
-    async ({ expectedStatus, throwValue }) => {
-      const routePattern = `/api/force-static-draft-error-${expectedStatus}-${Date.now()}`;
+    "applies the draft policy on $kind responses",
+    async ({ commitsCookies, expectedStatus, throwValue }) => {
+      const routePattern = `/api/draft-error-${expectedStatus}-${Date.now()}`;
       const isrSet = vi.fn();
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       setHeadersContext({
@@ -407,8 +422,9 @@ describe("app route handler execution helpers", () => {
             return [];
           },
           getDraftModeCookieHeader,
-          handler: { dynamic: "force-static", revalidate: 60 },
+          handler: { dynamic: "auto", revalidate: 60 },
           async handlerFn() {
+            (await cookies()).set("pending", "value");
             (await draftMode()).enable();
             throw throwValue;
           },
@@ -426,13 +442,16 @@ describe("app route handler execution helpers", () => {
           request: new Request(`https://example.com${routePattern}`),
           revalidateSeconds: 60,
           routePattern,
-          setHeadersAccessPhase() {
-            return "render";
-          },
+          setHeadersAccessPhase,
         });
 
         expect(response.status).toBe(expectedStatus);
-        expect(response.headers.get("set-cookie")).toContain("__prerender_bypass=draft-secret");
+        if (commitsCookies) {
+          expect(response.headers.get("set-cookie")).toContain("pending=value");
+          expect(response.headers.get("set-cookie")).toContain("__prerender_bypass=draft-secret");
+        } else {
+          expect(response.headers.get("set-cookie")).toBeNull();
+        }
         expect(response.headers.get("cache-control")).toContain("no-store");
         expect(isrSet).not.toHaveBeenCalled();
         expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
