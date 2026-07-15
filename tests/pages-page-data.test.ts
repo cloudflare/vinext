@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  getPagesRouteParams,
+  matchesPagesStaticPath,
   renderPagesIsrHtml,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
@@ -246,6 +248,45 @@ describe("pages page data", () => {
     );
 
     expect(result).toEqual({ kind: "notFound" });
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("matches encoded data request paths against string getStaticPaths entries", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: ["/posts/[second]"],
+            };
+          },
+          async getStaticProps({ params }) {
+            return { props: { slug: params?.slug } };
+          },
+        },
+        params: { slug: "[second]" },
+        query: { slug: "[second]" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/%5Bsecond%5D",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { slug: "[second]" },
+    });
+
+    expect(
+      matchesPagesStaticPath(
+        "/docs/a/b",
+        { slug: "a/b" },
+        getPagesRouteParams("/docs/[slug]"),
+        "/docs/a%2Fb",
+      ),
+    ).toBe(false);
   });
 
   it("renders unlisted fallback false paths in preview mode without caching them", async () => {
