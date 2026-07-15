@@ -726,6 +726,9 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
         version: 1.31.0(@voidzero-dev/vite-plus-core@0.2.2(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(workerd@1.20260401.1)(wrangler@4.80.0)
+      '@vinext/cloudflare':
+        specifier: workspace:*
+        version: link:../../../packages/cloudflare
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.2.2(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
