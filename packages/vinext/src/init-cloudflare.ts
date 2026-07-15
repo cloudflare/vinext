@@ -4,7 +4,8 @@ import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
-import { detectProject } from "./utils/project.js";
+import { stripJsonComments } from "./utils/jsonc.js";
+import { detectProject, resolveWranglerJsonPath } from "./utils/project.js";
 
 const require = createRequire(import.meta.url);
 
@@ -50,9 +51,7 @@ export function validateCloudflarePlatformSetup(
   }
 
   const projectInfo = detectProject(context.root);
-  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
-    .map((fileName) => path.join(context.root, fileName))
-    .find((candidate) => fs.existsSync(candidate));
+  const wranglerPath = resolveWranglerJsonPath(context.root) ?? undefined;
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
     ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare)
@@ -81,9 +80,7 @@ export function setupCloudflarePlatform(
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
   const projectInfo = detectProject(context.root);
-  const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
-    .map((fileName) => path.join(context.root, fileName))
-    .find((candidate) => fs.existsSync(candidate));
+  const wranglerPath = resolveWranglerJsonPath(context.root) ?? undefined;
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const imagesBinding = wranglerCode ? getWranglerImagesBinding(wranglerCode) : "IMAGES";
 
@@ -205,44 +202,6 @@ export function generateWranglerConfig(
   }
 
   return JSON.stringify(config, null, 2) + "\n";
-}
-
-function stripJsonComments(code: string): string {
-  let output = "";
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < code.length; index++) {
-    const char = code[index];
-    const next = code[index + 1];
-    if (inString) {
-      output += char;
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      output += char;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      while (index < code.length && code[index] !== "\n") index++;
-      output += "\n";
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      index += 2;
-      while (index < code.length && !(code[index] === "*" && code[index + 1] === "/")) {
-        output += code[index] === "\n" ? "\n" : " ";
-        index++;
-      }
-      index++;
-      continue;
-    }
-    output += char;
-  }
-  return output.replace(/,\s*([}\]])/g, "$1");
 }
 
 function findTopLevelJsonProperty(

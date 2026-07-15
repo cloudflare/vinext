@@ -895,10 +895,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    await runPrerender({
-      root: info.root,
-      concurrency: options.prerenderConcurrency,
-      nextConfig,
+    // Prerender must observe the same CLOUDFLARE_ENV as the build so the
+    // publisher reads the selected environment's Wrangler assets config.
+    await withCloudflareEnv(buildEnv, async () => {
+      await runPrerender({
+        root: info.root,
+        concurrency: options.prerenderConcurrency,
+        nextConfig,
+      });
     });
     ranPrerender = true;
   }

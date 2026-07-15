@@ -1,9 +1,15 @@
+import { encodeBase64Url } from "../utils/base64url.js";
 import { fnv1a64 } from "../utils/hash.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import {
+  createRscTransportRequestPathname,
+  isCloudflareRscTransportEnabled,
+  resolveRscTransportRoutePathname,
+} from "./app-rsc-transport.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -56,15 +62,6 @@ type ResolveInvalidRscCacheBustingRequestOptions = {
   isRscRequest: boolean;
   request: Request;
 };
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
 
 function normalizeHeaderValue(value: string | null): string {
   return value ?? "0";
@@ -128,7 +125,10 @@ export function resolveHardNavigationTargetFromRscResponse(
   const parsed = new URL(responseUrl, origin);
   stripRscCacheBustingSearchParam(parsed);
   const origUrl = new URL(currentHref, origin);
-  let pathname = stripRscSuffix(parsed.pathname);
+  // Cloudflare RSC transport response URLs live in an internal namespace; a
+  // hard navigation must target the visible route, never the transport path.
+  let pathname =
+    resolveRscTransportRoutePathname(parsed.pathname) ?? stripRscSuffix(parsed.pathname);
   if (origUrl.pathname.length > 1 && origUrl.pathname.endsWith("/") && !pathname.endsWith("/")) {
     pathname += "/";
   }
@@ -324,6 +324,9 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  if (isCloudflareRscTransportEnabled()) {
+    url.pathname = createRscTransportRequestPathname(url.pathname, headers);
+  }
   return `${url.pathname}${url.search}`;
 }
 

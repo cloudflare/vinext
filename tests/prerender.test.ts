@@ -1633,11 +1633,13 @@ describe("assertNoFatalPrerenderRoutes (#1982)", () => {
 // a shared local prod server started by runPrerender().
 
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
+  let fixtureRoot: string;
   let outDir: string;
   let allResults: PrerenderRouteResult[];
 
   beforeAll(async () => {
     const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
+    fixtureRoot = root;
     outDir = path.join(root, "dist", "server", "prerendered-routes");
 
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
@@ -1695,6 +1697,18 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
       expect(fs.existsSync(path.join(outDir, "about.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "blog/hello-world.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "blog/hello-world.rsc"))).toBe(true);
+    });
+
+    it("records hasServerActions in vinext-server.json", () => {
+      // cf-app-basic has no server actions, so the build manifest must say so.
+      // The publisher uses this flag to decide whether HTML may be published
+      // at visible asset paths (POSTs from server actions to a published asset
+      // path would get a 405 from Cloudflare's asset worker). Publication
+      // itself is skipped for this fixture because it has middleware.
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(fixtureRoot, "dist", "server", "vinext-server.json"), "utf-8"),
+      ) as { hasServerActions?: boolean };
+      expect(manifest.hasServerActions).toBe(false);
     });
   });
 

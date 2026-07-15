@@ -300,6 +300,20 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
+  it("runs prerender with CLOUDFLARE_ENV set to the deploy environment", async () => {
+    writeProject("true");
+    let envDuringPrerender: string | undefined = "<unset>";
+    runPrerenderMock.mockImplementationOnce(async () => {
+      envDuringPrerender = process.env.CLOUDFLARE_ENV;
+      return { routes: [] };
+    });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, env: "preview" });
+
+    expect(envDuringPrerender).toBe("preview");
+  });
+
   it("passes deploy prerender concurrency through config-triggered prerender", async () => {
     writeProject('{ routes: "*" }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");

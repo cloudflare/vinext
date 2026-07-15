@@ -49,6 +49,7 @@ import {
   buildRenderRequestApiObservations,
   createStaticLayoutArtifactReuseDecision,
   DEFAULT_CACHE_VARIANT_BUDGET,
+  hasCompleteNegativeRequestApiProof,
   type StaticLayoutCacheProofOutputScope,
 } from "./cache-proof.js";
 import type {
@@ -82,6 +83,7 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
+import { VINEXT_PRERENDER_QUERY_INVARIANT_HEADER } from "./headers.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -100,6 +102,11 @@ type AppPageCacheSetter = (
 type AppPageRequestCacheLife = {
   revalidate?: number;
   expire?: number;
+};
+
+type AppPagePrerenderQueryInvariant = {
+  html: boolean;
+  rsc: boolean;
 };
 
 type RenderAppPageLifecycleOptions = {
@@ -619,6 +626,41 @@ function wrapRscResponseForDevErrorReporting(
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+function buildPrerenderQueryInvariantMetadata(options: {
+  cacheTags: readonly string[];
+  cleanPathname: string;
+  htmlOutputScope: ReturnType<typeof createAppPageHtmlOutputScope>;
+  navigationParams: Record<string, unknown>;
+  rscOutputScope: ReturnType<typeof createAppPageRscOutputScope>;
+  state: AppPageRenderObservationState;
+}): AppPagePrerenderQueryInvariant {
+  const htmlObservation = createAppPageRenderObservation({
+    boundaryOutcome: { kind: "success" },
+    cacheability: "public",
+    cacheTags: options.cacheTags,
+    cleanPathname: options.cleanPathname,
+    completeness: "complete",
+    output: options.htmlOutputScope,
+    params: options.navigationParams,
+    state: options.state,
+  });
+  const rscObservation = createAppPageRenderObservation({
+    boundaryOutcome: { kind: "success" },
+    cacheability: "public",
+    cacheTags: options.cacheTags,
+    cleanPathname: options.cleanPathname,
+    completeness: "complete",
+    output: options.rscOutputScope,
+    params: options.navigationParams,
+    state: options.state,
+  });
+
+  return {
+    html: hasCompleteNegativeRequestApiProof(htmlObservation, ["searchParams"]),
+    rsc: hasCompleteNegativeRequestApiProof(rscObservation, ["searchParams"]),
+  };
 }
 
 export async function renderAppPageLifecycle(
@@ -1141,7 +1183,25 @@ export async function renderAppPageLifecycle(
     });
 
     if (options.isPrerender === true) {
-      return isrResponse;
+      const html = await isrResponse.text();
+      const pageTags = options.getPageTags();
+      const observationState =
+        options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
+      const queryInvariant = buildPrerenderQueryInvariantMetadata({
+        cacheTags: pageTags,
+        cleanPathname: options.cleanPathname,
+        htmlOutputScope,
+        navigationParams: options.navigationParams,
+        rscOutputScope,
+        state: observationState,
+      });
+      const headers = new Headers(isrResponse.headers);
+      headers.set(VINEXT_PRERENDER_QUERY_INVARIANT_HEADER, JSON.stringify(queryInvariant));
+      return new Response(html, {
+        status: isrResponse.status,
+        statusText: isrResponse.statusText,
+        headers,
+      });
     }
 
     return finalizeAppPageHtmlCacheResponse(isrResponse, {

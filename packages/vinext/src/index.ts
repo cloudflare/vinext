@@ -118,7 +118,12 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { readServerManifest } from "./build/server-manifest.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
+import {
+  isCloudflareRscTransportAllowedForAssetsConfig,
+  readRootWranglerAssetsConfig,
+} from "./build/cloudflare-static-assets-config.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
@@ -1315,6 +1320,34 @@ type NitroSetupContext = {
   };
 };
 
+function isCloudflareVitePlugin(plugin: unknown): boolean {
+  return (
+    plugin !== null &&
+    typeof plugin === "object" &&
+    "name" in plugin &&
+    typeof plugin.name === "string" &&
+    (plugin.name === "vite-plugin-cloudflare" || plugin.name.startsWith("vite-plugin-cloudflare:"))
+  );
+}
+
+function flattenPluginCandidates(plugins: unknown): unknown[] {
+  if (!Array.isArray(plugins)) return [];
+  return plugins.flatMap((plugin) =>
+    Array.isArray(plugin) ? flattenPluginCandidates(plugin) : [plugin],
+  );
+}
+
+function hasCloudflareVitePlugin(plugins: unknown): boolean {
+  return flattenPluginCandidates(plugins).some(isCloudflareVitePlugin);
+}
+
+function shouldEnableCloudflareRscTransport(root: string, plugins: unknown): boolean {
+  if (!hasCloudflareVitePlugin(plugins)) return false;
+
+  const readResult = readRootWranglerAssetsConfig(root, process.env.CLOUDFLARE_ENV);
+  return readResult.ok && isCloudflareRscTransportAllowedForAssetsConfig(readResult.assets);
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
@@ -2081,6 +2114,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_PREFETCH_INLINING"] = JSON.stringify(
           nextConfig.prefetchInlining ? "true" : "false",
         );
+        // Export builds write plain `about.rsc` files next to the HTML and the
+        // publisher never emits the reserved transport assets, so the client
+        // must keep requesting RSC at the public route URL.
+        defines["process.env.__VINEXT_CLOUDFLARE_RSC_TRANSPORT"] = JSON.stringify(
+          nextConfig.output !== "export" && shouldEnableCloudflareRscTransport(root, config.plugins)
+            ? "true"
+            : "false",
+        );
         // Emit a raw boolean (not the "true"/"false" string form used by the
         // sibling defines above): the consumer guards with
         // `if (process.env.__NEXT_GESTURE_TRANSITION)`, so the literal `false`
@@ -2354,22 +2395,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
-        const pluginsFlat: unknown[] = [];
-        function flattenPlugins(arr: unknown[]) {
-          for (const p of arr) {
-            if (Array.isArray(p)) flattenPlugins(p);
-            else if (p) pluginsFlat.push(p);
-          }
-        }
-        flattenPlugins((config.plugins as unknown[]) ?? []);
-        hasCloudflarePlugin = pluginsFlat.some(
-          (p: unknown) =>
-            p &&
-            typeof p === "object" &&
-            "name" in p &&
-            typeof p.name === "string" &&
-            (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
-        );
+        const pluginsFlat = flattenPluginCandidates(config.plugins);
+        hasCloudflarePlugin = pluginsFlat.some(isCloudflareVitePlugin);
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&
@@ -6195,7 +6222,7 @@ export const loadServerActionClient = ${
         writeBundle: {
           sequential: true,
           order: "post" as const,
-          handler(options: { dir?: string }) {
+          async handler(options: { dir?: string }) {
             const envName = this.environment?.name;
             // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
             // (ssr env). Skip client and other environments.
@@ -6204,8 +6231,23 @@ export const loadServerActionClient = ${
             const outDir = options.dir;
             if (!outDir) return;
 
-            const manifest = { prerenderSecret };
-            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+            // Only the rsc environment can see the server reference map, so it
+            // owns the hasServerActions flag. The ssr environment preserves an
+            // existing flag rather than dropping it: in hybrid CLI builds the
+            // Pages Router SSR bundle is a second builder with a separate
+            // vinext() closure (see cli.ts), and it writes this manifest after
+            // the App Router build already recorded the flag. Pages Router has
+            // no server actions of its own, so preserving is always correct.
+            const manifestPath = path.join(outDir, "vinext-server.json");
+            const hasServerActions =
+              envName === "rsc"
+                ? await resolveHasServerActions(this.environment.config)
+                : readServerManifest(outDir)?.hasServerActions;
+            const manifest = {
+              prerenderSecret,
+              ...(hasServerActions === undefined ? {} : { hasServerActions }),
+            };
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest));
           },
         },
       };

@@ -7,9 +7,10 @@
  *
  * Output files (HTML/RSC payloads) are written to
  * `dist/server/prerendered-routes/` for non-export builds, co-located with
- * server artifacts and away from the static assets directory. On Cloudflare
- * Workers, `not_found_handling: "none"` means every request hits the worker
- * first, so files in `dist/client/` are never auto-served for page requests.
+ * server artifacts. After the prerender manifest is written, a conservative
+ * Cloudflare publisher may copy fully static App Router HTML into visible
+ * assets and RSC payloads into a reserved transport namespace so browser RSC
+ * requests cannot be shadowed by document assets.
  * For `output: 'export'` builds the caller controls `outDir` via
  * `static-export.ts`, which passes `dist/client/` directly.
  *
@@ -35,6 +36,8 @@ import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { publishCloudflarePrerenderedAppAssets } from "./cloudflare-prerender-assets.js";
+import { readServerManifest } from "./server-manifest.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -206,13 +209,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let completedUrls = 0;
   const progress = new PrerenderProgress();
 
-  // Non-export builds write to dist/server/prerendered-routes/ so they are
-  // co-located with server artifacts. On Cloudflare Workers the assets binding
-  // uses not_found_handling: "none", so every request hits the worker first;
-  // files in dist/client/ are never auto-served for page requests and would be
-  // inert. Keeping prerendered output out of dist/client/ also prevents ISR
-  // routes from being served as stale static files forever (bypassing
-  // revalidation) when KV pre-population is added in the future.
+  // Non-export builds write to dist/server/prerendered-routes/ so ISR and
+  // dynamic artifacts stay server-owned by default. Fully static App Router
+  // artifacts are copied into Cloudflare's asset directory later only when
+  // ASSETS-first document serving and the split RSC transport are semantically safe.
   //
   // output: 'export' builds use dist/client/ (handled by static-export.ts which
   // passes its own outDir — this path is only reached for non-export builds).
@@ -342,21 +342,45 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     else errors++;
   }
 
+  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
+  // mode (default included), matching Next.js — unlike intentionally-skipped
+  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
+  // Refs cloudflare/vinext#1982
+  //
+  // Run this BEFORE publishing static assets: a fatal route must not mutate
+  // dist/client before the build aborts.
+  assertNoFatalPrerenderRoutes(allRoutes);
+
   try {
     fs.mkdirSync(manifestDir, { recursive: true });
     writePrerenderIndex(allRoutes, manifestDir, {
       buildId: config.buildId,
       trailingSlash: config.trailingSlash,
     });
+    const publishResult = publishCloudflarePrerenderedAppAssets({
+      config,
+      // Server actions POST to the visible page path, and Cloudflare's asset
+      // worker answers 405 for non-GET/HEAD requests to a published asset
+      // instead of falling through to the Worker. Absence of the flag means
+      // an older or partial build — treat it as "actions may exist".
+      hasServerActions: readServerManifest(serverDir)?.hasServerActions ?? true,
+      prerenderDir: outDir,
+      root,
+      routes: allRoutes,
+      rscCompatibilityId: process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID || config.deploymentId,
+      serverDir,
+    });
+    // The publisher gates static publication behind a dozen disqualifiers
+    // (middleware, config transforms, basePath, i18n, trailingSlash, server
+    // actions, _headers rule limit, …). When a route silently keeps hitting the
+    // Worker, this is the only place the reason exists — surface it under the
+    // same VINEXT_DEBUG_* opt-in the classification channel uses.
+    if (publishResult.skipped && process.env.VINEXT_DEBUG_STATIC_ASSETS === "1") {
+      console.log(`  Static asset publication skipped: ${publishResult.reason}`);
+    }
   } finally {
     progress.finish(rendered, skipped, errors);
   }
-
-  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
-  // mode (default included), matching Next.js — unlike intentionally-skipped
-  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
-  // Refs cloudflare/vinext#1982
-  assertNoFatalPrerenderRoutes(allRoutes);
 
   // In export mode, any error route means the build should fail — the app
   // contains dynamic functionality that cannot be statically exported.
