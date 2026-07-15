@@ -1007,15 +1007,15 @@ importers:
 
   packages/vinext:
     dependencies:
-      '@vinext/types':
-        specifier: workspace:^
-        version: link:../types
       '@unpic/react':
         specifier: 'catalog:'
         version: 1.0.2(next@16.2.7(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.100.0))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@vercel/og':
         specifier: 'catalog:'
         version: 0.8.6
+      '@vinext/types':
+        specifier: workspace:^
+        version: link:../types
       image-size:
         specifier: 'catalog:'
         version: 2.0.2
@@ -1147,13 +1147,13 @@ importers:
         specifier: 'catalog:'
         version: 0.2.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.9(vitest@4.1.9))(@voidzero-dev/vite-plus-core@0.2.2(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
+  tests/fixtures/app-trailing-slash-isr: {}
+
   tests/fixtures/app-type-only-imports:
     dependencies:
       vinext:
         specifier: workspace:*
         version: link:../../../packages/vinext
-
-  tests/fixtures/app-trailing-slash-isr: {}
 
   tests/fixtures/app-with-src:
     dependencies:
@@ -1611,6 +1611,8 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.2.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.9(vitest@4.1.9))(@voidzero-dev/vite-plus-core@0.2.2(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/pages-isr-query-context: {}
 
   tests/fixtures/pages-scroll-restoration:
     dependencies:
