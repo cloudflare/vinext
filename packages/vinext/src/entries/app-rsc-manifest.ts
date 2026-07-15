@@ -4,6 +4,13 @@ import {
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
+import {
+  getAppRootBoundaryPath,
+  getAppRootLayoutPaths,
+  matchAppRootRoute,
+  selectAppRootBoundaryRoute,
+  visitAppRouteModulePaths,
+} from "../routing/app-route-module-load-plan.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -55,33 +62,6 @@ type BuildAppRscManifestCodeOptions = {
   globalNotFoundPath?: string | null;
 };
 
-function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefined {
-  return (
-    routes.find((route) => route.pattern === "/") ??
-    routes.find((route) => route.layouts.length > 0 && route.layoutTreePositions.length > 0)
-  );
-}
-
-function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
-  if (!route) return [];
-  if (route.pattern === "/") return route.layouts;
-
-  const rootPosition = route.layoutTreePositions[0];
-  return route.layouts.filter((_, index) => route.layoutTreePositions[index] === rootPosition);
-}
-
-function rootRouteBoundaryPath(
-  route: AppRoute | undefined,
-  boundaryPaths: readonly (string | null)[] | undefined,
-  fallbackPath: string | null | undefined,
-): string | null {
-  if (!route) return null;
-  if (route.pattern === "/") return fallbackPath ?? null;
-  // Boundary arrays are ordered from the root layout outward by the route
-  // scanner, so the first entry is the root boundary for non-root routes.
-  return boundaryPaths?.[0] ?? fallbackPath ?? null;
-}
-
 type ImportAllocator = {
   getImportVar(filePath: string): string;
   /**
@@ -91,6 +71,7 @@ type ImportAllocator = {
    * loader variable name. Deduplicated independently of eager imports.
    */
   getLazyLoaderVar(filePath: string): string;
+  sealLazyLoaderPaths(): void;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -101,6 +82,7 @@ function createImportAllocator(): ImportAllocator {
   const lazyMap = new Map<string, string>();
   let importIdx = 0;
   let lazyIdx = 0;
+  let lazyLoaderPathsSealed = false;
 
   return {
     importMap,
@@ -118,6 +100,9 @@ function createImportAllocator(): ImportAllocator {
     getLazyLoaderVar(filePath) {
       const existing = lazyMap.get(filePath);
       if (existing) return existing;
+      if (lazyLoaderPathsSealed) {
+        throw new Error(`[vinext] Unregistered App Router module path: ${filePath}`);
+      }
 
       const varName = `load_${lazyIdx++}`;
       const absPath = toSlash(filePath);
@@ -131,81 +116,23 @@ function createImportAllocator(): ImportAllocator {
       lazyMap.set(filePath, varName);
       return varName;
     },
+    sealLazyLoaderPaths() {
+      lazyLoaderPathsSealed = true;
+    },
   };
 }
 
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    // All page modules are lazy-loaded so route modules — including dynamic
-    // routes and routes nested under a dynamic segment — stay out of the RSC
-    // entry's top-level evaluation. Their generateStaticParams (if any) is
-    // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
-    // on demand at prerender time.
-    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
-    // Route handlers are always lazy: they are never referenced by
-    // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
-    // from layouts + page, never route.routePath), so unlike dynamic-route
-    // pages they have no module-load-time consumer. (Next.js route handlers can
-    // export generateStaticParams for prerendering, but vinext does not wire
-    // that into the map yet — a separate gap, unaffected by lazy loading.)
-    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
-    for (const layout of route.layouts) imports.getLazyLoaderVar(layout);
-    for (const tmpl of route.templates) imports.getLazyLoaderVar(tmpl);
-    if (route.loadingPath) imports.getLazyLoaderVar(route.loadingPath);
-    if (route.errorPath) imports.getLazyLoaderVar(route.errorPath);
-    if (route.layoutErrorPaths) {
-      for (const ep of route.layoutErrorPaths) {
-        if (ep) imports.getLazyLoaderVar(ep);
-      }
-    }
-    if (route.errorPaths) {
-      for (const ep of route.errorPaths) {
-        imports.getLazyLoaderVar(ep);
-      }
-    }
-    if (route.notFoundPath) imports.getLazyLoaderVar(route.notFoundPath);
-    if (route.notFoundPaths) {
-      for (const nfp of route.notFoundPaths) {
-        if (nfp) imports.getLazyLoaderVar(nfp);
-      }
-    }
-    if (route.forbiddenPath) imports.getLazyLoaderVar(route.forbiddenPath);
-    if (route.forbiddenPaths) {
-      for (const fp of route.forbiddenPaths) {
-        if (fp) imports.getLazyLoaderVar(fp);
-      }
-    }
-    if (route.unauthorizedPath) imports.getLazyLoaderVar(route.unauthorizedPath);
-    if (route.unauthorizedPaths) {
-      for (const up of route.unauthorizedPaths) {
-        if (up) imports.getLazyLoaderVar(up);
-      }
-    }
-    for (const slot of route.parallelSlots) {
-      if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
-      if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
-      if (slot.layoutPath) imports.getLazyLoaderVar(slot.layoutPath);
-      for (const layoutPath of slot.configLayoutPaths ?? []) {
-        imports.getLazyLoaderVar(layoutPath);
-      }
-      if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath);
-      if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
-      for (const ir of slot.interceptingRoutes) {
-        imports.getLazyLoaderVar(ir.pagePath);
-        for (const layoutPath of ir.layoutPaths) {
-          imports.getLazyLoaderVar(layoutPath);
-        }
-      }
-    }
-    for (const ir of route.siblingIntercepts ?? []) {
-      // Lazy-load sibling intercept modules like slot intercept modules so
-      // their CSS chunks stay isolated in production (#1738) without pulling
-      // their layout chains into the entry's top-level evaluation.
-      imports.getLazyLoaderVar(ir.pagePath);
-      for (const layoutPath of ir.layoutPaths) {
-        imports.getLazyLoaderVar(layoutPath);
-      }
-    }
+    visitAppRouteModulePaths(
+      route,
+      {
+        includeBaseModules: true,
+        includeSlotModules: true,
+        includeInterceptions: true,
+      },
+      (filePath) => imports.getLazyLoaderVar(filePath),
+    );
   }
 }
 
@@ -478,20 +405,22 @@ export function buildAppRscManifestCode(
   const metadataRoutes = options.metadataRoutes ?? [];
 
   registerRouteModules(options.routes, imports);
+  imports.sealLazyLoaderPaths();
   const routeEntries = buildRouteEntries(options.routes, imports);
 
-  const rootRoute = findRootBoundaryRoute(options.routes);
-  const rootNotFoundPath = rootRouteBoundaryPath(
+  const matchedRootRoute = matchAppRootRoute(options.routes);
+  const rootRoute = selectAppRootBoundaryRoute(options.routes, matchedRootRoute);
+  const rootNotFoundPath = getAppRootBoundaryPath(
     rootRoute,
     rootRoute?.notFoundPaths,
     rootRoute?.notFoundPath,
   );
-  const rootForbiddenPath = rootRouteBoundaryPath(
+  const rootForbiddenPath = getAppRootBoundaryPath(
     rootRoute,
     rootRoute?.forbiddenPaths,
     rootRoute?.forbiddenPath,
   );
-  const rootUnauthorizedPath = rootRouteBoundaryPath(
+  const rootUnauthorizedPath = getAppRootBoundaryPath(
     rootRoute,
     rootRoute?.unauthorizedPaths,
     rootRoute?.unauthorizedPath,
@@ -501,7 +430,7 @@ export function buildAppRscManifestCode(
   const rootUnauthorizedVar = rootUnauthorizedPath
     ? imports.getImportVar(rootUnauthorizedPath)
     : null;
-  const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
+  const rootLayoutVars = getAppRootLayoutPaths(rootRoute).map((layoutPath) =>
     imports.getImportVar(layoutPath),
   );
   const globalErrorVar = options.globalErrorPath

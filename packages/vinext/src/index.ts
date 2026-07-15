@@ -33,6 +33,7 @@ import {
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
+import { collectAppRouterStartupOptimizeEntries } from "./routing/app-startup-optimize-entries.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
@@ -1331,6 +1332,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
+  let startupGlobalErrorPath: string | null = null;
+  let startupGlobalNotFoundPath: string | null = null;
   let globalNotFoundCssIsolationPath: string | null = null;
   // Resolved in the `config` hook from the user's `build.assetsInlineLimit`
   // (default 0 = always emit files, matching Next's `asset/resource`). Read by
@@ -2023,10 +2026,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : createRscCompatibilityId(nextConfig);
         }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
-        globalNotFoundCssIsolationPath =
-          env?.command === "build" && nextConfig.globalNotFound
+        startupGlobalErrorPath = hasAppDir
+          ? findFileWithExts(appDir, "global-error", fileMatcher)
+          : null;
+        startupGlobalNotFoundPath =
+          hasAppDir && nextConfig.globalNotFound
             ? findFileWithExts(appDir, "global-not-found", fileMatcher)
             : null;
+        globalNotFoundCssIsolationPath =
+          env?.command === "build" ? startupGlobalNotFoundPath : null;
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         const middlewareConventionDir =
@@ -2947,19 +2955,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
-          // Compute optimizeDeps.entries so Vite discovers server-side
-          // dependencies at startup instead of on first request. Without
-          // this, deps imported in rsc/ssr environments are found lazily,
-          // causing re-optimisation cascades and runtime errors (e.g.
-          // "Invalid hook call" from duplicate React instances).
-          // The entries must be relative to the project root.
-          const relAppDir = path.relative(root, appDir);
-          const appEntries = [`${relAppDir}/**/*.{tsx,ts,jsx,js}`];
+          // Seed only the modules that rendering the root URL ("/") loads,
+          // derived from the canonical route graph, instead of crawling the
+          // entire app/ tree. Route modules below "/" are already represented in
+          // the generated RSC manifest as lazy import() thunks, so crawling every
+          // page/route file makes the first dev response scale with total route
+          // count even when the requested route is "/". Framework deps that must
+          // stay identity-stable across environments are handled by explicit
+          // include/exclude rules below instead of relying on incidental
+          // whole-app discovery. The entries must be relative to the project root.
+          const appEntries = await collectAppRouterStartupOptimizeEntries({
+            root,
+            appDir,
+            matcher: fileMatcher,
+            globalErrorPath: startupGlobalErrorPath,
+            globalNotFoundPath: startupGlobalNotFoundPath,
+          });
           const explicitInstrumentationEntries = [
             instrumentationPath,
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          const dynamicMetadataEntries = scanMetadataFiles(appDir)
+            .filter((route) => route.isDynamic)
+            .map((route) => toRelativeFileEntry(root, route.filePath));
+          const rscOptimizeEntries = [...new Set([...optimizeEntries, ...dynamicMetadataEntries])];
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
           if (hasPagesDir) {
             appClientInput["vinext-client-entry"] = VIRTUAL_CLIENT_ENTRY;
@@ -3000,7 +3020,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }),
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
-                entries: optimizeEntries,
+                entries: rscOptimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
                 // Prebundle both so they share the large development renderer
@@ -3108,9 +3128,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   nextServerExternal,
                 ),
-                // Crawl app/ source files up front so client-only deps imported
-                // by user components are discovered during startup instead of
-                // triggering a late re-optimisation + full page reload.
+                // Crawl app startup conventions up front. Route-specific client
+                // deps are discovered when their route is requested, while
+                // framework hydration deps below are always pre-included to
+                // avoid duplicate React/runtime instances.
                 entries: optimizeEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
@@ -3589,13 +3610,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
             const hasServerActions = await resolveHasServerActions(this.environment.config);
-            // Check for global-error.tsx at app root
             const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
-            // Check for global-not-found.tsx at app root (Next.js 16+ feature)
-            // When present, this file replaces the root layout when serving a
-            // route-miss 404. The file is responsible for emitting its own
-            // <html> and <body> tags (similar to global-error.tsx).
-            // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;

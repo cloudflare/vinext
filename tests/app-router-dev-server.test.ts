@@ -1984,11 +1984,11 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Enter a search term");
   });
 
-  it("sets optimizeDeps.entries for rsc, ssr, and client environments so deps are discovered at startup", () => {
-    // Without optimizeDeps.entries, Vite only crawls build.rolldownOptions.input
-    // for dependency discovery — but those are virtual modules that don't
-    // import user dependencies. This causes lazy discovery, re-optimisation
-    // cascades, and "Invalid hook call" errors on first load.
+  it("sets focused optimizeDeps.entries for app startup conventions and instrumentation", () => {
+    // Vite only crawls build.rolldownOptions.input for dependency discovery,
+    // but App Router build inputs are virtual modules. Seed the real root-level
+    // startup files without crawling every route module up front; otherwise
+    // first-load dependency discovery can cause re-optimisation cascades.
     const rscEntries = server.config.environments.rsc?.optimizeDeps?.entries;
     const ssrEntries = server.config.environments.ssr?.optimizeDeps?.entries;
     const clientEntries = server.config.environments.client?.optimizeDeps?.entries;
@@ -2000,19 +2000,46 @@ describe("App Router integration", () => {
     expect(Array.isArray(ssrEntries)).toBe(true);
     expect(Array.isArray(clientEntries)).toBe(true);
 
-    // Entries should include a glob pattern that covers app/ source files
     const rscGlob = (rscEntries as string[]).join(",");
     const ssrGlob = (ssrEntries as string[]).join(",");
     const clientGlob = (clientEntries as string[]).join(",");
-    expect(rscGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
-    expect(ssrGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
-    expect(clientGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+
+    expect(rscGlob).toContain("app/layout.tsx");
+    expect(rscGlob).toContain("app/page.tsx");
+    expect(rscGlob).toContain("app/template.tsx");
+    expect(ssrGlob).toContain("app/layout.tsx");
+    expect(ssrGlob).toContain("app/page.tsx");
+    expect(ssrGlob).toContain("app/template.tsx");
+    expect(clientGlob).toContain("app/layout.tsx");
+    expect(clientGlob).toContain("app/page.tsx");
+    expect(clientGlob).toContain("app/template.tsx");
+
     expect(rscGlob).toContain("instrumentation.ts");
     expect(rscGlob).toContain("instrumentation-client.ts");
     expect(ssrGlob).toContain("instrumentation.ts");
     expect(ssrGlob).toContain("instrumentation-client.ts");
     expect(clientGlob).toContain("instrumentation.ts");
     expect(clientGlob).toContain("instrumentation-client.ts");
+
+    expect(rscGlob).not.toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(ssrGlob).not.toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(clientGlob).not.toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(rscGlob).not.toContain("app/about/page.tsx");
+    expect(ssrGlob).not.toContain("app/about/page.tsx");
+    expect(clientGlob).not.toContain("app/about/page.tsx");
+  });
+
+  it("renders a non-startup client route after root startup without duplicate React", async () => {
+    const rootResponse = await fetch(`${baseUrl}/`);
+    expect(rootResponse.status).toBe(200);
+    await rootResponse.text();
+
+    const routeResponse = await fetch(`${baseUrl}/interactive`);
+    expect(routeResponse.status).toBe(200);
+    const html = await routeResponse.text();
+    expect(html).toContain("This page mixes server and client components.");
+    expect(html).toMatch(/Count:.*0/);
+    expect(html).not.toContain("Invalid hook call");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
