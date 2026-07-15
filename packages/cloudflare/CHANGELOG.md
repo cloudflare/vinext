@@ -1,5 +1,17 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.2
+
+### Bug Fixes
+
+- **Cache:** guard 'use cache' key against Cloudflare KV's 512-byte limit (#2606)
+- **Create:** make create-vinext-app work with npm and npx (#2618)
+
+### Contributors
+
+- @blitss
+- @james-elicx
+
 ## 1.0.0-beta.1
 
 ### Bug Fixes
