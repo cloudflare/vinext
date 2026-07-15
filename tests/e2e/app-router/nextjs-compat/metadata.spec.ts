@@ -15,6 +15,26 @@ import { waitForAppRouterHydration } from "../../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Next.js compat: metadata (browser)", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-a11y/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-a11y/index.test.ts
+  test("route announcer stays empty initially and announces a soft navigation", async ({
+    page,
+  }) => {
+    const readAnnouncement = () =>
+      page.evaluate(() => {
+        const host = document.querySelector("next-route-announcer");
+        return host?.shadowRoot?.querySelector("#__next-route-announcer__")?.textContent ?? null;
+      });
+
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForAppRouterHydration(page);
+    await expect.poll(readAnnouncement).toBe("");
+
+    await page.click("#link-to-title");
+    await expect(page).toHaveTitle("this is the page title");
+    await expect.poll(readAnnouncement).toBe("this is the page title");
+  });
+
   // Next.js: 'should support title and description'
   // Source: metadata.test.ts#L25-L32
   test("document.title matches metadata export", async ({ page }) => {

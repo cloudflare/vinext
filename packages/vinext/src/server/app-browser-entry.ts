@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import {
+  Fragment,
   createElement,
   startTransition,
   use,
@@ -19,6 +20,7 @@ import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import { AppRouterAnnouncer } from "../client/app-router-announcer.js";
 import {
   __basePath,
   appRouterInstance,
@@ -1201,16 +1203,22 @@ function BrowserRoot({
     // oxlint-disable-next-line react/no-children-prop -- This generated browser entry is TypeScript, not TSX.
     children: scrollScopedTree,
   });
+  const accessibleTree = createElement(
+    Fragment,
+    null,
+    rootErrorTree,
+    createElement(AppRouterAnnouncer, { commitVersion: treeState.visibleCommitVersion }),
+  );
 
   const ClientNavigationRenderContext = getClientNavigationRenderContext();
   if (!ClientNavigationRenderContext) {
-    return rootErrorTree;
+    return accessibleTree;
   }
 
   return createElement(
     ClientNavigationRenderContext.Provider,
     { value: treeState.navigationSnapshot },
-    rootErrorTree,
+    accessibleTree,
   );
 }
 
