@@ -13321,6 +13321,57 @@ describe("next/font/local shim", () => {
     const matches = preloads.filter((p: any) => p.href === "/assets/dedup-test.woff2");
     expect(matches.length).toBe(1);
   });
+
+  it("shares SSR collection state and class counter across module copies", async () => {
+    // Regression: in Vite's multi-environment dev mode the shim can be loaded
+    // more than once in the same worker (different resolved IDs / different
+    // environments), so the localFont() call site and the SSR readers can land
+    // on different module copies. Dynamic imports are intentional here — this
+    // test exercises the module-loading boundary itself.
+    const slotNames = [
+      "vinext.fontLocal.classCounter",
+      "vinext.fontLocal.injectedFonts",
+      "vinext.fontLocal.injectedClassRules",
+      "vinext.fontLocal.injectedVariableRules",
+      "vinext.fontLocal.injectedRootVariables",
+      "vinext.fontLocal.ssrFontStyles",
+      "vinext.fontLocal.ssrFontPreloads",
+      "vinext.fontLocal.ssrFontPreloadHrefs",
+    ];
+    try {
+      const copyA = await import("../packages/vinext/src/shims/font-local.js");
+      const a = copyA.default({
+        src: "/assets/multi-copy-a.woff2",
+        variable: "--font-multi-copy-a",
+      });
+
+      // Simulate a second, genuinely fresh module copy: reset the module
+      // registry so the next import re-evaluates the shim from scratch.
+      vi.resetModules();
+      const copyB = await import("../packages/vinext/src/shims/font-local.js");
+      expect(copyB).not.toBe(copyA);
+
+      // Copy B must see the SSR styles/preloads pushed through copy A.
+      expect(copyB.getSSRFontStyles().some((css) => css.includes("multi-copy-a"))).toBe(true);
+      expect(copyB.getSSRFontPreloads().some((p) => p.href === "/assets/multi-copy-a.woff2")).toBe(
+        true,
+      );
+
+      // The class counter must continue across copies — a fresh copy
+      // restarting at 0 would mint a className that collides with copy A's.
+      const b = copyB.default({ src: "/assets/multi-copy-b.woff2" });
+      expect(b.className).not.toBe(a.className);
+      const aId = Number(a.className.replace("__font_local_", ""));
+      const bId = Number(b.className.replace("__font_local_", ""));
+      expect(bId).toBe(aId + 1);
+    } finally {
+      // Symbol.for slots survive vi.resetModules() by design — clear them so
+      // other tests observe pristine module state on their next import.
+      vi.resetModules();
+      const g = globalThis as Record<symbol, unknown>;
+      for (const name of slotNames) delete g[Symbol.for(name)];
+    }
+  });
 });
 
 describe("next/og shim", () => {
