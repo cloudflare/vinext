@@ -285,6 +285,37 @@ describe("Vite tsconfig paths support", () => {
     expect(alias["@"].replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
   });
 
+  it("honors typescript.tsconfigPath from next.config", async () => {
+    const root = setupProject({ name: "vite", version: "8.0.0" });
+    process.chdir(root);
+    fs.writeFileSync(
+      path.join(root, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@/*": ["./default/*"] } } }),
+    );
+    fs.writeFileSync(
+      path.join(root, "tsconfig.app.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@/*": ["./custom/*"] } } }),
+    );
+
+    const plugins = vinext({
+      appDir: root,
+      nextConfig: { typescript: { tsconfigPath: "./tsconfig.app.json" } },
+    });
+    const configPlugin = (await findNamedPlugin(plugins, "vinext:config")) as {
+      config?: (
+        config: { root: string },
+        env: { command: "serve"; mode: string },
+      ) => Promise<{ resolve?: Record<string, unknown> }>;
+    };
+    const resolvedConfig = await configPlugin.config?.(
+      { root },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(aliasEntriesToRecord(resolvedConfig?.resolve?.alias)["@"]).toBe("/custom");
+    expect(resolvedConfig?.resolve?.tsconfigPaths).toBeUndefined();
+  });
+
   it("orders overlapping tsconfig path aliases longest-prefix-first on Vite 8", async () => {
     const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);

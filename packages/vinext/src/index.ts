@@ -871,20 +871,26 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
   return Object.fromEntries(Object.entries(aliases).sort((a, b) => b[0].length - a[0].length));
 }
 
-function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
-  if (_tsconfigAliasCache.has(projectRoot)) {
-    return _tsconfigAliasCache.get(projectRoot)!;
+function resolveTsconfigAliases(
+  projectRoot: string,
+  configuredPath?: string,
+): Record<string, string> {
+  const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
+  const cacheKey = configPath ?? projectRoot;
+  if (_tsconfigAliasCache.has(cacheKey)) {
+    return _tsconfigAliasCache.get(cacheKey)!;
   }
 
   let aliases: Record<string, string> = {};
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
+  for (const candidate of configPath
+    ? [configPath]
+    : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
     aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
     break;
   }
 
-  _tsconfigAliasCache.set(projectRoot, aliases);
+  _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
 }
 
@@ -1867,21 +1873,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         isServeCommand = env.command === "serve";
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
-        const shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
-        const tsconfigPathAliases = resolveTsconfigAliases(root);
+        let shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
+        let tsconfigPathAliases: Record<string, string> = {};
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
-
-        // tsconfig-derived alias entries carry a customResolver, which Vite 8
-        // reports as deprecated during config resolution. Filter that warning
-        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
-        // config.customLogger (rather than returning it) keeps mergeConfig
-        // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
-          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
-            config.customLogger ??
-              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
-          );
-        }
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2012,6 +2006,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
+        }
+        const configuredTsconfigPath = isRecord(nextConfig.typescript)
+          ? typeof nextConfig.typescript.tsconfigPath === "string"
+            ? nextConfig.typescript.tsconfigPath
+            : undefined
+          : undefined;
+        tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        // Native tsconfig discovery always starts from tsconfig.json. For an
+        // explicitly selected file, use the aliases materialized above so the
+        // default config cannot override the user's next.config selection.
+        if (configuredTsconfigPath) shouldEnableNativeTsconfigPaths = false;
+
+        // tsconfig-derived alias entries carry a customResolver, which Vite 8
+        // reports as deprecated during config resolution. Filter that warning
+        // (see suppressAliasCustomResolverDeprecationWarning). Mutating
+        // config.customLogger (rather than returning it) keeps mergeConfig
+        // from deep-cloning the logger and flattening its hasWarned getter.
+        if (Object.keys(tsconfigPathAliases).length > 0) {
+          config.customLogger = suppressAliasCustomResolverDeprecationWarning(
+            config.customLogger ??
+              createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
+          );
         }
         // RSC-compat ID coordination across plugin instances — same rationale as
         // the build ID above. createRscCompatibilityId() falls back to a random
