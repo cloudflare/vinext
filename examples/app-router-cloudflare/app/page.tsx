@@ -1,5 +1,8 @@
 import { Counter } from "./components/counter";
 
+// The example's E2E coverage expects the rendered timestamp to change per request.
+export const dynamic = "force-dynamic";
+
 export default function HomePage() {
   return (
     <main>

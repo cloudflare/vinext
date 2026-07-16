@@ -14,6 +14,7 @@ import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import {
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
+  INFINITE_CACHE_SECONDS,
   NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
@@ -100,7 +101,9 @@ function buildCacheControl(
 ): string {
   if (kind === "app-route") {
     if (revalidate === 0) return NEVER_CACHE_CONTROL;
-    if (revalidate === Infinity) return STATIC_CACHE_CONTROL;
+    if (revalidate === Infinity || revalidate === INFINITE_CACHE_SECONDS) {
+      return STATIC_CACHE_CONTROL;
+    }
   }
   return buildCachedRevalidateCacheControl(disposition, revalidate, expire);
 }
@@ -166,7 +169,9 @@ export function buildAppRouteMissIsrCacheControl(
   expireSeconds?: number,
 ): string {
   if (revalidateSeconds === 0) return NEVER_CACHE_CONTROL;
-  if (revalidateSeconds === Infinity) return STATIC_CACHE_CONTROL;
+  if (revalidateSeconds === Infinity || revalidateSeconds === INFINITE_CACHE_SECONDS) {
+    return STATIC_CACHE_CONTROL;
+  }
   return buildRevalidateCacheControl(revalidateSeconds, expireSeconds);
 }
 

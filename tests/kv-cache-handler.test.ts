@@ -529,6 +529,27 @@ describe("KVCacheHandler", () => {
       ]);
     });
 
+    it("round-trips the JSON-safe indefinite revalidation sentinel", async () => {
+      await handler.set(
+        "rt-indefinite",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 0xfffffffe } },
+      );
+
+      const raw = store.get("cache:rt-indefinite");
+      expect(raw).toContain('"revalidate":4294967294');
+      const result = await handler.get("rt-indefinite");
+      expect(result?.cacheControl).toEqual({ revalidate: 0xfffffffe });
+      expect(result?.value?.kind).toBe("APP_PAGE");
+    });
+
     it("serves stale within expire and returns a hard miss beyond expire", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);

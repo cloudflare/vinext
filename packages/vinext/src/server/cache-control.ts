@@ -6,6 +6,9 @@ export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalid
 
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 
+// Matches Next.js's JSON-safe sentinel for `revalidate = false`.
+export const INFINITE_CACHE_SECONDS = 0xfffffffe;
+
 const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
@@ -92,7 +95,7 @@ export function buildCachedRevalidateCacheControl(
   revalidateSeconds: number,
   expireSeconds?: number,
 ): string {
-  if (revalidateSeconds === Infinity) {
+  if (revalidateSeconds === Infinity || revalidateSeconds === INFINITE_CACHE_SECONDS) {
     return STATIC_CACHE_CONTROL;
   }
 

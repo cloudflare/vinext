@@ -1738,6 +1738,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html2).not.toContain('"filter">alpha<');
   });
 
+  it("caches fully static pages without explicit segment config", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    const first = await fetch(`${baseUrl}/default-static-cache`);
+    expect(first.status).toBe(200);
+    expect(["MISS", "HIT"]).toContain(first.headers.get("x-vinext-cache"));
+    const firstHtml = await first.text();
+    const firstValue = extractTextById(firstHtml, "default-static-value");
+    expect(firstValue).toBeTruthy();
+
+    const second = await fetch(`${baseUrl}/default-static-cache`);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await second.text();
+    expect(extractTextById(secondHtml, "default-static-value")).toBe(firstValue);
+  });
+
   // Route handler ISR caching tests
   // These tests are ORDER-DEPENDENT: they share a single production server and
   // /api/static-data cache state persists across tests. HIT depends on MISS

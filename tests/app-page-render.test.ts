@@ -492,6 +492,42 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("does not expose cacheable CDN headers when default-config HTML becomes dynamic late", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+    let dynamicUsed = false;
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        consumeDynamicUsage() {
+          const value = dynamicUsed;
+          dynamicUsed = false;
+          return value;
+        },
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                dynamicUsed = true;
+                controller.enqueue(new TextEncoder().encode("<html>dynamic</html>"));
+                controller.close();
+              },
+            });
+          },
+        }),
+        revalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>dynamic</html>");
+      expect(common.isrSet).not.toHaveBeenCalled();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("recovers HTML page special errors from the real render when the page probe is skipped", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
@@ -702,8 +738,8 @@ describe("app page render lifecycle", () => {
     ).resolves.toBe("returned");
 
     const response = await responsePromise;
-    expect(response.headers.get("cache-control")).toBeNull();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(common.waitUntilPromises).toHaveLength(1);
 
     releaseRsc.resolve();
@@ -847,8 +883,8 @@ describe("app page render lifecycle", () => {
     ).resolves.toBe("returned");
 
     const response = await responsePromise;
-    expect(response.headers.get("cache-control")).toBeNull();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(common.waitUntilPromises).toHaveLength(1);
 
     releaseRsc.resolve();
@@ -872,7 +908,7 @@ describe("app page render lifecycle", () => {
     );
   });
 
-  it("preserves original production RSC response headers when speculative cacheLife never appears", async () => {
+  it("caches default-static production RSC when cacheLife never appears", async () => {
     const common = createCommonOptions();
 
     const response = await renderAppPageLifecycle({
@@ -882,16 +918,22 @@ describe("app page render lifecycle", () => {
       revalidateSeconds: null,
     });
 
-    expect(response.headers.get("cache-control")).toBeNull();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(common.waitUntilPromises).toHaveLength(1);
 
     await expect(response.text()).resolves.toBe("flight-data");
     await Promise.all(common.waitUntilPromises);
-    expect(common.isrSet).not.toHaveBeenCalled();
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "rsc:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE" }),
+      0xfffffffe,
+      ["_N_T_/posts/post"],
+      undefined,
+    );
   });
 
-  it("preserves original production HTML response headers when speculative cacheLife never appears", async () => {
+  it("caches default-static production HTML when cacheLife never appears", async () => {
     const common = createCommonOptions();
 
     const response = await renderAppPageLifecycle({
@@ -900,13 +942,13 @@ describe("app page render lifecycle", () => {
       revalidateSeconds: null,
     });
 
-    expect(response.headers.get("cache-control")).toBeNull();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(common.waitUntilPromises).toHaveLength(1);
 
     await expect(response.text()).resolves.toBe("<html>page</html>");
     await Promise.all(common.waitUntilPromises);
-    expect(common.isrSet).not.toHaveBeenCalled();
+    expect(common.isrSet).toHaveBeenCalledTimes(2);
   });
 
   it("captures prerender cache metadata before building non-production HTML responses", async () => {
@@ -1337,6 +1379,38 @@ describe("app page render lifecycle", () => {
     });
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("caches default-config static production HTML indefinitely", async () => {
+    // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+
+    expect(common.isrSet).toHaveBeenCalledTimes(2);
+    expect(common.isrSet).toHaveBeenNthCalledWith(
+      1,
+      "html:/posts/post",
+      expect.anything(),
+      0xfffffffe,
+      ["_N_T_/posts/post"],
+      undefined,
+    );
+    expect(common.isrSet).toHaveBeenNthCalledWith(
+      2,
+      "rsc:/posts/post",
+      expect.anything(),
+      0xfffffffe,
+      ["_N_T_/posts/post"],
+      undefined,
+    );
   });
 
   it("streams runtime HTML responses progressively without buffering the body", async () => {

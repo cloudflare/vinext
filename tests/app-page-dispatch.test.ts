@@ -1914,6 +1914,29 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>static cached</html>");
   });
 
+  it("serves cached production HTML for default-config static pages", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>default static cached</html>")),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("default static cache hit should not render the page");
+      },
+      isProduction: true,
+      isrGet,
+      revalidateSeconds: null,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalledWith("html:/posts/hello");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("<html>default static cached</html>");
+  });
+
   it("returns method policy responses instead of rendering unsupported methods", async () => {
     const { options } = createDispatchOptions({
       async buildPageElement() {

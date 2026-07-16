@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
@@ -20,6 +21,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import { readStreamAsText } from "../utils/text-stream.js";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -279,15 +281,9 @@ function applyRequestCacheLife(options: {
 }
 
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
-  isDynamicError: boolean;
-  isForceStatic: boolean;
   revalidateSeconds: number | null;
 }): number | null {
-  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
-    return Infinity;
-  }
-
-  return options.revalidateSeconds;
+  return options.revalidateSeconds ?? Infinity;
 }
 
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
@@ -806,7 +802,18 @@ export async function renderAppPageLifecycle(
       }));
     }
 
-    const dynamicUsedDuringBuild = options.consumeDynamicUsage();
+    let dynamicUsedDuringBuild = options.consumeDynamicUsage();
+    let dynamicUsageCheckComplete = false;
+    if (
+      options.isProduction &&
+      !dynamicUsedDuringBuild &&
+      shouldCaptureRscForCacheMetadata &&
+      (options.isEdgeRuntime || !getCdnCacheAdapter().ownsBackgroundRevalidation)
+    ) {
+      await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+      dynamicUsedDuringBuild = options.consumeDynamicUsage();
+      dynamicUsageCheckComplete = true;
+    }
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
@@ -890,6 +897,7 @@ export async function renderAppPageLifecycle(
         });
       },
       dynamicUsedDuringBuild,
+      dynamicUsageCheckComplete,
       getPageTags() {
         return options.getPageTags();
       },
@@ -906,8 +914,6 @@ export async function renderAppPageLifecycle(
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
-        isDynamicError: options.isDynamicError,
-        isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
       waitUntil(promise) {
@@ -1074,12 +1080,29 @@ export async function renderAppPageLifecycle(
   // Clearing the context synchronously here would race those executions, causing
   // headers()/cookies() to see a null context on warm (module-cached) requests.
   // See: https://github.com/cloudflare/vinext/issues/660
-  const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
+  let safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
     dynamicUsedBeforeContextCleanup =
       dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
     dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
     options.clearRequestContext();
   });
+
+  let dynamicUsageCheckComplete = false;
+  if (
+    options.isProduction &&
+    !dynamicUsedDuringRender &&
+    shouldCaptureRscForCacheMetadata &&
+    (options.isEdgeRuntime || !getCdnCacheAdapter().ownsBackgroundRevalidation)
+  ) {
+    // CDN-managed caches need the final cache policy before response headers
+    // leave the origin. Buffer candidate static HTML so late request-API usage
+    // can still demote the response to no-store instead of poisoning the edge.
+    const bufferedHtml = await readStreamAsText(safeHtmlStream);
+    safeHtmlStream = new Response(bufferedHtml).body!;
+    dynamicUsedDuringRender = dynamicUsedBeforeContextCleanup || options.consumeDynamicUsage();
+    dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+    dynamicUsageCheckComplete = true;
+  }
 
   const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
     dynamicUsedDuringRender,
@@ -1129,7 +1152,11 @@ export async function renderAppPageLifecycle(
     options.isProgressiveActionRender !== true &&
     !dynamicUsedDuringRender;
 
-  if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
+  if (
+    htmlResponsePolicy.shouldWriteToCache ||
+    shouldSpeculativelyWriteCache ||
+    (dynamicUsageCheckComplete && htmlResponsePolicy.cacheState === "MISS")
+  ) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       linkHeader,
@@ -1151,6 +1178,7 @@ export async function renderAppPageLifecycle(
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: options.consumeDynamicUsage,
+      dynamicUsageCheckComplete,
       consumeRenderObservationState: options.consumeRenderObservationState,
       createHtmlRenderObservation(input) {
         return createAppPageRenderObservation({
@@ -1191,8 +1219,6 @@ export async function renderAppPageLifecycle(
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
-        isDynamicError: options.isDynamicError,
-        isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
       waitUntil(cachePromise) {

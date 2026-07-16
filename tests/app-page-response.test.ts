@@ -59,7 +59,7 @@ describe("app page response helpers", () => {
     });
   });
 
-  it("resolves RSC response policy for force-dynamic, infinity, and default cases", () => {
+  it("resolves RSC response policy for force-dynamic and indefinitely static cases", () => {
     expect(
       resolveAppPageRscResponsePolicy({
         dynamicUsedDuringBuild: false,
@@ -99,7 +99,10 @@ describe("app page response helpers", () => {
         isProduction: true,
         revalidateSeconds: null,
       }),
-    ).toEqual({});
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+    });
   });
 
   it("resolves RSC response policy as no-store when dynamic usage is detected during build", () => {
@@ -272,6 +275,71 @@ describe("app page response helpers", () => {
       cacheState: "STATIC",
       shouldWriteToCache: false,
     });
+  });
+
+  it("writes default-config static HTML responses to cache in production", () => {
+    // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+    // Next.js initializes prerender revalidation to INFINITE_CACHE and only
+    // demotes it when explicit config or dynamic usage requires it.
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+      shouldWriteToCache: false,
+    });
+  });
+
+  it("keeps default-config pages uncached in development", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: false,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({});
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: false,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({ shouldWriteToCache: false });
   });
 
   it("treats progressive action HTML responses as no-store", () => {

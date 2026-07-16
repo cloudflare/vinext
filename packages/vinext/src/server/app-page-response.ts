@@ -155,10 +155,21 @@ export function resolveAppPageRscResponsePolicy(
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
 
-  if (
-    ((options.isForceStatic || options.isDynamicError) && !options.revalidateSeconds) ||
-    options.revalidateSeconds === Infinity
-  ) {
+  if (options.revalidateSeconds === null) {
+    if (!options.isProduction && !options.isForceStatic && !options.isDynamicError) {
+      return {};
+    }
+
+    return {
+      cacheControl: STATIC_CACHE_CONTROL,
+      cacheState:
+        options.isProduction && !options.isForceStatic && !options.isDynamicError
+          ? "MISS"
+          : "STATIC",
+    };
+  }
+
+  if (options.revalidateSeconds === Infinity) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
@@ -221,18 +232,22 @@ export function resolveAppPageHtmlResponsePolicy(
     };
   }
 
-  if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
-    return {
-      cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: options.isProduction ? "MISS" : "STATIC",
-      shouldWriteToCache: options.isProduction,
-    };
-  }
-
   if (options.dynamicUsedDuringRender) {
     return {
       cacheControl: NO_STORE_CACHE_CONTROL,
       shouldWriteToCache: false,
+    };
+  }
+
+  if (options.revalidateSeconds === null) {
+    if (!options.isProduction && !options.isForceStatic && !options.isDynamicError) {
+      return { shouldWriteToCache: false };
+    }
+
+    return {
+      cacheControl: STATIC_CACHE_CONTROL,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 

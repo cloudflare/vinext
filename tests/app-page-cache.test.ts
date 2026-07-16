@@ -1421,4 +1421,39 @@ describe("app page cache helpers", () => {
       ["RSC cache write skipped (no cache policy)", "rsc:/invalid-cache-life"],
     ]);
   });
+
+  it("uses indefinite revalidation when default static config has no cacheLife override", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn();
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/default-static",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/default-static"];
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      revalidateSeconds: null,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(true);
+    await Promise.all(pendingCacheWrites);
+    expect(isrSet).toHaveBeenCalledWith(
+      "rsc:/default-static",
+      expect.anything(),
+      0xfffffffe,
+      ["/default-static"],
+      undefined,
+    );
+  });
 });

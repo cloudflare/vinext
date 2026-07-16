@@ -472,17 +472,9 @@ export function shouldReadAppPageCache(options: {
 }
 
 function resolveAppPageCacheReadRevalidateSeconds(options: {
-  isDynamicError: boolean;
-  isForceStatic: boolean;
   revalidateSeconds: number | null;
 }): number {
-  if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
-    return Infinity;
-  }
-
-  // cacheLife-only routes discover their actual revalidate during the fresh
-  // render; this seed only gets them into the cache read path.
-  return options.revalidateSeconds ?? 0;
+  return options.revalidateSeconds ?? Infinity;
 }
 
 export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
@@ -676,8 +668,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
       revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
-        isDynamicError,
-        isForceStatic,
         revalidateSeconds: currentRevalidateSeconds,
       }),
       renderFreshPageForCache: async () => {

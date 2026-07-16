@@ -31,6 +31,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
 import type { RenderObservation } from "./cache-proof.js";
+import { INFINITE_CACHE_SECONDS } from "./cache-control.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -179,14 +180,16 @@ export async function isrSet(
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {
+  const storedRevalidateSeconds =
+    revalidateSeconds === Infinity ? INFINITE_CACHE_SECONDS : revalidateSeconds;
   await getCdnCacheAdapter().set(key, data, {
     cacheControl:
       expireSeconds === undefined
-        ? { revalidate: revalidateSeconds }
-        : { revalidate: revalidateSeconds, expire: expireSeconds },
+        ? { revalidate: storedRevalidateSeconds }
+        : { revalidate: storedRevalidateSeconds, expire: expireSeconds },
     // `revalidate` is the legacy vinext CacheHandler context field. `expire`
     // is new metadata and intentionally only lives inside cacheControl.
-    revalidate: revalidateSeconds,
+    revalidate: storedRevalidateSeconds,
     tags: tags ?? [],
   });
 }
