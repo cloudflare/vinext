@@ -2030,6 +2030,7 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      typescript: {},
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
       resolveExtensions: null,

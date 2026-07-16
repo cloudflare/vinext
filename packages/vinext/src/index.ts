@@ -1873,7 +1873,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         isServeCommand = env.command === "serve";
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
-        let shouldEnableNativeTsconfigPaths = userResolve?.tsconfigPaths === undefined;
         let tsconfigPathAliases: Record<string, string> = {};
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
@@ -2013,10 +2012,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : undefined
           : undefined;
         tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
-        // Native tsconfig discovery always starts from tsconfig.json. For an
-        // explicitly selected file, use the aliases materialized above so the
-        // default config cannot override the user's next.config selection.
-        if (configuredTsconfigPath) shouldEnableNativeTsconfigPaths = false;
+        // Vite's native option discovers tsconfig.json and cannot receive Next's
+        // typescript.tsconfigPath. Only auto-enable it for the default config;
+        // an explicit user resolve.tsconfigPaths value remains untouched.
+        const shouldAutoEnableNativeTsconfigPaths =
+          userResolve?.tsconfigPaths === undefined && configuredTsconfigPath === undefined;
 
         // tsconfig-derived alias entries carry a customResolver, which Vite 8
         // reports as deprecated during config resolution. Filter that warning
@@ -2756,7 +2756,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // causing cryptic "Invalid hook call" errors. This is a no-op
             // when only one copy exists.
             dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
-            ...(shouldEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
+            ...(shouldAutoEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
           },
           // NOTE: top-level optimizeDeps is now set below (after capturing
           // incoming values from earlier plugins) so both Pages Router and
