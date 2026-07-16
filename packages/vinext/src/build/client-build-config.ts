@@ -128,7 +128,10 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
         // Studio) ever imports it. Split those entrypoints into their own chunk
         // so the server renderer loads lazily, only on routes that use it,
         // instead of weighing down first paint on every page.
-        const sub = id.slice(id.lastIndexOf("react-dom/") + "react-dom/".length);
+        // Windows ids carry backslashes, so slash-normalize before matching
+        // the "react-dom/" separator (same convention as getPackageName).
+        const slashedId = toSlash(id);
+        const sub = slashedId.slice(slashedId.lastIndexOf("react-dom/") + "react-dom/".length);
         if (
           sub.startsWith("server.") ||
           sub.startsWith("static.") ||

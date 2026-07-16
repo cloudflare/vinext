@@ -121,6 +121,25 @@ describe("clientManualChunks", () => {
     );
   });
 
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")(
+    "classifies Windows-style backslash ids for the react-dom server split",
+    () => {
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\server.browser.js")).toBe(
+        "react-dom-server",
+      );
+      expect(
+        clientManualChunks(
+          "C:\\proj\\node_modules\\react-dom\\cjs\\react-dom-server.browser.production.js",
+        ),
+      ).toBe("react-dom-server");
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\client.js")).toBe("framework");
+      expect(
+        clientManualChunks("C:\\proj\\node_modules\\react-dom\\server-rendering-stub.js"),
+      ).toBe("framework");
+    },
+  );
+
   it("groups scheduler into 'framework' chunk", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
