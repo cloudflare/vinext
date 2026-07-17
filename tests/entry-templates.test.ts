@@ -451,6 +451,28 @@ describe("App Router generated manifest construction", () => {
     ]);
   });
 
+  it("emits lazy per-segment loading modules with their tree positions", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/parent/slow",
+      patternParts: ["parent", "slow"],
+      pagePath: "/tmp/test/app/parent/slow/page.tsx",
+      loadingPath: "/tmp/test/app/parent/slow/loading.tsx",
+      loadingPaths: ["/tmp/test/app/parent/loading.tsx", "/tmp/test/app/parent/slow/loading.tsx"],
+      loadingTreePositions: [1, 2],
+      routeSegments: ["parent", "slow"],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+    const routeEntry = manifest.routeEntries[0];
+
+    expect(manifest.imports.join("\n")).toContain("/tmp/test/app/parent/loading.tsx");
+    expect(manifest.imports.join("\n")).toContain("/tmp/test/app/parent/slow/loading.tsx");
+    expect(routeEntry).toContain("loadings: [null, null]");
+    expect(routeEntry).toContain("__loadLoadings: [load_");
+    expect(routeEntry).toContain("loadingTreePositions: [1,2]");
+  });
+
   it("derives route-miss root boundaries when the app has no root page", () => {
     const routes = [
       {

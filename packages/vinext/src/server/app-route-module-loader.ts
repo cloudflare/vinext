@@ -58,6 +58,7 @@ export type LazyLoadableRoute = {
   routeHandler?: unknown;
   layouts?: unknown[];
   templates?: unknown[];
+  loadings?: unknown[];
   errors?: unknown[];
   errorPaths?: unknown[];
   notFounds?: unknown[];
@@ -76,6 +77,7 @@ export type LazyLoadableRoute = {
   __loadRouteHandler?: LazyModuleThunk | null;
   __loadLayouts?: LazyModuleLoaderArray | null;
   __loadTemplates?: LazyModuleLoaderArray | null;
+  __loadLoadings?: LazyModuleLoaderArray | null;
   __loadErrors?: LazyModuleLoaderArray | null;
   __loadErrorPaths?: LazyModuleLoaderArray | null;
   __loadNotFounds?: LazyModuleLoaderArray | null;
@@ -177,6 +179,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushFieldLoad(loads, route as Record<string, unknown>, "unauthorized", route.__loadUnauthorized);
   pushArrayLoads(loads, route.layouts, route.__loadLayouts);
   pushArrayLoads(loads, route.templates, route.__loadTemplates);
+  pushArrayLoads(loads, route.loadings, route.__loadLoadings);
   pushArrayLoads(loads, route.errors, route.__loadErrors);
   pushArrayLoads(loads, route.errorPaths, route.__loadErrorPaths);
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);

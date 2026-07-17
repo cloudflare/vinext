@@ -466,6 +466,31 @@ describe("appRouter - route discovery", () => {
     expect(homeRoute!.layouts[0]).toContain("layout.tsx");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("records loading boundaries at every segment, including segments without layouts", async () => {
+    await withTempDir("vinext-app-segment-loading-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "parent", "slow"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parent", "slow", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/parent/slow");
+
+      expect(route?.loadingPath).toBe(canonical(appDir, "parent/slow/loading.tsx"));
+      expect(route?.loadingPaths).toEqual([
+        canonical(appDir, "parent/loading.tsx"),
+        canonical(appDir, "parent/slow/loading.tsx"),
+      ]);
+      expect(route?.loadingTreePositions).toEqual([1, 2]);
+    });
+  });
+
   it("records the owner position of a not-found boundary without a layout", async () => {
     await withTempDir("vinext-app-not-found-owner-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
@@ -1812,6 +1837,7 @@ describe("matchAppRoute - URL matching", () => {
       await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "parallel-nested", "layout.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "parallel-nested", "home", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "parallel-nested", "home", "loading.tsx"), EMPTY_PAGE);
       await writeFile(
         path.join(appDir, "parallel-nested", "home", "@parallelB", "default.tsx"),
         EMPTY_PAGE,
@@ -1829,11 +1855,15 @@ describe("matchAppRoute - URL matching", () => {
       expect(patterns).toContain("/parallel-nested/home");
       const parentRoute = routes.find((r) => r.pattern === "/parallel-nested/home")!;
       expect(parentRoute.pagePath).toBeNull();
+      expect(parentRoute.loadingPath).toContain(canonical(path.join("home", "loading.tsx")));
       expect(parentRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
 
       // Nested slot sub-route should be discovered even though parent has no page.tsx
       expect(patterns).toContain("/parallel-nested/home/nested");
       const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
+      expect(nestedRoute.loadingPath).toBeNull();
+      expect(nestedRoute.loadingPaths).toEqual(parentRoute.loadingPaths);
+      expect(nestedRoute.loadingTreePositions).toEqual(parentRoute.loadingTreePositions);
       expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
       const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
       expect(parallelBSlot.pagePath).toContain(

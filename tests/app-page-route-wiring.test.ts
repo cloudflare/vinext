@@ -149,6 +149,30 @@ function findSuspenseWithFallback(
   return match as ReactElement<Record<string, unknown>> | null;
 }
 
+function countSuspenseWithFallback(node: unknown, fallbackTypeName: string): number {
+  if (Array.isArray(node)) {
+    return node.reduce(
+      (count, child) => count + countSuspenseWithFallback(child, fallbackTypeName),
+      0,
+    );
+  }
+
+  if (!isValidElement<InspectableElementProps>(node)) {
+    return 0;
+  }
+
+  const fallback = node.props.fallback;
+  const isMatch =
+    getElementTypeName(node.type) === "Symbol(react.suspense)" &&
+    isValidElement(fallback) &&
+    getElementTypeName(fallback.type) === fallbackTypeName;
+
+  return Object.values(node.props).reduce<number>(
+    (count, value) => count + countSuspenseWithFallback(value, fallbackTypeName),
+    isMatch ? 1 : 0,
+  );
+}
+
 async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -1917,6 +1941,53 @@ describe("app page route wiring helpers", () => {
 
     expect(templateSlot).not.toBeNull();
     expect(templateSlot?.key).toBe("slug|launch|d");
+  });
+
+  it("nests per-segment loading boundaries around slow child layouts without duplicating the leaf", () => {
+    function ParentLoading() {
+      return createElement("p", null, "Loading layout");
+    }
+
+    function LeafLoading() {
+      return createElement("p", null, "Loading page");
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 2],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: { default: LeafLoading },
+        loadings: [{ default: ParentLoading }, { default: LeafLoading }],
+        loadingTreePositions: [1, 2],
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["parent", "slow"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/parent/slow",
+      rootNotFoundModule: null,
+    });
+
+    const routeEntry = elements["route:/parent/slow"];
+    const parentBoundary = findSuspenseWithFallback(routeEntry, "ParentLoading");
+    const leafBoundary = findSuspenseWithFallback(routeEntry, "LeafLoading");
+
+    expect(parentBoundary?.key).toBe("slow");
+    expect(leafBoundary?.key).toBe(JSON.stringify(["parent", "slow"]));
+    expect(findSuspenseWithFallback(parentBoundary?.props.children, "LeafLoading")).not.toBeNull();
+    expect(findSlotById(parentBoundary?.props.children, "layout:/parent/slow")).not.toBeNull();
+    expect(countSuspenseWithFallback(routeEntry, "LeafLoading")).toBe(1);
   });
 
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {

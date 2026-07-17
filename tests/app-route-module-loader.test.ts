@@ -136,6 +136,22 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(__loadLayouts[2]).not.toHaveBeenCalled();
   });
 
+  it("hydrates per-segment loading modules positionally", async () => {
+    const parentLoading = { default: () => null };
+    const leafLoading = { default: () => null };
+    const __loadLoadings = [vi.fn(async () => parentLoading), vi.fn(async () => leafLoading)];
+    const route: LazyLoadableRoute = {
+      loadings: [null, null],
+      __loadLoadings,
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.loadings).toEqual([parentLoading, leafLoading]);
+    expect(__loadLoadings[0]).toHaveBeenCalledTimes(1);
+    expect(__loadLoadings[1]).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores array loaders beyond the manifest placeholder length", async () => {
     const layout = { default: () => null };
     const outOfRangeLoader = vi.fn(async () => layout);

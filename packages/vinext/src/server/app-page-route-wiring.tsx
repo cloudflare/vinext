@@ -129,6 +129,8 @@ export type AppPageRouteWiringRoute<
   layoutTreePositions?: readonly number[] | null;
   layouts: readonly (TModule | null | undefined)[];
   loading?: TModule | null;
+  loadings?: readonly (TModule | null | undefined)[] | null;
+  loadingTreePositions?: readonly number[] | null;
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
   notFoundTreePosition?: number | null;
@@ -250,6 +252,11 @@ type AppPageTemplateEntry<TModule extends AppPageModule = AppPageModule> = {
 
 type AppPageErrorEntry<TErrorModule extends AppPageErrorModule = AppPageErrorModule> = {
   errorModule?: TErrorModule | null | undefined;
+  treePosition: number;
+};
+
+type AppPageLoadingEntry<TModule extends AppPageModule = AppPageModule> = {
+  loadingModule?: TModule | null | undefined;
   treePosition: number;
 };
 
@@ -423,6 +430,17 @@ function createAppPageErrorEntries<TErrorModule extends AppPageErrorModule>(
     const treePosition = route.errorTreePositions?.[index];
     if (treePosition === undefined) return [];
     return [{ errorModule, treePosition }];
+  });
+}
+
+function createAppPageLoadingEntries<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loadings" | "loadingTreePositions">,
+): AppPageLoadingEntry<TModule>[] {
+  return (route.loadings ?? []).flatMap((loadingModule, index) => {
+    if (!loadingModule) return [];
+    const treePosition = route.loadingTreePositions?.[index];
+    if (treePosition === undefined) return [];
+    return [{ loadingModule, treePosition }];
   });
 }
 
@@ -643,16 +661,21 @@ export function buildAppPageElements<
     : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
+  const loadingEntries = createAppPageLoadingEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
   const metadataPlacement = options.metadataPlacement ?? "head";
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
+  const loadingEntriesByTreePosition = new Map<number, AppPageLoadingEntry<TModule>>();
   const errorEntriesByTreePosition = new Map<number, AppPageErrorEntry<TErrorModule>>();
   for (const layoutEntry of layoutEntries) {
     layoutEntriesByTreePosition.set(layoutEntry.treePosition, layoutEntry);
   }
   for (const templateEntry of templateEntries) {
     templateEntriesByTreePosition.set(templateEntry.treePosition, templateEntry);
+  }
+  for (const loadingEntry of loadingEntries) {
+    loadingEntriesByTreePosition.set(loadingEntry.treePosition, loadingEntry);
   }
   for (const errorEntry of errorEntries) {
     errorEntriesByTreePosition.set(errorEntry.treePosition, errorEntry);
@@ -678,6 +701,7 @@ export function buildAppPageElements<
     new Set<number>([
       ...layoutEntries.map((entry) => entry.treePosition),
       ...templateEntries.map((entry) => entry.treePosition),
+      ...loadingEntries.map((entry) => entry.treePosition),
       ...errorEntries.map((entry) => entry.treePosition),
     ]),
   ).sort((left, right) => left - right);
@@ -1128,11 +1152,28 @@ export function buildAppPageElements<
     let segmentChildren: ReactNode = routeChildren;
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
+    const loadingEntry = loadingEntriesByTreePosition.get(treePosition);
     const errorEntry = errorEntriesByTreePosition.get(treePosition);
 
-    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > children.
-    // Building bottom-up means NotFoundBoundary must wrap the leaf subtree first,
-    // then ErrorBoundary, then Template, with the Layout slot outermost.
+    // The leaf loading convention keeps using the route-level wrapper above so
+    // its ordering relative to page access/error boundaries and scroll handling
+    // remains unchanged. Ancestor segment boundaries are inserted here so they
+    // can suspend while a child layout entry renders.
+    if (treePosition < routeSegments.length) {
+      const segmentLoadingComponent = getDefaultExport(loadingEntry?.loadingModule);
+      if (segmentLoadingComponent) {
+        const SegmentLoadingComponent = segmentLoadingComponent;
+        segmentChildren = (
+          <Suspense key={segmentResetKey || routeResetKey} fallback={<SegmentLoadingComponent />}>
+            {segmentChildren}
+          </Suspense>
+        );
+      }
+    }
+
+    // Next.js nesting per segment (outer to inner): Layout > Template > Error > Unauthorized > Forbidden > NotFound > Loading > children.
+    // Building bottom-up means Loading must wrap the leaf subtree first, then
+    // access/error boundaries, Template, and finally the Layout slot.
     if (layoutEntry) {
       const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
       if (layoutNotFoundComponent) {

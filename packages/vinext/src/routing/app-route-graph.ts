@@ -147,8 +147,12 @@ export type AppRoute = {
    * Empty array when there are no sibling-style interception markers.
    */
   siblingIntercepts: InterceptingRoute[];
-  /** Loading component path */
+  /** Loading component path (leaf directory only) */
   loadingPath: string | null;
+  /** Per-segment loading component paths, aligned with loadingTreePositions. */
+  loadingPaths?: string[];
+  /** Tree position (directory depth from app/ root) for each loading boundary. */
+  loadingTreePositions?: number[];
   /** Error component path (leaf directory only) */
   errorPath: string | null;
   /**
@@ -1402,7 +1406,11 @@ function discoverSlotSubRoutes(
           ownerTreePath: childrenOwnerTreePath,
           state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
         },
-        loadingPath: parentRoute.loadingPath,
+        // The parent loading convention becomes an ancestor boundary for the
+        // synthetic sub-route; it is no longer the synthetic route's leaf.
+        loadingPath: null,
+        loadingPaths: parentRoute.loadingPaths,
+        loadingTreePositions: parentRoute.loadingTreePositions,
         errorPath: parentRoute.errorPath,
         layoutErrorPaths: parentRoute.layoutErrorPaths,
         notFoundPath: parentRoute.notFoundPath,
@@ -1672,6 +1680,9 @@ function directoryToAppRoute(
   // In Next.js, each segment independently wraps its children with an ErrorBoundary.
   // This array enables interleaving error boundaries with layouts in the rendering.
   const layoutErrorPaths = discoverLayoutAlignedErrors(segments, appDir, matcher);
+  const loadingEntries = discoverSegmentLoadings(segments, appDir, matcher);
+  const loadingPaths = loadingEntries.map((entry) => entry.path);
+  const loadingTreePositions = loadingEntries.map((entry) => entry.treePosition);
   const errorEntries = discoverSegmentErrors(segments, appDir, matcher);
   const errorPaths = errorEntries.map((entry) => entry.path);
   const errorTreePositions = errorEntries.map((entry) => entry.treePosition);
@@ -1725,6 +1736,8 @@ function directoryToAppRoute(
     templates,
     parallelSlots,
     loadingPath,
+    loadingPaths,
+    loadingTreePositions,
     errorPath,
     layoutErrorPaths,
     errorPaths,
@@ -1935,6 +1948,37 @@ function discoverSegmentErrors(
   }
 
   return errors;
+}
+
+/**
+ * Discover loading.tsx files by segment tree position.
+ *
+ * Loading conventions belong to loader-tree segments rather than layouts. A
+ * segment without layout.tsx can therefore provide the boundary that suspends
+ * while its child layout renders.
+ */
+function discoverSegmentLoadings(
+  segments: string[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const loadings: { path: string; treePosition: number }[] = [];
+
+  const rootLoading = findFile(appDir, "loading", matcher);
+  if (rootLoading) {
+    loadings.push({ path: rootLoading, treePosition: 0 });
+  }
+
+  let currentDir = appDir;
+  for (let index = 0; index < segments.length; index++) {
+    currentDir = path.join(currentDir, segments[index]);
+    const loading = findFile(currentDir, "loading", matcher);
+    if (loading) {
+      loadings.push({ path: loading, treePosition: index + 1 });
+    }
+  }
+
+  return loadings;
 }
 
 /**

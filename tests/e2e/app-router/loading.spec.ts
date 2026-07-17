@@ -45,4 +45,38 @@ test.describe("Loading boundaries (loading.tsx)", () => {
       timeout: 10_000,
     });
   });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  test("slow nested layout includes its ancestor loading fallback in initial HTML", async ({
+    request,
+  }) => {
+    const response = await request.get(`${BASE}/slow-layout-with-loading/slow`);
+    const html = await response.text();
+
+    expect(response.status()).toBe(200);
+    expect(html).toContain('id="slow-layout-loading"');
+  });
+
+  test("slow nested layout and page include both loading fallbacks in initial HTML", async ({
+    request,
+  }) => {
+    const response = await request.get(`${BASE}/slow-layout-and-page-with-loading/slow`);
+    const html = await response.text();
+
+    expect(response.status()).toBe(200);
+    expect(html).toContain('id="slow-combined-layout-loading"');
+    expect(html).toContain('id="slow-combined-page-loading"');
+  });
+
+  test("slow nested layout and page eventually render final content", async ({ page }) => {
+    await page.goto(`${BASE}/slow-layout-and-page-with-loading/slow`);
+
+    await expect(page.locator("#slow-combined-layout-message")).toHaveText("Slow layout resolved", {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#slow-combined-page-message")).toHaveText("Slow page resolved", {
+      timeout: 10_000,
+    });
+  });
 });

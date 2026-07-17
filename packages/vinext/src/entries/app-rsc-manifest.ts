@@ -152,6 +152,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
     for (const layout of route.layouts) imports.getLazyLoaderVar(layout);
     for (const tmpl of route.templates) imports.getLazyLoaderVar(tmpl);
     if (route.loadingPath) imports.getLazyLoaderVar(route.loadingPath);
+    for (const loadingPath of route.loadingPaths ?? []) {
+      imports.getLazyLoaderVar(loadingPath);
+    }
     if (route.errorPath) imports.getLazyLoaderVar(route.errorPath);
     if (route.layoutErrorPaths) {
       for (const ep of route.layoutErrorPaths) {
@@ -237,10 +240,12 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     // module cache after the eager import rather than evaluating them twice.
     const layoutLoaders = lazyLoaderArray(route.layouts, imports);
     const templateLoaders = lazyLoaderArray(route.templates, imports);
+    const loadingPaths = route.loadingPaths ?? [];
     const notFoundPaths = route.notFoundPaths ?? [];
     const forbiddenPaths = route.forbiddenPaths ?? [];
     const unauthorizedPaths = route.unauthorizedPaths ?? [];
     const notFoundLoaders = lazyLoaderArray(notFoundPaths, imports);
+    const loadingLoaders = lazyLoaderArray(loadingPaths, imports);
     const forbiddenLoaders = lazyLoaderArray(forbiddenPaths, imports);
     const unauthorizedLoaders = lazyLoaderArray(unauthorizedPaths, imports);
     const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
@@ -343,6 +348,9 @@ ${interceptEntries.join(",\n")}
     layoutTreePositions: ${JSON.stringify(route.layoutTreePositions)},
     templates: ${moduleArray(route.templates.length)},
     __loadTemplates: ${templateLoaders},
+    loadings: ${moduleArray(loadingPaths.length)},
+    __loadLoadings: ${loadingLoaders},
+    loadingTreePositions: ${JSON.stringify(route.loadingTreePositions ?? null)},
     errors: ${moduleArray(layoutErrorPaths.length)},
     __loadErrors: ${layoutErrorLoaders},
     errorPaths: ${moduleArray(errorPaths.length)},
