@@ -19,6 +19,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Input } from "@cloudflare/kumo/components/input";
+import { Select } from "@cloudflare/kumo/components/select";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Table as TableIcon, X } from "@phosphor-icons/react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
@@ -124,7 +126,26 @@ function getDisplayStatus(cell: GridCell): DisplayStatus {
   return cell.supportStatus === "supported" ? cell.status : cell.supportStatus;
 }
 
-function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
+type SupportFilter = "all" | SuiteSupportStatus;
+type ResultFilter = "all" | FileStatus;
+
+export function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
+  const [query, setQuery] = useState("");
+  const [supportFilter, setSupportFilter] = useState<SupportFilter>("all");
+  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
+  const filteredCells = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return cells.filter((cell) => {
+      if (supportFilter !== "all" && cell.supportStatus !== supportFilter) return false;
+      if (resultFilter !== "all" && cell.status !== resultFilter) return false;
+      if (!normalizedQuery) return true;
+      return [cell.suite, cell.feature, cell.reason, ROUTER_LABELS[cell.router]]
+        .filter((value): value is string => value !== null)
+        .some((value) => value.toLowerCase().includes(normalizedQuery));
+    });
+  }, [cells, query, resultFilter, supportFilter]);
+  const hasFilters = query !== "" || supportFilter !== "all" || resultFilter !== "all";
+
   return (
     <Dialog.Root>
       <Dialog.Trigger
@@ -150,8 +171,8 @@ function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
               Compatibility test files
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-sm text-kumo-subtle">
-              Showing {cells.length} files for the current router filter. Classifications do not
-              alter the raw test results.
+              Showing {filteredCells.length} of {cells.length} files for the current router filter.
+              Classifications do not alter the raw test results.
             </Dialog.Description>
           </div>
           <Dialog.Close
@@ -167,6 +188,52 @@ function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
             )}
           />
         </div>
+        <div className="grid gap-3 border-b border-kumo-hairline bg-kumo-base px-5 py-3 sm:grid-cols-[minmax(16rem,1fr)_14rem_12rem_auto] sm:items-center">
+          <Input
+            size="sm"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder="Search test files and features"
+            aria-label="Search compatibility test files"
+            className="w-full"
+          />
+          <Select
+            size="sm"
+            value={supportFilter}
+            onValueChange={(value) => setSupportFilter(value as SupportFilter)}
+            aria-label="Filter by classification"
+          >
+            <Select.Option value="all">All classifications</Select.Option>
+            <Select.Option value="supported">Supported</Select.Option>
+            <Select.Option value="deferred">Deferred</Select.Option>
+            <Select.Option value="needs-vite-equivalent">Needs Vite equivalent</Select.Option>
+            <Select.Option value="unsupported">Unsupported</Select.Option>
+          </Select>
+          <Select
+            size="sm"
+            value={resultFilter}
+            onValueChange={(value) => setResultFilter(value as ResultFilter)}
+            aria-label="Filter by raw result"
+          >
+            <Select.Option value="all">All raw results</Select.Option>
+            <Select.Option value="pass">Pass</Select.Option>
+            <Select.Option value="partial">Partial</Select.Option>
+            <Select.Option value="fail">Fail</Select.Option>
+            <Select.Option value="skip">Skipped by Next.js</Select.Option>
+          </Select>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!hasFilters}
+            onClick={() => {
+              setQuery("");
+              setSupportFilter("all");
+              setResultFilter("all");
+            }}
+          >
+            Clear
+          </Button>
+        </div>
         <div className="min-h-0 overflow-auto">
           <Table aria-label="Compatibility test files">
             <Table.Header sticky>
@@ -181,7 +248,7 @@ function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {cells.map((cell) => (
+              {filteredCells.map((cell) => (
                 <Table.Row key={cell.suite}>
                   <Table.Cell className="min-w-80 font-mono text-xs break-all">
                     {cell.suite}
@@ -210,6 +277,13 @@ function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
                   <Table.Cell className="text-right font-mono text-sm">{cell.skipped}</Table.Cell>
                 </Table.Row>
               ))}
+              {filteredCells.length === 0 ? (
+                <Table.Row>
+                  <Table.Cell colSpan={7} className="py-10 text-center text-sm text-kumo-subtle">
+                    No test files match these filters.
+                  </Table.Cell>
+                </Table.Row>
+              ) : null}
             </Table.Body>
           </Table>
         </div>
@@ -323,9 +397,6 @@ export function ContributionGrid({
 
   return (
     <div ref={containerRef} className="relative w-full">
-      <div className="mb-3 flex justify-end">
-        <CompatibilityTableDialog cells={visibleCells} />
-      </div>
       {visibleCells.length === 0 ? (
         <div className="py-8 text-center text-sm text-kumo-subtle">
           No test files in this category.
