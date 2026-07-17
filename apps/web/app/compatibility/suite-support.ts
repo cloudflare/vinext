@@ -116,7 +116,7 @@ export const SUITE_SUPPORT_POLICY = {
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
 /** Feature labels for the supported failures classified in run 29551314872. */
-export const SUPPORTED_SUITE_FEATURES = {
+const SUPPORTED_SUITE_FEATURES = {
   "test/e2e/app-dir/app-client-cache/client-cache.parallel-routes.test.ts":
     "App Router prefetch and client cache",
   "test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts":
