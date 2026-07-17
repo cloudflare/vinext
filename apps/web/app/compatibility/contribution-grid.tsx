@@ -3,14 +3,10 @@
 /**
  * GitHub-style contribution grid for compatibility test files.
  *
- * Each dot is one test file. Color encodes status:
- *   green  → all tests in the file passed
- *   orange → some tests passed, some failed (partial)
- *   red    → at least one test failed and none passed (or only failures)
- *   gray   → no verdict (all tests in the file were skipped by Next.js — via
- *            it.skip() / it.todo() / conditional runtime skips). Vinext does
- *            not add its own skips; we either run a file or filter it out
- *            of the manifest entirely.
+ * Each dot is one test file. Raw pass/partial/fail/skip colors are overridden
+ * by compatibility-scope colors for deferred, unsupported, and
+ * Vite-equivalent suites. The raw result remains visible in the tooltip and
+ * continues to contribute to the overall pass rate.
  *
  * Hovering a dot shows the file path and counts.
  *
@@ -23,6 +19,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
+import type { SuiteSupportStatus } from "./suite-support";
 
 // (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
 // the active filter as a prop. Filter semantics — what each value means and
@@ -36,25 +33,46 @@ export type GridCell = {
   suite: string;
   status: FileStatus;
   router: RouterKind;
+  supportStatus: SuiteSupportStatus;
+  feature: string | null;
+  reason: string | null;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
 };
 
-const COLORS: Record<FileStatus, string> = {
+type DisplayStatus = FileStatus | Exclude<SuiteSupportStatus, "supported">;
+
+const COLORS: Record<DisplayStatus, string> = {
   pass: "#2da44e", // green
   partial: "#e08600", // orange
   fail: "#cf222e", // red
-  skip: "#8c959f", // gray
+  skip: "#afb8c1", // light gray
+  deferred: "#0969da", // blue
+  "needs-vite-equivalent": "#8250df", // purple
+  unsupported: "#6e7781", // dark gray
 };
 
-const LABELS: Record<FileStatus, string> = {
+const LABELS: Record<DisplayStatus, string> = {
   pass: "Pass",
   partial: "Partial",
   fail: "Fail",
   skip: "Skipped by Next.js",
+  deferred: "Deferred",
+  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  unsupported: "Unsupported by vinext",
 };
+
+const LEGEND_ORDER: DisplayStatus[] = [
+  "pass",
+  "partial",
+  "fail",
+  "deferred",
+  "needs-vite-equivalent",
+  "unsupported",
+  "skip",
+];
 
 const ROUTER_LABELS: Record<RouterKind, string> = {
   app: "App Router",
@@ -79,7 +97,13 @@ function summarize(cell: GridCell): string {
   const group = deriveSuiteGroup(cell.suite);
   const prefix = group ? `[${group}] ${cell.suite}` : cell.suite;
   const routerTag = ROUTER_LABELS[cell.router];
-  return `${prefix} — ${LABELS[cell.status]} · ${routerTag} (${parts.join(", ")})`;
+  const displayStatus = getDisplayStatus(cell);
+  const rawStatus = displayStatus === cell.status ? "" : ` · raw result: ${LABELS[cell.status]}`;
+  return `${prefix} — ${LABELS[displayStatus]}${rawStatus} · ${routerTag} (${parts.join(", ")})`;
+}
+
+function getDisplayStatus(cell: GridCell): DisplayStatus {
+  return cell.supportStatus === "supported" ? cell.status : cell.supportStatus;
 }
 
 /**
@@ -200,6 +224,7 @@ export function ContributionGrid({
           style={{ display: "block", maxWidth: "100%" }}
         >
           {visibleCells.map((cell, i) => {
+            const displayStatus = getDisplayStatus(cell);
             const col = i % effectiveCols;
             const row = Math.floor(i / effectiveCols);
             const x = col * STRIDE;
@@ -213,7 +238,7 @@ export function ContributionGrid({
                 height={CELL_SIZE}
                 rx={2}
                 ry={2}
-                fill={COLORS[cell.status]}
+                fill={COLORS[displayStatus]}
                 onMouseEnter={(e) => {
                   const container = containerRef.current;
                   if (!container) return;
@@ -250,12 +275,18 @@ export function ContributionGrid({
                 </div>
                 <div className="font-mono break-all">{hover.cell.suite}</div>
                 <div className="mt-1 text-kumo-subtle">{summarize(hover.cell).split(" — ")[1]}</div>
+                {hover.cell.feature ? (
+                  <div className="mt-1 font-medium text-kumo-default">{hover.cell.feature}</div>
+                ) : null}
+                {hover.cell.reason ? (
+                  <div className="mt-1 text-kumo-subtle">{hover.cell.reason}</div>
+                ) : null}
               </div>
             );
           })()
         : null}
       <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-kumo-subtle">
-        {(Object.keys(COLORS) as FileStatus[]).map((s) => (
+        {LEGEND_ORDER.map((s) => (
           <div key={s} className="flex items-center gap-2">
             <span
               className="inline-block h-3 w-3 rounded-sm"
