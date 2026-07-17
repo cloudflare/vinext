@@ -166,7 +166,7 @@
   },
   "scripts": {
     "build": "vp pack",
-    "prepack": "cp ../../README.md README.md && vp run build",
+    "prepack": "node -e \"require('node:fs').copyFileSync('../../README.md', 'README.md')\" && vp run build",
     "dev": "vp pack --watch"
   },
   "dependencies": {

@@ -56,17 +56,29 @@ async function linkPackage(root: string, packageName: string): Promise<void> {
   const target = path.dirname(packageJsonPath);
   const linkPath = path.join(root, "node_modules", packageName);
   await mkdir(path.dirname(linkPath), { recursive: true });
-  await symlink(target, linkPath, "dir");
+  await symlink(target, linkPath, process.platform === "win32" ? "junction" : "dir");
 }
 
 function runCommand(command: string, args: string[], cwd: string): void {
-  const result = spawnSync(command, args, {
+  let executable = command;
+  let commandArgs = args;
+  if (process.platform === "win32" && command === "pnpm") {
+    executable = process.env.ComSpec ?? "cmd.exe";
+    commandArgs = ["/d", "/s", "/c", command, ...args];
+  }
+
+  const result = spawnSync(executable, commandArgs, {
     cwd,
     encoding: "utf-8",
     env: { ...process.env, CI: "false" },
   });
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed:\n${result.stdout}${result.stderr}`);
+    throw new Error(
+      `${command} ${args.join(" ")} failed:\n${result.stdout ?? ""}${result.stderr ?? ""}`,
+    );
   }
 }
 
@@ -138,8 +150,9 @@ void [metadata, config, image, link, font];
 
   const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
   const result = spawnSync(
-    tscPath,
+    process.execPath,
     [
+      tscPath,
       "--ignoreConfig",
       "--strict",
       "--noEmit",
@@ -156,7 +169,10 @@ void [metadata, config, image, link, font];
     ],
     { cwd: root, encoding: "utf-8" },
   );
-  return result.status === 0 ? "" : result.stdout + result.stderr;
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0 ? "" : `${result.stdout ?? ""}${result.stderr ?? ""}`;
 }
 
 async function eventually(run: () => Promise<void>, timeoutMs = 3_000): Promise<void> {
@@ -366,7 +382,7 @@ describe("generateRouteTypes", () => {
         await mkdir(packDir, { recursive: true });
         await mkdir(consumer, { recursive: true });
 
-        const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+        const pnpm = "pnpm";
         runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/types"));
         runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/vinext"));
 
