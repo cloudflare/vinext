@@ -20,7 +20,7 @@ import {
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import type { AppRouterState } from "../packages/vinext/src/server/app-browser-state.js";
 
-type HistoryWrite = { state: unknown; href: string };
+type HistoryWrite = { state: unknown; href?: string };
 
 function readWrittenState(write: HistoryWrite | undefined): Record<string, unknown> {
   const state = write?.state;
@@ -69,10 +69,12 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
       state = next;
       href = new URL(nextHref, href).href;
     },
-    replaceHistoryState: (next: unknown, nextHref: string) => {
+    replaceHistoryState: (next: unknown, nextHref?: string) => {
       replaced.push({ state: next, href: nextHref });
       state = next;
-      href = new URL(nextHref, href).href;
+      if (nextHref !== undefined) {
+        href = new URL(nextHref, href).href;
+      }
     },
   };
 }
@@ -246,6 +248,24 @@ describe("AppBrowserHistoryController history metadata sync", () => {
     expect(createCanonicalBrowserHistoryHref("https://example.com/page?value=1#section")).toBe(
       "/page?value=1#section",
     );
+  });
+
+  it("omits the URL from hydrated metadata writes", () => {
+    const { controller, store } = createController();
+
+    controller.writeHydratedHistoryMetadata({ bfcacheIds: {}, previousNextUrl: null });
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBeUndefined();
+  });
+
+  it("omits the URL from current-entry metadata synchronization", () => {
+    const { controller, store } = createController();
+
+    controller.syncCurrentHistoryStatePreviousNextUrl("/previous");
+
+    expect(store.replaced).toHaveLength(1);
+    expect(store.replaced[0]?.href).toBeUndefined();
   });
 
   it("preserves the BFCache epoch check when deciding whether to re-sync", () => {

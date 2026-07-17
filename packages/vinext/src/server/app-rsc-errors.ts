@@ -2,6 +2,7 @@ import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 type DigestError = Error & { digest?: string };
+const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
 
 type RscRequestInfo = {
   path: string;
@@ -93,7 +94,15 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
       "The specific message is omitted in production builds to avoid leaking sensitive details. " +
       "A digest property is included on this error instance which may provide additional details about the nature of the error.",
   );
-  sanitized.digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+  sanitized.digest = hasDigest(error)
+    ? String(error.digest)
+    : errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+  Object.defineProperty(sanitized, ORIGINAL_SERVER_ERROR, {
+    configurable: false,
+    enumerable: false,
+    value: error,
+    writable: false,
+  });
   return sanitized;
 }
 
@@ -139,8 +148,14 @@ export function createRscOnErrorHandler(
     }
 
     if (options.requestInfo && options.errorContext && error) {
+      const reportableError =
+        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+          : error;
       options.reportRequestError(
-        error instanceof Error ? error : new Error(getThrownValueMessage(error)),
+        reportableError instanceof Error
+          ? reportableError
+          : new Error(getThrownValueMessage(reportableError)),
         options.requestInfo,
         options.errorContext,
       );

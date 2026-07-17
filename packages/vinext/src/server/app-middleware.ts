@@ -1,5 +1,5 @@
 import type { NextI18nConfig } from "../config/next-config.js";
-import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
@@ -150,6 +150,7 @@ export async function proxyExternalMiddlewareRewrite(
   setHeadersContext(null);
   setNavigationContext(null);
 
+  const { proxyExternalRequest } = await import("../config/config-matchers.js");
   const proxyResponse = await proxyExternalRequest(proxyRequest, rewriteUrl);
   const headers = new Headers(proxyResponse.headers);
   processMiddlewareHeaders(headers);

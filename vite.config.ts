@@ -29,7 +29,11 @@ export default defineConfig({
     semi: true,
     singleQuote: false,
     trailingComma: "all",
-    ignorePatterns: ["tests/fixtures/ecosystem/**", "examples/**"],
+    ignorePatterns: [
+      "tests/fixtures/ecosystem/**",
+      "examples/**",
+      "packages/types/next/upstream/**",
+    ],
   },
   lint: {
     ignorePatterns: [
@@ -37,6 +41,7 @@ export default defineConfig({
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
+      "packages/types/next/upstream/**",
     ],
     options: {
       typeAware: true,
@@ -199,6 +204,7 @@ export default defineConfig({
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
             "tests/client-global-define.test.ts",
+            "tests/dev-route-discovery.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/features.test.ts",
@@ -206,6 +212,7 @@ export default defineConfig({
             "tests/image-optimization-parity.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/pages-i18n-prod.test.ts",
+            "tests/pages-isr-query-context.test.ts",
             "tests/pages-router-concurrency.test.ts",
             "tests/pages-router.test.ts",
             "tests/postcss-resolve.test.ts",
@@ -259,6 +266,7 @@ export default defineConfig({
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
             "tests/client-global-define.test.ts",
+            "tests/dev-route-discovery.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/favicon-short-circuit.test.ts",
@@ -267,6 +275,7 @@ export default defineConfig({
             "tests/kv-cache-handler.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/pages-i18n-prod.test.ts",
+            "tests/pages-isr-query-context.test.ts",
             "tests/pages-router-concurrency.test.ts",
             "tests/pages-router.test.ts",
             "tests/postcss-resolve.test.ts",

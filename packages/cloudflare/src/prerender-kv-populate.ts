@@ -17,7 +17,7 @@ import {
 } from "vinext/internal/server/prerender-manifest";
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
 import { getOutputPath, getRscOutputPath } from "vinext/internal/utils/prerender-output-paths";
-import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
+import { createKvKeySpace } from "./cache/kv-key.js";
 
 /** Default KV expiration TTL used by KVCacheHandler for revalidating entries. */
 const DEFAULT_KV_TTL_SECONDS = 30 * 24 * 3600;
@@ -47,10 +47,6 @@ function resolveContainedFile(rootDir: string, relativePath: string): string {
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error);
-}
-
-function buildKVKey(appPrefix: string | undefined, cacheKey: string): string {
-  return `${appPrefix ? `${appPrefix}:` : ""}${ENTRY_PREFIX}${cacheKey}`;
 }
 
 function buildCacheEntry(
@@ -105,6 +101,7 @@ export function buildPrerenderKVPairs(
   const now = options?.now ?? Date.now();
   const ttlSeconds = options?.ttlSeconds ?? DEFAULT_KV_TTL_SECONDS;
   const trailingSlash = manifest.trailingSlash ?? false;
+  const keySpace = createKvKeySpace(options?.appPrefix);
   let routeCount = 0;
 
   for (const route of getRenderedAppRoutes(manifest.routes)) {
@@ -133,7 +130,7 @@ export function buildPrerenderKVPairs(
     const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);
 
     pairs.push({
-      key: buildKVKey(options?.appPrefix, htmlKey),
+      key: keySpace.entryKey(htmlKey),
       value: buildCacheEntry(
         {
           kind: "APP_PAGE",
@@ -152,7 +149,7 @@ export function buildPrerenderKVPairs(
     if (fs.existsSync(rscPath)) {
       const rscData = fs.readFileSync(rscPath).toString("base64");
       pairs.push({
-        key: buildKVKey(options?.appPrefix, rscKey),
+        key: keySpace.entryKey(rscKey),
         value: buildCacheEntry(
           {
             kind: "APP_PAGE",

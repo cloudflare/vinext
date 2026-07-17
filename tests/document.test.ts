@@ -159,7 +159,7 @@ describe("loadUserDocumentInitialProps", () => {
         return { ...base, docValue: await Promise.resolve("doc value") };
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).not.toBeNull();
     expect(props!.docValue).toBe("doc value");
     expect(props!.html).toBe("");
@@ -174,7 +174,7 @@ describe("loadUserDocumentInitialProps", () => {
         return React.createElement("html");
       }
     }
-    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    const props = await loadUserDocumentInitialProps(MyDocument as unknown as React.ComponentType);
     expect(props).toBeNull();
   });
 
@@ -190,8 +190,8 @@ describe("loadUserDocumentInitialProps", () => {
     // 500 to the caller. vinext matches that contract so user bugs in
     // `_document.tsx`'s getInitialProps are visible instead of silently
     // erasing docProps from every render.
-    await expect(loadUserDocumentInitialProps(BadDocument as React.ComponentType)).rejects.toThrow(
-      "boom",
-    );
+    await expect(
+      loadUserDocumentInitialProps(BadDocument as unknown as React.ComponentType),
+    ).rejects.toThrow("boom");
   });
 });

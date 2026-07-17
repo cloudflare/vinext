@@ -22,7 +22,7 @@ import {
   type BeforeInteractiveInlineScript,
 } from "./before-interactive-context.js";
 
-export type ScriptProps = {
+export type ScriptProps = React.ScriptHTMLAttributes<HTMLScriptElement> & {
   /** Script source URL */
   src?: string;
   /** Loading strategy. Default: "afterInteractive" */
@@ -30,15 +30,13 @@ export type ScriptProps = {
   /** Unique identifier for the script */
   id?: string;
   /** Called when the script has loaded */
-  onLoad?: (e: Event) => void;
+  onLoad?: (e: unknown) => void;
   /** Called when the script is ready (after load, and on every re-render if already loaded) */
   onReady?: () => void;
   /** Called on script load error */
-  onError?: (e: Event) => void;
+  onError?: (e: unknown) => void;
   /** Inline script content */
   children?: React.ReactNode;
-  /** Dangerous inner HTML */
-  dangerouslySetInnerHTML?: { __html: string };
   /** Script type attribute */
   type?: string;
   /** Async attribute */
@@ -46,7 +44,7 @@ export type ScriptProps = {
   /** Defer attribute */
   defer?: boolean;
   /** Crossorigin attribute */
-  crossOrigin?: string;
+  crossOrigin?: React.ScriptHTMLAttributes<HTMLScriptElement>["crossOrigin"];
   /** Nonce for CSP */
   nonce?: string;
   /** Integrity hash */
@@ -61,8 +59,6 @@ export type ScriptProps = {
    * and the `appDir` block).
    */
   stylesheets?: string[];
-  /** Additional attributes */
-  [key: string]: unknown;
 };
 
 // Track scripts that have already been loaded, plus remote scripts currently
@@ -161,7 +157,7 @@ function buildBeforeInteractiveScriptProps(options: {
   id?: string;
   rest: Record<string, unknown>;
   resolvedNonce?: string;
-  dangerouslySetInnerHTML?: { __html: string };
+  dangerouslySetInnerHTML?: { __html: string | TrustedHTML };
 }): Record<string, unknown> {
   const scriptProps: Record<string, unknown> = { ...options.rest };
   if (options.src) scriptProps.src = options.src;
@@ -171,10 +167,20 @@ function buildBeforeInteractiveScriptProps(options: {
   }
   if (options.dangerouslySetInnerHTML) {
     scriptProps.dangerouslySetInnerHTML = {
-      __html: escapeInlineContent(options.dangerouslySetInnerHTML.__html, "script"),
+      __html: escapeInlineContent(
+        stringifyInlineContent(options.dangerouslySetInnerHTML.__html),
+        "script",
+      ),
     };
   }
   return scriptProps;
+}
+
+function stringifyInlineContent(value: string | TrustedHTML): string {
+  // TrustedHTML is intentionally stringified at the DOM boundary, matching
+  // React's dangerouslySetInnerHTML contract.
+  // oxlint-disable-next-line typescript/no-base-to-string
+  return String(value);
 }
 
 /**
@@ -190,14 +196,13 @@ function buildBeforeInteractiveScriptProps(options: {
  */
 function extractBeforeInteractiveInlineContent(
   children: React.ReactNode,
-  dangerouslySetInnerHTML?: { __html: string },
+  dangerouslySetInnerHTML?: { __html: string | TrustedHTML },
 ): string | null {
   if (
     dangerouslySetInnerHTML &&
-    typeof dangerouslySetInnerHTML.__html === "string" &&
-    dangerouslySetInnerHTML.__html.length > 0
+    stringifyInlineContent(dangerouslySetInnerHTML.__html).length > 0
   ) {
-    return dangerouslySetInnerHTML.__html;
+    return stringifyInlineContent(dangerouslySetInnerHTML.__html);
   }
   if (typeof children === "string" && children.length > 0) {
     return children;
@@ -389,7 +394,7 @@ function loadClientScript(
     // is developer-supplied inline script content (not user input). The prop name
     // itself signals developer awareness of the XSS risk, consistent with React's
     // design. User-supplied data must never flow into this prop.
-    el.innerHTML = dangerouslySetInnerHTML.__html;
+    el.innerHTML = stringifyInlineContent(dangerouslySetInnerHTML.__html);
     markLoaded();
   } else if (children && typeof children === "string") {
     el.textContent = children;

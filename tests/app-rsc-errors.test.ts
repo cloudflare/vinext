@@ -46,6 +46,32 @@ describe("app RSC error primitives", () => {
     expect(digestError.digest).toBe(errorDigest("secret detailsstack"));
   });
 
+  it("keeps an existing non-signal digest on the sanitized transport error", () => {
+    const error = Object.assign(new Error("secret details"), { digest: "existing-digest" });
+
+    const sanitized = sanitizeErrorForClient(error, "production");
+
+    expect(sanitized).not.toBe(error);
+    expect(expectDigestError(sanitized).digest).toBe("existing-digest");
+  });
+
+  it("reports the original server error when the client transport error is sanitized", () => {
+    const original = new Error("metadata secret");
+    original.stack = "original stack";
+    const sanitized = sanitizeErrorForClient(original, "production");
+    const reportRequestError = vi.fn();
+    const onError = createRscOnErrorHandler({
+      errorContext: { routerKind: "App Router", routePath: "/metadata", routeType: "render" },
+      nodeEnv: "production",
+      reportRequestError,
+      requestInfo: { path: "/metadata", method: "GET", headers: {} },
+    });
+
+    expect(onError(sanitized)).toBe(errorDigest("metadata secretoriginal stack"));
+    expect(reportRequestError).toHaveBeenCalledOnce();
+    expect(reportRequestError.mock.calls[0]?.[0]).toBe(original);
+  });
+
   it("preserves the previous String(error) digest input for non-Error values", () => {
     const thrownValue = { message: "object detail" };
 

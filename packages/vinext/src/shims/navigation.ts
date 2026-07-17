@@ -11,6 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
+import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -43,21 +44,20 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../server/headers.js";
-import {
-  isAbsoluteOrProtocolRelativeUrl,
-  toBrowserNavigationHref,
-  toSameOriginAppPath,
-  withBasePath,
-} from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath, withBasePath } from "./url-utils.js";
 import { navigationPlanner } from "../server/navigation-planner.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
-import { resolveHybridClientRouteOwner } from "./internal/hybrid-client-route-owner.js";
+import {
+  resolveDirectHybridClientRouteOwner,
+  type HybridClientOwner,
+} from "./internal/hybrid-client-route-owner-direct.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -79,6 +79,32 @@ import {
   releaseAppPrefetchFetchSlot,
   scheduleAppPrefetchFetch,
 } from "./internal/app-prefetch-fetch-queue.js";
+
+const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
+let hybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
+let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
+
+/** Load rewrite-aware hybrid route ownership before navigation becomes interactive. */
+export async function preloadHybridClientRouteOwner(): Promise<void> {
+  if (hybridClientRouteOwnerModule) return;
+  hybridClientRouteOwnerModulePromise ??= import("./internal/hybrid-client-route-owner.js");
+  hybridClientRouteOwnerModule = await hybridClientRouteOwnerModulePromise;
+}
+
+export function resolveLoadedHybridClientRewriteHref(
+  href: string,
+  basePath: string,
+): string | null {
+  return hybridClientRouteOwnerModule?.resolveHybridClientRewriteHref(href, basePath) ?? null;
+}
+
+function resolveHybridClientRouteOwner(href: string): HybridClientOwner | null {
+  if (!HAS_PAGES_ROUTER) return null;
+  return hybridClientRouteOwnerModule
+    ? hybridClientRouteOwnerModule.resolveHybridClientRouteOwner(href, __basePath)
+    : resolveDirectHybridClientRouteOwner(href, __basePath);
+}
 
 export {
   type NavigationContext,
@@ -1612,7 +1638,7 @@ function subscribeToNavigation(cb: () => void): () => void {
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
  */
-export function usePathname(): string | null {
+export function usePathname(): string {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR of "use client" components, the navigation context may not be set.
@@ -1621,7 +1647,10 @@ export function usePathname(): string | null {
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
     const pagesCtx = _getPagesNavigationContext();
-    return pagesCtx ? pagesCtx.pathname : "/";
+    // The standalone next/navigation declaration returns string, while the
+    // Pages Router compatibility runtime intentionally yields null before
+    // router readiness (matching Next.js' Pages Router adapter behavior).
+    return pagesCtx ? (pagesCtx.pathname as string) : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
@@ -1636,9 +1665,9 @@ export function usePathname(): string | null {
   // fall through to useSyncExternalStore so user pushState/replaceState
   // calls are immediately reflected.
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
-    return renderSnapshot.pathname;
+    return renderSnapshot.pathname as string;
   }
-  return pathname;
+  return pathname as string;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
@@ -1670,9 +1699,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
 /**
  * Returns the dynamic params for the current route.
  */
-export function useParams<
-  T extends Record<string, string | string[]> = Record<string, string | string[]>,
->(): T | null {
+export function useParams<T extends Params = Params>(): T | null {
   if (isServer) {
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
@@ -1691,13 +1718,6 @@ export function useParams<
   return params;
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
-
-/**
- * Check if a href is an external URL (any URL scheme per RFC 3986, or protocol-relative).
- */
-function isExternalUrl(href: string): boolean {
-  return isAbsoluteOrProtocolRelativeUrl(href);
-}
 
 // ---------------------------------------------------------------------------
 // History method wrappers — suppress notifications for internal updates
@@ -1956,7 +1976,7 @@ export async function navigateClientSide(
   // requests) or render the App catch-all's path array. This is the
   // programmatic equivalent of the link click / prefetch check in
   // `link.tsx`.
-  const hybridOwner = resolveHybridClientRouteOwner(normalizedHref, __basePath);
+  const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
     const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
     notifyAppRouterTransitionStart(fullHref, mode);
@@ -2192,7 +2212,7 @@ const _appRouter: AppRouterInstance = {
       // origins so we don't pollute the prefetch cache with a same-path .rsc on
       // the current origin. Mirrors Link's prefetchUrl and navigateClientSide.
       let prefetchHref = href;
-      if (isAbsoluteOrProtocolRelativeUrl(href)) {
+      if (isExternalUrl(href)) {
         const localPath = toSameOriginAppPath(href, __basePath);
         if (localPath == null) return;
         prefetchHref = localPath;
@@ -2204,7 +2224,7 @@ const _appRouter: AppRouterInstance = {
       // an unusable cache entry. The matching `push`/`replace` call will
       // hard-navigate via `window.location`, so a no-op here is correct —
       // the document prefetch the link shim emits on hover still runs.
-      const hybridOwner = resolveHybridClientRouteOwner(prefetchHref, __basePath);
+      const hybridOwner = resolveHybridClientRouteOwner(prefetchHref);
       if (hybridOwner === "pages" || hybridOwner === "document") {
         return;
       }
@@ -2273,7 +2293,7 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // inline check exists to *no-op* on external hrefs instead of falling
     // through to its hard window.location.assign.
     let appHref = href;
-    if (isAbsoluteOrProtocolRelativeUrl(href)) {
+    if (isExternalUrl(href)) {
       const localPath = toSameOriginAppPath(href, __basePath);
       if (localPath === null) return;
       appHref = localPath;

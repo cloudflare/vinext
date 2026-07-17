@@ -15,6 +15,7 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
 import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -109,6 +110,7 @@ type AppFallbackRendererCallContext = {
    * render path. Defaults to `false` when no route is matched.
    */
   isEdgeRuntime?: boolean;
+  routePathname?: string;
   sourcePageSegments?: readonly string[] | null;
 };
 
@@ -132,6 +134,7 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     opts: {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
+      intercept?: AppPageInterceptOptions<TModule> | null;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
     },
@@ -309,6 +312,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
+        intercept: opts?.intercept ?? null,
         isEdgeRuntime: callContext?.isEdgeRuntime,
         isRscRequest,
         layoutModules: useGlobalNotFound ? [] : (opts?.layouts ?? null),
@@ -325,6 +329,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
         route: useGlobalNotFound ? null : route,
+        routePathname: callContext?.routePathname,
         renderToReadableStream: rscRenderer,
         scriptNonce,
         serveStreamingMetadata,

@@ -11,6 +11,7 @@ import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
@@ -19,9 +20,25 @@ import {
   type AppPageSpecialError,
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
+import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead, type ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import {
+  resolveActiveParallelRouteHeadInputs,
+  resolveAppPageHead,
+  type ActiveParallelRouteHeadInput,
+  type ApplyAppPageFileBasedMetadata,
+} from "./app-page-head.js";
+import {
+  resolveHttpAccessFallbackMetadata,
+  resolveHttpAccessFallbackViewport,
+} from "./app-page-http-access-fallback-metadata.js";
+import {
+  resolveSlotParamOverrides,
+  type AppPageInterceptOptions,
+} from "./app-page-element-builder.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -36,7 +53,11 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { createAppPageLayoutEntries, createAppPageSourcePage } from "./app-page-route-wiring.js";
+import {
+  createAppPageLayoutEntries,
+  createAppPageSourcePage,
+  type AppPageRouteWiringRoute,
+} from "./app-page-route-wiring.js";
 import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -75,13 +96,20 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
   errorPaths?: readonly TModule[] | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
+  forbiddenTreePosition?: number | null;
+  forbiddens?: readonly (TModule | null | undefined)[] | null;
   layoutTreePositions?: readonly number[] | null;
   layouts?: readonly (TModule | null | undefined)[];
   notFound?: TModule | null;
+  notFounds?: readonly (TModule | null | undefined)[] | null;
+  notFoundTreePosition?: number | null;
   params?: AppPageParams;
   pattern?: string;
   routeSegments?: readonly string[];
+  slots?: AppPageRouteWiringRoute<TModule>["slots"];
   unauthorized?: TModule | null;
+  unauthorizedTreePosition?: number | null;
+  unauthorizeds?: readonly (TModule | null | undefined)[] | null;
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -135,11 +163,14 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
 type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
   boundaryComponent?: AppPageComponent | null;
   boundaryModule?: TModule | null;
+  intercept?: AppPageInterceptOptions<TModule> | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   matchedParams: AppPageParams;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
+  /** Normalized, basePath-free application pathname used for route matching. */
+  routePathname?: string;
   route?: AppPageBoundaryRoute<TModule> | null;
   /**
    * When true, the resolved boundary is rendered without wrapping it in the
@@ -164,6 +195,37 @@ function getDefaultExport<TModule extends AppPageModule>(
   module: TModule | null | undefined,
 ): AppPageComponent | null {
   return module?.default ?? null;
+}
+
+function resolveHttpAccessBoundaryTreePosition<TModule extends AppPageModule>(
+  route: AppPageBoundaryRoute<TModule> | null | undefined,
+  boundaryModule: TModule | null | undefined,
+  statusCode: number,
+): number | null {
+  if (!route || !boundaryModule) return null;
+  const routeBoundary =
+    statusCode === 403 ? route.forbidden : statusCode === 401 ? route.unauthorized : route.notFound;
+  const layoutBoundaries =
+    statusCode === 403
+      ? route.forbiddens
+      : statusCode === 401
+        ? route.unauthorizeds
+        : route.notFounds;
+  if (boundaryModule === routeBoundary && statusCode === 404) {
+    return route.notFoundTreePosition ?? null;
+  }
+  if (boundaryModule === routeBoundary && statusCode === 403) {
+    return route.forbiddenTreePosition ?? null;
+  }
+  if (boundaryModule === routeBoundary && statusCode === 401) {
+    return route.unauthorizedTreePosition ?? null;
+  }
+  for (let index = (layoutBoundaries?.length ?? 0) - 1; index >= 0; index--) {
+    if (layoutBoundaries?.[index] === boundaryModule) {
+      return route.layoutTreePositions?.[index] ?? null;
+    }
+  }
+  return null;
 }
 
 function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
@@ -481,23 +543,127 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
+  const routePathname =
+    options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
-  let head: Awaited<ReturnType<typeof resolveAppPageHead>>;
+  const fallbackRouteSegments = routeSegments ?? [];
+  let head: Pick<Awaited<ReturnType<typeof resolveAppPageHead>>, "metadata" | "viewport">;
   try {
-    head = await resolveAppPageHead({
-      applyFileBasedMetadata: options.applyFileBasedMetadata,
-      basePath: options.basePath ?? "",
-      layoutModules,
-      layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+    const useHttpAccessHeadPlan = [401, 403, 404].includes(options.statusCode);
+    if (useHttpAccessHeadPlan) {
+      const boundaryTreePosition = resolveHttpAccessBoundaryTreePosition(
         options.route,
+        boundaryModule,
+        options.statusCode,
+      );
+      const boundaryParams =
+        boundaryTreePosition == null
+          ? {}
+          : resolveAppPageSegmentParams(
+              fallbackRouteSegments,
+              boundaryTreePosition,
+              options.matchedParams,
+            );
+      const intercept = options.intercept;
+      const isSiblingIntercept =
+        intercept?.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+        intercept.interceptPage != null;
+      const effectiveParams = isSiblingIntercept
+        ? (intercept.interceptParams ?? options.matchedParams)
+        : options.matchedParams;
+      const slotParams = resolveSlotParamOverrides(
+        { slots: options.route?.slots ?? null },
+        routePathname,
+      );
+      const parallelBranches = resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
+        interceptLayouts: intercept?.interceptLayouts ?? null,
+        interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
+        interceptNotFoundBranchSegments: intercept?.interceptNotFoundBranchSegments ?? null,
+        interceptNotFound: intercept?.interceptNotFound ?? null,
+        interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
+        interceptPage: intercept?.interceptPage ?? null,
+        interceptParams: intercept?.interceptParams ?? null,
+        interceptSlotKey: intercept?.interceptSlotKey ?? null,
+        interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+        layoutTreePositions: options.route?.layoutTreePositions,
+        params: options.matchedParams,
+        routeSegments: fallbackRouteSegments,
+        slotParams,
+        slots: options.route?.slots ?? null,
+      });
+      const primaryParallelBranch: ActiveParallelRouteHeadInput<TModule> | null = isSiblingIntercept
+        ? {
+            head: {
+              layoutModules: intercept?.interceptLayouts ?? [],
+              layoutParams: (intercept?.interceptLayoutSegments ?? []).map((segments) =>
+                resolveAppPageBranchParams(
+                  intercept?.interceptBranchSegments ?? segments,
+                  segments.length,
+                  effectiveParams,
+                  segments,
+                ),
+              ),
+              pageModule: intercept?.interceptPage ?? null,
+              params: effectiveParams,
+              routeSegments: intercept?.interceptSourcePageSegments ?? fallbackRouteSegments,
+            },
+            ...(intercept?.interceptNotFound
+              ? {
+                  notFoundModule: intercept.interceptNotFound,
+                  notFoundParams: resolveAppPageBranchParams(
+                    intercept.interceptNotFoundBranchSegments ??
+                      intercept.interceptBranchSegments ??
+                      fallbackRouteSegments,
+                    intercept.interceptNotFoundTreePosition ?? 0,
+                    effectiveParams,
+                  ),
+                }
+              : {}),
+            ownerTreePosition: fallbackRouteSegments.length,
+          }
+        : null;
+      const fallbackHeadOptions = {
+        boundaryModule,
+        boundaryParams,
+        branchNotFoundConventions: options.statusCode === 404,
         layoutModules,
-      ),
-      metadataRoutes: options.metadataRoutes,
-      pageModule: boundaryModule,
-      params: options.matchedParams,
-      routePath: options.route?.pattern ?? pathname,
-      routeSegments,
-    });
+        layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+          options.route,
+          layoutModules,
+        ),
+        parallelBranches,
+        params: options.matchedParams,
+        primaryParallelBranch,
+        routeSegments,
+      };
+      const [metadata, viewport] = await Promise.all([
+        resolveHttpAccessFallbackMetadata({
+          applyFileBasedMetadata: options.applyFileBasedMetadata,
+          basePath: options.basePath ?? "",
+          ...fallbackHeadOptions,
+          metadataRoutes: options.metadataRoutes,
+          routePath: options.route?.pattern ?? pathname,
+        }),
+        resolveHttpAccessFallbackViewport(fallbackHeadOptions),
+      ]);
+      head = { metadata, viewport };
+    } else {
+      head = await resolveAppPageHead({
+        applyFileBasedMetadata: options.applyFileBasedMetadata,
+        basePath: options.basePath ?? "",
+        layoutModules,
+        layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
+          options.route,
+          layoutModules,
+        ),
+        metadataRoutes: options.metadataRoutes,
+        pageModule: boundaryModule,
+        params: options.matchedParams,
+        routePath: options.route?.pattern ?? pathname,
+        routeSegments,
+      });
+    }
   } catch (error) {
     const specialError = resolveAppPageSpecialError(error);
     if (specialError) {

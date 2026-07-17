@@ -11,6 +11,12 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+    ? {
+        basePath: "/docs",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      }
+    : {}),
   // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
   // fixture-wide solely for that spec (the only observable effect is the
   // optional `experimental_gesturePush` method being attached). Note this
@@ -90,8 +96,21 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        // Encoded App Page params must have the same canonical representation
+        // on direct requests and config rewrites.
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity/rewrite/:path*"
+            : "/encoded-parity/rewrite/:path*",
+          destination: "/encoded-parity/page/:path*",
+        },
         // Used by Vitest: app-router.test.ts
-        { source: "/rewrite-about", destination: "/about" },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/rewrite-about"
+            : "/rewrite-about",
+          destination: "/about",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",

@@ -5,7 +5,6 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
-  fixFlightHints,
   fixPreloadAs,
   waitAtLeastOneReactRenderTask,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
@@ -51,38 +50,6 @@ describe("App SSR stream helpers", () => {
         '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
       expect(fixPreloadAs(html)).toBe(
         '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>',
-      );
-    });
-  });
-
-  describe("fixFlightHints", () => {
-    it("rewrites stylesheet hints in Flight HL records", () => {
-      expect(fixFlightHints(':HL["/assets/index.css","stylesheet"]')).toBe(
-        ':HL["/assets/index.css","style"]',
-      );
-
-      expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
-        '2:HL["/assets/index.css","style",{"crossOrigin":""}]',
-      );
-    });
-
-    it("leaves unrelated content unchanged", () => {
-      expect(
-        fixFlightHints(
-          '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]',
-        ),
-      ).toBe('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]');
-
-      expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe('2:HL["/font.woff2","font"]');
-      expect(fixFlightHints(':HL["/font.woff2","font"]')).toBe(':HL["/font.woff2","font"]');
-    });
-
-    it("handles multiple hints in a single chunk", () => {
-      expect(fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]')).toBe(
-        '2:HL["/a.css","style"]\n3:HL["/b.css","style"]',
-      );
-      expect(fixFlightHints(':HL["/a.css","stylesheet"]\n:HL["/b.css","stylesheet"]')).toBe(
-        ':HL["/a.css","style"]\n:HL["/b.css","style"]',
       );
     });
   });
@@ -175,22 +142,16 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     await expect(transform.getRawBuffer()).rejects.toThrow("stream broke");
   });
 
-  it("preserves raw bytes before fixFlightHints transform", async () => {
-    // Flight hints use as="stylesheet" which get fixed to as="style" in the
-    // embed transform. Raw bytes must be the unmodified originals.
+  it("preserves Flight bytes in both embedded and captured RSC data", async () => {
     const sideStream = createTextStream([':HL["/a.css","stylesheet"]']);
     const transform = createRscEmbedTransform(sideStream);
 
     const rawBuffer = await transform.getRawBuffer();
     const rawText = new TextDecoder().decode(rawBuffer);
-    // Raw bytes: unmodified originals (not fixed)
     expect(rawText).toBe(':HL["/a.css","stylesheet"]');
 
-    // finalize() returns the embed scripts with fixed hints
     const finalScripts = await transform.finalize();
-    // The fixed text "as=\"style\"" appears in the embed script after JSON escaping.
-    // fixFlightHints turns "stylesheet" → "style" before the chunk is script-wrapped.
-    expect(finalScripts).not.toContain("stylesheet");
+    expect(finalScripts).toContain("stylesheet");
     expect(finalScripts).toContain(".done=true");
   });
 

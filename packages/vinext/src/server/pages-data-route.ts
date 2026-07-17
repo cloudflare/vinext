@@ -46,6 +46,27 @@ export function isNextDataPathname(pathname: string): boolean {
 }
 
 /**
+ * WHATWG URL parsing removes TAB, LF, and CR characters. Reject paths where
+ * that normalization would manufacture the internal Pages data namespace.
+ */
+export function urlParserCreatesPagesDataPath(pathname: string): boolean {
+  const parsedPathname = pathname.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "");
+  return (
+    pathname !== parsedPathname &&
+    !isNextDataPathname(pathname) &&
+    isNextDataPathname(parsedPathname)
+  );
+}
+
+/**
+ * Keep URL-parser-ignored characters encoded until route matching decodes the
+ * captured parameter. Passing them literally to `new URL()` would remove them.
+ */
+export function encodeUrlParserIgnoredCharacters(pathname: string): string {
+  return pathname.replaceAll("\t", "%09").replaceAll("\n", "%0A").replaceAll("\r", "%0D");
+}
+
+/**
  * Parse `/_next/data/<buildId>/<...page>.json` and return the normalized page
  * pathname. Returns `null` if the pathname does not match the pattern or if
  * the buildId segment does not match the server's buildId.

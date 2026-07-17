@@ -102,6 +102,8 @@ type AppPageRouteWiringSlot<
   layout?: TModule | null;
   layoutIndex: number;
   loading?: TModule | null;
+  notFound?: TModule | null;
+  notFoundTreePosition?: number | null;
   page?: TModule | null;
   routeSegments?: readonly string[] | null;
   /**
@@ -129,9 +131,12 @@ export type AppPageRouteWiringRoute<
   loading?: TModule | null;
   notFound?: TModule | null;
   notFounds?: readonly (TModule | null | undefined)[] | null;
+  notFoundTreePosition?: number | null;
   forbidden?: TModule | null;
+  forbiddenTreePosition?: number | null;
   forbiddens?: readonly (TModule | null | undefined)[] | null;
   unauthorized?: TModule | null;
+  unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
   childrenRouteSegments?: readonly string[] | null;
@@ -203,6 +208,10 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  streamingMetadata?: Promise<Metadata | null> | null;
+  streamingMetadataOutlet?: Promise<unknown> | null;
+  streamingMetadataOutletSuspended?: boolean;
+  streamingMetadataTags?: Promise<Metadata | null> | null;
   trailingSlash?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
@@ -565,6 +574,51 @@ export function createAppPageRouteBodyMetadata(
   );
 }
 
+async function AppPageStreamingMetadata(props: {
+  metadata: Promise<Metadata | null>;
+  pathname: string;
+  trailingSlash?: boolean;
+}): Promise<ReactNode> {
+  try {
+    const metadata = await props.metadata;
+    return createAppPageRouteBodyMetadata(metadata, props.pathname, "body", props.trailingSlash);
+  } catch {
+    // The matching outlet below rethrows inside the route's error boundaries.
+    // Keeping the tag outlet successful lets already-flushed HTML remain valid.
+    return null;
+  }
+}
+AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
+
+async function AppPageMetadataOutlet(props: { metadata: Promise<unknown> }): Promise<null> {
+  await props.metadata;
+  return null;
+}
+AppPageMetadataOutlet.displayName = "Vinext.MetadataOutlet";
+
+function createAppPageStreamingMetadataOutlet(
+  elementId: string | null,
+  suspended = true,
+): ReactNode {
+  if (!elementId) return null;
+  const outlet = <Slot id={elementId} />;
+  return suspended ? <Suspense fallback={null}>{outlet}</Suspense> : outlet;
+}
+
+function createAppPageStreamingMetadataBody(elementId: string | null): ReactNode {
+  if (!elementId) return null;
+  return (
+    // React treats metadata tags as hoistable and otherwise waits for them
+    // before flushing the document. Next.js uses the same persistent hidden
+    // host boundary so the shell can flush while this Suspense branch is open.
+    <div hidden>
+      <Suspense fallback={null}>
+        <Slot id={elementId} />
+      </Suspense>
+    </div>
+  );
+}
+
 export function buildAppPageElements<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
@@ -581,6 +635,12 @@ export function buildAppPageElements<
   const pageId =
     renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
   const pageElementId = options.route.childrenSlot?.id ?? pageId;
+  const streamingMetadataBodyId = options.streamingMetadata
+    ? `__vinext_streaming_metadata_body:${routeId}`
+    : null;
+  const streamingMetadataOutletId = options.streamingMetadataOutlet
+    ? `__vinext_streaming_metadata_outlet:${routeId}`
+    : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
@@ -666,6 +726,20 @@ export function buildAppPageElements<
   // fully-static routes.
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
+  }
+  if (options.streamingMetadata && streamingMetadataBodyId) {
+    elements[streamingMetadataBodyId] = (
+      <AppPageStreamingMetadata
+        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
+        pathname={options.resolvedMetadataPathname ?? options.routePath}
+        trailingSlash={options.trailingSlash}
+      />
+    );
+  }
+  if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
+    elements[streamingMetadataOutletId] = (
+      <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
+    );
   }
   const getEffectiveSlotParams = (slotKey: string, slotName: string): AppPageParams =>
     resolveSlotOverride(slotKey, slotName)?.params ?? options.matchedParams;
@@ -927,12 +1001,18 @@ export function buildAppPageElements<
   }
 
   let routeChildren: ReactNode = (
-    <LayoutSegmentProvider
-      providerId={pageElementId}
-      segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
-    >
-      <Slot id={pageElementId} />
-    </LayoutSegmentProvider>
+    <>
+      <LayoutSegmentProvider
+        providerId={pageElementId}
+        segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
+      >
+        <Slot id={pageElementId} />
+      </LayoutSegmentProvider>
+      {createAppPageStreamingMetadataOutlet(
+        streamingMetadataOutletId,
+        options.streamingMetadataOutletSuspended,
+      )}
+    </>
   );
 
   if (isPrefetchLoadingShell) {
@@ -1192,6 +1272,7 @@ export function buildAppPageElements<
         metadataPlacement,
         options.trailingSlash,
       )}
+      {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
 

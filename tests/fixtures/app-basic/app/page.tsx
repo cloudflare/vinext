@@ -40,6 +40,23 @@ export default function HomePage() {
         <Link href="/delayed-protected-loading" data-testid="delayed-protected-loading-link">
           Delayed Protected Loading
         </Link>
+        <Link href="/metadata-redirect-test" prefetch={false} data-testid="metadata-redirect-link">
+          Metadata Redirect
+        </Link>
+        <Link
+          href="/metadata-streaming-not-found"
+          prefetch={false}
+          data-testid="metadata-streaming-not-found-link"
+        >
+          Metadata Not Found
+        </Link>
+        <Link
+          href="/nextjs-compat/metadata-error-with-boundary"
+          prefetch={false}
+          data-testid="metadata-error-with-boundary-link"
+        >
+          Metadata Error
+        </Link>
       </nav>
     </main>
   );

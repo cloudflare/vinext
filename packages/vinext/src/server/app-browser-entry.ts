@@ -35,12 +35,14 @@ import {
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
+  preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
   isRedirectError,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
+  resolveLoadedHybridClientRewriteHref,
   resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
@@ -68,7 +70,6 @@ import {
   consumeAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
-import { resolveHybridClientRewriteHref } from "vinext/shims/internal/hybrid-client-route-owner";
 import { installWindowNext, setWindowNextInternalSourcePage } from "../client/window-next.js";
 import {
   chunksToReadableStream,
@@ -186,6 +187,8 @@ import {
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
+
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
@@ -1479,6 +1482,7 @@ async function main(): Promise<void> {
 
   if (hasServerActions) registerServerActionCallback();
   installAppNavigationFailureListeners();
+  if (HAS_CLIENT_REWRITES) await preloadHybridClientRouteOwner();
 
   let devErrorOverlay: DevErrorOverlayModule | null = null;
   if (import.meta.env.DEV) {
@@ -1772,8 +1776,8 @@ function bootstrapHydration(
         });
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const rewrittenNavigationHref =
-          navigationKind === "navigate"
-            ? resolveHybridClientRewriteHref(currentHref, __basePath)
+          navigationKind === "navigate" && HAS_CLIENT_REWRITES
+            ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
         const additionalPrefetchRscUrls =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref

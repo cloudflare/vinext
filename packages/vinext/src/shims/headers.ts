@@ -29,6 +29,8 @@ import {
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
+import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
+import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -65,6 +67,8 @@ export type VinextHeadersShimState = {
 };
 
 type ConnectionProbeState = {
+  active: boolean;
+  dynamicUsageTarget: VinextHeadersShimState;
   interrupted: boolean;
   interrupt: () => void;
   pending: Promise<never>;
@@ -206,6 +210,67 @@ export function markDynamicUsage(): void {
     return;
   }
   state.dynamicUsageDetected = true;
+  forEachConnectionProbeTarget(state, (target) => {
+    target.dynamicUsageDetected = true;
+  });
+}
+
+function forEachConnectionProbeTarget(
+  state: VinextHeadersShimState,
+  visit: (target: VinextHeadersShimState) => void,
+): void {
+  let target = state.connectionProbe?.dynamicUsageTarget ?? null;
+  const seen = new Set<VinextHeadersShimState>([state]);
+  while (target && !seen.has(target)) {
+    seen.add(target);
+    visit(target);
+    target = target.connectionProbe?.dynamicUsageTarget ?? null;
+  }
+}
+
+function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error: unknown): void {
+  forEachConnectionProbeTarget(state, (target) => {
+    if (target.invalidDynamicUsageError == null) {
+      target.invalidDynamicUsageError = error;
+    }
+  });
+}
+
+/**
+ * Measure dynamic usage in a child async scope without clearing the parent.
+ * Concurrent work that already belongs to the request (such as deferred
+ * metadata) keeps writing to the parent state and therefore remains visible
+ * to the final cache policy.
+ */
+export async function runWithIsolatedDynamicUsage<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T; dynamicDetected: boolean }> {
+  const runInChildState = async (childState: VinextHeadersShimState) => {
+    const result = await fn();
+    return { result, dynamicDetected: childState.dynamicUsageDetected };
+  };
+
+  if (isInsideUnifiedScope()) {
+    let childState: VinextHeadersShimState | null = null;
+    return await runWithUnifiedStateMutation(
+      (context) => {
+        context.dynamicUsageDetected = false;
+        childState = context;
+      },
+      () => {
+        if (!childState) {
+          throw new Error("Dynamic usage scope was not initialized");
+        }
+        return runInChildState(childState);
+      },
+    );
+  }
+
+  const childState: VinextHeadersShimState = {
+    ..._getState(),
+    dynamicUsageDetected: false,
+  };
+  return await _als.run(childState, () => runInChildState(childState));
 }
 
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
@@ -222,14 +287,16 @@ export function throwIfStaticGenerationAccessError(): void {
 export async function runWithConnectionProbe<T>(
   fn: () => T | Promise<T>,
 ): Promise<ConnectionProbeResult<T>> {
-  const state = _getState();
-  const previousProbe = state.connectionProbe;
+  const parentState = _getState();
+  const parentInvalidDynamicUsageError = parentState.invalidDynamicUsageError;
   let interruptProbe: () => void = () => {};
   const interrupted = new Promise<ConnectionProbeResult<T>>((resolve) => {
     interruptProbe = () => resolve({ completed: false });
   });
 
   const probe: ConnectionProbeState = {
+    active: true,
+    dynamicUsageTarget: parentState,
     interrupted: false,
     interrupt() {
       if (probe.interrupted) return;
@@ -242,20 +309,64 @@ export async function runWithConnectionProbe<T>(
     pending: new Promise<never>(() => {}),
   };
 
-  state.connectionProbe = probe;
-  try {
-    const completed = Promise.resolve()
-      .then(fn)
-      .then<ConnectionProbeResult<T>>((result) => ({ completed: true, result }));
-    return await Promise.race([completed, interrupted]);
-  } finally {
-    state.connectionProbe = previousProbe;
+  const runInChildState = async (childState: VinextHeadersShimState) => {
+    try {
+      const completed = Promise.resolve()
+        .then(fn)
+        .then<ConnectionProbeResult<T>>((result) => ({ completed: true, result }));
+      return await Promise.race([completed, interrupted]);
+    } finally {
+      probe.active = false;
+      // Async resources created inside this ALS scope retain `childState` after
+      // the probe returns. Restore the inherited probe when nested; otherwise
+      // retain this inactive probe so late dynamic usage can still propagate
+      // to its parent without suspending. Reading the parent at cleanup time
+      // preserves the right lifecycle if an outer probe completed separately.
+      childState.connectionProbe = parentState.connectionProbe ?? probe;
+
+      // Dynamic usage discovered by a speculative probe still classifies the
+      // request, but the probe itself must remain branch-local. In particular,
+      // metadata resolution can already be running in a sibling async branch;
+      // sharing `connectionProbe` would make its connection() call suspend on
+      // a probe it does not belong to.
+      if (childState.dynamicUsageDetected) {
+        parentState.dynamicUsageDetected = true;
+      }
+      if (
+        childState.invalidDynamicUsageError !== parentInvalidDynamicUsageError &&
+        parentState.invalidDynamicUsageError === parentInvalidDynamicUsageError
+      ) {
+        parentState.invalidDynamicUsageError = childState.invalidDynamicUsageError;
+      }
+    }
+  };
+
+  if (isInsideUnifiedScope()) {
+    let childState: VinextHeadersShimState | null = null;
+    return await runWithUnifiedStateMutation(
+      (context) => {
+        context.connectionProbe = probe;
+        childState = context;
+      },
+      () => {
+        if (!childState) {
+          throw new Error("Connection probe scope was not initialized");
+        }
+        return runInChildState(childState);
+      },
+    );
   }
+
+  const childState: VinextHeadersShimState = {
+    ...parentState,
+    connectionProbe: probe,
+  };
+  return await _als.run(childState, () => runInChildState(childState));
 }
 
 export function suspendConnectionProbe(): Promise<never> | null {
   const probe = _getState().connectionProbe;
-  if (!probe) return null;
+  if (!probe?.active) return null;
 
   probe.interrupt();
   return probe.pending;
@@ -348,6 +459,7 @@ export function throwIfInsideCacheScope(apiName: string): void {
       if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
       const ctx = getRequestContext();
       if (ctx) ctx.invalidDynamicUsageError = error;
+      propagateInvalidDynamicUsageError(_getState(), error);
     } catch {
       // Ignore — best-effort recording for dev diagnostics
     }
@@ -362,6 +474,7 @@ export function throwIfInsideCacheScope(apiName: string): void {
     try {
       const ctx = getRequestContext();
       if (ctx) ctx.invalidDynamicUsageError = error;
+      propagateInvalidDynamicUsageError(_getState(), error);
     } catch {
       // Ignore
     }
@@ -888,7 +1001,7 @@ export function headers(): Promise<Headers> & Headers {
  * Cookie jar from the incoming request.
  * Returns a ReadonlyRequestCookies-like object.
  */
-export function cookies(): Promise<RequestCookies> & RequestCookies {
+function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   markRenderRequestApiUsage("cookies");
   try {
     throwIfInsideCacheScope("cookies()");
@@ -920,6 +1033,13 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
     : _getReadonlyCookies(state.headersContext);
 
   return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
+}
+
+type VinextReadonlyRequestCookies = Omit<ReadonlyRequestCookies, keyof RequestCookies> &
+  RequestCookies;
+
+export function cookies(): Promise<VinextReadonlyRequestCookies> & VinextReadonlyRequestCookies {
+  return cookiesImpl();
 }
 
 // ---------------------------------------------------------------------------
@@ -997,17 +1117,26 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
 }
 
 /**
+ * Read draft mode from the live request context without recording request API
+ * usage. `null` means there is no active request context, which lets framework
+ * callers fall back to an explicitly supplied request when needed.
+ */
+export function getActiveDraftModeState(): boolean | null {
+  const context = _getState().headersContext;
+  if (!context) return null;
+  if (context.draftModeEnabled !== undefined) return context.draftModeEnabled;
+  const secret = context.draftModeSecret;
+  if (secret === undefined) return false;
+  return context.cookies.get(DRAFT_MODE_COOKIE) === validateDraftModeSecret(secret);
+}
+
+/**
  * Read the active request's draft-mode state without recording request API usage.
  * Internal cache implementations use this to bypass persistent reads and writes,
  * matching Next.js's request-level `workStore.isDraftMode` guard.
  */
 export function isDraftModeEnabled(): boolean {
-  const context = _getState().headersContext;
-  if (!context) return false;
-  if (context.draftModeEnabled !== undefined) return context.draftModeEnabled;
-  const secret = context.draftModeSecret;
-  if (secret === undefined) return false;
-  return context.cookies.get(DRAFT_MODE_COOKIE) === validateDraftModeSecret(secret);
+  return getActiveDraftModeState() ?? false;
 }
 
 type DraftModeResult = {
@@ -1134,34 +1263,16 @@ class RequestCookies {
    * Set a cookie. In Route Handlers and Server Actions, this produces
    * a Set-Cookie header on the response.
    */
+  set(options: ResponseCookie): this;
+  set(key: string, value: string, cookie?: Partial<ResponseCookie>): this;
   set(
-    nameOrOptions:
-      | string
-      | {
-          name: string;
-          value: string;
-          path?: string;
-          domain?: string;
-          maxAge?: number;
-          expires?: Date;
-          httpOnly?: boolean;
-          secure?: boolean;
-          sameSite?: "Strict" | "Lax" | "None";
-        },
+    nameOrOptions: string | ResponseCookie,
     value?: string,
-    options?: {
-      path?: string;
-      domain?: string;
-      maxAge?: number;
-      expires?: Date;
-      httpOnly?: boolean;
-      secure?: boolean;
-      sameSite?: "Strict" | "Lax" | "None";
-    },
+    options?: Partial<ResponseCookie>,
   ): this {
     let cookieName: string;
     let cookieValue: string;
-    let opts: typeof options;
+    let opts: Partial<ResponseCookie> | undefined;
 
     if (typeof nameOrOptions === "string") {
       cookieName = nameOrOptions;
@@ -1178,14 +1289,28 @@ class RequestCookies {
     // Update the local cookie map
     this._cookies.set(cookieName, cookieValue);
 
-    _getState().pendingSetCookies.push(serializeSetCookie(cookieName, cookieValue, opts));
+    const sameSite =
+      opts?.sameSite === true
+        ? "Strict"
+        : typeof opts?.sameSite === "string"
+          ? ((opts.sameSite[0].toUpperCase() + opts.sameSite.slice(1)) as "Strict" | "Lax" | "None")
+          : undefined;
+    _getState().pendingSetCookies.push(
+      serializeSetCookie(cookieName, cookieValue, {
+        ...opts,
+        expires: typeof opts?.expires === "number" ? new Date(opts.expires) : opts?.expires,
+        sameSite,
+      }),
+    );
     return this;
   }
 
   /**
    * Delete a cookie by emitting an expired Set-Cookie header.
    */
-  delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
+  delete(name: string): this;
+  delete(options: Omit<ResponseCookie, "value" | "expires">): this;
+  delete(nameOrOptions: string | Omit<ResponseCookie, "value" | "expires">): this {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     const path = typeof nameOrOptions === "string" ? "/" : (nameOrOptions.path ?? "/");
     const domain = typeof nameOrOptions === "string" ? undefined : nameOrOptions.domain;
@@ -1208,20 +1333,10 @@ class RequestCookies {
     return this._cookies.size;
   }
 
-  [Symbol.iterator](): IterableIterator<[string, { name: string; value: string }]> {
-    const entries = this._cookies.entries();
-    const iter: IterableIterator<[string, { name: string; value: string }]> = {
-      [Symbol.iterator]() {
-        return iter;
-      },
-      next() {
-        const { value, done } = entries.next();
-        if (done) return { value: undefined, done: true };
-        const [name, val] = value;
-        return { value: [name, { name, value: val }], done: false };
-      },
-    };
-    return iter;
+  [Symbol.iterator](): MapIterator<[string, { name: string; value: string }]> {
+    return new Map(
+      Array.from(this._cookies, ([name, value]) => [name, { name, value }] as const),
+    ).entries();
   }
 
   toString(): string {

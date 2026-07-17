@@ -1,10 +1,14 @@
 import { createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
+  prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
-  resolveAppPageHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
+import {
+  resolveHttpAccessFallbackMetadata,
+  resolveHttpAccessFallbackViewport,
+} from "./app-page-http-access-fallback-metadata.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   buildAppPageElements,
@@ -16,7 +20,9 @@ import {
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import type { AppPageParams } from "./app-page-boundary.js";
+import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
+import { resolveAppPageSpecialError } from "./app-page-execution.js";
+import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
@@ -28,7 +34,7 @@ import {
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { resolveAppPageBranchParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -76,6 +82,9 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFound?: TModule | null;
+  interceptNotFoundTreePosition?: number | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
@@ -103,6 +112,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
   serveStreamingMetadata?: boolean;
+  /** Whether streamed render errors must be sanitized for client transport. */
+  isProduction?: boolean;
 };
 
 export type BuildPageElementsOptions<
@@ -201,6 +212,7 @@ export async function buildPageElements<
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
     serveStreamingMetadata,
+    isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -271,58 +283,192 @@ export async function buildPageElements<
     };
   }
 
-  const {
-    hasDynamicMetadata,
-    metadata: resolvedMetadata,
-    pageSearchParams,
-    viewport: resolvedViewport,
-  } = await resolveAppPageHead({
+  const activeParallelRouteHeadInputs = resolveActiveParallelRouteHeadInputs({
+    interceptBranchSegments: opts?.interceptBranchSegments ?? null,
+    interceptLayouts: opts?.interceptLayouts ?? null,
+    interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
+    interceptNotFoundBranchSegments: opts?.interceptNotFoundBranchSegments ?? null,
+    interceptNotFound: opts?.interceptNotFound ?? null,
+    interceptNotFoundTreePosition: opts?.interceptNotFoundTreePosition ?? null,
+    interceptPage: opts?.interceptPage ?? null,
+    interceptParams: opts?.interceptParams ?? null,
+    interceptSlotKey: opts?.interceptSlotKey ?? null,
+    interceptSourcePageSegments: opts?.interceptSourcePageSegments ?? null,
+    layoutTreePositions: route.layoutTreePositions,
+    params,
+    routeSegments: route.routeSegments ?? [],
+    slotParams: slotParamOverrides,
+    slots: route.slots ?? null,
+  });
+  const primaryParallelRouteHeadInput = isSiblingIntercept
+    ? {
+        head: {
+          layoutModules: opts?.interceptLayouts ?? [],
+          layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
+            resolveInterceptLayoutParams(
+              opts?.interceptBranchSegments ?? segments,
+              segments,
+              effectiveParams,
+            ),
+          ),
+          pageModule: effectivePageModule ?? null,
+          params: effectiveParams,
+          routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
+        },
+        ...(opts?.interceptNotFound
+          ? {
+              notFoundModule: opts.interceptNotFound,
+              notFoundParams: resolveAppPageBranchParams(
+                opts.interceptNotFoundBranchSegments ??
+                  opts.interceptBranchSegments ??
+                  route.routeSegments ??
+                  [],
+                opts.interceptNotFoundTreePosition ?? 0,
+                effectiveParams,
+              ),
+            }
+          : {}),
+        ownerTreePosition: route.routeSegments?.length ?? 0,
+      }
+    : null;
+  const parallelRoutes = [
+    ...activeParallelRouteHeadInputs.map((input) => input.head),
+    ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
+  ];
+  const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
+    ? createAppPageSearchParamsObserver()
+    : undefined;
+  const preparedHead = prepareAppPageHead({
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
-    parallelRoutes: [
-      ...resolveActiveParallelRouteHeadInputs({
-        interceptBranchSegments: opts?.interceptBranchSegments ?? null,
-        interceptLayouts: opts?.interceptLayouts ?? null,
-        interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
-        interceptPage: opts?.interceptPage ?? null,
-        interceptParams: opts?.interceptParams ?? null,
-        interceptSlotKey: opts?.interceptSlotKey ?? null,
-        layoutTreePositions: route.layoutTreePositions,
-        params,
-        routeSegments: route.routeSegments ?? [],
-        slotParams: slotParamOverrides,
-        slots: route.slots ?? null,
-      }),
-      ...(isSiblingIntercept
-        ? [
-            {
-              layoutModules: opts?.interceptLayouts ?? [],
-              layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
-                resolveInterceptLayoutParams(
-                  opts?.interceptBranchSegments ?? segments,
-                  segments,
-                  effectiveParams,
-                ),
-              ),
-              pageModule: effectivePageModule ?? null,
-              params: effectiveParams,
-              routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
-            },
-          ]
-        : []),
-    ],
+    parallelRoutes,
     params: effectiveParams,
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
-    searchParamsObserver: observeMetadataSearchParamsAccess
-      ? createAppPageSearchParamsObserver()
-      : undefined,
+    searchParamsObserver: metadataSearchParamsObserver,
   });
+  const { hasDynamicMetadata, pageSearchParams } = preparedHead;
+  const streamGeneratedHead =
+    serveStreamingMetadata ??
+    shouldServeStreamingMetadata(
+      pageRequest.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    );
+  const metadataPlacement = hasDynamicMetadata && streamGeneratedHead ? "body" : "head";
+  // Streaming HTML and Flight responses share the unresolved promise between
+  // the Suspense tag branch and its in-boundary error outlet. Late navigation
+  // signals remain encoded in the Flight digest; response headers are only an
+  // early optimization and must not make generated metadata block navigation.
+  const shouldDeferMetadata = metadataPlacement === "body";
+  const streamingMetadata = shouldDeferMetadata
+    ? isProduction
+      ? preparedHead.metadata.catch((error) => {
+          throw sanitizeErrorForClient(error, "production");
+        })
+      : preparedHead.metadata
+    : null;
+  // Viewport resolution can keep us below from wiring the paired outlet for
+  // another event-loop turn. Observe an early metadata rejection immediately;
+  // the original promise remains rejected for the real outlet consumer.
+  void streamingMetadata?.catch(() => null);
+
+  const resolveNotFoundFallbackPlanOptions = () => {
+    const routeBoundaryModule = route.notFound;
+    const parentBoundary = resolveAppPageParentHttpAccessBoundary({
+      layoutIndex: route.layouts.length,
+      rootForbiddenModule,
+      rootNotFoundModule,
+      rootUnauthorizedModule,
+      routeForbiddenModules: route.forbiddens,
+      routeNotFoundModules: route.notFounds,
+      routeUnauthorizedModules: route.unauthorizeds,
+      statusCode: 404,
+    });
+    const boundaryModule = routeBoundaryModule ?? parentBoundary.module;
+    const boundaryTreePosition = routeBoundaryModule
+      ? route.notFoundTreePosition
+      : parentBoundary.layoutIndex === null
+        ? null
+        : route.layoutTreePositions?.[parentBoundary.layoutIndex];
+    const boundaryParams =
+      boundaryModule && boundaryTreePosition != null
+        ? resolveAppPageSegmentParams(
+            route.routeSegments ?? [],
+            boundaryTreePosition,
+            effectiveParams,
+          )
+        : {};
+    return {
+      boundaryModule,
+      boundaryParams,
+      layoutModules: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      parallelBranches: activeParallelRouteHeadInputs,
+      params: effectiveParams,
+      primaryParallelBranch: primaryParallelRouteHeadInput,
+      routeSegments: route.routeSegments ?? null,
+    };
+  };
+
+  let viewportErrorOutlet: Promise<never> | null = null;
+  let metadataErrorOutlet: Promise<never> | null = null;
+  const resolveMetadataErrorTags = async (error: unknown) => {
+    const specialError = resolveAppPageSpecialError(error);
+    if (specialError?.kind !== "http-access-fallback") return null;
+
+    // Next resolves the not-found metadata convention for every HTTP access
+    // fallback. Errors from that fallback tag branch are suppressed because
+    // the original digest is still rethrown by the paired outlet.
+    return resolveHttpAccessFallbackMetadata({
+      applyFileBasedMetadata: options.applyFileBasedMetadata,
+      basePath: options.basePath ?? "",
+      ...resolveNotFoundFallbackPlanOptions(),
+      metadataRoutes,
+      routePath: route.pattern,
+    }).catch(() => null);
+  };
+  const [resolvedMetadata, resolvedViewport] = await Promise.all([
+    shouldDeferMetadata
+      ? Promise.resolve(null)
+      : preparedHead.metadata.catch((error) => {
+          metadataErrorOutlet = Promise.reject(
+            isProduction ? sanitizeErrorForClient(error, "production") : error,
+          );
+          void metadataErrorOutlet.catch(() => null);
+          return resolveMetadataErrorTags(error);
+        }),
+    preparedHead.viewport.catch(async (error) => {
+      const specialError = resolveAppPageSpecialError(error);
+
+      viewportErrorOutlet = Promise.reject(
+        isProduction ? sanitizeErrorForClient(error, "production") : error,
+      );
+      void viewportErrorOutlet.catch(() => null);
+      return specialError?.kind === "http-access-fallback"
+        ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(() => ({}))
+        : {};
+    }),
+  ]);
+  const streamingMetadataTags = shouldDeferMetadata
+    ? preparedHead.metadata.catch(resolveMetadataErrorTags)
+    : null;
+  const streamingMetadataOutletInputs = [
+    streamingMetadata,
+    metadataErrorOutlet,
+    viewportErrorOutlet,
+  ]
+    .filter((promise) => promise !== null)
+    .map((promise) => Promise.resolve(promise));
+  const streamingMetadataOutlet =
+    streamingMetadataOutletInputs.length > 0
+      ? Promise.all(streamingMetadataOutletInputs).then(() => null)
+      : null;
+  void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
@@ -361,16 +507,6 @@ export async function buildPageElements<
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
-  const metadataPlacement =
-    hasDynamicMetadata &&
-    (serveStreamingMetadata ??
-      shouldServeStreamingMetadata(
-        pageRequest.request.headers.get("user-agent") ?? "",
-        options.htmlLimitedBots,
-      ))
-      ? "body"
-      : "head";
-
   // For sibling intercepts, wrap the intercepting page in any layouts that
   // live under the interception marker directory (interceptLayouts). In Next.js
   // the intercepting route's segment layouts wrap the intercepting page; the
@@ -427,6 +563,10 @@ export async function buildPageElements<
     resolvedMetadata,
     resolvedMetadataPathname: routePath,
     resolvedViewport,
+    streamingMetadata,
+    streamingMetadataOutlet,
+    streamingMetadataOutletSuspended: streamGeneratedHead,
+    streamingMetadataTags,
     renderIdentity,
     routePath,
     sourcePageSegments,
@@ -569,7 +709,7 @@ export function resolveInterceptedSlotSegments(
   return routeSegments;
 }
 
-function resolveSlotParamOverrides(
+export function resolveSlotParamOverrides(
   route: AppPageNavigationParamRoute,
   routePath: string,
 ): Readonly<Record<string, AppPageParams>> | null {

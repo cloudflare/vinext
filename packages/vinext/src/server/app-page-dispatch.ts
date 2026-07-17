@@ -16,9 +16,9 @@ import {
   getDraftModeCookieHeader,
   getHeadersContext,
   isDraftModeRequest,
-  markDynamicUsage,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
+  runWithIsolatedDynamicUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -128,6 +128,9 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptNotFoundBranchSegments?: readonly string[] | null;
+  notFound?: unknown;
+  notFoundTreePosition?: number | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -142,6 +145,9 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptLayouts?: readonly unknown[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFound?: unknown;
+  interceptNotFoundTreePosition?: number | null;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -179,6 +185,7 @@ export type AppPageDispatchRoute = {
   error?: AppPageModule | null;
   errors?: readonly (AppPageModule | null | undefined)[];
   forbidden?: AppPageModule | null;
+  forbiddenTreePosition?: number | null;
   forbiddens?: readonly (AppPageModule | null | undefined)[];
   isDynamic: boolean;
   layouts: readonly AppPageModule[];
@@ -191,6 +198,7 @@ export type AppPageDispatchRoute = {
   routeSegments: readonly string[];
   slots?: Readonly<Record<string, AppPageDispatchSlot>>;
   unauthorized?: AppPageModule | null;
+  unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
 
@@ -328,6 +336,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: {
       boundaryComponent?: unknown;
       boundaryModule?: AppPageModule | null;
+      intercept?: AppPageDispatchInterceptOptions | null;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
     },
@@ -537,6 +546,9 @@ function toInterceptOptions(
     interceptLayouts: intercept.interceptLayouts,
     interceptLayoutSegments: intercept.interceptLayoutSegments,
     interceptBranchSegments: intercept.interceptBranchSegments,
+    interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
+    interceptNotFound: intercept.notFound,
+    interceptNotFoundTreePosition: intercept.notFoundTreePosition,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,
@@ -786,7 +798,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  if (options.skipStaticParamsValidation !== true) {
+  // Next.js' production force-dynamic routes are absent from the prerender
+  // manifest, so they never enter its generated-path fallback gate. Dev still
+  // resolves and exact-matches generateStaticParams for the same route.
+  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
     const dynamicParamsResponse = await validateAppPageDynamicParams({
       clearRequestContext: options.clearRequestContext,
       enforceStaticParamsOnly: options.dynamicParamsConfig === false,
@@ -954,7 +969,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return options.renderErrorBoundaryPage(buildError);
       },
       renderSpecialError(specialError) {
-        return renderPageSpecialError(options, specialError, serveStreamingMetadata);
+        return renderPageSpecialError(
+          options,
+          specialError,
+          serveStreamingMetadata,
+          interceptResult.interceptOpts,
+        );
       },
       resolveSpecialError: resolveAppPageSpecialError,
     });
@@ -1094,15 +1114,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       async runWithIsolatedDynamicScope(fn) {
-        const priorDynamic = consumeDynamicUsage();
-        try {
-          const result = await fn();
-          const dynamicDetected = consumeDynamicUsage();
-          return { result, dynamicDetected };
-        } finally {
-          consumeDynamicUsage();
-          if (priorDynamic) markDynamicUsage();
-        }
+        return runWithIsolatedDynamicUsage(fn);
       },
     },
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
@@ -1116,7 +1128,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
     },
     renderPageSpecialError(specialError) {
-      return renderPageSpecialError(options, specialError, serveStreamingMetadata);
+      return renderPageSpecialError(
+        options,
+        specialError,
+        serveStreamingMetadata,
+        interceptResult.interceptOpts,
+      );
     },
     renderToReadableStream: options.renderToReadableStream,
     hasCustomGlobalError: options.hasCustomGlobalError,
@@ -1181,6 +1198,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
   serveStreamingMetadata: boolean,
+  intercept: AppPageDispatchInterceptOptions | null | undefined,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
@@ -1229,6 +1247,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         boundaryLayoutIndex !== null &&
         (routeBoundaryModule === null || routeBoundaryModule === parentBoundaryModule);
       const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
+        intercept,
         matchedParams: options.params,
       };
       if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {

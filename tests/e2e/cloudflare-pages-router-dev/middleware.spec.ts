@@ -57,12 +57,13 @@ test.describe("middleware.ts with @cloudflare/vite-plugin (vite dev)", () => {
   });
 
   test("middleware does not run on routes outside the matcher", async ({ request }) => {
-    // / and /about are not in the matcher config — header must be absent
+    // / and /nav-test are not in the matcher config — header must be absent.
+    // /nav-test is subsequently rewritten by next.config.js, after middleware.
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
     expect(res.headers()["x-mw-ran"]).toBeUndefined();
 
-    const res2 = await request.get(`${BASE}/about`);
+    const res2 = await request.get(`${BASE}/nav-test`);
     expect(res2.status()).toBe(200);
     expect(res2.headers()["x-mw-ran"]).toBeUndefined();
   });

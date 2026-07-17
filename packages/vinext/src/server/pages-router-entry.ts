@@ -39,6 +39,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -129,6 +130,11 @@ async function handleRequest(
     // downstream redirect can echo them.
     if (isOpenRedirectShaped(pathname)) {
       return new Response("This page could not be found", { status: 404 });
+    }
+    try {
+      normalizePathnameForRouteMatchStrict(pathname);
+    } catch {
+      return new Response("Bad Request", { status: 400 });
     }
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker

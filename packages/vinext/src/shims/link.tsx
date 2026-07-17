@@ -19,6 +19,7 @@ import React, {
   type MouseEvent,
   type TouchEvent,
 } from "react";
+import type { UrlObject } from "node:url";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -75,11 +76,12 @@ type NavigateEvent = {
 };
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
-type LinkProps = {
-  href: string | { pathname?: string; query?: UrlQuery; hash?: string };
+export type LinkProps<_RouteInferType = unknown> = {
+  href: string | UrlObject;
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
-  as?: string;
+  as?: string | UrlObject;
   /** Replace the current history entry instead of pushing */
   replace?: boolean;
   /** Prefetch the page in the background (App Router default: auto, Pages Router default: true) */
@@ -111,7 +113,8 @@ type LinkProps = {
   /** Locale for i18n (used for locale-prefixed URLs) */
   locale?: string | false;
   /** Called before navigation happens (Next.js 16). Return value is ignored. */
-  onNavigate?: (event: NavigateEvent) => void;
+  onNavigate?: (event: { preventDefault(): void }) => void;
+  transitionTypes?: string[];
   children?: React.ReactNode;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
 
@@ -145,6 +148,13 @@ export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
 }
 
+let linkPrefetchNavigationEpoch = 0;
+
+function notifyLinkNavigationStartAndCancelPrefetchSetup(): void {
+  linkPrefetchNavigationEpoch += 1;
+  notifyLinkNavigationStart();
+}
+
 // Register the link-status reset hook on the navigation runtime as soon as this
 // module evaluates on the client. `navigateClientSide` calls it at the start of
 // every App Router navigation (including router.push and shallow routing), so a
@@ -153,7 +163,7 @@ export function useLinkStatus(): LinkStatusContextValue {
 // it can be unit-tested without rendering a <Link>.
 if (typeof window !== "undefined") {
   registerNavigationRuntimeFunctions({
-    notifyLinkNavigationStart,
+    notifyLinkNavigationStart: notifyLinkNavigationStartAndCancelPrefetchSetup,
   });
 }
 
@@ -175,7 +185,7 @@ function resolveHref(href: LinkProps["href"]): string {
   // back/forward traversal (issue #1540).
   let url = href.pathname ?? "";
   if (href.query) {
-    const params = urlQueryToSearchParams(href.query);
+    const params = urlQueryToSearchParams(href.query as UrlQuery);
     url = appendSearchParamsToUrl(url, params);
   }
   if (href.hash) {
@@ -422,6 +432,7 @@ function prefetchUrl(
   locale?: string | false,
 ): void {
   if (typeof window === "undefined") return;
+  const navigationEpoch = linkPrefetchNavigationEpoch;
 
   const prefetchHref = getLinkPrefetchHref({
     href,
@@ -467,15 +478,21 @@ function prefetchUrl(
             APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           },
           headersModule,
-          { resolveHybridClientRewriteHref, resolveHybridClientRouteOwner },
+          hybridRouteOwner,
         ] = await Promise.all([
           import("./navigation.js"),
           import("../server/app-elements.js"),
           import("../server/app-rsc-cache-busting.js"),
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
-          import("./internal/hybrid-client-route-owner.js"),
+          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES
+            ? import("./internal/hybrid-client-route-owner.js")
+            : null,
         ]);
+        // A pointer-intent prefetch and its click navigation can start in the
+        // same event turn. If navigation won the module-loading race, do not
+        // begin a second request after it consumes an equivalent cached route.
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const {
           getPrefetchInterceptionContext,
           getPrefetchCache,
@@ -501,11 +518,15 @@ function prefetchUrl(
         // stream is never consumed (the click path now hard-navigates to
         // Pages) and would also race the request the browser will issue on
         // the actual navigation.
-        const hybridOwner = resolveHybridClientRouteOwner(prefetchHref, __basePath);
+        const hybridOwner = HAS_PAGES_ROUTER
+          ? hybridRouteOwner!.resolveHybridClientRouteOwner(prefetchHref, __basePath)
+          : null;
         if (hybridOwner === "pages" || hybridOwner === "document") {
           return;
         }
-        const rewrittenPrefetchHref = resolveHybridClientRewriteHref(fullHref, __basePath);
+        const rewrittenPrefetchHref = HAS_CLIENT_REWRITES
+          ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
+          : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const autoPrefetch =
           mode === "auto"
@@ -1077,7 +1098,9 @@ function resolveConcreteRouteHref(href: LinkProps["href"], as: string | undefine
   const projection = interpolateDynamicRouteHref(
     hrefStr,
     as,
-    typeof href === "string" ? undefined : href.query,
+    typeof href === "string" || !href.query || typeof href.query === "string"
+      ? undefined
+      : (href.query as UrlQuery),
   );
   return projection?.href || null;
 }
@@ -1098,10 +1121,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     unstable_dynamicOnHover = false,
     legacyBehavior = false,
     passHref = false,
+    transitionTypes: _transitionTypes,
     ...rest
   },
   forwardedRef,
 ) {
+  const asHref = as === undefined ? undefined : resolveHref(as);
   // Extract locale from rest props
   const { locale, ...restWithoutLocale } = rest;
 
@@ -1136,12 +1161,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Mirrors Next.js' Router.change(): `getRouteRegex` + `interpolateAs`
   // computes `resolvedAs` for the dynamic-route branch (packages/next/src/
   // shared/lib/router/router.ts around L987).
-  const unresolvedHref = as ?? resolveHref(href);
+  const unresolvedHref = asHref ?? resolveHref(href);
   const rawResolvedHref =
     typeof unresolvedHref === "string" && unresolvedHref.startsWith("#")
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
-  const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, as) : null;
+  const concreteRouteHref = HAS_PAGES_ROUTER ? resolveConcreteRouteHref(href, asHref) : null;
   const routeHrefRaw = concreteRouteHref ?? (typeof href === "string" ? href : resolveHref(href));
 
   // Mirror Next.js: emit a console.error when the href contains repeated
@@ -1166,9 +1191,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const normalizedHref = normalizePathTrailingSlash(localizedHref, __trailingSlash);
   const normalizedRouteHref =
     HAS_PAGES_ROUTER &&
-    typeof as === "string" &&
+    typeof asHref === "string" &&
     typeof routeHrefRaw === "string" &&
-    as !== routeHrefRaw
+    asHref !== routeHrefRaw
       ? normalizePathTrailingSlash(
           applyLocaleToHref(isDangerous ? "/" : routeHrefRaw, locale),
           __trailingSlash,
@@ -1384,9 +1409,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // existing single-arg navigation (the dominant code path) is unaffected.
     const pagesAsForLink =
       HAS_PAGES_ROUTER &&
-      typeof as === "string" &&
+      typeof asHref === "string" &&
       typeof routeHrefRaw === "string" &&
-      as !== routeHrefRaw
+      asHref !== routeHrefRaw
         ? pagesNavigateHref
         : undefined;
     const pagesHrefForLink = pagesAsForLink === undefined ? pagesNavigateHref : routeHrefRaw;

@@ -22,11 +22,23 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  cacheTag,
   getAndClearActionRevalidationKind,
   refresh,
   revalidatePath,
   revalidateTag,
+  unstable_cache,
+  updateTag,
 } from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   cookies,
   getHeadersContext,
@@ -221,13 +233,20 @@ function createRscOptions(
 > {
   const route: TestRoute = { id: "dashboard", page: {}, params: [], pattern: "/dashboard" };
 
+  const cleanPathname = overrides.cleanPathname ?? "/dashboard";
+  const matchRoute =
+    overrides.matchRoute ??
+    (() => ({
+      params: {},
+      route,
+    }));
+
   return {
     actionId: "action-id",
     allowedOrigins: [],
     buildPageElement({ route: matchedRoute, params, interceptOpts }) {
       return `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`;
     },
-    cleanPathname: "/dashboard",
     clearRequestContext() {},
     contentType: "text/plain;charset=UTF-8",
     createNotFoundElement(routeId) {
@@ -265,9 +284,6 @@ function createRscOptions(
     loadServerAction() {
       return Promise.resolve(() => "action-result");
     },
-    matchRoute() {
-      return { params: {}, route };
-    },
     maxActionBodySize: 1024,
     maxActionBodySizeLabel: "1kb",
     middlewareHeaders: null,
@@ -294,6 +310,13 @@ function createRscOptions(
       return { slot: intercept.slotKey };
     },
     ...overrides,
+    cleanPathname,
+    currentRouteMatch:
+      overrides.currentRouteMatch !== undefined
+        ? overrides.currentRouteMatch
+        : matchRoute(cleanPathname),
+    currentRoutePathname: overrides.currentRoutePathname ?? cleanPathname,
+    matchRoute,
   };
 }
 
@@ -632,7 +655,7 @@ describe("app server action execution helpers", () => {
     formData.set("0", '"$Q1:x"');
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = requireProgressiveActionResponse(
@@ -1349,7 +1372,7 @@ describe("app server action execution helpers", () => {
           buildPageElement,
           loadServerAction() {
             return Promise.resolve(async () => {
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "updated";
             });
           },
@@ -1381,7 +1404,7 @@ describe("app server action execution helpers", () => {
           loadServerAction() {
             return Promise.resolve(async () => {
               deferredRead = deferred.then(() => getRootParam("lang"));
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "updated";
             });
           },
@@ -1445,7 +1468,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },
@@ -1511,7 +1534,7 @@ describe("app server action execution helpers", () => {
               kind === "redirect"
                 ? () => redirect("/redirect-target?user=alice")
                 : async () => {
-                    await revalidatePath("/dashboard");
+                    await Promise.resolve(revalidatePath("/dashboard"));
                     return "revalidated";
                   },
             );
@@ -1574,7 +1597,7 @@ describe("app server action execution helpers", () => {
               kind === "redirect"
                 ? () => redirect("/redirect-target?user=alice")
                 : async () => {
-                    await revalidatePath("/dashboard");
+                    await Promise.resolve(revalidatePath("/dashboard"));
                     return "revalidated";
                   },
             );
@@ -1628,7 +1651,7 @@ describe("app server action execution helpers", () => {
           },
           loadServerAction() {
             return Promise.resolve(async () => {
-              await revalidatePath("/dashboard");
+              await Promise.resolve(revalidatePath("/dashboard"));
               return "revalidated";
             });
           },
@@ -1900,7 +1923,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", "hours");
+            await Promise.resolve(revalidateTag("dashboard", "hours"));
             return "revalidated";
           });
         },
@@ -1916,7 +1939,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard", { expire: 0 });
+            await Promise.resolve(revalidateTag("dashboard", { expire: 0 }));
             return "revalidated";
           });
         },
@@ -1925,6 +1948,96 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  // Covers the read-your-own-writes ordering asserted by Next.js:
+  // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
+  it("finishes updateTag invalidation before rendering the action response", async () => {
+    const previousHandler = getDataCacheHandler();
+    let markInvalidationStarted!: () => void;
+    const invalidationStarted = new Promise<void>((resolve) => {
+      markInvalidationStarted = resolve;
+    });
+    let releaseInvalidation!: () => void;
+    const invalidationGate = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
+    });
+    let invalidationFinished = false;
+    let markSameActionReadFinished!: () => void;
+    const sameActionReadFinished = new Promise<void>((resolve) => {
+      markSameActionReadFinished = resolve;
+    });
+    let sameActionValue: unknown;
+    let sameActionUseCacheValue: unknown;
+    const renderToReadableStream = vi.fn((model: TestActionModel) => {
+      expect(invalidationFinished).toBe(true);
+      return new Response(JSON.stringify(model)).body;
+    });
+    const cachedRead = unstable_cache(async () => "fresh", ["update-tag-read-your-own-writes"], {
+      tags: ["dashboard"],
+    });
+    const useCacheRead = registerCachedFunction(async () => {
+      cacheTag("dashboard");
+      return "fresh-use-cache";
+    }, "test:update-tag-read-your-own-writes");
+
+    setDataCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "stale" }),
+              url: "unstable_cache:test",
+            },
+            tags: ["dashboard"],
+            revalidate: false,
+          },
+        };
+      },
+      async set() {},
+      async revalidateTag() {
+        markInvalidationStarted();
+        await invalidationGate;
+        invalidationFinished = true;
+      },
+    });
+
+    try {
+      const responsePromise = runWithRequestContext(createRequestContext(), () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            loadServerAction() {
+              return Promise.resolve(async () => {
+                expect(updateTag("dashboard")).toBeUndefined();
+                sameActionValue = await cachedRead();
+                sameActionUseCacheValue = await useCacheRead();
+                markSameActionReadFinished();
+                return "revalidated";
+              });
+            },
+            renderToReadableStream,
+          }),
+        ),
+      );
+
+      await invalidationStarted;
+      await sameActionReadFinished;
+      expect(sameActionValue).toBe("fresh");
+      expect(sameActionUseCacheValue).toBe("fresh-use-cache");
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+      releaseInvalidation();
+
+      const response = await responsePromise;
+      expect(response?.status).toBe(200);
+      expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseInvalidation();
+      setDataCacheHandler(previousHandler);
+    }
   });
 
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
@@ -2046,7 +2159,7 @@ describe("app server action execution helpers", () => {
   it("clears pending cookies and revalidation state for rejected fetch payloads", async () => {
     const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
     const previousPhase = setHeadersAccessPhase("action");
-    await revalidatePath("/stale");
+    await Promise.resolve(revalidatePath("/stale"));
     setHeadersAccessPhase(previousPhase);
 
     const response = await handleServerActionRscRequest(
@@ -2250,7 +2363,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidateTag("dashboard");
+            await Promise.resolve(revalidateTag("dashboard"));
             throw { digest: "NEXT_REDIRECT;;%2Ftarget;307" };
           });
         },
@@ -2346,7 +2459,7 @@ describe("app server action execution helpers", () => {
         },
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "forwarded-result";
           });
         },
@@ -2757,7 +2870,7 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         loadServerAction() {
           return Promise.resolve(async () => {
-            await revalidatePath("/dashboard");
+            await Promise.resolve(revalidatePath("/dashboard"));
             return "revalidated";
           });
         },

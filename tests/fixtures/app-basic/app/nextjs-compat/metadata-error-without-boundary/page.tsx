@@ -6,7 +6,7 @@
 export const dynamic = "force-dynamic";
 
 export function generateMetadata() {
-  throw new Error("Metadata error");
+  throw new Error("Sensitive metadata error detail");
 }
 
 export default function Page() {

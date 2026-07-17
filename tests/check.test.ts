@@ -216,6 +216,17 @@ describe("scanImports", () => {
     expect(items[0].name).toBe("next/image");
   });
 
+  it("ignores imports used only by test modules and tool config files", () => {
+    writeFile("app/page.test.tsx", `import { useAmp } from "next/amp";`);
+    writeFile("vitest.config.ts", `import { useAmp } from "next/amp";`);
+    writeFile("site.config.ts", `import { useAmp } from "next/amp";`);
+    writeFile("app/page.tsx", `import Link from "next/link";`);
+
+    const items = scanImports(tmpDir);
+
+    expect(items.map((item) => item.name)).toEqual(["next/amp", "next/link"]);
+  });
+
   it("deduplicates files using the same import", () => {
     writeFile(
       "app/page.tsx",
@@ -1224,6 +1235,33 @@ describe("checkConventions", () => {
     expect(cjs?.detail).toContain("fileURLToPath");
     expect(cjs?.detail).toContain("import.meta.dirname");
     expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("ignores CJS globals in test modules and tool config files", () => {
+    writeFile(
+      "src/app/mobile-layout-alignment.test.ts",
+      `const css = readFileSync(resolve(__dirname, "film.module.css"), "utf-8");`,
+    );
+    writeFile("vitest.config.ts", `export default { root: path.resolve(__dirname, "./src") };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+
+    expect(cjs).toBeUndefined();
+  });
+
+  it("still reports CJS globals in runtime source alongside excluded files", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("site.config.ts", `const root = path.join(__dirname, "content");`);
+    writeFile("lib/db.spec.ts", `const fixture = path.join(__dirname, "fixtures");`);
+    writeFile("vitest.config.ts", `export default { root: path.resolve(__dirname, "./src") };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+
+    expect(cjs?.files).toEqual(["lib/db.ts", "site.config.ts"]);
   });
 
   it("detects __filename usage", () => {

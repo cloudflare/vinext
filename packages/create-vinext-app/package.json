@@ -1,6 +1,6 @@
 {
   "name": "create-vinext-app",
-  "version": "1.0.0-beta.0",
+  "version": "1.0.0-beta.1",
   "description": "Create a vinext app for Cloudflare Workers.",
   "license": "MIT",
   "repository": {
@@ -9,7 +9,7 @@
     "directory": "packages/create-vinext-app"
   },
   "bin": {
-    "create-vinext-app": "dist/index.js"
+    "create-vinext-app": "dist/cli.js"
   },
   "files": [
     "dist"

@@ -37,6 +37,8 @@ jobs:
         working-directory: packages/vinext
         run: |
           vp pm pack --pack-destination "${{ runner.temp }}"
+          cd ../types
+          vp pm pack --pack-destination "${{ runner.temp }}"
           cd ../cloudflare
           vp pm pack --pack-destination "${{ runner.temp }}"
 
@@ -69,8 +71,8 @@ jobs:
       - name: Install local vinext packages
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
-          vp add "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare

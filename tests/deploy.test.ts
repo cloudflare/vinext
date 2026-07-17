@@ -116,6 +116,15 @@ function readVinextPackageExports(): Record<string, unknown> {
   return parsed.exports;
 }
 
+function readCloudflarePackagePeerDependencies(): Record<string, unknown> {
+  const packageJsonPath = path.resolve("packages/cloudflare/package.json");
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.peerDependencies)) {
+    throw new Error("packages/cloudflare/package.json must define peerDependencies");
+  }
+  return parsed.peerDependencies;
+}
+
 function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
   if (Object.hasOwn(exportsMap, subpath)) return true;
 
@@ -1412,6 +1421,11 @@ describe("readPagesRouterEntrySource", () => {
       true,
     );
     expect(hasPackageExport(exportsMap, "./internal/utils/project")).toBe(true);
+  });
+
+  it("publishes a vinext peer range that includes matching prereleases", () => {
+    const peerDependencies = readCloudflarePackagePeerDependencies();
+    expect(peerDependencies.vinext).toBe("workspace:^");
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {

@@ -143,6 +143,35 @@ test.describe("Server-side redirects", () => {
     await expect(page.locator("h1")).toHaveText("About");
     expect(pageErrors.filter((message) => message.includes("NEXT_REDIRECT"))).toHaveLength(0);
   });
+
+  test("client navigation handles a delayed generateMetadata redirect", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("metadata-redirect-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(pageErrors.filter((message) => message.includes("NEXT_REDIRECT"))).toHaveLength(0);
+  });
+
+  test("client navigation renders not-found metadata from delayed generateMetadata", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("metadata-streaming-not-found-link").click();
+
+    await expect(page).toHaveURL(`${BASE}/metadata-streaming-not-found`);
+    await expect(page.getByTestId("metadata-streaming-not-found")).toBeVisible();
+    await expect(page).toHaveTitle("Streamed not-found metadata");
+    expect(pageErrors.filter((message) => message.includes("NEXT_HTTP_ERROR"))).toHaveLength(0);
+  });
 });
 
 test.describe("Dashboard nested not-found", () => {
