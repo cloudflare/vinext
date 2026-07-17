@@ -17,6 +17,10 @@
  * scaling, so tooltip positioning math stays straightforward.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@cloudflare/kumo/components/button";
+import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Table } from "@cloudflare/kumo/components/table";
+import { Table as TableIcon, X } from "@phosphor-icons/react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
 import type { SuiteSupportStatus } from "./suite-support";
@@ -64,6 +68,20 @@ const LABELS: Record<DisplayStatus, string> = {
   unsupported: "Unsupported by vinext",
 };
 
+const SUPPORT_LABELS: Record<SuiteSupportStatus, string> = {
+  supported: "Supported",
+  deferred: "Deferred",
+  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  unsupported: "Unsupported by vinext",
+};
+
+const SUPPORT_COLORS: Record<SuiteSupportStatus, string> = {
+  supported: "#2da44e",
+  deferred: COLORS.deferred,
+  "needs-vite-equivalent": COLORS["needs-vite-equivalent"],
+  unsupported: COLORS.unsupported,
+};
+
 const LEGEND_ORDER: DisplayStatus[] = [
   "pass",
   "partial",
@@ -104,6 +122,100 @@ function summarize(cell: GridCell): string {
 
 function getDisplayStatus(cell: GridCell): DisplayStatus {
   return cell.supportStatus === "supported" ? cell.status : cell.supportStatus;
+}
+
+function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
+  return (
+    <Dialog.Root>
+      <Dialog.Trigger
+        render={(props) => (
+          <Button
+            {...props}
+            size="sm"
+            variant="outline"
+            icon={TableIcon}
+            disabled={cells.length === 0}
+          >
+            View table
+          </Button>
+        )}
+      />
+      <Dialog
+        size="xl"
+        className="flex max-h-[90vh] w-[min(96vw,80rem)] max-w-none flex-col overflow-hidden p-0"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-kumo-hairline px-5 py-4">
+          <div>
+            <Dialog.Title className="text-xl font-semibold tracking-tight text-kumo-default">
+              Compatibility test files
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+              Showing {cells.length} files for the current router filter. Classifications do not
+              alter the raw test results.
+            </Dialog.Description>
+          </div>
+          <Dialog.Close
+            render={(props) => (
+              <Button
+                {...props}
+                shape="square"
+                size="sm"
+                variant="ghost"
+                icon={X}
+                aria-label="Close compatibility table"
+              />
+            )}
+          />
+        </div>
+        <div className="min-h-0 overflow-auto">
+          <Table aria-label="Compatibility test files">
+            <Table.Header sticky>
+              <Table.Row>
+                <Table.Head>Test file</Table.Head>
+                <Table.Head>Classification</Table.Head>
+                <Table.Head>Feature</Table.Head>
+                <Table.Head>Raw result</Table.Head>
+                <Table.Head className="text-right">Passed</Table.Head>
+                <Table.Head className="text-right">Failed</Table.Head>
+                <Table.Head className="text-right">Skipped</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {cells.map((cell) => (
+                <Table.Row key={cell.suite}>
+                  <Table.Cell className="min-w-80 font-mono text-xs break-all">
+                    {cell.suite}
+                  </Table.Cell>
+                  <Table.Cell className="min-w-48">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: SUPPORT_COLORS[cell.supportStatus] }}
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm font-medium">
+                        {SUPPORT_LABELS[cell.supportStatus]}
+                      </span>
+                    </div>
+                    {cell.reason ? (
+                      <div className="mt-1 max-w-72 text-xs text-kumo-subtle">{cell.reason}</div>
+                    ) : null}
+                  </Table.Cell>
+                  <Table.Cell className="min-w-56 text-sm">{cell.feature ?? "—"}</Table.Cell>
+                  <Table.Cell className="whitespace-nowrap text-sm">
+                    {LABELS[cell.status]}
+                  </Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.passed}</Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.failed}</Table.Cell>
+                  <Table.Cell className="text-right font-mono text-sm">{cell.skipped}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      </Dialog>
+    </Dialog.Root>
+  );
 }
 
 /**
@@ -211,6 +323,9 @@ export function ContributionGrid({
 
   return (
     <div ref={containerRef} className="relative w-full">
+      <div className="mb-3 flex justify-end">
+        <CompatibilityTableDialog cells={visibleCells} />
+      </div>
       {visibleCells.length === 0 ? (
         <div className="py-8 text-center text-sm text-kumo-subtle">
           No test files in this category.
