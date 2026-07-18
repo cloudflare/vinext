@@ -3,7 +3,7 @@ async function delay(ms: number) {
 }
 
 export default async function SlowLayout({ children }: { children: React.ReactNode }) {
-  await delay(1500);
+  await delay(3000);
 
   return (
     <section>

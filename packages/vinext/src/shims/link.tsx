@@ -542,7 +542,6 @@ function prefetchUrl(
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
-        if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
         const hasSearchAgnosticShell =
           isAutomaticSearchParamShell &&
           hasSearchAgnosticPrefetchShellForRoute(

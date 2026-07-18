@@ -192,6 +192,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         imports.getLazyLoaderVar(layoutPath);
       }
       if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath);
+      for (const loadingPath of slot.loadingPaths ?? []) {
+        imports.getLazyLoaderVar(loadingPath);
+      }
       if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
       if (slot.notFoundPath) imports.getLazyLoaderVar(slot.notFoundPath);
       for (const ir of slot.interceptingRoutes) {
@@ -199,6 +202,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getLazyLoaderVar(layoutPath);
+        }
+        for (const loadingPath of ir.loadingPaths ?? []) {
+          imports.getLazyLoaderVar(loadingPath);
         }
       }
     }
@@ -210,6 +216,9 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
       for (const layoutPath of ir.layoutPaths) {
         imports.getLazyLoaderVar(layoutPath);
+      }
+      for (const loadingPath of ir.loadingPaths ?? []) {
+        imports.getLazyLoaderVar(loadingPath);
       }
     }
   }
@@ -259,6 +268,9 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
       interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
       interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
+      interceptLoadings: ${moduleArray(ir.loadingPaths?.length ?? 0)},
+      __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
+      interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
       interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
       page: null,
       __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
@@ -279,6 +291,9 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
           interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
           interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
+          interceptLoadings: ${moduleArray(ir.loadingPaths?.length ?? 0)},
+          __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
+          interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
           interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
           page: null,
           __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
@@ -291,6 +306,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       return `      ${JSON.stringify(slot.key)}: {
         id: ${JSON.stringify(slot.id ?? null)},
         name: ${JSON.stringify(slot.name)},
+        ownerTreePosition: ${slot.ownerTreePosition ?? "null"},
         page: null,
         __loadPage: ${slot.pagePath ? imports.getLazyLoaderVar(slot.pagePath) : "null"},
         default: null,
@@ -302,6 +318,9 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
+        loadings: ${moduleArray(slot.loadingPaths?.length ?? 0)},
+        __loadLoadings: ${lazyLoaderArray(slot.loadingPaths ?? [], imports)},
+        loadingTreePositions: ${JSON.stringify(slot.loadingTreePositions ?? [])},
         error: null,
         __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath) : "null"},
         notFound: null,

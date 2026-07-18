@@ -171,20 +171,24 @@ describe("ensureAppRouteModulesLoaded", () => {
     const slotLayout = { default: () => null };
     const slotNotFound = { default: () => null, metadata: { title: "slot not found" } };
     const nestedSlotLayout = { default: () => null, revalidate: 30 };
+    const nestedSlotLoading = { default: () => null };
     const __loadPage = vi.fn(async () => slotPage);
     const __loadLayout = vi.fn(async () => slotLayout);
     const __loadNotFound = vi.fn(async () => slotNotFound);
     const __loadConfigLayout = vi.fn(async () => nestedSlotLayout);
+    const __loadSlotLoading = vi.fn(async () => nestedSlotLoading);
     const route: LazyLoadableRoute = {
       slots: {
         "@modal": {
           page: null,
           layout: null,
           configLayouts: [null],
+          loadings: [null],
           __loadPage,
           __loadLayout,
           __loadNotFound,
           __loadConfigLayouts: [__loadConfigLayout],
+          __loadLoadings: [__loadSlotLoading],
         },
       },
     };
@@ -195,6 +199,7 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].layout).toBe(slotLayout);
     expect(route.slots?.["@modal"].notFound).toBe(slotNotFound);
     expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
+    expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
   });
 });
 
@@ -202,14 +207,18 @@ describe("loadAppInterceptLayouts", () => {
   it("hydrates intercept layouts from their loaders and returns the array", async () => {
     const layoutA = { default: () => null };
     const layoutB = { default: () => null };
+    const loading = { default: () => null };
     const intercept = {
       interceptLayouts: [null, null],
       __loadInterceptLayouts: [async () => layoutA, async () => layoutB],
+      interceptLoadings: [null],
+      __loadInterceptLoadings: [async () => loading],
     };
 
     const result = await loadAppInterceptLayouts(intercept);
 
     expect(intercept.interceptLayouts).toEqual([layoutA, layoutB]);
+    expect(intercept.interceptLoadings).toEqual([loading]);
     expect(result).toBe(intercept.interceptLayouts);
   });
 

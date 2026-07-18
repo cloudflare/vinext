@@ -1625,7 +1625,9 @@ describe("matchAppRoute - URL matching", () => {
       await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "@modal", "(.)foo", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "loading.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "loading.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "@modal", "(.)foo", "bar", "baz", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "foo", "page.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "foo", "bar", "page.tsx"), EMPTY_PAGE);
@@ -1644,6 +1646,44 @@ describe("matchAppRoute - URL matching", () => {
         canonical(path.join(appDir, "@modal", "(.)foo", "layout.tsx")),
         canonical(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx")),
       ]);
+      expect(modalSlot!.interceptingRoutes[0]?.loadingPaths).toEqual([
+        canonical(path.join(appDir, "@modal", "(.)foo", "loading.tsx")),
+        canonical(path.join(appDir, "@modal", "(.)foo", "bar", "loading.tsx")),
+      ]);
+      expect(modalSlot!.interceptingRoutes[0]?.loadingTreePositions).toEqual([1, 2]);
+    });
+  });
+
+  it("includes loading boundaries on common slot ancestry before an intercept marker", async () => {
+    await withTempDir("vinext-app-intercept-common-loading-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      await mkdir(path.join(appDir, "@modal", "gallery", "(.)photo"), { recursive: true });
+      await mkdir(path.join(appDir, "gallery", "photo"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "@modal", "gallery", "loading.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "@modal", "gallery", "(.)photo", "loading.tsx"),
+        EMPTY_PAGE,
+      );
+      await writeFile(path.join(appDir, "@modal", "gallery", "(.)photo", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "gallery", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "gallery", "photo", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const galleryRoute = routes.find((route) => route.pattern === "/gallery");
+      const modalSlot = galleryRoute?.parallelSlots.find((slot) => slot.name === "modal");
+      const intercept = modalSlot?.interceptingRoutes[0];
+
+      expect(intercept?.loadingPaths).toEqual([
+        canonical(path.join(appDir, "@modal", "gallery", "loading.tsx")),
+        canonical(path.join(appDir, "@modal", "gallery", "(.)photo", "loading.tsx")),
+      ]);
+      expect(intercept?.loadingTreePositions).toEqual([1, 2]);
+      expect(intercept?.branchSegments).toEqual(["gallery", "photo"]);
     });
   });
 
@@ -1846,6 +1886,10 @@ describe("matchAppRoute - URL matching", () => {
         path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "page.tsx"),
         EMPTY_PAGE,
       );
+      await writeFile(
+        path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "loading.tsx"),
+        EMPTY_PAGE,
+      );
 
       invalidateAppRouteCache();
       const routes = await appRouter(appDir);
@@ -1869,6 +1913,12 @@ describe("matchAppRoute - URL matching", () => {
       expect(parallelBSlot.pagePath).toContain(
         canonical(path.join("@parallelB", "nested", "page.tsx")),
       );
+      expect(parallelBSlot.loadingPaths).toEqual([
+        canonical(
+          path.join(appDir, "parallel-nested", "home", "@parallelB", "nested", "loading.tsx"),
+        ),
+      ]);
+      expect(parallelBSlot.loadingTreePositions).toEqual([1]);
     });
   });
 
