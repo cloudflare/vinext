@@ -49,12 +49,12 @@ import ${JSON.stringify(entryPath)};`;
  * emitting the same manifest for hybrid builds — see issue #1526 and
  * `pages-client-entry.ts`.
  */
-export function isLinkPrefetchRoute(route: AppRoute): boolean {
+function isLinkPrefetchRoute(route: AppRoute): boolean {
   if (route.pagePath !== null) return true;
   return route.routePath === null && route.layouts.length > 0;
 }
 
-export function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
+function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: false,
     documentOnly: true,
