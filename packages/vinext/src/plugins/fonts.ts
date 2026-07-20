@@ -41,7 +41,6 @@ import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
 import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
-import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -130,11 +129,6 @@ function formatGoogleFontsErrorBody(body: string): string {
  * kept only so the exported helper can be driven directly from unit
  * tests without synthesizing a full plugin context.
  *
- * When `deploymentId` is configured, it is added to the rewritten font URLs
- * before the CSS is embedded. Next.js uses this query to keep static-asset
- * requests on the same deployment as the HTML during rolling deploys, and the
- * matching preload consumers use these exact deployment-aware URLs.
- *
  * Uses split/join rather than regex because `cacheDir` is an absolute
  * filesystem path that may contain regex metacharacters on unusual
  * filesystems.
@@ -143,23 +137,10 @@ export function _rewriteCachedFontCssToServedUrls(
   css: string,
   cacheDir: string,
   assetsDir: string = DEFAULT_ASSETS_DIR,
-  deploymentId?: string,
 ): string {
   if (!cacheDir || !css.includes(cacheDir)) return css;
   const prefix = assetsDir || DEFAULT_ASSETS_DIR;
-  const servedPrefix = `/${prefix}/${VINEXT_FONT_URL_NAMESPACE}`;
-  const rewritten = css.split(cacheDir).join(servedPrefix);
-  if (!deploymentId) return rewritten;
-
-  return rewritten.replace(/url\(([^)]*)\)/g, (full, rawValue: string) => {
-    const leadingWhitespace = rawValue.match(/^\s*/)?.[0] ?? "";
-    const trailingWhitespace = rawValue.match(/\s*$/)?.[0] ?? "";
-    const trimmed = rawValue.trim();
-    const quote = trimmed[0] === '"' || trimmed[0] === "'" ? trimmed[0] : "";
-    const value = quote && trimmed.endsWith(quote) ? trimmed.slice(1, -1) : trimmed;
-    if (!value.startsWith(`${servedPrefix}/`)) return full;
-    return `url(${leadingWhitespace}${quote}${appendDeploymentIdQuery(value, deploymentId)}${quote}${trailingWhitespace})`;
-  });
+  return css.split(cacheDir).join(`/${prefix}/${VINEXT_FONT_URL_NAMESPACE}`);
 }
 
 /**
@@ -669,11 +650,7 @@ export function _findCallEnd(code: string, objEnd: number): number | null {
   return i + 1;
 }
 
-export function createGoogleFontsPlugin(
-  fontGoogleShimPath: string,
-  shimsDir: string,
-  getDeploymentId: () => string | undefined = () => undefined,
-): Plugin {
+export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: string): Plugin {
   // Vite does not bind `this` to the plugin object when calling hooks, so
   // plugin state must be held in closure variables rather than as properties.
   const fontCache = new Map<string, string>(); // url -> local @font-face CSS
@@ -942,7 +919,6 @@ export function createGoogleFontsPlugin(
             localCSS,
             cacheDir,
             transformAssetsDir,
-            getDeploymentId(),
           );
           const preloadUrls = findFontFilesInCss(
             servedCSS,

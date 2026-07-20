@@ -26,7 +26,6 @@ import {
   sanitizeFontDescriptorValue,
   type FontStyle,
 } from "./font-utils.js";
-import { appendAssetDeploymentIdQuery, getDeploymentId } from "../utils/deployment-id.js";
 
 /**
  * Validate a CSS property name for use in declarations.
@@ -281,21 +280,9 @@ function injectVariableClassRule(
  * Handles string, single object, and array forms.
  */
 function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
-  const sources = Array.isArray(options.src)
-    ? options.src
-    : typeof options.src === "string"
-      ? [{ path: options.src }]
-      : [options.src];
-  const deploymentId = getDeploymentId();
-  if (!deploymentId) return sources;
-  return sources.map((source) => ({
-    ...source,
-    // Local font imports are URLs embedded in JavaScript, so Vite deliberately
-    // leaves them query-free to preserve JS module identity. Add the
-    // deployment-skew token at the font runtime seam instead, where the same
-    // normalized URL feeds both @font-face CSS and preload collection.
-    path: appendAssetDeploymentIdQuery(source.path, deploymentId),
-  }));
+  if (Array.isArray(options.src)) return options.src;
+  if (typeof options.src === "string") return [{ path: options.src }];
+  return [options.src];
 }
 
 /**

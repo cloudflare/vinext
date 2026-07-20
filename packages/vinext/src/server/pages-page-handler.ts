@@ -69,7 +69,6 @@ import {
   VINEXT_CACHE_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
-import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
@@ -750,14 +749,11 @@ export function createPagesPageHandler(
         try {
           allFontPreloads = getFontPreloads();
           if (allFontPreloads.length > 0) {
+            // Font files are content-hashed immutable assets. The bare URL
+            // must match both the HTML preload and the @font-face source.
             fontLinkHeader = allFontPreloads
               .map(
-                (p) =>
-                  "<" +
-                  appendAssetDeploymentIdQuery(p.href) +
-                  ">; rel=preload; as=font; type=" +
-                  p.type +
-                  "; crossorigin",
+                (p) => "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin",
               )
               .join(", ");
           }

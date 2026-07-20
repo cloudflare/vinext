@@ -68,10 +68,10 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
       return originalFetch(input as RequestInfo, init);
     };
 
-    // Pin a deploymentId: Next.js applies this skew-routing token to the
-    // @font-face source, HTML preload, and Link header. All three URLs must
-    // remain byte-identical so the browser consumes the preload.
-    // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+    // Pin a deploymentId to prove immutable, content-hashed font assets stay
+    // query-free across CSS, HTML preloads, and HTTP Link preloads. Next.js
+    // clears its client asset token when supportsImmutableAssets applies; its
+    // deployment parity fixture exercises this with NEXT_DEPLOYMENT_ID_IMMUTABLE.
     // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
     const plugins = () => [vinext({ nextConfig: () => ({ deploymentId: "dpl-pages-font-prod" }) })];
     try {
@@ -127,7 +127,7 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     }
   }, 15000);
 
-  it("emits deployment-aware font preload hrefs byte-identical to the @font-face src URLs", async () => {
+  it("keeps Google and local HTML preload URLs query-free and byte-identical", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -135,17 +135,25 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
       ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
     ].map((m) => m[1]);
     expect(preloadHrefs.length).toBeGreaterThan(0);
+    const googleFontHref = preloadHrefs.find((href) => href.includes("/_vinext_fonts/"));
     const localFontHref = preloadHrefs.find((href) => !href.includes("/_vinext_fonts/"));
+    expect(googleFontHref).toBeDefined();
     expect(localFontHref).toBeDefined();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
     for (const href of preloadHrefs) {
-      expect(href).toContain("?dpl=dpl-pages-font-prod");
+      expect(href).not.toContain("?");
       expect(styleMatch![1]).toContain(href);
+      if (href === googleFontHref) {
+        const fontRes = await fetch(`${baseUrl}${href}`);
+        expect(fontRes.status, href).toBe(200);
+        expect(fontRes.headers.get("content-type")).toBe("font/woff2");
+        expect(fontRes.headers.get("cache-control")).toContain("immutable");
+      }
     }
   });
 
-  it("emits deployment-aware font preload URLs in the HTTP Link response header", async () => {
+  it("keeps Google and local HTTP Link preload URLs query-free and byte-identical", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const link = res.headers.get("link");
@@ -153,12 +161,17 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     const html = await res.text();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
+    const preloadHrefs = [
+      ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
+    ].map((m) => m[1]);
     const linkHrefs = [...link!.matchAll(/<([^>]+)>; rel=preload; as=font/g)].map((m) => m[1]);
     expect(linkHrefs.length).toBeGreaterThan(0);
+    expect(linkHrefs.some((href) => href.includes("/_vinext_fonts/"))).toBe(true);
     expect(linkHrefs.some((href) => !href.includes("/_vinext_fonts/"))).toBe(true);
     for (const href of linkHrefs) {
-      expect(href).toContain("?dpl=dpl-pages-font-prod");
+      expect(href).not.toContain("?");
       expect(styleMatch![1]).toContain(href);
+      expect(preloadHrefs).toContain(href);
     }
   });
 });
