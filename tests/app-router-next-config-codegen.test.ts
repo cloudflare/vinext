@@ -173,6 +173,10 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 
     expect(appOnlyCode).toContain("export const __hasPagesDir = false;");
     expect(hybridCode).toContain("export const __hasPagesDir = true;");
+    expect(hybridCode).toContain("export { __i18nConfig };");
+    expect(hybridCode).toContain(
+      "export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;",
+    );
   });
 
   it("re-exports Pages API handling from the hybrid SSR entry", () => {

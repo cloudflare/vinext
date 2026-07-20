@@ -20,6 +20,7 @@
  * documented in the "How this works" card on /compatibility.
  */
 import type { RouterKind } from "@/app/lib/db/schema";
+import type { SuiteSupportStatus } from "./suite-support";
 
 /**
  * The filter / bucket key set used across the compat UI. Matches the
@@ -66,6 +67,8 @@ type RouterBucket = {
   passed: number;
   failed: number;
   skipped: number;
+  supportedPassed: number;
+  supportedFailed: number;
 };
 
 type RouterBuckets = Record<RouterFilter, RouterBucket>;
@@ -77,9 +80,22 @@ type RouterBuckets = Record<RouterFilter, RouterBucket>;
  * stat cards can compute per-router pass rates.
  */
 export function bucketByRouter<
-  T extends { router: RouterKind; passed: number; failed: number; skipped: number },
+  T extends {
+    router: RouterKind;
+    supportStatus: SuiteSupportStatus;
+    passed: number;
+    failed: number;
+    skipped: number;
+  },
 >(cells: T[]): RouterBuckets {
-  const empty = (): RouterBucket => ({ files: 0, passed: 0, failed: 0, skipped: 0 });
+  const empty = (): RouterBucket => ({
+    files: 0,
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    supportedPassed: 0,
+    supportedFailed: 0,
+  });
   const out: RouterBuckets = {
     all: empty(),
     app: empty(),
@@ -93,6 +109,10 @@ export function bucketByRouter<
     b.passed += c.passed;
     b.failed += c.failed;
     b.skipped += c.skipped;
+    if (c.supportStatus === "supported") {
+      b.supportedPassed += c.passed;
+      b.supportedFailed += c.failed;
+    }
   };
 
   for (const c of cells) {
@@ -114,4 +134,13 @@ export function bucketByRouter<
 export function bucketPassRate(b: { passed: number; failed: number }): number {
   const denom = b.passed + b.failed;
   return denom > 0 ? (b.passed / denom) * 100 : 0;
+}
+
+/** Supported-surface pass rate (0..100), excluding deferred/out-of-scope files. */
+export function bucketSupportedPassRate(b: {
+  supportedPassed: number;
+  supportedFailed: number;
+}): number {
+  const denom = b.supportedPassed + b.supportedFailed;
+  return denom > 0 ? (b.supportedPassed / denom) * 100 : 0;
 }

@@ -10,6 +10,9 @@ export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-pa
 /** Indicates a build-time prerender render is probing whether a route can be static. */
 export const VINEXT_PRERENDER_SPECULATIVE_HEADER = "x-vinext-prerender-speculative";
 
+/** Logical hostname carried only by authenticated Node revalidation loopbacks. */
+export const VINEXT_REVALIDATE_HOST_HEADER = "x-vinext-revalidate-host";
+
 /** Prefix for forwarded request headers (e.g. `x-middleware-request-cookie`). */
 export const MIDDLEWARE_REQUEST_HEADER_PREFIX = "x-middleware-request-";
 
@@ -27,3 +30,9 @@ export const MIDDLEWARE_SKIP_HEADER = "x-middleware-skip";
 
 /** Generic prefix for all middleware internal headers. */
 export const MIDDLEWARE_HEADER_PREFIX = "x-middleware-";
+
+/** Authenticates an internal Pages Router on-demand revalidation request. */
+export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+
+/** Restricts on-demand revalidation to paths that were already generated. */
+export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";

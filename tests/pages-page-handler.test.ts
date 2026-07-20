@@ -15,6 +15,16 @@ import {
   PAGES_PREVIEW_CACHE_CONTROL,
   setPagesPreviewData,
 } from "../packages/vinext/src/server/pages-preview.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  getRevalidateSecret,
+  PRERENDER_REVALIDATE_HEADER,
+} from "../packages/vinext/src/server/isr-cache.js";
+import { after } from "../packages/vinext/src/shims/server.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,6 +154,35 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
   });
 });
 
+describe("createPagesPageHandler — after() lifecycle", () => {
+  it("runs callbacks only after the response body closes", async () => {
+    let callbackRan = false;
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async () => {
+                after(() => {
+                  callbackRan = true;
+                });
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const response = await handler(makeRequest(), "/", null, null, null);
+    expect(callbackRan).toBe(false);
+
+    await response.text();
+    await vi.waitFor(() => expect(callbackRan).toBe(true));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -173,6 +212,66 @@ describe("createPagesPageHandler — route miss", () => {
     const res = await handler(makeRequest("/nonexistent"), "/nonexistent", null, null, null);
     // Custom 404 renders successfully (200 body, 404 status via override)
     expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const direct = await handler(makeRequest("/404"), "/404", null, null, null);
+    expect(direct.status).toBe(404);
+    expect(direct.headers.get("cache-control")).toBeNull();
+  });
+
+  it("replaces the inner /404 CDN policy with the source notFound policy", async () => {
+    const edgeAdapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        if (/(?:private|no-store|no-cache)/i.test(input.cacheControl)) {
+          return {
+            "Cache-Control": "no-store",
+            "CDN-Cache-Control": null,
+            "Cache-Tag": null,
+          };
+        }
+        return {
+          "Cache-Control": "no-store",
+          "CDN-Cache-Control": input.cacheControl,
+          "Cache-Tag": input.tags?.join(",") ?? null,
+        };
+      },
+    };
+    setCdnCacheAdapter(edgeAdapter);
+    try {
+      const sourceRoute = makeRoute(
+        "/source",
+        makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+      );
+      const notFoundRoute = makeRoute(
+        "/404",
+        makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+      );
+      const handler = createPagesPageHandler(
+        makeOpts({ pageRoutes: [sourceRoute, notFoundRoute] }),
+      );
+
+      const sourceResponse = await handler(makeRequest("/source"), "/source", null, null, null);
+      expect(sourceResponse.headers.get("cache-control")).toBe("no-store");
+      expect(sourceResponse.headers.get("cdn-cache-control")).toBe(
+        "s-maxage=7, stale-while-revalidate",
+      );
+      expect(sourceResponse.headers.get("cache-tag")).toBe("_N_T_/source");
+
+      const genericResponse = await handler(makeRequest("/missing"), "/missing", null, null, null);
+      expect(genericResponse.headers.get("cache-control")).toBe("no-store");
+      expect(genericResponse.headers.get("cdn-cache-control")).toBeNull();
+      expect(genericResponse.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
@@ -212,6 +311,29 @@ describe("createPagesPageHandler — route miss", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+});
+
+describe("createPagesPageHandler — on-demand terminal responses", () => {
+  it("does not leave a contradictory vinext MISS beside REVALIDATED", async () => {
+    const route = makeRoute(
+      "/redirect",
+      makePageModule({
+        getStaticProps: async () => ({
+          redirect: { destination: "/target", permanent: false },
+          revalidate: 60,
+        }),
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const request = new Request("http://localhost/redirect", {
+      headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+    });
+
+    const response = await handler(request, "/redirect", null, null, null);
+
+    expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
   });
 });
 
@@ -483,6 +605,55 @@ describe("createPagesPageHandler — preview responses", () => {
       expect.stringMatching(/^__prerender_bypass=; Expires=/),
       expect.stringMatching(/^__next_preview_data=; Expires=/),
     ]);
+  });
+
+  it("does not expose preview notFound responses to shared CDN caching", async () => {
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+    const request = new Request("http://localhost/missing", {
+      headers: { cookie: makePreviewCookieHeader({ draft: true }) },
+    });
+    const middlewareHeaders = new Headers({
+      "CDN-Cache-Control": "s-maxage=6000",
+      "Cloudflare-CDN-Cache-Control": "s-maxage=6000",
+      "Cache-Tag": "draft-404",
+    });
+
+    const response = await handler(request, "/missing", null, middlewareHeaders, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
+  });
+
+  it("keeps nonce-bearing source notFound HTML out of shared caches", async () => {
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [pageRoute, notFoundRoute] }));
+    const request = new Request("http://localhost/missing", {
+      headers: { "content-security-policy": "script-src 'nonce-test-nonce'" },
+    });
+
+    const response = await handler(request, "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).not.toContain("s-maxage");
   });
 });
 

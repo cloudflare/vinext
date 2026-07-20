@@ -262,7 +262,6 @@ async function hydrate() {
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: Router,
     });
   } catch {

@@ -576,6 +576,16 @@ describe("ISR (Pages Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
+  function readGeneration(html: string): number {
+    return Number(html.match(/data-testid="generation">(\d+)</)?.[1]);
+  }
+
+  function expectDevCacheHeaders(response: Response): void {
+    expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+  }
+
   beforeAll(async () => {
     ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
@@ -584,112 +594,72 @@ describe("ISR (Pages Router)", () => {
     await server?.close();
   });
 
-  it("renders ISR page on first request (cache MISS)", async () => {
+  it("renders a GSP page with the Next.js development cache boundary", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("ISR Page");
     expect(html).toContain("Hello from ISR");
-    // First request should be a cache miss
-    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(readGeneration(html)).toBeGreaterThan(0);
+    expectDevCacheHeaders(res);
   });
 
-  it("serves cached ISR page on second request (cache HIT)", async () => {
-    // First request populates the cache
+  it("reruns getStaticProps on immediate repeated requests", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     expect(res1.status).toBe(200);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp1Match).toBeTruthy();
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Second request should be a cache hit with same timestamp
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
     const html2 = await res2.text();
-    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match).toBeTruthy();
-    expect(timestamp2Match![1]).toBe(timestamp1);
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("serves stale content after TTL expires then regenerates", async () => {
-    // First request populates cache
+  it("continues rerunning after the configured revalidate interval", async () => {
     const res1 = await fetch(`${baseUrl}/isr-test`);
     const html1 = await res1.text();
-    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
-    const timestamp1 = timestamp1Match![1];
+    const generation1 = readGeneration(html1);
+    expect(generation1).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
+    // The delay crosses the configured one-second interval, but dev still has
+    // no response-cache boundary: this is another independent GSP render.
     await new Promise((r) => setTimeout(r, 1200));
 
-    // Request after TTL should get STALE content
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
-    expect(res2.headers.get("x-vinext-cache")).toBe("STALE");
-    // Stale content should have the same timestamp as original
     const html2 = await res2.text();
-    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
-    expect(timestamp2Match![1]).toBe(timestamp1);
-
-    // Wait a moment for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 200));
-
-    // Next request should be a HIT — background regen re-ran getStaticProps
-    // and cached the fresh result.
-    const res3 = await fetch(`${baseUrl}/isr-test`);
-    expect(res3.status).toBe(200);
-    expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(readGeneration(html2)).toBeGreaterThan(generation1);
+    expectDevCacheHeaders(res1);
+    expectDevCacheHeaders(res2);
   });
 
-  it("background regeneration re-renders HTML with fresh props", async () => {
-    // Ensure cache is populated (may already be from prior tests)
-    await fetch(`${baseUrl}/isr-test`);
+  it("keeps each fresh GSP HTML render and hydration data in sync", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    expectDevCacheHeaders(res);
+    const html = await res.text();
+    const htmlGeneration = readGeneration(html);
+    const htmlTimestamp = Number(html.match(/data-testid="timestamp">(\d+)</)?.[1]);
+    expect(htmlGeneration).toBeGreaterThan(0);
+    expect(htmlTimestamp).toBeGreaterThan(0);
 
-    // Wait for TTL to expire (revalidate: 1 second)
-    await new Promise((r) => setTimeout(r, 1200));
-
-    // Trigger background regeneration via STALE request and capture old HTML
-    const staleRes = await fetch(`${baseUrl}/isr-test`);
-    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
-    const staleHtml = await staleRes.text();
-    const staleTimestamp = staleHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(staleTimestamp).toBeTruthy();
-    const oldTimestamp = Number(staleTimestamp![1]);
-
-    // Wait for background regeneration to complete
-    await new Promise((r) => setTimeout(r, 500));
-
-    // The regenerated HIT should have DIFFERENT HTML — the page must have been
-    // re-rendered with fresh getStaticProps data, not just the old HTML cached
-    // again with new pageData.
-    const hitRes = await fetch(`${baseUrl}/isr-test`);
-    expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
-    const hitHtml = await hitRes.text();
-    const hitTimestamp = hitHtml.match(/data-testid="timestamp">(\d+)</);
-    expect(hitTimestamp).toBeTruthy();
-    const newTimestamp = Number(hitTimestamp![1]);
-
-    // The HTML timestamp must have changed — proves the page was re-rendered,
-    // not just getStaticProps re-run with old HTML cached again.
-    expect(newTimestamp).toBeGreaterThan(oldTimestamp);
-
-    // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
+    // __NEXT_DATA__ must contain the same props as the HTML, proving both the
     // server-rendered HTML and the hydration data are in sync.
-    const nextDataMatch = hitHtml.match(
+    const nextDataMatch = html.match(
       /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
     );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]);
-    expect(nextData.props.pageProps.timestamp).toBe(newTimestamp);
+    expect(nextData.props.pageProps.generation).toBe(htmlGeneration);
+    expect(nextData.props.pageProps.timestamp).toBe(htmlTimestamp);
   });
 
-  it("sets Cache-Control header for ISR pages", async () => {
+  it("uses the exact development Cache-Control header even when revalidate is configured", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
-    const cacheControl = res.headers.get("cache-control");
-    expect(cacheControl).toContain("s-maxage=1");
-    expect(cacheControl).toContain("stale-while-revalidate");
+    expectDevCacheHeaders(res);
   });
 
   it("does not set ISR headers for non-ISR pages", async () => {
@@ -1520,6 +1490,53 @@ describe("i18n domain routing (Pages Router)", () => {
     expect(res.body).toContain(
       '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
     );
+  });
+
+  it("revalidates with the request domain locale without persisting a dev response", async () => {
+    const before = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    const beforeGeneration = Number(before.body.match(/<p id="generation">(\d+)<\/p>/)?.[1]);
+    expect(beforeGeneration).toBeGreaterThan(0);
+    expect(before.body).toContain('<p id="reason">stale</p>');
+
+    const revalidate = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidate?path=%2Fisr-about&includeState=1",
+      "example.fr",
+    );
+    expect(revalidate.status).toBe(200);
+    const revalidateResult = JSON.parse(revalidate.body);
+    expect(revalidateResult).toEqual({
+      revalidated: true,
+      state: {
+        defaultLocale: "fr",
+        generation: expect.any(Number),
+        locale: "fr",
+        reason: "on-demand",
+      },
+    });
+    expect(revalidateResult.state.generation).toBeGreaterThan(beforeGeneration);
+
+    const after = await requestNodeServerWithHost(domainPort, "/isr-about", "example.fr");
+    expect(after.body).toContain('<p id="locale">fr</p>');
+    expect(after.body).toContain('<p id="defaultLocale">fr</p>');
+    expect(after.body).toContain('<p id="reason">stale</p>');
+    expect(Number(after.body.match(/<p id="generation">(\d+)<\/p>/)?.[1])).toBeGreaterThan(
+      revalidateResult.state.generation,
+    );
+  });
+
+  it("does not trust or expose a forged logical revalidation hostname", async () => {
+    const response = await requestNodeServerWithHost(
+      domainPort,
+      "/api/revalidation-headers",
+      "example.com",
+      {
+        "x-prerender-revalidate": "not-the-secret",
+        "x-vinext-revalidate-host": "example.fr",
+      },
+    );
+
+    expect(JSON.parse(response.body)).toEqual({ host: "example.com", logicalHost: null });
   });
 
   it("uses the dynamic route pattern for locale-prefixed data responses in dev", async () => {

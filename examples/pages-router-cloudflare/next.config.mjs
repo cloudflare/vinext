@@ -34,7 +34,15 @@ export default {
         { source: "/nav-test", destination: "/about" },
         { source: "/rewrite-about", destination: "/about" },
       ],
-      fallback: [],
+      fallback:
+        process.env.VINEXT_E2E_REVALIDATION_PROXY === "1"
+          ? [
+              {
+                source: "/external-revalidate-proxy",
+                destination: "http://127.0.0.1:43199/revalidation-capture",
+              },
+            ]
+          : [],
     };
   },
 };

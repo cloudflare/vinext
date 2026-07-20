@@ -88,13 +88,14 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
     // the ctx via the unified scope so server components / route handlers
     // can schedule deferred work.
     const { after } = await import("../packages/vinext/src/shims/server.js");
-    const { createRequestContext, runWithRequestContext } =
+    const { closeAfterResponse, createRequestContext, runWithRequestContext } =
       await import("../packages/vinext/src/shims/unified-request-context.js");
 
     const ctx = createMockCtx();
+    const requestContext = createRequestContext({ executionContext: ctx });
     let ran = false;
 
-    await runWithRequestContext(createRequestContext({ executionContext: ctx }), async () => {
+    await runWithRequestContext(requestContext, async () => {
       after(async () => {
         await Promise.resolve();
         ran = true;
@@ -102,6 +103,8 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
     });
 
     expect(ctx.promises).toHaveLength(1);
+    expect(ran).toBe(false);
+    await closeAfterResponse(requestContext);
     await ctx.promises[0];
     expect(ran).toBe(true);
   });
@@ -143,7 +146,7 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
     // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
     const content = readPagesRouterEntrySource();
-    expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
+    expect(content).toContain("handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)");
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {

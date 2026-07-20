@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -42,6 +43,150 @@ test.describe("Loading boundaries (loading.tsx)", () => {
 
     // Then the actual page content should resolve
     await expect(page.locator("h1")).toHaveText("Slow Page", {
+      timeout: 10_000,
+    });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  test("slow nested layout streams its ancestor loading fallback before resolving", async () => {
+    const streamFallback = async () => {
+      const response = await fetch(`${BASE}/slow-layout-with-loading/slow`);
+      if (!response.body) throw new Error("Expected a streaming response body");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let html = "";
+      try {
+        while (!html.includes('id="slow-layout-loading"')) {
+          const { done, value } = await reader.read();
+          if (done) throw new Error("Response ended before the loading fallback was streamed");
+          html += decoder.decode(value, { stream: true });
+        }
+      } finally {
+        await reader.cancel();
+      }
+    };
+
+    // Compile this route before starting the timing assertion. Vite's first
+    // request can spend longer than the threshold transforming a new fixture;
+    // the second request isolates server-render streaming from dev compilation.
+    await streamFallback();
+    await expect(
+      Promise.race([
+        streamFallback(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Loading fallback did not stream promptly")), 1_500),
+        ),
+      ]),
+    ).resolves.toBeUndefined();
+  });
+
+  test("ancestor loading-shell prefetch stops before the slow descendant layout", async () => {
+    const fetchLoadingShell = () =>
+      fetch(`${BASE}/slow-layout-with-loading/slow?_rsc=loading-shell`, {
+        headers: {
+          RSC: "1",
+          "Next-Router-Prefetch": "1",
+          "Next-Router-Segment-Prefetch": "1",
+          "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+        },
+      });
+
+    // Warm the generated route before measuring request-time tree traversal.
+    await (await fetchLoadingShell()).text();
+    const startedAt = performance.now();
+    const response = await fetchLoadingShell();
+    const body = await response.text();
+    const durationMs = performance.now() - startedAt;
+
+    expect(response.status).toBe(200);
+    expect(durationMs).toBeLessThan(1_500);
+    expect(body).toContain("Loading layout");
+    expect(body).not.toContain("Slow layout resolved");
+    expect(body).not.toContain("slow-layout-message");
+  });
+
+  test("client navigation uses an ancestor-only loading shell", async ({ page }) => {
+    await page.goto(BASE);
+    const link = page.getByTestId("slow-layout-with-loading-link");
+    await link.waitFor();
+    await page.waitForTimeout(250);
+
+    await link.click();
+    await expect(page.locator("#slow-layout-loading")).toBeVisible({ timeout: 1_500 });
+    await expect(page.locator("#slow-layout-message")).toHaveText("Slow layout resolved", {
+      timeout: 10_000,
+    });
+  });
+
+  test("slot-only loading-shell prefetch stops before the slow slot page", async () => {
+    const fetchLoadingShell = () =>
+      fetch(`${BASE}/slow-slot-loading/slow?_rsc=slot-loading-shell`, {
+        headers: {
+          RSC: "1",
+          "Next-Router-Prefetch": "1",
+          "Next-Router-Segment-Prefetch": "1",
+          "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+        },
+      });
+
+    await (await fetchLoadingShell()).text();
+    const startedAt = performance.now();
+    const response = await fetchLoadingShell();
+    const body = await response.text();
+    const durationMs = performance.now() - startedAt;
+
+    expect(response.status).toBe(200);
+    expect(durationMs).toBeLessThan(1_500);
+    expect(body).toContain("Loading named slot");
+    expect(body).not.toContain("Slow named slot resolved");
+  });
+
+  test("client navigation streams a slot-only loading boundary", async ({ page }) => {
+    await page.goto(BASE);
+    const link = page.getByTestId("slow-slot-loading-link");
+    await link.waitFor();
+    await page.waitForTimeout(250);
+
+    await link.click();
+    await expect(page.locator("#slow-slot-loading")).toBeVisible({ timeout: 1_500 });
+    await expect(page.locator("#slow-slot-message")).toHaveText("Slow named slot resolved", {
+      timeout: 10_000,
+    });
+  });
+
+  test("client interception streams its branch loading boundary", async ({ page }) => {
+    await page.goto(`${BASE}/slow-intercept`);
+    await waitForAppRouterHydration(page);
+    const link = page.getByTestId("slow-intercept-link");
+    await link.waitFor();
+
+    await link.click();
+    await expect(page.locator("#slow-intercept-loading")).toBeVisible({ timeout: 1_500 });
+    await expect(page.locator("#slow-intercept-message")).toHaveText(
+      "Slow intercepted photo resolved",
+      { timeout: 10_000 },
+    );
+  });
+
+  test("slow nested layout and page include both loading fallbacks in initial HTML", async ({
+    request,
+  }) => {
+    const response = await request.get(`${BASE}/slow-layout-and-page-with-loading/slow`);
+    const html = await response.text();
+
+    expect(response.status()).toBe(200);
+    expect(html).toContain('id="slow-combined-layout-loading"');
+    expect(html).toContain('id="slow-combined-page-loading"');
+  });
+
+  test("slow nested layout and page eventually render final content", async ({ page }) => {
+    await page.goto(`${BASE}/slow-layout-and-page-with-loading/slow`);
+
+    await expect(page.locator("#slow-combined-layout-message")).toHaveText("Slow layout resolved", {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#slow-combined-page-message")).toHaveText("Slow page resolved", {
       timeout: 10_000,
     });
   });

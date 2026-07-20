@@ -683,7 +683,9 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
   _setRequestScopedCacheLife({
-    revalidate: cacheControl.revalidate,
+    // `false` is an indefinite lifetime and therefore does not constrain an
+    // enclosing cache scope's finite revalidation window.
+    revalidate: cacheControl.revalidate === false ? undefined : cacheControl.revalidate,
     expire: cacheControl.expire,
   });
 }

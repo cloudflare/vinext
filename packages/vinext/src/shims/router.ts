@@ -2085,15 +2085,18 @@ async function renderPagesNavigationTarget(
   const React = (await import("react")).default;
   assertStillCurrent();
 
-  const rawPageProps = props.pageProps;
-  const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+  // Next.js normalizes every successful client transition through
+  // `Object.assign({}, props.pageProps)`. Besides ensuring an own pageProps
+  // key, this preserves Object.assign semantics for null and primitive values.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  const pageProps = Object.assign({}, props.pageProps) as Record<string, unknown>;
+  props.pageProps = pageProps;
 
   let element: ReactElement;
   if (AppComponent) {
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: singletonRouter,
     });
   } else {
@@ -2383,8 +2386,10 @@ async function navigateClientHtml(
 
   const nextData = parseVinextNextDataJson(nextDataJson);
   const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
-  const rawPageProps = props.pageProps;
-  const pageProps: Record<string, unknown> = isUnknownRecord(rawPageProps) ? rawPageProps : {};
+  // Keep the HTML fallback transport aligned with the manifest/data paths.
+  // Next.js installs this cloned object into routeInfo.props before rendering.
+  const pageProps = Object.assign({}, props.pageProps) as Record<string, unknown>;
+  props.pageProps = pageProps;
   // Defer writing window.__NEXT_DATA__ until just before root.render() —
   // writing it here would let a stale navigation briefly pollute the global
   // between this assertStillCurrent() and the next one after await import().
@@ -2460,7 +2465,6 @@ async function navigateClientHtml(
     element = React.createElement(AppComponent, {
       ...props,
       Component: PageComponent,
-      pageProps: rawPageProps,
       router: singletonRouter,
     });
   } else {

@@ -267,6 +267,71 @@ describe("pages api route", () => {
     await expect(response.text()).resolves.toBe("Internal Server Error");
   });
 
+  it("res.revalidate() uses the trusted origin instead of the request host", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      expect(input instanceof Request ? input.method : init?.method).toBe("HEAD");
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://127.0.0.1:9999/api/revalidate"),
+        trustedRevalidateOrigin: "http://app.local:3000",
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ revalidated: true });
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("res.revalidate() ignores Host header spoofing in Fetch request adapters", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: URL | undefined;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      capturedUrl =
+        typeof input === "string"
+          ? new URL(input)
+          : input instanceof URL
+            ? input
+            : new URL(input.url);
+      return new Response(null, { status: 200 });
+    };
+
+    try {
+      const response = await handlePagesApiRoute({
+        match: createMatch(async (_req, res) => {
+          await res.revalidate("/fixed-page");
+          res.json({ revalidated: true });
+        }),
+        request: new Request("http://app.local:3000/api/revalidate", {
+          headers: { host: "127.0.0.1:9999" },
+        }),
+        url: "/api/revalidate",
+      });
+
+      expect(response.status).toBe(200);
+      expect(capturedUrl?.href).toBe("http://app.local:3000/fixed-page");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("res.writeHead() lowercases header keys and joins array values", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {

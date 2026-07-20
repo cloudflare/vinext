@@ -1353,7 +1353,7 @@ describe("readPagesRouterEntrySource", () => {
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
     expect(content).toContain("handleApi:");
     expect(content).toContain('typeof handleApiRoute === "function"');
-    expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
+    expect(content).toContain("handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin)");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
