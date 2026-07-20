@@ -68,11 +68,11 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
       return originalFetch(input as RequestInfo, init);
     };
 
-    // Pin a deploymentId: the ?dpl= asset query must NOT leak into font
-    // preload hrefs (HTML tags or the Link: header). A preload only matches
-    // a later font request when the URLs are byte-identical, and the
-    // @font-face src URLs are emitted bare — appending ?dpl= to the
-    // preloads made the browser download every font twice.
+    // Pin a deploymentId: Next.js applies this skew-routing token to the
+    // @font-face source, HTML preload, and Link header. All three URLs must
+    // remain byte-identical so the browser consumes the preload.
+    // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
     const plugins = () => [vinext({ nextConfig: () => ({ deploymentId: "dpl-pages-font-prod" }) })];
     try {
       // Pages Router only — no RSC pipeline, so separate build() calls work.
@@ -82,6 +82,7 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
         plugins: plugins(),
         logLevel: "silent",
         build: {
+          assetsInlineLimit: 0,
           outDir: path.join(outDir, "server"),
           ssr: "virtual:vinext-server-entry",
           rolldownOptions: { output: { entryFileNames: "entry.js" } },
@@ -93,6 +94,7 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
         plugins: plugins(),
         logLevel: "silent",
         build: {
+          assetsInlineLimit: 0,
           outDir: path.join(outDir, "client"),
           manifest: true,
           ssrManifest: true,
@@ -125,7 +127,7 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     }
   }, 15000);
 
-  it("emits font preload hrefs byte-identical to the @font-face src URLs (no ?dpl= query)", async () => {
+  it("emits deployment-aware font preload hrefs byte-identical to the @font-face src URLs", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -133,18 +135,17 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
       ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
     ].map((m) => m[1]);
     expect(preloadHrefs.length).toBeGreaterThan(0);
+    const localFontHref = preloadHrefs.find((href) => !href.includes("/_vinext_fonts/"));
+    expect(localFontHref).toBeDefined();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
     for (const href of preloadHrefs) {
-      // The deploymentId is pinned in this build; if it leaks into the
-      // preload href the URL no longer matches the @font-face src and the
-      // preload becomes a wasted duplicate download.
-      expect(href).not.toContain("dpl");
-      expect(styleMatch![1]).toContain(`url(${href})`);
+      expect(href).toContain("?dpl=dpl-pages-font-prod");
+      expect(styleMatch![1]).toContain(href);
     }
   });
 
-  it("emits query-free font preload URLs in the HTTP Link response header", async () => {
+  it("emits deployment-aware font preload URLs in the HTTP Link response header", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const link = res.headers.get("link");
@@ -154,11 +155,10 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     expect(styleMatch).not.toBeNull();
     const linkHrefs = [...link!.matchAll(/<([^>]+)>; rel=preload; as=font/g)].map((m) => m[1]);
     expect(linkHrefs.length).toBeGreaterThan(0);
+    expect(linkHrefs.some((href) => !href.includes("/_vinext_fonts/"))).toBe(true);
     for (const href of linkHrefs) {
-      // Same byte-identity requirement as the HTML preload tags: the
-      // Link: header preload must match the bare @font-face src URL.
-      expect(href).not.toContain("dpl");
-      expect(styleMatch![1]).toContain(`url(${href})`);
+      expect(href).toContain("?dpl=dpl-pages-font-prod");
+      expect(styleMatch![1]).toContain(href);
     }
   });
 });

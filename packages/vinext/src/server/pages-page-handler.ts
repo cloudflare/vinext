@@ -58,6 +58,7 @@ import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
@@ -599,12 +600,14 @@ export function createPagesPageHandler(
         try {
           allFontPreloads = getFontPreloads();
           if (allFontPreloads.length > 0) {
-            // Bare href, deliberately no ?dpl= query: the @font-face src URLs
-            // are emitted bare, and a preload only matches a font request when
-            // the URLs are byte-identical (fonts are content-hashed anyway).
             fontLinkHeader = allFontPreloads
               .map(
-                (p) => "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin",
+                (p) =>
+                  "<" +
+                  appendAssetDeploymentIdQuery(p.href) +
+                  ">; rel=preload; as=font; type=" +
+                  p.type +
+                  "; crossorigin",
               )
               .join(", ");
           }

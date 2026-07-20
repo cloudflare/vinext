@@ -5906,7 +5906,7 @@ export const loadServerActionClient = ${
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
-    createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
+    createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir, () => nextConfig?.deploymentId),
     // Local font path resolution — see src/plugins/fonts.ts
     createLocalFontsPlugin(_shimsDir),
     // Barrel import optimization:

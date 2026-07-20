@@ -255,12 +255,7 @@ function buildPagesFontHeadHtml(
   }
 
   for (const preload of fontPreloads) {
-    // Deliberately NOT appendAssetDeploymentIdQuery: the @font-face rules in
-    // the <style data-vinext-fonts> block below reference the bare
-    // content-hashed URL, and a preload only matches a font request when the
-    // URLs are byte-identical. Appending ?dpl= here made every preload a
-    // wasted download and re-fetched each font a second time from CSS, later.
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
   }
 
   if (fontStyles.length > 0) {

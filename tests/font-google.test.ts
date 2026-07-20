@@ -1548,6 +1548,23 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
     expect(out).toBe("src: url(/_next/static/_vinext_fonts/geist/a.woff2);");
     expect(out).not.toContain("//_vinext_fonts");
   });
+
+  it("adds the deployment ID to rewritten font URLs", () => {
+    // Next.js emits the same deployment-aware URL in @font-face sources and
+    // font preloads so rolling deployments route every static asset request
+    // to the deployment that produced the HTML.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-font-loader/index.ts
+    const cacheDir = "/root/.vinext/fonts";
+    const css = [
+      "src: url(/root/.vinext/fonts/geist/a.woff2);",
+      "src: url('/root/.vinext/fonts/geist/b.woff2');",
+    ].join("\n");
+
+    const out = rewriteCachedFontCssToServedUrls(css, cacheDir, "_next/static", "font-dpl");
+
+    expect(out).toContain("url(/_next/static/_vinext_fonts/geist/a.woff2?dpl=font-dpl)");
+    expect(out).toContain("url('/_next/static/_vinext_fonts/geist/b.woff2?dpl=font-dpl')");
+  });
 });
 
 // ── parseStaticObjectLiteral security tests ───────────────────

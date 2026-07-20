@@ -119,16 +119,16 @@ describe("App Router Production server self-hosted next/font/google headers", ()
         plugins: [
           vinext({
             appDir: FONT_FIXTURE_DIR,
-            // Pin a deploymentId: the ?dpl= asset query must NOT leak into
-            // font preload hrefs. A preload only matches a later font
-            // request when the URLs are byte-identical, and the @font-face
-            // src URLs are emitted bare — appending ?dpl= to the preloads
-            // made the browser download every font twice (wasted preload +
-            // late re-fetch once the CSS parsed).
+            // Pin a deploymentId: Next.js applies this skew-routing token to
+            // both @font-face sources and font preloads. The URLs must remain
+            // byte-identical so the preload is consumed by the CSS request.
+            // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+            // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
             nextConfig: () => ({ deploymentId: "dpl-font-prod-test" }),
           }),
         ],
         logLevel: "silent",
+        build: { assetsInlineLimit: 0 },
       });
       await builder.buildApp();
     } finally {
@@ -165,6 +165,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     expect(link).toMatch(/rel=preload/);
     expect(link).toMatch(/as=font/);
     expect(link).toMatch(/type=font\/woff2/);
+    expect(link).toContain("?dpl=dpl-font-prod-test");
     // Both the absolute dev-machine prefix and the relative cache dir
     // name must be absent — the leaked path always contained both.
     expect(link).not.toContain(FONT_FIXTURE_DIR);
@@ -175,27 +176,36 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     const res = await fetch(`${fontBaseUrl}/`);
     const html = await res.text();
     expect(html).toMatch(
-      /<link rel="preload"[^>]*href="\/_next\/static\/_vinext_fonts\/[^"]+\.woff2"[^>]*as="font"/,
+      /<link rel="preload"[^>]*href="\/_next\/static\/_vinext_fonts\/[^"]+\.woff2\?dpl=dpl-font-prod-test"[^>]*as="font"/,
     );
     expect(html).not.toContain(FONT_FIXTURE_DIR);
     expect(html).not.toContain(".vinext/fonts");
   });
 
-  it("emits font preload hrefs byte-identical to the @font-face src URLs (no ?dpl= query)", async () => {
+  it("emits deployment-aware font preload hrefs byte-identical to the @font-face src URLs", async () => {
     const res = await fetch(`${fontBaseUrl}/`);
+    const link = res.headers.get("link");
+    expect(link).toBeTruthy();
     const html = await res.text();
     const preloadHrefs = [
       ...html.matchAll(/<link rel="preload"[^>]*href="([^"]+)"[^>]*as="font"/g),
     ].map((m) => m[1]);
     expect(preloadHrefs.length).toBeGreaterThan(0);
+    const localFontHref = preloadHrefs.find((href) => !href.includes("/_vinext_fonts/"));
+    expect(localFontHref).toBeDefined();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
     for (const href of preloadHrefs) {
-      // The deploymentId is pinned in this build; if it leaks into the
-      // preload href the URL no longer matches the @font-face src and the
-      // preload becomes a wasted duplicate download.
-      expect(href).not.toContain("dpl");
-      expect(styleMatch![1]).toContain(`url(${href})`);
+      expect(href).toContain("?dpl=dpl-font-prod-test");
+      expect(styleMatch![1]).toContain(href);
+    }
+    expect((await fetch(`${fontBaseUrl}${localFontHref!}`)).status).toBe(200);
+    const linkHrefs = [...link!.matchAll(/<([^>]+)>; rel=preload; as=font/g)].map((m) => m[1]);
+    expect(linkHrefs.length).toBeGreaterThan(0);
+    expect(linkHrefs.some((href) => !href.includes("/_vinext_fonts/"))).toBe(true);
+    for (const href of linkHrefs) {
+      expect(href).toContain("?dpl=dpl-font-prod-test");
+      expect(styleMatch![1]).toContain(href);
     }
   });
 
@@ -209,7 +219,9 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
     const styleContent = styleMatch![1];
-    expect(styleContent).toMatch(/url\(\/_next\/static\/_vinext_fonts\/[^)]+\.woff2\)/);
+    expect(styleContent).toMatch(
+      /url\(\/_next\/static\/_vinext_fonts\/[^)]+\.woff2\?dpl=dpl-font-prod-test\)/,
+    );
     expect(styleContent).not.toContain(FONT_FIXTURE_DIR);
     expect(styleContent).not.toContain(".vinext/fonts");
   });
@@ -220,7 +232,9 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     // time because the font files never leave `<root>/.vinext/fonts/`.
     const res = await fetch(`${fontBaseUrl}/`);
     const html = await res.text();
-    const match = html.match(/\/_next\/static\/_vinext_fonts\/[^"]+\.woff2/);
+    const match = html.match(
+      /\/_next\/static\/_vinext_fonts\/[^"]+\.woff2\?dpl=dpl-font-prod-test/,
+    );
     expect(match).not.toBeNull();
     const fontPath = match![0];
     const fontRes = await fetch(`${fontBaseUrl}${fontPath}`);

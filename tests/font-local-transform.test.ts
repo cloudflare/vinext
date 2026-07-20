@@ -2,7 +2,10 @@ import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { toSlash } from "pathslash";
-import localFont, { getSSRFontStyles } from "../packages/vinext/src/shims/font-local.js";
+import localFont, {
+  getSSRFontPreloads,
+  getSSRFontStyles,
+} from "../packages/vinext/src/shims/font-local.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -413,6 +416,36 @@ describe("vinext:local-fonts plugin", () => {
     });
     expect(result.className).toBeDefined();
     expect(result.style.fontFamily).toBeDefined();
+  });
+
+  it("uses the same deployment-aware URL in local font CSS and preloads", () => {
+    const previousDeploymentId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = "local-font-dpl";
+    const fontUrl = "/_next/static/local-font-deployment.woff2";
+    const beforeCount = getSSRFontStyles().length;
+
+    try {
+      const publicFontUrl = "/assets/public-font.woff2";
+      const signedFontUrl = "https://cdn.example.com/fonts/signed.woff2?signature=keep-me";
+      localFont({
+        src: [fontUrl, publicFontUrl, signedFontUrl].map((path) => ({ path })),
+      });
+      const expectedUrl = `${fontUrl}?dpl=local-font-dpl`;
+      const css = getSSRFontStyles().slice(beforeCount).join("\n");
+      expect(css).toContain(`url('${expectedUrl}')`);
+      expect(css).toContain(`url('${publicFontUrl}')`);
+      expect(css).toContain(`url('${signedFontUrl}')`);
+      expect(css).not.toContain("public-font.woff2?dpl=");
+      expect(css).not.toContain("signature=keep-me&dpl=");
+      expect(getSSRFontPreloads()).toContainEqual({ href: expectedUrl, type: "font/woff2" });
+      expect(getSSRFontPreloads()).toContainEqual({ href: publicFontUrl, type: "font/woff2" });
+    } finally {
+      if (previousDeploymentId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = previousDeploymentId;
+      }
+    }
   });
 
   it("sanitizes fallback font names with CSS injection attempts", () => {
