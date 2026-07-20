@@ -2531,10 +2531,15 @@ async function renderErrorPage(
         });
         if (res.headersSent || res.writableEnded) return;
         const appRenderProps = appInitialProps ?? {};
-        renderProps = {
-          ...appRenderProps,
-          pageProps: mergePagesDataProps(appRenderProps.pageProps, errorProps),
-        };
+        // Preserve a custom App's exact initial-props envelope. Next does not
+        // synthesize `pageProps` when App.getInitialProps omits it; doing so
+        // changes the client-side framework-error fallback behavior.
+        renderProps = Object.hasOwn(appRenderProps, "pageProps")
+          ? {
+              ...appRenderProps,
+              pageProps: mergePagesDataProps(appRenderProps.pageProps, errorProps),
+            }
+          : appRenderProps;
       } else {
         renderProps = { pageProps: errorProps };
       }
