@@ -69,7 +69,7 @@ jobs:
           fi
 
       - name: Checkout code under test
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TARGET_SHA }}
@@ -134,7 +134,7 @@ jobs:
 
       - name: Checkout pull request base
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_BASE_SHA }}
@@ -151,7 +151,7 @@ jobs:
           chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
 
       - name: Checkout trusted benchmark manifests
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}
@@ -286,7 +286,7 @@ jobs:
           echo "VINEXT_PERF_BASE_USER=vinext-perf-base" >> "$GITHUB_ENV"
 
       - name: Checkout trusted performance harness
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_TRUSTED_REF }}
