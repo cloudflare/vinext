@@ -176,6 +176,12 @@ export type NextConfig = {
   assetPrefix?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** TypeScript build settings. */
+  typescript?: {
+    /** Project-relative path to the TypeScript configuration file. */
+    tsconfigPath?: string;
+    [key: string]: unknown;
+  };
   /** Internationalization routing config */
   i18n?: NextI18nConfig;
   /** URL redirect rules */
@@ -392,6 +398,7 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
   pageExtensions: string[];
   resolveExtensions: string[] | null;
@@ -1538,6 +1545,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      typescript: {},
       output: "",
       pageExtensions: normalizePageExtensions(),
       resolveExtensions: null,
@@ -1870,6 +1878,10 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    typescript:
+      typeof config.typescript?.tsconfigPath === "string"
+        ? { tsconfigPath: config.typescript.tsconfigPath }
+        : {},
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
     resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,

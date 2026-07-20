@@ -4188,6 +4188,18 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("cookies().toString() URL-encodes request cookie values", async () => {
+    const { setHeadersContext, cookies } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["message", "hello world; done"]]),
+    });
+
+    expect((await cookies()).toString()).toBe("message=hello%20world%3B%20done");
+
+    setHeadersContext(null);
+  });
+
   it("draftMode() returns isEnabled=false for arbitrary cookie values (not signed)", async () => {
     const { setHeadersContext, draftMode } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -4291,6 +4303,79 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  // Next.js's DraftModeProvider writes through requestStore.mutableCookies, so
+  // draftMode() and cookies() must observe the same ResponseCookies entries.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/async-storage/draft-mode-provider.ts
+  it("draftMode() mutations stay synchronized with an existing mutable cookie store", async () => {
+    const {
+      setHeadersContext,
+      setHeadersAccessPhase,
+      cookies,
+      draftMode,
+      getDraftModeCookieHeader,
+    } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      draftModeSecret: "draft-secret",
+    });
+    const previousPhase = setHeadersAccessPhase("action");
+
+    try {
+      const cookieStore = await cookies();
+      const dm = await draftMode();
+      dm.enable();
+
+      const secure = process.env.NODE_ENV !== "development";
+      expect(cookieStore.get("__prerender_bypass")).toEqual({
+        name: "__prerender_bypass",
+        value: "draft-secret",
+        path: "/",
+        httpOnly: true,
+        sameSite: secure ? "none" : "lax",
+        secure,
+      });
+      expect(cookieStore.toString()).toBe(getDraftModeCookieHeader());
+
+      dm.disable();
+      expect(cookieStore.get("__prerender_bypass")).toEqual({
+        name: "__prerender_bypass",
+        value: "",
+        path: "/",
+        expires: new Date(0),
+        httpOnly: true,
+        sameSite: secure ? "none" : "lax",
+        secure,
+      });
+      expect(cookieStore.toString()).toBe(getDraftModeCookieHeader());
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("draftMode() mutations do not leak into the readonly request-cookie view", async () => {
+    const { setHeadersContext, cookies, draftMode } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      draftModeSecret: "draft-secret",
+    });
+
+    try {
+      const readonlyCookies = await cookies();
+      const dm = await draftMode();
+      dm.enable();
+      expect(readonlyCookies.get("__prerender_bypass")).toBeUndefined();
+
+      dm.disable();
+      expect(readonlyCookies.get("__prerender_bypass")).toBeUndefined();
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
   it("draftMode().disable() throws after its request context has been cleared", async () => {
     const { setHeadersContext, draftMode, getDraftModeCookieHeader } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -4347,7 +4432,13 @@ describe("next/headers phase-aware cookies", () => {
       const c = await cookies();
       c.set("token", "xyz", { path: "/", httpOnly: true, secure: true });
 
-      expect(c.get("token")).toEqual({ name: "token", value: "xyz" });
+      expect(c.get("token")).toEqual({
+        name: "token",
+        value: "xyz",
+        path: "/",
+        httpOnly: true,
+        secure: true,
+      });
       expect(c.has("token")).toBe(true);
 
       const pending = getAndClearPendingCookies();
@@ -4376,7 +4467,12 @@ describe("next/headers phase-aware cookies", () => {
       const cookieStore = cookies();
       void cookieStore.set("token", "sync-token", { httpOnly: true });
 
-      expect(cookieStore.get("token")).toEqual({ name: "token", value: "sync-token" });
+      expect(cookieStore.get("token")).toEqual({
+        name: "token",
+        value: "sync-token",
+        path: "/",
+        httpOnly: true,
+      });
       expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("token=sync-token")]);
     } finally {
       setHeadersAccessPhase(previousPhase);
@@ -4444,7 +4540,7 @@ describe("next/headers phase-aware cookies", () => {
       cookieStore.set("session", "abc", { partitioned: true, priority: "high" });
 
       expect(getAndClearPendingCookies()).toEqual([
-        "session=abc; Path=/; Partitioned; Priority=High",
+        "session=abc; Path=/; Partitioned; Priority=high",
       ]);
     } finally {
       setHeadersAccessPhase(previousPhase);
@@ -4464,8 +4560,15 @@ describe("next/headers phase-aware cookies", () => {
     try {
       const c = await cookies();
       expect(c.has("session")).toBe(true);
+      expect(c.get("session")).toEqual({ name: "session", value: "abc", path: "/" });
       c.delete("session");
-      expect(c.has("session")).toBe(false);
+      expect(c.has("session")).toBe(true);
+      expect(c.get("session")).toEqual({
+        name: "session",
+        value: "",
+        path: "/",
+        expires: new Date(0),
+      });
 
       const pending = getAndClearPendingCookies();
       expect(pending.length).toBe(1);
@@ -4538,14 +4641,74 @@ describe("next/headers phase-aware cookies", () => {
     try {
       const c = await cookies();
       c.set({ name: "pref", value: "dark", sameSite: "lax" });
-      expect(c.get("pref")?.value).toBe("dark");
+      expect(c.get("pref")).toEqual({
+        name: "pref",
+        value: "dark",
+        path: "/",
+        sameSite: "lax",
+      });
 
       const pending = getAndClearPendingCookies();
       expect(pending[0]).toContain("pref=dark");
-      expect(pending[0]).toContain("SameSite=Lax");
+      expect(pending[0]).toContain("SameSite=lax");
     } finally {
       setHeadersAccessPhase(previousPhase);
       setHeadersContext(null);
+    }
+  });
+
+  // Ported from Next.js:
+  // packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.ts
+  it("mutable cookies retain response metadata across all read APIs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const previousPhase = setHeadersAccessPhase("action");
+
+    try {
+      const cookieStore = await cookies();
+      cookieStore.set("session", "abc", {
+        path: "/admin",
+        domain: "example.com",
+        maxAge: 60,
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        partitioned: true,
+        priority: "high",
+      });
+
+      const expected = {
+        name: "session",
+        value: "abc",
+        path: "/admin",
+        domain: "example.com",
+        maxAge: 60,
+        expires: new Date("2026-01-01T00:01:00.000Z"),
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        partitioned: true,
+        priority: "high",
+      };
+      expect(cookieStore.get("session")).toEqual(expected);
+      expect(cookieStore.getAll()).toEqual([expected]);
+      expect([...cookieStore]).toEqual([["session", expected]]);
+
+      const expectedSerialization =
+        "session=abc; Path=/admin; Expires=Thu, 01 Jan 2026 00:01:00 GMT; " +
+        "Max-Age=60; Domain=example.com; Secure; HttpOnly; SameSite=lax; " +
+        "Partitioned; Priority=high";
+      expect(getAndClearPendingCookies()).toEqual([expectedSerialization]);
+      expect(cookieStore.toString()).toBe(expectedSerialization);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+      vi.useRealTimers();
     }
   });
 
@@ -4560,6 +4723,7 @@ describe("next/headers phase-aware cookies", () => {
       cookies: new Map(),
     });
 
+    const readonlyCookies = await cookies();
     const previousPhase = setHeadersAccessPhase("action");
     try {
       const c = await cookies();
@@ -4574,6 +4738,7 @@ describe("next/headers phase-aware cookies", () => {
         /Cookies can only be modified in a Server Action or Route Handler/,
       );
       expect(c.get("session")?.value).toBe("abc123");
+      expect(readonlyCookies.get("session")).toEqual({ name: "session", value: "abc123" });
       expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("session=abc123")]);
     } finally {
       setHeadersAccessPhase(previousPhase);
@@ -4701,10 +4866,10 @@ describe("next/server shim", () => {
     res.cookies.set("session", "abc", { partitioned: true, priority: "medium" });
 
     expect(res.headers.getSetCookie()).toEqual([
-      "session=abc; Path=/; Partitioned; Priority=Medium",
+      "session=abc; Path=/; Partitioned; Priority=medium",
     ]);
     expect(res.headers.get("x-middleware-set-cookie")).toBe(
-      "session=abc; Path=/; Partitioned; Priority=Medium",
+      "session=abc; Path=/; Partitioned; Priority=medium",
     );
   });
 
@@ -9362,7 +9527,7 @@ describe("ResponseCookies API", () => {
       path: "/",
       httpOnly: true,
       secure: true,
-      sameSite: "Lax",
+      sameSite: "lax",
       maxAge: 3600,
     });
 
@@ -9372,7 +9537,7 @@ describe("ResponseCookies API", () => {
     expect(setCookie[0]).toContain("Path=/");
     expect(setCookie[0]).toContain("HttpOnly");
     expect(setCookie[0]).toContain("Secure");
-    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("SameSite=lax");
     expect(setCookie[0]).toContain("Max-Age=3600");
   });
 
@@ -9397,7 +9562,7 @@ describe("ResponseCookies API", () => {
 
     cookies.set("token", "xyz");
     const result = cookies.get("token");
-    expect(result).toEqual({ name: "token", value: "xyz" });
+    expect(result).toEqual({ name: "token", value: "xyz", path: "/" });
   });
 
   it("getAll() returns all set cookies", async () => {
@@ -9411,9 +9576,9 @@ describe("ResponseCookies API", () => {
 
     const all = cookies.getAll();
     expect(all).toHaveLength(3);
-    expect(all).toContainEqual({ name: "a", value: "1" });
-    expect(all).toContainEqual({ name: "b", value: "2" });
-    expect(all).toContainEqual({ name: "c", value: "3" });
+    expect(all).toContainEqual({ name: "a", value: "1", path: "/" });
+    expect(all).toContainEqual({ name: "b", value: "2", path: "/" });
+    expect(all).toContainEqual({ name: "c", value: "3", path: "/" });
   });
 
   it("has() checks whether a response cookie exists", async () => {
@@ -9467,9 +9632,9 @@ describe("ResponseCookies API", () => {
     const entries = [...cookies];
     expect(entries).toHaveLength(2);
     expect(entries[0][0]).toBe("x");
-    expect(entries[0][1]).toEqual({ name: "x", value: "1" });
+    expect(entries[0][1]).toEqual({ name: "x", value: "1", path: "/" });
     expect(entries[1][0]).toBe("y");
-    expect(entries[1][1]).toEqual({ name: "y", value: "2" });
+    expect(entries[1][1]).toEqual({ name: "y", value: "2", path: "/" });
   });
 
   it("set() with domain option includes Domain directive", async () => {
@@ -9591,7 +9756,7 @@ describe("ResponseCookies correctness", () => {
 
     const filtered = cookies.getAll("b");
     expect(filtered).toHaveLength(1);
-    expect(filtered[0]).toEqual({ name: "b", value: "2" });
+    expect(filtered[0]).toEqual({ name: "b", value: "2", path: "/" });
   });
 
   it("getAll({ name }) filters by cookie name (object form)", async () => {
@@ -9604,7 +9769,7 @@ describe("ResponseCookies correctness", () => {
 
     const filtered = cookies.getAll({ name: "x" });
     expect(filtered).toHaveLength(1);
-    expect(filtered[0]).toEqual({ name: "x", value: "10" });
+    expect(filtered[0]).toEqual({ name: "x", value: "10", path: "/" });
   });
 
   it("getAll() with no args returns all cookies", async () => {
@@ -9657,14 +9822,14 @@ describe("ResponseCookies correctness", () => {
       path: "/app",
       httpOnly: true,
       secure: true,
-      sameSite: "Lax",
+      sameSite: "lax",
     });
 
     const setCookie = headers.getSetCookie();
     expect(setCookie).toHaveLength(1);
     expect(setCookie[0]).toContain("HttpOnly");
     expect(setCookie[0]).toContain("Secure");
-    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("SameSite=lax");
     expect(setCookie[0]).toContain("Path=/app");
     expect(setCookie[0]).toContain("Expires=");
   });
@@ -9693,6 +9858,159 @@ describe("ResponseCookies correctness", () => {
     const cookies = new ResponseCookies(headers);
     const result = cookies.get("existing");
     expect(result?.value).toBe("value");
+  });
+
+  it("get() and getAll() retain response cookie attributes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    try {
+      const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+      const cookies = new ResponseCookies(new Headers());
+
+      cookies.set("session", "abc", {
+        path: "/admin",
+        domain: "example.com",
+        maxAge: 60,
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        partitioned: true,
+        priority: "high",
+      });
+
+      const expected = {
+        name: "session",
+        value: "abc",
+        path: "/admin",
+        domain: "example.com",
+        maxAge: 60,
+        expires: new Date("2026-01-01T00:01:00.000Z"),
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        partitioned: true,
+        priority: "high",
+      };
+      expect(cookies.get("session")).toEqual(expected);
+      expect(cookies.getAll()).toEqual([expected]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("constructor retains attributes from existing Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    headers.append(
+      "Set-Cookie",
+      "session=hello%20world; Path=/admin; Domain=example.com; Max-Age=60; " +
+        "Expires=Thu, 01 Jan 2026 00:01:00 GMT; HttpOnly; Secure; SameSite=Lax; " +
+        "Partitioned; Priority=High",
+    );
+
+    const cookies = new ResponseCookies(headers);
+
+    expect(cookies.get("session")).toEqual({
+      name: "session",
+      value: "hello world",
+      path: "/admin",
+      domain: "example.com",
+      maxAge: 60,
+      expires: new Date("2026-01-01T00:01:00.000Z"),
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      partitioned: true,
+      priority: "high",
+    });
+  });
+
+  it("toString() serializes all response cookies", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("first-name", "first-value", {
+      domain: "custom-domain",
+      path: "custom-path",
+      secure: true,
+      sameSite: "strict",
+      expires: new Date(0),
+      httpOnly: true,
+      maxAge: 0,
+      priority: "high",
+      partitioned: true,
+    });
+
+    // Ported from @edge-runtime/cookies:
+    // packages/cookies/test/response-cookies.test.ts
+    // https://github.com/vercel/edge-runtime/blob/main/packages/cookies/test/response-cookies.test.ts
+    const expected =
+      "first-name=first-value; Path=custom-path; " +
+      "Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Domain=custom-domain; " +
+      "Secure; HttpOnly; SameSite=strict; Partitioned; Priority=high";
+    expect(cookies.toString()).toBe(expected);
+    expect(headers.getSetCookie()).toEqual([expected]);
+  });
+
+  it("uses parsed cookie entries as the serialization source of truth", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({
+      "Set-Cookie": "session=old; HttpOnly; Secure; SameSite=Lax; Priority=High",
+    });
+    const cookies = new ResponseCookies(headers);
+
+    const session = cookies.get("session");
+    expect(session).toBeDefined();
+    session!.value = "updated";
+
+    expect(cookies.toString()).toBe(
+      "session=updated; Secure; HttpOnly; SameSite=lax; Priority=high",
+    );
+
+    cookies.set("other", "2");
+    expect(headers.getSetCookie()).toEqual([
+      "session=updated; Secure; HttpOnly; SameSite=lax; Priority=high",
+      "other=2; Path=/",
+    ]);
+  });
+
+  it("matches Next.js double decoding for existing response-cookie values", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const cookies = new ResponseCookies(new Headers({ "Set-Cookie": "encoded=%252F" }));
+
+    expect(cookies.get("encoded")?.value).toBe("/");
+    expect(cookies.toString()).toBe("encoded=%2F");
+  });
+
+  it("falls back to splitting a joined Set-Cookie header", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = {
+      get(name: string) {
+        return name.toLowerCase() === "set-cookie"
+          ? "a=1; Expires=Thu, 01 Jan 2026 00:00:00 GMT, b=2; Secure"
+          : null;
+      },
+    } as Headers;
+
+    const cookies = new ResponseCookies(headers);
+    expect(cookies.getAll()).toEqual([
+      { name: "a", value: "1", expires: new Date("2026-01-01T00:00:00.000Z") },
+      { name: "b", value: "2", secure: true },
+    ]);
+  });
+
+  it("delete() preserves partitioned and priority options", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete({ name: "session", partitioned: true, priority: "high" });
+
+    expect(headers.getSetCookie()).toEqual([
+      "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Partitioned; Priority=high",
+    ]);
   });
 
   // has() should work with internal map
@@ -9817,6 +10135,26 @@ describe("cookie name validation", () => {
       );
     } finally {
       headersModule.setHeadersAccessPhase(previousPhase);
+    }
+  });
+
+  it("RequestCookies.delete() leaves mutable state unchanged when validation fails", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.delete({ name: "session", path: "/; Domain=evil.com" })).toThrow(
+        "Invalid cookie Path",
+      );
+      expect(jar.get("session")).toEqual({ name: "session", value: "abc", path: "/" });
+      expect(headersModule.getAndClearPendingCookies()).toEqual([]);
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+      headersModule.setHeadersContext(null);
     }
   });
 
