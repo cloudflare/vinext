@@ -55,6 +55,35 @@ describe("vinext next data client helpers", () => {
 });
 
 describe("dynamic route href interpolation", () => {
+  // Ported from Next.js: test/e2e/dynamic-routing/pages/index.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/pages/index.js
+  it("resolves a Pages Router href/as pair and omits consumed params from as", async () => {
+    const { resolveDynamicRouteHref } =
+      await import("../packages/vinext/src/shims/internal/interpolate-as.js");
+
+    expect(resolveDynamicRouteHref("/[a]/[b]/c?a=a&b=b&q=q#section")).toEqual({
+      href: "/[a]/[b]/c?a=a&b=b&q=q#section",
+      as: "/a/b/c?q=q#section",
+    });
+  });
+
+  it("resolves repeated query values into catch-all segments", async () => {
+    const { resolveDynamicRouteHref } =
+      await import("../packages/vinext/src/shims/internal/interpolate-as.js");
+
+    expect(resolveDynamicRouteHref("/docs/[...slug]?slug=one&slug=two&preview=1")).toEqual({
+      href: "/docs/[...slug]?slug=one&slug=two&preview=1",
+      as: "/docs/one/two?preview=1",
+    });
+  });
+
+  it("does not treat brackets in a query value as a dynamic route", async () => {
+    const { resolveDynamicRouteHref } =
+      await import("../packages/vinext/src/shims/internal/interpolate-as.js");
+
+    expect(resolveDynamicRouteHref("/search?q=[literal]")).toBeNull();
+  });
+
   it("preserves query and hash suffixes while interpolating", async () => {
     const { interpolateDynamicRouteHref } =
       await import("../packages/vinext/src/shims/internal/interpolate-as.js");
@@ -16449,6 +16478,53 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/dynamic-routing/dynamic-routing.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/dynamic-routing.test.ts
+  it("throws href-interpolation-failed when a full dynamic href omits a required param", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(
+        Router.push({
+          pathname: "/catalog/[category]/[item]",
+          query: { category: "music" },
+        }),
+      ).rejects.toThrow(
+        "The provided `href` (/catalog/[category]/[item]?category=music) value is missing query values (item) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed",
+      );
+      expect(win.history.pushState).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("throws incompatible-href-as when an explicit as does not match a dynamic href", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push("/catalog/[id]", "/wrong")).rejects.toThrow(
+        "The provided `as` value (/wrong) is incompatible with the `href` value (/catalog/[id]). Read more: https://nextjs.org/docs/messages/incompatible-href-as",
+      );
+      expect(win.history.pushState).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("allows an omitted optional catch-all during same-segment interpolation", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();
@@ -19526,6 +19602,46 @@ describe("Pages Router _next/data client navigation", () => {
   function makePageModule(name: string): { default: unknown } {
     return { default: ((): string => `page:${name}`) as unknown };
   }
+
+  it("allows middleware to resolve an incomplete explicit dynamic href", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const routePattern = "/catalog/[category]/[item]";
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        [routePattern]: vi.fn(async () => makePageModule("catalog")),
+      },
+      sspPatterns: [routePattern],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { resolvedByMiddleware: true } }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as typeof fetch;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(
+        Router.push({
+          pathname: routePattern,
+          query: { category: "music" },
+        }),
+      ).resolves.toBe(true);
+      expect(globalThis.fetch).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
 
   it("fetches /_next/data/<buildId>/<page>.json instead of the HTML page", async () => {
     const previousWindow = (globalThis as any).window;
